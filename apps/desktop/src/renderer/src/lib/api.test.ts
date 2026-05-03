@@ -243,6 +243,24 @@ describe("ApiClient", () => {
             error: null,
           });
         }
+        if (url.endsWith("/api/review-sessions/session_1/export/copy-packet")) {
+          return jsonResponse({
+            data: copyPacketFixture,
+            error: null,
+          });
+        }
+        if (url.endsWith("/api/copy-packets/copy_packet_1/copied")) {
+          return jsonResponse({
+            data: copiedPacketFixture,
+            error: null,
+          });
+        }
+        if (url.endsWith("/api/review-sessions/session_1/github/preview")) {
+          return jsonResponse({
+            data: githubPreviewFixture,
+            error: null,
+          });
+        }
         if (
           url.endsWith("/api/findings/finding_1/evidence-map") &&
           method === "GET"
@@ -345,6 +363,30 @@ describe("ApiClient", () => {
       action: "copy",
       finding: { decision_status: "copied" },
     });
+    await expect(
+      client.createReviewCopyPacket("session_1", {
+        finding_ids: ["finding_1"],
+        format: "markdown",
+      }),
+    ).resolves.toMatchObject({
+      copy_packet_id: "copy_packet_1",
+      finding_count: 1,
+    });
+    await expect(
+      client.markCopyPacketCopied("copy_packet_1"),
+    ).resolves.toMatchObject({
+      copy_packet_id: "copy_packet_1",
+      finding_ids: ["finding_1"],
+    });
+    await expect(
+      client.createGitHubPreview("session_1", {
+        finding_ids: ["finding_1"],
+        review_event: "COMMENT",
+      }),
+    ).resolves.toMatchObject({
+      publish_draft_id: "publish_draft_1",
+      checklist: { has_selected_findings: true },
+    });
     await expect(client.getFindingEvidenceMap("finding_1")).resolves.toEqual(
       evidenceMapFixture,
     );
@@ -380,6 +422,9 @@ describe("ApiClient", () => {
       "GET http://127.0.0.1:17658/api/findings/finding_1/thread",
       "POST http://127.0.0.1:17658/api/findings/finding_1/question",
       "POST http://127.0.0.1:17658/api/findings/finding_1/thread/actions",
+      "POST http://127.0.0.1:17658/api/review-sessions/session_1/export/copy-packet",
+      "POST http://127.0.0.1:17658/api/copy-packets/copy_packet_1/copied",
+      "POST http://127.0.0.1:17658/api/review-sessions/session_1/github/preview",
       "GET http://127.0.0.1:17658/api/findings/finding_1/evidence-map",
       "POST http://127.0.0.1:17658/api/findings/finding_1/evidence-map/rebuild",
       "POST http://127.0.0.1:17658/api/findings/finding_1/evidence-map/question",
@@ -400,7 +445,15 @@ describe("ApiClient", () => {
       action: "copy",
       reason: "sent to agent",
     });
+    expect(seen[10]?.body).toEqual({
+      finding_ids: ["finding_1"],
+      format: "markdown",
+    });
     expect(seen[12]?.body).toEqual({
+      finding_ids: ["finding_1"],
+      review_event: "COMMENT",
+    });
+    expect(seen[15]?.body).toEqual({
       question: "Does this graph prove the missing guard?",
       agent_config_id: "agent_config_1",
       graph_refs: [{ node_id: "node_1" }],
@@ -938,6 +991,58 @@ const askEvidenceMapQuestionFixture = {
   },
   agent_run_id: "run_graph_1",
   context_bundle_id: "bundle_graph_1",
+};
+
+const copyPacketFixture = {
+  copy_packet_id: "copy_packet_1",
+  content: "## Auth middleware is not applied\n\nPlease add the guard.",
+  format: "markdown",
+  finding_count: 1,
+  token_estimate: 42,
+  content_artifact_id: "artifact_packet_1",
+};
+
+const copiedPacketFixture = {
+  copy_packet_id: "copy_packet_1",
+  copied_at: "2026-05-04T00:01:00Z",
+  finding_ids: ["finding_1"],
+  decisions: [
+    {
+      id: "decision_packet_copy",
+      finding_id: "finding_1",
+      review_session_id: "session_1",
+      decision: "copied",
+      reason: "",
+      metadata: {},
+      created_at: "2026-05-04T00:01:00Z",
+    },
+  ],
+};
+
+const githubPreviewFixture = {
+  publish_draft_id: "publish_draft_1",
+  artifact_id: "artifact_preview_1",
+  review_event: "COMMENT",
+  body: "Review body for accepted findings.",
+  comments: [
+    {
+      finding_id: "finding_1",
+      path: "src/app.ts",
+      body: "This route appears to bypass auth.",
+      line: 42,
+      side: "RIGHT",
+      position: 1,
+      unanchored: false,
+    },
+  ],
+  warnings: [],
+  checklist: {
+    has_selected_findings: true,
+    has_inline_comments: true,
+    has_unanchored_comments: false,
+    can_publish_inline: true,
+    can_publish_summary_only: true,
+  },
 };
 
 const reviewEventFixture = {

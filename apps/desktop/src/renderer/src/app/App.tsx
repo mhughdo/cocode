@@ -101,8 +101,11 @@ import {
   type Finding,
   type FindingDetailResponse,
   type FindingListResponse,
+  type FindingListStats,
   type FindingQuickActionResponse,
   type FindingThreadView,
+  type CreateCopyPacketResponse,
+  type GitHubPreviewResponse,
   type OpenRepositoryResponse,
   type Repository,
   type ReviewContextPolicy,
@@ -2652,10 +2655,9 @@ function ReviewThread({
             </TabsContent>
 
             <TabsContent value="publish" className="mt-4">
-              <EmptyState
-                title="Publish preview comes next"
-                description="Accepted findings will feed the GitHub preview and copy packet screens."
-                icon={CopyIcon}
+              <PublishReviewScreen
+                client={client}
+                session={live.session ?? session}
               />
             </TabsContent>
           </Tabs>
@@ -3713,6 +3715,453 @@ function ReviewFindingsBoard({
           )}
         </div>
       </div>
+    </section>
+  );
+}
+
+function PublishReviewScreen({
+  client,
+  session,
+}: {
+  client: ApiClient | null;
+  session?: ReviewSession;
+}) {
+  const [acceptedFindings, setAcceptedFindings] =
+    useState<Loadable<FindingListResponse>>(idleApiState());
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [reviewEvent, setReviewEvent] = useState("COMMENT");
+  const [previewState, setPreviewState] =
+    useState<Loadable<GitHubPreviewResponse>>(idleApiState());
+  const [copyPacketState, setCopyPacketState] =
+    useState<Loadable<CreateCopyPacketResponse>>(idleApiState());
+  const [actionMessage, setActionMessage] = useState("");
+
+  useEffect(() => {
+    let canceled = false;
+    queueMicrotask(() => {
+      if (canceled) {
+        return;
+      }
+      if (!client || !session) {
+        setAcceptedFindings(
+          successApiState({ items: [], stats: emptyFindingStats() }),
+        );
+        setSelectedIds(new Set());
+        return;
+      }
+      setAcceptedFindings(loadingApiState());
+      void loadApiResource(() =>
+        client.listFindings(session.id, { status: "accepted" }),
+      ).then((state) => {
+        if (canceled) {
+          return;
+        }
+        setAcceptedFindings(state);
+        if (state.status === "success") {
+          setSelectedIds(
+            new Set(state.data.items.map((finding) => finding.id)),
+          );
+        }
+      });
+    });
+    return () => {
+      canceled = true;
+    };
+  }, [client, session?.id, session]);
+
+  const findings =
+    acceptedFindings.status === "success" ? acceptedFindings.data.items : [];
+  const selectedFindings = findings.filter((finding) =>
+    selectedIds.has(finding.id),
+  );
+  const selectedIdList = selectedFindings.map((finding) => finding.id);
+  const canPreview = Boolean(client && session && selectedIdList.length > 0);
+
+  async function buildPreview() {
+    if (!client || !session) {
+      return;
+    }
+    setActionMessage("");
+    const state = await loadApiResource(() =>
+      client.createGitHubPreview(session.id, {
+        finding_ids: selectedIdList,
+        review_event: reviewEvent,
+      }),
+    );
+    setPreviewState(state);
+  }
+
+  async function buildCopyPacket(copyToClipboard: boolean) {
+    if (!client || !session) {
+      return;
+    }
+    setActionMessage("");
+    const state = await loadApiResource(() =>
+      client.createReviewCopyPacket(session.id, {
+        finding_ids: selectedIdList,
+        format: "markdown",
+        include_evidence: true,
+        include_counter_evidence: true,
+        include_code_snippets: false,
+        target_agent: "reviewer",
+      }),
+    );
+    setCopyPacketState(state);
+    if (state.status !== "success" || !copyToClipboard) {
+      return;
+    }
+    if (!window.cocode?.writeClipboard) {
+      setActionMessage("Clipboard bridge is unavailable.");
+      return;
+    }
+    const copied = await loadApiResource(() =>
+      window.cocode!.writeClipboard(state.data.content),
+    );
+    setActionMessage(
+      copied.status === "success"
+        ? "Copy packet copied to clipboard"
+        : copied.status === "error"
+          ? copied.error.message
+          : "Copy failed",
+    );
+  }
+
+  function toggleFinding(findingId: string) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(findingId)) {
+        next.delete(findingId);
+      } else {
+        next.add(findingId);
+      }
+      return next;
+    });
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <PaneHeader
+        title="Publish review"
+        description="Prepare accepted findings for GitHub review or an agent copy packet."
+        actions={
+          <div className="flex items-center gap-2">
+            <Button
+              disabled={!canPreview || previewState.status === "loading"}
+              size="sm"
+              variant="outline"
+              onClick={() => void buildPreview()}
+            >
+              <FileSearchIcon data-icon="inline-start" />
+              Preview
+            </Button>
+            <Button
+              disabled={!canPreview || copyPacketState.status === "loading"}
+              size="sm"
+              onClick={() => void buildCopyPacket(true)}
+            >
+              <CopyIcon data-icon="inline-start" />
+              Copy packet
+            </Button>
+          </div>
+        }
+      />
+
+      <div className="grid gap-4 2xl:grid-cols-[360px_minmax(0,1fr)]">
+        <aside className="flex min-w-0 flex-col gap-4">
+          <div className="rounded-lg border">
+            <div className="flex items-center justify-between gap-2 border-b px-4 py-3">
+              <div>
+                <div className="text-sm font-medium">Accepted findings</div>
+                <div className="text-muted-foreground mt-1 text-xs">
+                  {selectedIds.size} selected
+                </div>
+              </div>
+              <Button
+                disabled={findings.length === 0}
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  setSelectedIds(new Set(findings.map((finding) => finding.id)))
+                }
+              >
+                All
+              </Button>
+            </div>
+            {acceptedFindings.status === "loading" && (
+              <LoadingRows rows={4} className="p-4" />
+            )}
+            {acceptedFindings.status === "error" && (
+              <div className="p-4">
+                <ErrorState
+                  title="Accepted findings failed to load"
+                  description={acceptedFindings.error.message}
+                />
+              </div>
+            )}
+            {acceptedFindings.status === "success" && findings.length === 0 && (
+              <EmptyState
+                title="No accepted findings"
+                description="Accept findings before building a publish preview."
+                icon={InboxIcon}
+              />
+            )}
+            {findings.length > 0 && (
+              <div className="flex flex-col">
+                {findings.map((finding) => (
+                  <label
+                    key={finding.id}
+                    className="hover:bg-surface flex cursor-pointer gap-3 border-b px-4 py-3 last:border-b-0"
+                  >
+                    <Checkbox
+                      checked={selectedIds.has(finding.id)}
+                      onCheckedChange={() => toggleFinding(finding.id)}
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="line-clamp-2 text-sm font-medium">
+                        {finding.canonical_claim}
+                      </span>
+                      <span className="text-muted-foreground mt-1 block truncate text-xs">
+                        {formatFindingLocation(finding)}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-lg border p-4">
+            <label className="flex flex-col gap-2 text-sm font-medium">
+              Review event
+              <NativeSelect
+                value={reviewEvent}
+                onChange={(event) => setReviewEvent(event.target.value)}
+              >
+                <NativeSelectOption value="COMMENT">Comment</NativeSelectOption>
+                <NativeSelectOption value="REQUEST_CHANGES">
+                  Request changes
+                </NativeSelectOption>
+                <NativeSelectOption value="APPROVE">Approve</NativeSelectOption>
+              </NativeSelect>
+            </label>
+            <div className="mt-3 rounded-md border p-3">
+              <Badge variant="outline">GitHub submit unavailable</Badge>
+              <p className="text-muted-foreground mt-2 text-xs leading-5">
+                Preview and copy packet are ready; direct submit waits for the
+                backend publish route.
+              </p>
+            </div>
+            {actionMessage && (
+              <p className="text-muted-foreground mt-2 text-sm">
+                {actionMessage}
+              </p>
+            )}
+          </div>
+        </aside>
+
+        <div className="grid min-w-0 gap-4 min-[1800px]:grid-cols-2">
+          <GitHubPreviewPane state={previewState} />
+          <CopyPacketPreviewPane
+            state={copyPacketState}
+            onBuild={() => void buildCopyPacket(false)}
+            disabled={!canPreview || copyPacketState.status === "loading"}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GitHubPreviewPane({
+  state,
+}: {
+  state: Loadable<GitHubPreviewResponse>;
+}) {
+  return (
+    <section className="rounded-lg border">
+      <div className="border-b px-4 py-3">
+        <div className="text-sm font-medium">GitHub preview</div>
+        <div className="text-muted-foreground mt-1 text-xs">
+          Review body, inline comments, warnings, and checklist.
+        </div>
+      </div>
+      {state.status === "idle" && (
+        <EmptyState
+          title="No preview yet"
+          description="Select accepted findings and build a preview."
+          icon={FileSearchIcon}
+        />
+      )}
+      {state.status === "loading" && <LoadingRows rows={5} className="p-4" />}
+      {state.status === "error" && (
+        <div className="p-4">
+          <ErrorState
+            title="Preview failed"
+            description={state.error.message}
+          />
+        </div>
+      )}
+      {state.status === "success" && (
+        <ScrollArea className="h-[620px]">
+          <div className="flex flex-col gap-4 p-4">
+            <GitHubPreviewChecklistView preview={state.data} />
+            <div className="rounded-md border p-3">
+              <div className="mb-2 text-xs font-medium">Review body</div>
+              <p className="text-muted-foreground text-sm leading-6 whitespace-pre-wrap">
+                {state.data.body}
+              </p>
+            </div>
+            <div>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div className="text-sm font-medium">Inline comments</div>
+                <Badge variant="outline">{state.data.comments.length}</Badge>
+              </div>
+              <div className="flex flex-col gap-2">
+                {state.data.comments.map((comment) => (
+                  <div
+                    key={comment.finding_id}
+                    className="rounded-md border p-3"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="truncate text-sm font-medium">
+                        {comment.path || "Summary comment"}
+                      </span>
+                      <Badge
+                        className="shrink-0"
+                        variant={comment.unanchored ? "destructive" : "outline"}
+                      >
+                        {comment.unanchored ? "unanchored" : "anchored"}
+                      </Badge>
+                    </div>
+                    <p className="text-muted-foreground mt-2 line-clamp-5 text-sm leading-6">
+                      {comment.body}
+                    </p>
+                    {comment.warning && (
+                      <p className="text-destructive mt-2 text-xs">
+                        {comment.warning}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+            {state.data.warnings.length > 0 && (
+              <div>
+                <div className="mb-2 text-sm font-medium">Warnings</div>
+                <div className="flex flex-col gap-2">
+                  {state.data.warnings.map((warning) => (
+                    <div
+                      key={`${warning.finding_id}:${warning.message}`}
+                      className="rounded-md border p-3"
+                    >
+                      <div className="text-sm font-medium">
+                        {warning.path || warning.finding_id}
+                      </div>
+                      <p className="text-muted-foreground mt-1 text-sm">
+                        {warning.message}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </ScrollArea>
+      )}
+    </section>
+  );
+}
+
+function GitHubPreviewChecklistView({
+  preview,
+}: {
+  preview: GitHubPreviewResponse;
+}) {
+  const items = [
+    ["Selected findings", preview.checklist.has_selected_findings],
+    ["Inline comments", preview.checklist.has_inline_comments],
+    ["Unanchored comments", preview.checklist.has_unanchored_comments],
+    ["Can publish inline", preview.checklist.can_publish_inline],
+    ["Can publish summary-only", preview.checklist.can_publish_summary_only],
+  ] as const;
+  return (
+    <div className="grid grid-cols-[repeat(auto-fit,minmax(170px,1fr))] gap-2">
+      {items.map(([label, ok]) => (
+        <div
+          key={label}
+          className="flex items-center gap-2 rounded-md border p-2"
+        >
+          <Badge variant={ok ? "secondary" : "outline"}>
+            {ok ? "yes" : "no"}
+          </Badge>
+          <span className="text-sm">{label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CopyPacketPreviewPane({
+  disabled,
+  onBuild,
+  state,
+}: {
+  disabled: boolean;
+  onBuild: () => void;
+  state: Loadable<CreateCopyPacketResponse>;
+}) {
+  return (
+    <section className="rounded-lg border">
+      <div className="flex items-center justify-between gap-2 border-b px-4 py-3">
+        <div>
+          <div className="text-sm font-medium">Copy packet</div>
+          <div className="text-muted-foreground mt-1 text-xs">
+            Markdown packet for handing findings to another agent.
+          </div>
+        </div>
+        <Button
+          disabled={disabled}
+          size="sm"
+          variant="outline"
+          onClick={onBuild}
+        >
+          Build
+        </Button>
+      </div>
+      {state.status === "idle" && (
+        <EmptyState
+          title="No packet yet"
+          description="Build or copy a packet from the selected findings."
+          icon={CopyIcon}
+        />
+      )}
+      {state.status === "loading" && <LoadingRows rows={5} className="p-4" />}
+      {state.status === "error" && (
+        <div className="p-4">
+          <ErrorState
+            title="Copy packet failed"
+            description={state.error.message}
+          />
+        </div>
+      )}
+      {state.status === "success" && (
+        <ScrollArea className="h-[620px]">
+          <div className="flex flex-col gap-3 p-4">
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="secondary">
+                {state.data.finding_count} findings
+              </Badge>
+              <Badge variant="outline">
+                {state.data.token_estimate} tokens
+              </Badge>
+              <Badge variant="outline">{state.data.format}</Badge>
+            </div>
+            <pre className="bg-surface overflow-x-auto rounded-md border p-3 text-xs leading-5 whitespace-pre-wrap">
+              {state.data.content}
+            </pre>
+          </div>
+        </ScrollArea>
+      )}
     </section>
   );
 }
@@ -5628,6 +6077,17 @@ function formatFindingLocation(finding: Finding) {
     return `${finding.primary_path}:L${finding.primary_start_line}`;
   }
   return finding.primary_path;
+}
+
+function emptyFindingStats(): FindingListStats {
+  return {
+    total: 0,
+    filtered: 0,
+    by_decision: {},
+    by_severity: {},
+    by_verification: {},
+    needs_triage: 0,
+  };
 }
 
 function findingClipboardText(finding: Finding) {

@@ -349,7 +349,7 @@ Large parallel workstreams:
 | T263 | Implement Evidence Map screen | Code hierarchy, graph, right panel, call path, legend, back/open editor actions. | Done | T215, T242 | T264 | Evidence Map renders as a review subview with hierarchy, bounded SVG graph layout, call path rail, legend, partial-state badges, and selected context panel. |
 | T264 | Implement Evidence Map interactions | Node click, edge detail, ask verifier, open in editor. | Done | T218, T213, T263 | T280 | Node/edge/call-path selection updates the panel, rebuild reloads graph state, ask verifier posts graph refs, and open-in-editor uses deep-link data through the Electron bridge. |
 | T265 | Implement Follow-up screen | Evidence bundle chips, chat messages, finding summary, selected agents, quick actions. | Done | T280, T251 | T266 | Follow-up opens from selected findings, loads/persists the finding thread, shows summary/evidence bundle/agent selector, supports scoped questions, and runs counter/accept/copy/dismiss quick actions. |
-| T266 | Implement Publish screen | Accepted findings selector, GitHub preview, copy fix packet preview, checklist. | Not started | T290, T296 | T267 | Screen matches mockup and enables copy/publish flows. |
+| T266 | Implement Publish screen | Accepted findings selector, GitHub preview, copy fix packet preview, checklist. | Done | T290, T296 | T267 | Publish tab loads accepted findings, builds GitHub preview/checklist, renders copy-packet previews, and copies selected packets through the Electron clipboard bridge; direct GitHub submit remains disabled until an HTTP publish route is exposed. |
 | T267 | Implement loading/error/empty states | Add robust state components across all screens. | Not started | T240-T266 | T360 | Common failure states are understandable and tested. |
 
 ---
@@ -364,7 +364,7 @@ Large parallel workstreams:
 | T283 | Implement quick actions from follow-up | Ask counter-evidence, accept, dismiss, copy. | Done | T281, T185 | T265 | Quick actions update finding state. |
 | T290 | Implement copy packet renderer | Render Markdown/XML-ish/JSON/compact/GitHub summary. | Done | T184, T185, T060 | T291 | Snapshot + selected findings render accurately. |
 | T291 | Implement copy packet API | Generate packet, store artifact, return content/token estimate. | Done | T290, T060 | T292 | API works for single/selected/accepted findings. |
-| T292 | Implement clipboard UI action | Use Electron bridge to copy packet/comment. | Not started | T034, T291 | T266 | Copy action works and shows success/failure toast. |
+| T292 | Implement clipboard UI action | Use Electron bridge to copy packet/comment. | Done | T034, T291 | T266 | Publish screen copy-packet action writes generated packet content through the Electron clipboard bridge and reports success/failure inline. |
 | T293 | Mark findings copied | Record copied decisions and packet metadata. | Done | T291, T185 | T266 | Copied state appears on findings/publish screen. |
 | T294 | Implement GitHub diff mapper | Map finding file/line to GitHub diff position/line/side. | Done | T079, T076 | T295 | Tests cover add/remove/context/multi-hunk cases. |
 | T295 | Implement GitHub review preview service | Build review body and comments JSON from selected findings. | Done | T187, T294 | T296 | Preview returns comment list and anchor warnings. |

@@ -560,6 +560,67 @@ export interface FindingQuickActionResponse {
   context_bundle_id?: string;
 }
 
+export interface CreateCopyPacketRequest {
+  format?: string;
+  finding_ids?: string[];
+  include_code_snippets?: boolean;
+  include_evidence?: boolean;
+  include_counter_evidence?: boolean;
+  target_agent?: string;
+}
+
+export interface CreateCopyPacketResponse {
+  copy_packet_id: string;
+  content: string;
+  format: string;
+  finding_count: number;
+  token_estimate: number;
+  content_artifact_id: string;
+}
+
+export interface MarkCopyPacketCopiedResponse {
+  copy_packet_id: string;
+  copied_at: string;
+  finding_ids: string[];
+  decisions: HumanDecision[];
+}
+
+export interface GitHubReviewCommentDraft {
+  finding_id: string;
+  path?: string;
+  body: string;
+  line?: number;
+  side?: string;
+  position?: number;
+  unanchored: boolean;
+  warning?: string;
+}
+
+export interface GitHubAnchorWarning {
+  finding_id: string;
+  path?: string;
+  line?: number;
+  message: string;
+}
+
+export interface GitHubPreviewChecklist {
+  has_selected_findings: boolean;
+  has_inline_comments: boolean;
+  has_unanchored_comments: boolean;
+  can_publish_inline: boolean;
+  can_publish_summary_only: boolean;
+}
+
+export interface GitHubPreviewResponse {
+  publish_draft_id: string;
+  artifact_id: string;
+  review_event: string;
+  body: string;
+  comments: GitHubReviewCommentDraft[];
+  warnings: GitHubAnchorWarning[];
+  checklist: GitHubPreviewChecklist;
+}
+
 export interface UpdateFindingDecisionRequest {
   decision: string;
   reason?: string;
@@ -962,6 +1023,41 @@ export class ApiClient {
   ) {
     return this.post<FindingQuickActionResponse>(
       `/api/findings/${encodeURIComponent(findingId)}/thread/actions`,
+      body,
+      options,
+    );
+  }
+
+  createReviewCopyPacket(
+    reviewSessionId: string,
+    body: CreateCopyPacketRequest,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.post<CreateCopyPacketResponse>(
+      `/api/review-sessions/${encodeURIComponent(reviewSessionId)}/export/copy-packet`,
+      body,
+      options,
+    );
+  }
+
+  markCopyPacketCopied(
+    copyPacketId: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.post<MarkCopyPacketCopiedResponse>(
+      `/api/copy-packets/${encodeURIComponent(copyPacketId)}/copied`,
+      undefined,
+      options,
+    );
+  }
+
+  createGitHubPreview(
+    reviewSessionId: string,
+    body: { finding_ids?: string[]; review_event?: string },
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.post<GitHubPreviewResponse>(
+      `/api/review-sessions/${encodeURIComponent(reviewSessionId)}/github/preview`,
       body,
       options,
     );

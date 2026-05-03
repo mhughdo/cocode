@@ -824,13 +824,13 @@ func (s *Service) runAgent(ctx context.Context, item runContext) (agentrun.RunRe
 	if err := s.appendAgentRunEvents(ctx, item.Session.ID, result.Events); err != nil {
 		return result, err
 	}
-	if err := s.parseAgentOutput(ctx, item, &result); err != nil {
+	if err := s.parseAgentOutputForPhase(ctx, item, &result, PhaseNormalizeOutputs); err != nil {
 		return result, err
 	}
 	return result, nil
 }
 
-func (s *Service) parseAgentOutput(ctx context.Context, item runContext, result *agentrun.RunResult) error {
+func (s *Service) parseAgentOutputForPhase(ctx context.Context, item runContext, result *agentrun.RunResult, phase string) error {
 	if !result.Run.StdoutArtifactID.Valid {
 		return nil
 	}
@@ -892,7 +892,7 @@ func (s *Service) parseAgentOutput(ctx context.Context, item runContext, result 
 		Type:            "AgentOutputParsed",
 		ArtifactID:      nullableEventString(artifactRow.ID),
 		Payload: map[string]any{
-			"phase":                 PhaseNormalizeOutputs,
+			"phase":                 phase,
 			"agent_config_id":       item.AgentConfig.ID,
 			"agent_run_id":          result.Run.ID,
 			"parsed_artifact_id":    artifactRow.ID,
@@ -1110,7 +1110,7 @@ func (s *Service) verifyFindings(ctx context.Context, session dbgen.ReviewSessio
 	if err != nil {
 		return err
 	}
-	return s.appendEvent(ctx, appendEventParams{
+	if err := s.appendEvent(ctx, appendEventParams{
 		ReviewSessionID: session.ID,
 		Type:            "FindingVerificationCompleted",
 		Payload: map[string]any{
@@ -1121,6 +1121,32 @@ func (s *Service) verifyFindings(ctx context.Context, session dbgen.ReviewSessio
 			"supporting_evidence":    summary.SupportingEvidence,
 			"counter_evidence":       summary.CounterEvidence,
 			"missing_evidence":       summary.MissingEvidence,
+		},
+	}); err != nil {
+		return err
+	}
+	agentSummary, err := s.runVerifierAgents(ctx, session, repository)
+	if err != nil {
+		return err
+	}
+	return s.appendEvent(ctx, appendEventParams{
+		ReviewSessionID: session.ID,
+		Type:            "VerifierAgentVerificationCompleted",
+		Payload: map[string]any{
+			"phase":                   PhaseVerifyFindings,
+			"configured":              agentSummary.Configured,
+			"findings_eligible":       agentSummary.FindingsEligible,
+			"findings_attempted":      agentSummary.FindingsAttempted,
+			"runs_started":            agentSummary.RunsStarted,
+			"runs_succeeded":          agentSummary.RunsSucceeded,
+			"runs_failed":             agentSummary.RunsFailed,
+			"evidence_items_created":  agentSummary.EvidenceItemsCreated,
+			"status_updates":          agentSummary.StatusUpdates,
+			"by_verification_status":  agentSummary.ByVerificationStatus,
+			"context_bundle_failures": agentSummary.ContextBundleFailures,
+			"apply_failures":          agentSummary.ApplyFailures,
+			"skipped":                 agentSummary.Skipped,
+			"skip_reason":             agentSummary.SkipReason,
 		},
 	})
 }

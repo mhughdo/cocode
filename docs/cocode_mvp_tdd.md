@@ -1617,6 +1617,8 @@ The MVP implementation runs a deterministic local verifier during the `verify_fi
 
 Finding-scoped and Evidence Map-scoped context bundles reuse the same context item model with `scope` set to `finding` or `evidence_map`. They include finding prompt material, bounded evidence rows, scoped changed-code snippets, related tests/search hits when available, and optionally a compact Evidence Map graph summary. Scoped bundles cap tokens/items below the broad review defaults so follow-up/verifier tasks stay fast on large PRs.
 
+The verifier agent runner is an optional extension after deterministic local verification. It selects enabled `cli_noninteractive` agent configs whose role is `verifier`, builds persisted finding-scoped bundles, and asks the CLI to return a single JSON verification result. The runner caps verifier configs and finding count for large diffs, stores verifier-provided evidence with `producer=verifier_agent`, and may update `verification_status`, `evidence_summary`, and `counter_evidence_summary`. CLI failures, invalid verifier output, and per-finding context failures are recorded as warning events and do not remove or block local verifier evidence.
+
 ### 14.2 Local verifier examples
 
 | Finding type | Deterministic checks |

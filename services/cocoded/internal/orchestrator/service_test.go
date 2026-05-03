@@ -496,6 +496,161 @@ func TestWorkflowContinuesWhenOneAgentFails(t *testing.T) {
 	assertEventTypes(t, events, []string{"AgentRunFailed", "ReviewSessionPartialFailure", "ReviewSessionCompleted"})
 }
 
+func TestVerifyFindingsRunsVerifierCLIWithFindingContext(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	createVerifierCLIConfig(t, env, "agent_config_verifier")
+	env.Driver.stdout = `{
+		"verification_status": "plausible",
+		"evidence_summary": "Verifier confirmed the changed function is the primary code path.",
+		"counter_evidence_summary": "Verifier found a nearby guard-like call that needs human review.",
+		"evidence": [
+			{
+				"kind": "counter",
+				"title": "Nearby guard-like call",
+				"summary": "The scoped context includes RequireAdmin, so the claim is plausible rather than fully verified.",
+				"path": "src/new.go",
+				"start_line": 3,
+				"end_line": 3,
+				"confidence": 0.73
+			}
+		]
+	}`
+	session := createWorkflowSession(t, env, "review_session_verifier_cli", StatusDraft)
+	finding := createWorkflowFinding(t, env, session.ID, "finding_verifier_cli")
+	repository, err := env.Queries.GetRepository(context.Background(), session.RepositoryID)
+	if err != nil {
+		t.Fatalf("GetRepository() error = %v", err)
+	}
+
+	if err := env.Service.verifyFindings(context.Background(), session, repository); err != nil {
+		t.Fatalf("verifyFindings() error = %v", err)
+	}
+
+	updated, err := env.Queries.GetFinding(context.Background(), finding.ID)
+	if err != nil {
+		t.Fatalf("GetFinding() error = %v", err)
+	}
+	if updated.VerificationStatus != evidence.StatusPlausible ||
+		!updated.EvidenceSummary.Valid ||
+		!strings.Contains(updated.EvidenceSummary.String, "Verifier confirmed") ||
+		!updated.CounterEvidenceSummary.Valid ||
+		!strings.Contains(updated.CounterEvidenceSummary.String, "human review") {
+		t.Fatalf("updated finding = %+v", updated)
+	}
+	items, err := env.Queries.ListEvidenceItemsByFinding(context.Background(), finding.ID)
+	if err != nil {
+		t.Fatalf("ListEvidenceItemsByFinding() error = %v", err)
+	}
+	localItems := 0
+	verifierItems := 0
+	for _, item := range items {
+		if strings.Contains(item.MetadataJson, `"producer":"local_verifier"`) {
+			localItems++
+		}
+		if strings.Contains(item.MetadataJson, `"producer":"verifier_agent"`) {
+			verifierItems++
+			if item.Kind != evidence.KindCounter || item.Path.String != "src/new.go" || item.StartLine.Int64 != 3 {
+				t.Fatalf("verifier evidence item = %+v", item)
+			}
+		}
+	}
+	if localItems == 0 || verifierItems != 1 {
+		t.Fatalf("evidence counts local=%d verifier=%d items=%+v", localItems, verifierItems, items)
+	}
+	runs, err := env.Queries.ListAgentRunsBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListAgentRunsBySession() error = %v", err)
+	}
+	if len(runs) != 1 ||
+		runs[0].Role != "verifier" ||
+		runs[0].Status != agentrun.RunStatusSucceeded ||
+		!runs[0].ContextBundleID.Valid ||
+		!runs[0].ParsedOutputArtifactID.Valid {
+		t.Fatalf("verifier runs = %+v", runs)
+	}
+	bundles, err := env.Queries.ListContextBundlesBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListContextBundlesBySession() error = %v", err)
+	}
+	if len(bundles) != 1 || bundles[0].Scope != string(contextbundle.ScopeFinding) {
+		t.Fatalf("context bundles = %+v", bundles)
+	}
+	if prompt := env.Driver.lastPrompt(); !strings.Contains(prompt, "You are a verifier agent") ||
+		!strings.Contains(prompt, "Finding ID: finding_verifier_cli") ||
+		!strings.Contains(prompt, "Context Bundle") {
+		t.Fatalf("verifier prompt missing scoped context:\n%s", prompt)
+	}
+	events, err := env.Events.ListByReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListByReviewSession() error = %v", err)
+	}
+	assertEventTypes(t, events, []string{
+		"FindingVerificationCompleted",
+		"ContextBundleCreated",
+		"AgentOutputParsed",
+		"VerifierAgentVerificationCompleted",
+	})
+}
+
+func TestVerifyFindingsKeepsLocalEvidenceWhenVerifierCLIFails(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	createVerifierCLIConfig(t, env, "agent_config_verifier_fail")
+	env.Driver.failConfigs = map[string]bool{"agent_config_verifier_fail": true}
+	session := createWorkflowSession(t, env, "review_session_verifier_fail", StatusDraft)
+	finding := createWorkflowFinding(t, env, session.ID, "finding_verifier_fail")
+	repository, err := env.Queries.GetRepository(context.Background(), session.RepositoryID)
+	if err != nil {
+		t.Fatalf("GetRepository() error = %v", err)
+	}
+
+	if err := env.Service.verifyFindings(context.Background(), session, repository); err != nil {
+		t.Fatalf("verifyFindings() error = %v", err)
+	}
+
+	updated, err := env.Queries.GetFinding(context.Background(), finding.ID)
+	if err != nil {
+		t.Fatalf("GetFinding() error = %v", err)
+	}
+	if updated.VerificationStatus != evidence.StatusVerified ||
+		!updated.EvidenceSummary.Valid ||
+		!strings.Contains(updated.EvidenceSummary.String, "Primary changed code was found") {
+		t.Fatalf("updated finding = %+v", updated)
+	}
+	items, err := env.Queries.ListEvidenceItemsByFinding(context.Background(), finding.ID)
+	if err != nil {
+		t.Fatalf("ListEvidenceItemsByFinding() error = %v", err)
+	}
+	localItems := 0
+	verifierItems := 0
+	for _, item := range items {
+		if strings.Contains(item.MetadataJson, `"producer":"local_verifier"`) {
+			localItems++
+		}
+		if strings.Contains(item.MetadataJson, `"producer":"verifier_agent"`) {
+			verifierItems++
+		}
+	}
+	if localItems == 0 || verifierItems != 0 {
+		t.Fatalf("evidence counts local=%d verifier=%d items=%+v", localItems, verifierItems, items)
+	}
+	runs, err := env.Queries.ListAgentRunsBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListAgentRunsBySession() error = %v", err)
+	}
+	if len(runs) != 1 || runs[0].Status != agentrun.RunStatusFailed {
+		t.Fatalf("verifier runs = %+v", runs)
+	}
+	events, err := env.Events.ListByReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListByReviewSession() error = %v", err)
+	}
+	assertEventTypes(t, events, []string{"AgentRunFailed", "VerifierAgentVerificationCompleted"})
+}
+
 func TestCheckpointLoadsPersistedPartialPhase(t *testing.T) {
 	t.Parallel()
 
@@ -707,6 +862,54 @@ func createWorkflowSession(t *testing.T, env workflowEnv, id string, status stri
 		t.Fatalf("CreateReviewSessionAgent() error = %v", err)
 	}
 	return session
+}
+
+func createWorkflowFinding(t *testing.T, env workflowEnv, sessionID string, id string) dbgen.Finding {
+	t.Helper()
+
+	finding, err := env.Queries.CreateFinding(context.Background(), dbgen.CreateFindingParams{
+		ID:                 id,
+		ReviewSessionID:    sessionID,
+		CanonicalClaim:     "Settings mutation lacks admin guard",
+		Category:           "security",
+		Severity:           "high",
+		Confidence:         0.91,
+		VerificationStatus: evidence.StatusUnverified,
+		DecisionStatus:     "open",
+		PrimaryPath:        nullableTestString("src/new.go"),
+		PrimaryStartLine:   sql.NullInt64{Int64: 3, Valid: true},
+		PrimaryEndLine:     sql.NullInt64{Int64: 3, Valid: true},
+		Fingerprint:        id + "_fingerprint",
+		FirstSeenAt:        "2026-05-03T00:09:00Z",
+		UpdatedAt:          "2026-05-03T00:09:00Z",
+	})
+	if err != nil {
+		t.Fatalf("CreateFinding() error = %v", err)
+	}
+	return finding
+}
+
+func createVerifierCLIConfig(t *testing.T, env workflowEnv, id string) {
+	t.Helper()
+
+	if _, err := env.Queries.CreateAgentConfig(context.Background(), dbgen.CreateAgentConfigParams{
+		ID:               id,
+		Name:             "Fake Verifier",
+		Role:             "verifier",
+		AdapterKind:      string(agents.AdapterCLINonInteractive),
+		Command:          nullableTestString("fake-verifier"),
+		ArgsJson:         "[]",
+		CwdMode:          "repo_root",
+		EnvAllowlistJson: "[]",
+		OutputMode:       string(agents.OutputJSON),
+		CapabilitiesJson: `{"supports_json":true,"can_read":true,"output_modes":["json"]}`,
+		SettingsJson:     `{"prompt_delivery":"stdin","timeout_seconds":30}`,
+		Enabled:          1,
+		CreatedAt:        "2026-05-03T00:04:30Z",
+		UpdatedAt:        "2026-05-03T00:04:30Z",
+	}); err != nil {
+		t.Fatalf("CreateAgentConfig(verifier) error = %v", err)
+	}
 }
 
 func assertEventTypes(t *testing.T, events []dbgen.Event, want []string) {

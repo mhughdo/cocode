@@ -92,12 +92,19 @@ func TestAuthenticatedRouteAcceptsToken(t *testing.T) {
 
 func TestAgentConfigEndpointCRUDAndHealth(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
+	command := writeFakeAgentConfigCommand(t, `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'fake-agent 1.0.0\n'
+  exit 0
+fi
+exit 0
+`)
 
 	createRequest := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/agents/configs", map[string]any{
 		"name":            "Codex reviewer",
 		"role":            "reviewer",
 		"adapter_kind":    "cli_noninteractive",
-		"command":         "codex",
+		"command":         command,
 		"args":            []string{"exec"},
 		"cwd_mode":        "repo_root",
 		"env_allowlist":   []string{"OPENAI_API_KEY", "OPENAI_API_KEY"},
@@ -125,7 +132,7 @@ func TestAgentConfigEndpointCRUDAndHealth(t *testing.T) {
 	created := decodeAgentConfigResponse(t, createResponse.Body.Bytes())
 	if !strings.HasPrefix(created.ID, "agent_config_") ||
 		created.Name != "Codex reviewer" ||
-		created.Command != "codex" ||
+		created.Command != command ||
 		len(created.Args) != 1 ||
 		created.Args[0] != "exec" ||
 		len(created.EnvAllowlist) != 1 ||
@@ -165,7 +172,10 @@ func TestAgentConfigEndpointCRUDAndHealth(t *testing.T) {
 		t.Fatalf("health status = %d, body = %s", healthResponse.Code, healthResponse.Body.String())
 	}
 	health := decodeAgentConfigHealthResponse(t, healthResponse.Body.Bytes())
-	if health.AgentConfigID != created.ID || health.Status != agents.HealthUnknown || !health.Capabilities.SupportsOutputMode(agents.OutputJSON) {
+	if health.AgentConfigID != created.ID ||
+		health.Status != agents.HealthAvailable ||
+		health.Metadata["version"] != "fake-agent 1.0.0" ||
+		!health.Capabilities.SupportsOutputMode(agents.OutputJSON) {
 		t.Fatalf("health = %+v", health)
 	}
 
@@ -297,6 +307,40 @@ func TestAgentConfigEndpointRejectsInvalidInputs(t *testing.T) {
 				t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusBadRequest, response.Body.String())
 			}
 		})
+	}
+}
+
+func TestAgentConfigHealthReportsMissingCommand(t *testing.T) {
+	router, _ := testRouterWithQueries(t)
+
+	createRequest := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/agents/configs", map[string]any{
+		"name":         "Missing reviewer",
+		"role":         "reviewer",
+		"adapter_kind": "cli_noninteractive",
+		"command":      filepath.Join(t.TempDir(), "missing-agent"),
+		"output_mode":  "text",
+		"settings": map[string]any{
+			"skip_version": true,
+		},
+	})
+	createResponse := httptest.NewRecorder()
+	router.ServeHTTP(createResponse, createRequest)
+	if createResponse.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createResponse.Code, createResponse.Body.String())
+	}
+	created := decodeAgentConfigResponse(t, createResponse.Body.Bytes())
+
+	healthRequest := httptest.NewRequest(http.MethodPost, "/api/agents/configs/"+created.ID+"/test", nil)
+	healthRequest.Header.Set("X-Cocode-Token", "test-token")
+	healthResponse := httptest.NewRecorder()
+	router.ServeHTTP(healthResponse, healthRequest)
+	if healthResponse.Code != http.StatusOK {
+		t.Fatalf("health status = %d, body = %s", healthResponse.Code, healthResponse.Body.String())
+	}
+	health := decodeAgentConfigHealthResponse(t, healthResponse.Body.Bytes())
+	if health.Status != agents.HealthUnavailable ||
+		!strings.Contains(health.Message, "not installed") {
+		t.Fatalf("health = %+v", health)
 	}
 }
 
@@ -891,6 +935,16 @@ func decodeAgentConfigHealthResponse(t *testing.T, content []byte) AgentConfigHe
 		t.Fatalf("response error = %+v", envelope.Error)
 	}
 	return envelope.Data
+}
+
+func writeFakeAgentConfigCommand(t *testing.T, content string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "fake-agent")
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return path
 }
 
 func initHTTPAPIGitRepo(t *testing.T) string {

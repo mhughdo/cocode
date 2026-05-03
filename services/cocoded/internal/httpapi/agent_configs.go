@@ -72,6 +72,7 @@ type AgentConfigHealthResponse struct {
 	Message       string                   `json:"message,omitempty"`
 	Capabilities  agents.AgentCapabilities `json:"capabilities"`
 	CheckedAt     string                   `json:"checked_at"`
+	Metadata      map[string]any           `json:"metadata,omitempty"`
 }
 
 func listAgentConfigsHandler(queries *dbgen.Queries) gin.HandlerFunc {
@@ -172,22 +173,43 @@ func testAgentConfigHandler(queries *dbgen.Queries) gin.HandlerFunc {
 			return
 		}
 
-		status := agents.HealthUnknown
-		message := "runtime health checks will be implemented by the CLI health check task"
+		kind := agents.AdapterKind(row.AdapterKind)
+		health := agents.AgentHealth{
+			Status:    agents.HealthUnknown,
+			Message:   "runtime health checks are not implemented for this adapter kind",
+			CheckedAt: time.Now().UTC(),
+			Metadata:  map[string]any{},
+		}
 		if row.Enabled == 0 {
-			status = agents.HealthDegraded
-			message = "agent config is disabled"
-		} else if agents.AdapterKind(row.AdapterKind) == agents.AdapterCLINonInteractive && strings.TrimSpace(row.Command.String) == "" {
-			status = agents.HealthUnavailable
-			message = "command is not configured"
+			health.Status = agents.HealthDegraded
+			health.Message = "agent config is disabled"
+		} else if kind == agents.AdapterCLINonInteractive {
+			args, err := decodeStringArray(row.ArgsJson)
+			if err != nil {
+				respondError(c, apperror.Internal("stored agent args are invalid"))
+				return
+			}
+			settings, appErr := decodeCommandHealthSettings(row.SettingsJson)
+			if appErr != nil {
+				respondError(c, appErr)
+				return
+			}
+			health = agents.CheckCommandHealth(c.Request.Context(), agents.ConnectionConfig{
+				AdapterID:      row.ID,
+				Kind:           kind,
+				Command:        nullableResponseString(row.Command),
+				Args:           args,
+				PromptDelivery: settings.PromptDelivery,
+			}, settings)
 		}
 
 		respondOK(c, AgentConfigHealthResponse{
 			AgentConfigID: row.ID,
-			Status:        status,
-			Message:       message,
+			Status:        health.Status,
+			Message:       health.Message,
 			Capabilities:  capabilities,
-			CheckedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+			CheckedAt:     health.CheckedAt.Format(time.RFC3339Nano),
+			Metadata:      health.Metadata,
 		})
 	}
 }
@@ -533,6 +555,18 @@ func normalizeObjectJSON(raw json.RawMessage, existingJSON string, field string)
 		return "", apperror.InvalidRequest(field + " must be a JSON object")
 	}
 	return string(data), nil
+}
+
+func decodeCommandHealthSettings(raw string) (agents.CommandHealthSettings, *apperror.Error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "{}" {
+		return agents.CommandHealthSettings{}, nil
+	}
+	var settings agents.CommandHealthSettings
+	if err := json.Unmarshal([]byte(raw), &settings); err != nil {
+		return agents.CommandHealthSettings{}, apperror.Internal("stored agent settings are invalid")
+	}
+	return settings, nil
 }
 
 func agentConfigResponse(row dbgen.AgentConfig) (AgentConfigResponse, *apperror.Error) {

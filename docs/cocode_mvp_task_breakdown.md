@@ -204,7 +204,7 @@ Large parallel workstreams:
 | T094 | Implement prompt delivery modes | Support prompt via stdin, arg, or temp file. | Done | T093, T060 | T095 | Tests cover all delivery modes and temp cleanup. |
 | T095 | Implement stdout/stderr capture | Capture outputs separately with size limits and artifacts. | Done | T093, T060 | T096 | Raw artifacts stored; truncation marked in metadata. |
 | T096 | Implement output parsers | Parse JSON, JSONL/NDJSON, and text fallback. | Done | T095, T013 | T170 | Parser tests cover valid/invalid/mixed outputs. |
-| T097 | Implement CLI health check | Validate command exists, version if possible, and auth smoke prompt if enabled. | Not started | T092, T093 | T248 | Health endpoint reports installed/missing/error states. |
+| T097 | Implement CLI health check | Validate command exists, version if possible, and auth smoke prompt if enabled. | Done | T092, T093 | T248 | Health endpoint reports installed/missing/error states. |
 | T098 | Implement agent run persistence | Create/update agent_runs around CLI execution. | Not started | T057, T093 | T140 | Agent run rows include status, duration, artifacts, errors. |
 | T099 | Implement CLI timeout policy | Enforce per-agent and per-review runtime limits. | Not started | T093, T098 | T151 | Timeout results in typed error and preserved logs. |
 | T100 | Implement single-agent cancellation | Cancel one running CLI without canceling session. | Not started | T093, T098 | T151 | UI/API can cancel agent; process exits; session continues. |

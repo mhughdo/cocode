@@ -59,6 +59,25 @@ type Artifact struct {
 	CreatedAt       string         `json:"created_at"`
 }
 
+type CallPath struct {
+	ID              string         `json:"id"`
+	EvidenceGraphID string         `json:"evidence_graph_id"`
+	Label           sql.NullString `json:"label"`
+	Confidence      float64        `json:"confidence"`
+	CreatedAt       string         `json:"created_at"`
+}
+
+type CallPathStep struct {
+	ID         string         `json:"id"`
+	CallPathID string         `json:"call_path_id"`
+	StepIndex  int64          `json:"step_index"`
+	NodeID     sql.NullString `json:"node_id"`
+	Path       sql.NullString `json:"path"`
+	StartLine  sql.NullInt64  `json:"start_line"`
+	EndLine    sql.NullInt64  `json:"end_line"`
+	Label      string         `json:"label"`
+}
+
 type ChangedFile struct {
 	ID              string         `json:"id"`
 	SnapshotID      string         `json:"snapshot_id"`
@@ -85,6 +104,58 @@ type ContextBundle struct {
 	ArtifactID      sql.NullString `json:"artifact_id"`
 	PolicyJson      string         `json:"policy_json"`
 	CreatedAt       string         `json:"created_at"`
+}
+
+type EvidenceEdge struct {
+	ID              string         `json:"id"`
+	EvidenceGraphID string         `json:"evidence_graph_id"`
+	SourceNodeID    string         `json:"source_node_id"`
+	TargetNodeID    string         `json:"target_node_id"`
+	Kind            string         `json:"kind"`
+	Status          string         `json:"status"`
+	Label           sql.NullString `json:"label"`
+	Confidence      float64        `json:"confidence"`
+	MetadataJson    string         `json:"metadata_json"`
+}
+
+type EvidenceGraph struct {
+	ID              string         `json:"id"`
+	FindingID       string         `json:"finding_id"`
+	ReviewSessionID string         `json:"review_session_id"`
+	Status          string         `json:"status"`
+	LayoutJson      string         `json:"layout_json"`
+	Summary         sql.NullString `json:"summary"`
+	CreatedAt       string         `json:"created_at"`
+	UpdatedAt       string         `json:"updated_at"`
+}
+
+type EvidenceItem struct {
+	ID           string         `json:"id"`
+	FindingID    string         `json:"finding_id"`
+	Kind         string         `json:"kind"`
+	Title        string         `json:"title"`
+	Summary      string         `json:"summary"`
+	Path         sql.NullString `json:"path"`
+	StartLine    sql.NullInt64  `json:"start_line"`
+	EndLine      sql.NullInt64  `json:"end_line"`
+	ArtifactID   sql.NullString `json:"artifact_id"`
+	Confidence   float64        `json:"confidence"`
+	MetadataJson string         `json:"metadata_json"`
+	CreatedAt    string         `json:"created_at"`
+}
+
+type EvidenceNode struct {
+	ID              string         `json:"id"`
+	EvidenceGraphID string         `json:"evidence_graph_id"`
+	Kind            string         `json:"kind"`
+	Label           string         `json:"label"`
+	Path            sql.NullString `json:"path"`
+	Symbol          sql.NullString `json:"symbol"`
+	StartLine       sql.NullInt64  `json:"start_line"`
+	EndLine         sql.NullInt64  `json:"end_line"`
+	EvidenceItemID  sql.NullString `json:"evidence_item_id"`
+	Confidence      float64        `json:"confidence"`
+	MetadataJson    string         `json:"metadata_json"`
 }
 
 type Finding struct {

@@ -219,3 +219,80 @@ CREATE INDEX idx_candidates_fingerprint ON finding_candidates(review_session_id,
 CREATE INDEX idx_findings_session_status ON findings(review_session_id, decision_status, verification_status);
 CREATE INDEX idx_findings_path ON findings(review_session_id, primary_path);
 CREATE INDEX idx_decisions_finding ON human_decisions(finding_id, created_at DESC);
+
+CREATE TABLE evidence_items (
+  id TEXT PRIMARY KEY,
+  finding_id TEXT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK(kind IN ('supporting','counter','neutral','missing','test','search','agent','static_analysis')),
+  title TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  path TEXT,
+  start_line INTEGER,
+  end_line INTEGER,
+  artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+  confidence REAL NOT NULL DEFAULT 0.5,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE evidence_graphs (
+  id TEXT PRIMARY KEY,
+  finding_id TEXT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+  review_session_id TEXT NOT NULL REFERENCES review_sessions(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'ready',
+  layout_json TEXT NOT NULL DEFAULT '{}',
+  summary TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(finding_id)
+);
+
+CREATE TABLE evidence_nodes (
+  id TEXT PRIMARY KEY,
+  evidence_graph_id TEXT NOT NULL REFERENCES evidence_graphs(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK(kind IN ('changed_code','related_code','middleware','guard','handler','test','config','counter_evidence','missing_guard','unknown')),
+  label TEXT NOT NULL,
+  path TEXT,
+  symbol TEXT,
+  start_line INTEGER,
+  end_line INTEGER,
+  evidence_item_id TEXT REFERENCES evidence_items(id) ON DELETE SET NULL,
+  confidence REAL NOT NULL DEFAULT 0.5,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE evidence_edges (
+  id TEXT PRIMARY KEY,
+  evidence_graph_id TEXT NOT NULL REFERENCES evidence_graphs(id) ON DELETE CASCADE,
+  source_node_id TEXT NOT NULL REFERENCES evidence_nodes(id) ON DELETE CASCADE,
+  target_node_id TEXT NOT NULL REFERENCES evidence_nodes(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK(kind IN ('calls','mounts','protects','tests','supports','contradicts','missing_guard','imports','reads','writes','unknown')),
+  status TEXT NOT NULL DEFAULT 'observed',
+  label TEXT,
+  confidence REAL NOT NULL DEFAULT 0.5,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE call_paths (
+  id TEXT PRIMARY KEY,
+  evidence_graph_id TEXT NOT NULL REFERENCES evidence_graphs(id) ON DELETE CASCADE,
+  label TEXT,
+  confidence REAL NOT NULL DEFAULT 0.5,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE call_path_steps (
+  id TEXT PRIMARY KEY,
+  call_path_id TEXT NOT NULL REFERENCES call_paths(id) ON DELETE CASCADE,
+  step_index INTEGER NOT NULL,
+  node_id TEXT REFERENCES evidence_nodes(id) ON DELETE SET NULL,
+  path TEXT,
+  start_line INTEGER,
+  end_line INTEGER,
+  label TEXT NOT NULL,
+  UNIQUE(call_path_id, step_index)
+);
+
+CREATE INDEX idx_evidence_finding ON evidence_items(finding_id, kind);
+CREATE INDEX idx_evidence_nodes_graph ON evidence_nodes(evidence_graph_id, kind);
+CREATE INDEX idx_evidence_edges_graph ON evidence_edges(evidence_graph_id, kind);

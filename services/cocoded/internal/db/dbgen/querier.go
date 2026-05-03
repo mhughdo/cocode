@@ -11,7 +11,13 @@ import (
 type Querier interface {
 	CreateAgentConfig(ctx context.Context, arg CreateAgentConfigParams) (AgentConfig, error)
 	CreateAgentRun(ctx context.Context, arg CreateAgentRunParams) (AgentRun, error)
+	CreateCallPath(ctx context.Context, arg CreateCallPathParams) (CallPath, error)
+	CreateCallPathStep(ctx context.Context, arg CreateCallPathStepParams) (CallPathStep, error)
 	CreateChangedFile(ctx context.Context, arg CreateChangedFileParams) (ChangedFile, error)
+	CreateEvidenceEdge(ctx context.Context, arg CreateEvidenceEdgeParams) (EvidenceEdge, error)
+	CreateEvidenceGraph(ctx context.Context, arg CreateEvidenceGraphParams) (EvidenceGraph, error)
+	CreateEvidenceItem(ctx context.Context, arg CreateEvidenceItemParams) (EvidenceItem, error)
+	CreateEvidenceNode(ctx context.Context, arg CreateEvidenceNodeParams) (EvidenceNode, error)
 	CreateFinding(ctx context.Context, arg CreateFindingParams) (Finding, error)
 	CreateFindingCandidate(ctx context.Context, arg CreateFindingCandidateParams) (FindingCandidate, error)
 	CreateHumanDecision(ctx context.Context, arg CreateHumanDecisionParams) (HumanDecision, error)
@@ -21,6 +27,11 @@ type Querier interface {
 	CreateReviewSessionAgent(ctx context.Context, arg CreateReviewSessionAgentParams) (ReviewSessionAgent, error)
 	CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) (Workspace, error)
 	DeleteAgentConfig(ctx context.Context, id string) error
+	DeleteCallPath(ctx context.Context, id string) error
+	DeleteEvidenceEdge(ctx context.Context, id string) error
+	DeleteEvidenceGraph(ctx context.Context, id string) error
+	DeleteEvidenceItem(ctx context.Context, id string) error
+	DeleteEvidenceNode(ctx context.Context, id string) error
 	DeleteFinding(ctx context.Context, id string) error
 	DeleteFindingCandidate(ctx context.Context, id string) error
 	DeletePullRequestSnapshot(ctx context.Context, id string) error
@@ -31,6 +42,10 @@ type Querier interface {
 	GetAgentRun(ctx context.Context, id string) (AgentRun, error)
 	GetChangedFile(ctx context.Context, id string) (ChangedFile, error)
 	GetChangedFileByPath(ctx context.Context, arg GetChangedFileByPathParams) (ChangedFile, error)
+	GetEvidenceGraph(ctx context.Context, id string) (EvidenceGraph, error)
+	GetEvidenceGraphByFinding(ctx context.Context, findingID string) (EvidenceGraph, error)
+	GetEvidenceItem(ctx context.Context, id string) (EvidenceItem, error)
+	GetEvidenceNode(ctx context.Context, id string) (EvidenceNode, error)
 	GetFinding(ctx context.Context, id string) (Finding, error)
 	GetFindingCandidate(ctx context.Context, id string) (FindingCandidate, error)
 	GetPullRequestSnapshot(ctx context.Context, id string) (PullRequestSnapshot, error)
@@ -42,7 +57,12 @@ type Querier interface {
 	LinkFindingCandidate(ctx context.Context, arg LinkFindingCandidateParams) error
 	ListAgentConfigs(ctx context.Context) ([]AgentConfig, error)
 	ListAgentRunsBySession(ctx context.Context, reviewSessionID string) ([]AgentRun, error)
+	ListCallPathStepsByCallPath(ctx context.Context, callPathID string) ([]CallPathStep, error)
+	ListCallPathsByGraph(ctx context.Context, evidenceGraphID string) ([]CallPath, error)
 	ListChangedFilesBySnapshot(ctx context.Context, snapshotID string) ([]ChangedFile, error)
+	ListEvidenceEdgesByGraph(ctx context.Context, evidenceGraphID string) ([]EvidenceEdge, error)
+	ListEvidenceItemsByFinding(ctx context.Context, findingID string) ([]EvidenceItem, error)
+	ListEvidenceNodesByGraph(ctx context.Context, evidenceGraphID string) ([]EvidenceNode, error)
 	ListFindingCandidateLinks(ctx context.Context, findingID string) ([]FindingCandidateLink, error)
 	ListFindingCandidatesBySession(ctx context.Context, reviewSessionID string) ([]FindingCandidate, error)
 	ListFindingsBySession(ctx context.Context, reviewSessionID string) ([]Finding, error)
@@ -55,7 +75,12 @@ type Querier interface {
 	ListWorkspaces(ctx context.Context) ([]Workspace, error)
 	UpdateAgentConfig(ctx context.Context, arg UpdateAgentConfigParams) (AgentConfig, error)
 	UpdateAgentRunStatus(ctx context.Context, arg UpdateAgentRunStatusParams) (AgentRun, error)
+	UpdateCallPath(ctx context.Context, arg UpdateCallPathParams) (CallPath, error)
 	UpdateChangedFileExclusion(ctx context.Context, arg UpdateChangedFileExclusionParams) (ChangedFile, error)
+	UpdateEvidenceEdge(ctx context.Context, arg UpdateEvidenceEdgeParams) (EvidenceEdge, error)
+	UpdateEvidenceGraph(ctx context.Context, arg UpdateEvidenceGraphParams) (EvidenceGraph, error)
+	UpdateEvidenceItem(ctx context.Context, arg UpdateEvidenceItemParams) (EvidenceItem, error)
+	UpdateEvidenceNode(ctx context.Context, arg UpdateEvidenceNodeParams) (EvidenceNode, error)
 	UpdateFinding(ctx context.Context, arg UpdateFindingParams) (Finding, error)
 	UpdateFindingDecisionStatus(ctx context.Context, arg UpdateFindingDecisionStatusParams) (Finding, error)
 	UpdateFindingVerificationStatus(ctx context.Context, arg UpdateFindingVerificationStatusParams) (Finding, error)

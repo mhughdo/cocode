@@ -1,7 +1,7 @@
 import { _electron as electron, expect, type Page } from "@playwright/test";
 import type { ElectronApplication, TestInfo } from "@playwright/test";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 type BackendInfo = {
@@ -31,11 +31,16 @@ export type CocodeApp = {
   page: Page;
 };
 
+export type SeededCocodeData = {
+  dataDir: string;
+  workspaceRoot: string;
+};
+
 export async function launchCocode(
   testInfo: TestInfo,
   env: Record<string, string> = {},
+  dataDir = testInfo.outputPath("cocode-data"),
 ): Promise<CocodeApp> {
-  const dataDir = testInfo.outputPath("cocode-data");
   mkdirSync(dataDir, { recursive: true });
 
   const electronApp = await electron.launch({
@@ -63,6 +68,34 @@ export async function launchCocode(
     electronApp,
     page,
   };
+}
+
+export function seedCocodeData(testInfo: TestInfo): SeededCocodeData {
+  const dataDir = testInfo.outputPath("seeded-cocode-data");
+  const workspaceRoot = testInfo.outputPath("seed-workspace");
+  rmSync(dataDir, { recursive: true, force: true });
+  mkdirSync(dataDir, { recursive: true });
+  mkdirSync(workspaceRoot, { recursive: true });
+  execFileSync(
+    "go",
+    [
+      "run",
+      "./cmd/cocode-db-seed",
+      "-db",
+      join(dataDir, "cocoded.sqlite"),
+      "-artifacts",
+      join(dataDir, "artifacts"),
+      "-workspace-root",
+      workspaceRoot,
+      "-quiet",
+    ],
+    {
+      cwd: resolve("../..", "services/cocoded"),
+      env: process.env,
+      stdio: "pipe",
+    },
+  );
+  return { dataDir, workspaceRoot };
 }
 
 export async function getBackendInfo(page: Page): Promise<BackendInfo> {

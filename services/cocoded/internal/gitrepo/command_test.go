@@ -28,6 +28,25 @@ func TestRunnerRunCapturesGitOutput(t *testing.T) {
 	}
 }
 
+func TestRunnerRunRawPreservesOutputWhitespace(t *testing.T) {
+	t.Parallel()
+
+	script := writeFakeGit(t, "#!/bin/sh\nprintf ' one\\n\\n'\n")
+	runner := Runner{
+		GitPath:     script,
+		Timeout:     5 * time.Second,
+		OutputLimit: 1024,
+	}
+
+	result, err := runner.RunRaw(context.Background(), t.TempDir(), "diff")
+	if err != nil {
+		t.Fatalf("RunRaw() error = %v", err)
+	}
+	if result.Stdout != " one\n\n" {
+		t.Fatalf("Stdout = %q, want raw output", result.Stdout)
+	}
+}
+
 func TestRunnerMapsInvalidCWDToTypedError(t *testing.T) {
 	t.Parallel()
 

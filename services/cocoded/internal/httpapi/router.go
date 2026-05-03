@@ -2,7 +2,10 @@ package httpapi
 
 import (
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -10,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/hughdo/cocode/services/cocoded/internal/app"
 	"github.com/hughdo/cocode/services/cocoded/internal/apperror"
+	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
 )
 
 type Envelope struct {
@@ -30,9 +34,25 @@ type VersionResponse struct {
 	DataDir string `json:"data_dir"`
 }
 
-func NewRouter(config app.Config, logger *slog.Logger) http.Handler {
+type ChangedFileResponse struct {
+	ID              string          `json:"id"`
+	SnapshotID      string          `json:"snapshot_id"`
+	Path            string          `json:"path"`
+	OldPath         string          `json:"old_path,omitempty"`
+	Status          string          `json:"status"`
+	Additions       int64           `json:"additions"`
+	Deletions       int64           `json:"deletions"`
+	IsBinary        bool            `json:"is_binary"`
+	IsGenerated     bool            `json:"is_generated"`
+	IsExcluded      bool            `json:"is_excluded"`
+	LineRanges      json.RawMessage `json:"line_ranges"`
+	PatchArtifactID string          `json:"patch_artifact_id,omitempty"`
+}
+
+func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Handler {
 	gin.SetMode(gin.ReleaseMode)
 
+	queries := dbgen.New(database)
 	router := gin.New()
 	router.Use(gin.Recovery())
 	router.Use(requestIDMiddleware())
@@ -61,8 +81,74 @@ func NewRouter(config app.Config, logger *slog.Logger) http.Handler {
 			"status": "authenticated",
 		})
 	})
+	api.GET("/pr-snapshots/:id/changed-files", changedFilesHandler(queries))
 
 	return router
+}
+
+func changedFilesHandler(queries *dbgen.Queries) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		snapshotID := strings.TrimSpace(c.Param("id"))
+		if snapshotID == "" {
+			respondError(c, apperror.InvalidRequest("snapshot id is required"))
+			return
+		}
+		if _, err := queries.GetPullRequestSnapshot(c.Request.Context(), snapshotID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				respondError(c, apperror.NotFound("snapshot was not found"))
+				return
+			}
+			respondError(c, apperror.Internal("failed to read snapshot"))
+			return
+		}
+
+		files, err := queries.ListChangedFilesBySnapshot(c.Request.Context(), snapshotID)
+		if err != nil {
+			respondError(c, apperror.Internal("failed to list changed files"))
+			return
+		}
+		response := make([]ChangedFileResponse, 0, len(files))
+		for _, file := range files {
+			item, err := changedFileResponse(file)
+			if err != nil {
+				respondError(c, apperror.Internal("changed file line ranges are invalid"))
+				return
+			}
+			response = append(response, item)
+		}
+		respondOK(c, response)
+	}
+}
+
+func changedFileResponse(file dbgen.ChangedFile) (ChangedFileResponse, error) {
+	lineRanges := json.RawMessage(file.LineRangesJson)
+	if len(lineRanges) == 0 {
+		lineRanges = json.RawMessage("[]")
+	}
+	if !json.Valid(lineRanges) {
+		return ChangedFileResponse{}, errors.New("invalid line ranges JSON")
+	}
+	return ChangedFileResponse{
+		ID:              file.ID,
+		SnapshotID:      file.SnapshotID,
+		Path:            file.Path,
+		OldPath:         nullableResponseString(file.OldPath),
+		Status:          file.Status,
+		Additions:       file.Additions,
+		Deletions:       file.Deletions,
+		IsBinary:        file.IsBinary != 0,
+		IsGenerated:     file.IsGenerated != 0,
+		IsExcluded:      file.IsExcluded != 0,
+		LineRanges:      lineRanges,
+		PatchArtifactID: nullableResponseString(file.PatchArtifactID),
+	}, nil
+}
+
+func nullableResponseString(value sql.NullString) string {
+	if !value.Valid {
+		return ""
+	}
+	return value.String
 }
 
 func respondOK(c *gin.Context, data any) {

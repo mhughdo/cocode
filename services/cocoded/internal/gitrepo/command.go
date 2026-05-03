@@ -37,6 +37,14 @@ func DefaultRunner() Runner {
 }
 
 func (r Runner) Run(ctx context.Context, cwd string, args ...string) (CommandResult, error) {
+	return r.run(ctx, cwd, true, args...)
+}
+
+func (r Runner) RunRaw(ctx context.Context, cwd string, args ...string) (CommandResult, error) {
+	return r.run(ctx, cwd, false, args...)
+}
+
+func (r Runner) run(ctx context.Context, cwd string, trimOutput bool, args ...string) (CommandResult, error) {
 	if strings.TrimSpace(cwd) == "" {
 		return CommandResult{}, apperror.InvalidRequest("git command cwd is required")
 	}
@@ -86,8 +94,12 @@ func (r Runner) Run(ctx context.Context, cwd string, args ...string) (CommandRes
 
 	err = cmd.Run()
 	result := CommandResult{
-		Stdout: strings.TrimSpace(stdout.String()),
-		Stderr: strings.TrimSpace(stderr.String()),
+		Stdout: stdout.String(),
+		Stderr: stderr.String(),
+	}
+	if trimOutput {
+		result.Stdout = strings.TrimSpace(result.Stdout)
+		result.Stderr = strings.TrimSpace(result.Stderr)
 	}
 	if runCtx.Err() != nil {
 		return result, apperror.InvalidRequest("git command timed out")

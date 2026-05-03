@@ -4,7 +4,7 @@
 **Document type:** Implementation task breakdown  
 **Scope:** MVP implementation with non-interactive CLI agents, Evidence Map, copy fix packets, GitHub publishing, Electron + Go/Gin + SQLite  
 **Status baseline:** Tasks are planned unless explicitly marked done  
-**Last updated:** 2026-05-02
+**Last updated:** 2026-05-03
 
 ---
 
@@ -181,11 +181,11 @@ Large parallel workstreams:
 | T074 | Fetch GitHub PR metadata | Fetch title, author, base/head refs, SHAs, and PR URL. | Done | T072, T073 | T075 | Integration test with fake GitHub server. |
 | T075 | Fetch changed files from GitHub | Fetch changed file list, additions/deletions/status/patches. | Done | T074, T055 | T076 | Snapshot stores changed files and patches. |
 | T076 | Fetch unified diff | Fetch PR diff artifact for diff mapping and reproducibility. | Done | T074, T060 | T079 | Diff stored as artifact; SHA metadata attached. |
-| T077 | Implement local branch compare | Use git to compute diff between base/head branches. | Not started | T071, T055 | T079 | Snapshot created from branch compare; tests with fixture repo. |
-| T078 | Implement local changes snapshot | Use git diff for working tree/uncommitted changes. | Not started | T071, T055 | T079 | Snapshot created; binary/generated files handled. |
+| T077 | Implement local branch compare | Use git to compute diff between base/head branches. | Done | T071, T055 | T079 | Snapshot created from branch compare; tests with fixture repo. |
+| T078 | Implement local changes snapshot | Use git diff for working tree/uncommitted changes. | Done | T071, T055 | T079 | Snapshot created; binary/generated files handled. |
 | T079 | Implement diff parser | Parse unified diff into files, hunks, line mappings, changed line ranges. | Done | T076 or T077 | T170, T294 | Tests cover add/delete/rename/multiple hunks. |
-| T080 | Detect generated/binary/excluded files | Identify generated/lock/vendor/binary files and support exclusion. | Not started | T079 | T246 | UI receives flags; exclusions are persisted. |
-| T081 | Implement changed-file API | Return changed file list with line ranges and exclusion flags. | Not started | T055, T079 | T246 | API powers Configure Review changed-files card. |
+| T080 | Detect generated/binary/excluded files | Identify generated/lock/vendor/binary files and support exclusion. | Done | T079 | T246 | UI receives flags; exclusions are persisted. |
+| T081 | Implement changed-file API | Return changed file list with line ranges and exclusion flags. | Done | T055, T079 | T246 | API powers Configure Review changed-files card. |
 | T082 | Implement snapshot creation API | Create snapshots from GitHub URL/local compare/local changes. | Not started | T074-T081 | T245 | End-to-end API creates snapshot and returns ID. |
 | T083 | Implement PR previous comments fetch | Fetch existing review comments/timeline comments for duplicate avoidance. | Not started | T074 | T120, T299 | Comments stored as artifact/context items; optional if auth unavailable. |
 | T084 | Implement CODEOWNERS/project rules discovery | Detect CODEOWNERS and common config files. | Not started | T070 | T120 | Rules files discovered and added to context candidates. |

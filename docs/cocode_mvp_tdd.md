@@ -804,6 +804,7 @@ POST   /api/pr-snapshots/from-github-url
 POST   /api/pr-snapshots/from-local-compare
 POST   /api/pr-snapshots/from-local-changes
 GET    /api/pr-snapshots/:id
+GET    /api/pr-snapshots/:id/changed-files
 
 POST   /api/review-sessions
 GET    /api/review-sessions

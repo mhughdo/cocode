@@ -39,7 +39,7 @@ func main() {
 	}
 	logger.Info("cocoded database ready", "path", config.DBPath)
 
-	router := httpapi.NewRouter(config, logger)
+	router := httpapi.NewRouter(config, logger, database)
 	server := &http.Server{
 		Addr:              config.Addr,
 		Handler:           router,

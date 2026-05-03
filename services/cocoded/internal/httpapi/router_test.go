@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -8,6 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hughdo/cocode/services/cocoded/internal/app"
@@ -141,62 +145,229 @@ func TestChangedFilesEndpointRejectsMissingSnapshot(t *testing.T) {
 	}
 }
 
+func TestSnapshotEndpointReturnsSnapshot(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPISnapshot(t, queries)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/pr-snapshots/snapshot_1", nil)
+	request.Header.Set("X-Cocode-Token", "test-token")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, response.Code, response.Body.String())
+	}
+	snapshot := decodeSnapshotResponse(t, response.Body.Bytes())
+	if snapshot.ID != "snapshot_1" || snapshot.SourceType != "branch_compare" || snapshot.ChangedFileCount != 2 {
+		t.Fatalf("snapshot = %+v", snapshot)
+	}
+}
+
+func TestCreateGitHubSnapshotEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer ghp_test" {
+			t.Fatalf("Authorization = %q", r.Header.Get("Authorization"))
+		}
+		switch {
+		case r.URL.Path == "/repos/openai/codex/pulls/123" && r.Header.Get("Accept") == "application/vnd.github+json":
+			_, _ = w.Write([]byte(`{
+				"title": "Add snapshot route",
+				"html_url": "https://github.com/openai/codex/pull/123",
+				"user": {"login": "octocat"},
+				"base": {"ref": "main", "sha": "base-sha"},
+				"head": {"ref": "feature/snapshot", "sha": "head-sha"}
+			}`))
+		case r.URL.Path == "/repos/openai/codex/pulls/123/files":
+			_, _ = w.Write([]byte(`[{
+				"sha": "file-sha",
+				"filename": "api/routes.go",
+				"status": "modified",
+				"additions": 1,
+				"deletions": 1,
+				"changes": 2,
+				"patch": "@@ -1 +1 @@\n-old\n+new\n"
+			}]`))
+		case r.URL.Path == "/repos/openai/codex/pulls/123" && r.Header.Get("Accept") == "application/vnd.github.diff":
+			_, _ = w.Write([]byte("diff --git a/api/routes.go b/api/routes.go\n@@ -1 +1 @@\n-old\n+new\n"))
+		default:
+			t.Fatalf("unexpected GitHub request path=%s accept=%s", r.URL.Path, r.Header.Get("Accept"))
+		}
+	}))
+	defer server.Close()
+
+	router, queries := testRouterWithConfigAndQueries(t, app.Config{GitHubAPIBaseURL: server.URL})
+	createHTTPAPIWorkspaceAndRepository(t, queries, "/tmp/cocode")
+
+	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/pr-snapshots/from-github-url", map[string]any{
+		"workspace_id":  "workspace_1",
+		"repository_id": "repo_1",
+		"url":           "https://github.com/openai/codex/pull/123",
+		"github_token":  "ghp_test",
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, response.Code, response.Body.String())
+	}
+	snapshot := decodeSnapshotResponse(t, response.Body.Bytes())
+	if snapshot.SourceType != "github_pr" ||
+		snapshot.Provider != "github" ||
+		snapshot.Owner != "openai" ||
+		snapshot.Repo != "codex" ||
+		snapshot.PRNumber != 123 ||
+		snapshot.ChangedFileCount != 1 {
+		t.Fatalf("snapshot = %+v", snapshot)
+	}
+	file, err := queries.GetChangedFileByPath(context.Background(), dbgen.GetChangedFileByPathParams{
+		SnapshotID: snapshot.ID,
+		Path:       "api/routes.go",
+	})
+	if err != nil {
+		t.Fatalf("GetChangedFileByPath() error = %v", err)
+	}
+	if file.Additions != 1 || file.Deletions != 1 || file.PatchArtifactID.String == "" {
+		t.Fatalf("changed file = %+v", file)
+	}
+}
+
+func TestCreateLocalCompareSnapshotEndpoint(t *testing.T) {
+	repoPath := initHTTPAPIGitRepo(t)
+	runHTTPAPIGit(t, repoPath, "checkout", "-B", "main")
+	writeHTTPAPIRepoFile(t, repoPath, "app/main.go", "package main\n\nfunc main() {}\n")
+	runHTTPAPIGit(t, repoPath, "add", ".")
+	runHTTPAPIGit(t, repoPath, "commit", "-m", "initial")
+	runHTTPAPIGit(t, repoPath, "checkout", "-b", "feature/api")
+	writeHTTPAPIRepoFile(t, repoPath, "app/main.go", "package main\n\nfunc main() {\n\tprintln(\"api\")\n}\n")
+	runHTTPAPIGit(t, repoPath, "add", ".")
+	runHTTPAPIGit(t, repoPath, "commit", "-m", "feature")
+
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIWorkspaceAndRepository(t, queries, repoPath)
+
+	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/pr-snapshots/from-local-compare", map[string]any{
+		"workspace_id":  "workspace_1",
+		"repository_id": "repo_1",
+		"base_ref":      "main",
+		"head_ref":      "feature/api",
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, response.Code, response.Body.String())
+	}
+	snapshot := decodeSnapshotResponse(t, response.Body.Bytes())
+	if snapshot.SourceType != "branch_compare" ||
+		snapshot.BaseRef != "main" ||
+		snapshot.HeadRef != "feature/api" ||
+		snapshot.ChangedFileCount != 1 {
+		t.Fatalf("snapshot = %+v", snapshot)
+	}
+	files, err := queries.ListChangedFilesBySnapshot(context.Background(), snapshot.ID)
+	if err != nil {
+		t.Fatalf("ListChangedFilesBySnapshot() error = %v", err)
+	}
+	if len(files) != 1 || files[0].Path != "app/main.go" || files[0].LineRangesJson == "[]" {
+		t.Fatalf("changed files = %+v", files)
+	}
+}
+
+func TestCreateLocalChangesSnapshotEndpointIncludesUntrackedBinary(t *testing.T) {
+	repoPath := initHTTPAPIGitRepo(t)
+	runHTTPAPIGit(t, repoPath, "checkout", "-B", "main")
+	writeHTTPAPIRepoFile(t, repoPath, "app/main.go", "package main\n\nfunc main() {}\n")
+	runHTTPAPIGit(t, repoPath, "add", ".")
+	runHTTPAPIGit(t, repoPath, "commit", "-m", "initial")
+	writeHTTPAPIRepoFile(t, repoPath, "app/main.go", "package main\n\nfunc main() {\n\tprintln(\"local\")\n}\n")
+	writeHTTPAPIRepoBytes(t, repoPath, "assets/logo.bin", []byte{0x00, 0x01})
+
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIWorkspaceAndRepository(t, queries, repoPath)
+
+	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/pr-snapshots/from-local-changes", map[string]any{
+		"workspace_id":  "workspace_1",
+		"repository_id": "repo_1",
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, response.Code, response.Body.String())
+	}
+	snapshot := decodeSnapshotResponse(t, response.Body.Bytes())
+	if snapshot.SourceType != "local_changes" || snapshot.ChangedFileCount != 2 {
+		t.Fatalf("snapshot = %+v", snapshot)
+	}
+	binary, err := queries.GetChangedFileByPath(context.Background(), dbgen.GetChangedFileByPathParams{
+		SnapshotID: snapshot.ID,
+		Path:       "assets/logo.bin",
+	})
+	if err != nil {
+		t.Fatalf("GetChangedFileByPath(binary) error = %v", err)
+	}
+	if binary.IsBinary != 1 || binary.IsExcluded != 1 {
+		t.Fatalf("binary changed file = %+v", binary)
+	}
+}
+
+func TestCreateSnapshotEndpointRejectsInvalidJSON(t *testing.T) {
+	router, _ := testRouterWithQueries(t)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/pr-snapshots/from-local-changes", strings.NewReader("{"))
+	request.Header.Set("X-Cocode-Token", "test-token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, response.Code, response.Body.String())
+	}
+}
+
 func testRouter(t *testing.T) http.Handler {
 	router, _ := testRouterWithQueries(t)
 	return router
 }
 
 func testRouterWithQueries(t *testing.T) (http.Handler, *dbgen.Queries) {
+	return testRouterWithConfigAndQueries(t, app.Config{})
+}
+
+func testRouterWithConfigAndQueries(t *testing.T, config app.Config) (http.Handler, *dbgen.Queries) {
 	database, err := db.Open(context.Background(), db.MemoryDatabase)
 	if err != nil {
-		if t != nil {
-			t.Fatalf("Open() error = %v", err)
-		}
-		panic(err)
+		t.Fatalf("Open() error = %v", err)
 	}
-	if t != nil {
-		t.Cleanup(func() {
-			_ = database.Close()
-		})
-	}
+	t.Cleanup(func() {
+		_ = database.Close()
+	})
 	if err := db.Apply(context.Background(), database, db.Migrations); err != nil {
-		if t != nil {
-			t.Fatalf("Apply() error = %v", err)
-		}
-		panic(err)
+		t.Fatalf("Apply() error = %v", err)
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{}))
-	return NewRouter(app.Config{
-		Addr:      "127.0.0.1:0",
-		AuthToken: "test-token",
-		DataDir:   "/tmp/cocode-test",
-		Version:   "test-version",
-	}, logger, database), dbgen.New(database)
+	if config.Addr == "" {
+		config.Addr = "127.0.0.1:0"
+	}
+	if config.AuthToken == "" {
+		config.AuthToken = "test-token"
+	}
+	if config.DataDir == "" {
+		config.DataDir = "/tmp/cocode-test"
+	}
+	if config.ArtifactDir == "" {
+		config.ArtifactDir = filepath.Join(t.TempDir(), "artifacts")
+	}
+	if config.Version == "" {
+		config.Version = "test-version"
+	}
+	return NewRouter(config, logger, database), dbgen.New(database)
 }
 
 func createHTTPAPISnapshot(t *testing.T, queries *dbgen.Queries) {
 	t.Helper()
 
-	if _, err := queries.CreateWorkspace(context.Background(), dbgen.CreateWorkspaceParams{
-		ID:           "workspace_1",
-		Name:         "cocode",
-		RootPath:     "/tmp/cocode",
-		SettingsJson: "{}",
-		CreatedAt:    "2026-05-03T00:00:00Z",
-		UpdatedAt:    "2026-05-03T00:00:00Z",
-	}); err != nil {
-		t.Fatalf("CreateWorkspace() error = %v", err)
-	}
-	if _, err := queries.CreateRepository(context.Background(), dbgen.CreateRepositoryParams{
-		ID:          "repo_1",
-		WorkspaceID: "workspace_1",
-		Name:        "cocode",
-		LocalPath:   "/tmp/cocode",
-		CreatedAt:   "2026-05-03T00:01:00Z",
-		UpdatedAt:   "2026-05-03T00:01:00Z",
-	}); err != nil {
-		t.Fatalf("CreateRepository() error = %v", err)
-	}
+	createHTTPAPIWorkspaceAndRepository(t, queries, "/tmp/cocode")
 	if _, err := queries.CreatePullRequestSnapshot(context.Background(), dbgen.CreatePullRequestSnapshotParams{
 		ID:           "snapshot_1",
 		RepositoryID: "repo_1",
@@ -239,6 +410,106 @@ func createHTTPAPISnapshot(t *testing.T, queries *dbgen.Queries) {
 	}
 }
 
+func createHTTPAPIWorkspaceAndRepository(t *testing.T, queries *dbgen.Queries, repoPath string) {
+	t.Helper()
+
+	if _, err := queries.CreateWorkspace(context.Background(), dbgen.CreateWorkspaceParams{
+		ID:           "workspace_1",
+		Name:         "cocode",
+		RootPath:     repoPath,
+		SettingsJson: "{}",
+		CreatedAt:    "2026-05-03T00:00:00Z",
+		UpdatedAt:    "2026-05-03T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace() error = %v", err)
+	}
+	if _, err := queries.CreateRepository(context.Background(), dbgen.CreateRepositoryParams{
+		ID:          "repo_1",
+		WorkspaceID: "workspace_1",
+		Name:        "cocode",
+		LocalPath:   repoPath,
+		CreatedAt:   "2026-05-03T00:01:00Z",
+		UpdatedAt:   "2026-05-03T00:01:00Z",
+	}); err != nil {
+		t.Fatalf("CreateRepository() error = %v", err)
+	}
+}
+
 func nullableString(value string) sql.NullString {
 	return sql.NullString{String: value, Valid: true}
+}
+
+func newAuthenticatedJSONRequest(t *testing.T, method string, path string, body any) *http.Request {
+	t.Helper()
+
+	content, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	request := httptest.NewRequest(method, path, bytes.NewReader(content))
+	request.Header.Set("X-Cocode-Token", "test-token")
+	request.Header.Set("Content-Type", "application/json")
+	return request
+}
+
+func decodeSnapshotResponse(t *testing.T, content []byte) SnapshotResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  SnapshotResponse `json:"data"`
+		Error any              `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func initHTTPAPIGitRepo(t *testing.T) string {
+	t.Helper()
+
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+
+	repoPath := t.TempDir()
+	runHTTPAPIGit(t, repoPath, "init")
+	runHTTPAPIGit(t, repoPath, "config", "user.email", "cocode@example.com")
+	runHTTPAPIGit(t, repoPath, "config", "user.name", "cocode")
+	runHTTPAPIGit(t, repoPath, "config", "commit.gpgsign", "false")
+	canonical, err := filepath.EvalSymlinks(repoPath)
+	if err != nil {
+		t.Fatalf("EvalSymlinks() error = %v", err)
+	}
+	return canonical
+}
+
+func runHTTPAPIGit(t *testing.T, cwd string, args ...string) {
+	t.Helper()
+
+	cmd := exec.Command("git", append([]string{"-C", cwd}, args...)...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v error = %v\n%s", args, err, string(output))
+	}
+}
+
+func writeHTTPAPIRepoFile(t *testing.T, repoPath string, relativePath string, content string) {
+	t.Helper()
+	writeHTTPAPIRepoBytes(t, repoPath, relativePath, []byte(content))
+}
+
+func writeHTTPAPIRepoBytes(t *testing.T, repoPath string, relativePath string, content []byte) {
+	t.Helper()
+
+	path := filepath.Join(repoPath, filepath.FromSlash(relativePath))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s) error = %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", relativePath, err)
+	}
 }

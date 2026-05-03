@@ -186,7 +186,7 @@ Large parallel workstreams:
 | T079 | Implement diff parser | Parse unified diff into files, hunks, line mappings, changed line ranges. | Done | T076 or T077 | T170, T294 | Tests cover add/delete/rename/multiple hunks. |
 | T080 | Detect generated/binary/excluded files | Identify generated/lock/vendor/binary files and support exclusion. | Done | T079 | T246 | UI receives flags; exclusions are persisted. |
 | T081 | Implement changed-file API | Return changed file list with line ranges and exclusion flags. | Done | T055, T079 | T246 | API powers Configure Review changed-files card. |
-| T082 | Implement snapshot creation API | Create snapshots from GitHub URL/local compare/local changes. | Not started | T074-T081 | T245 | End-to-end API creates snapshot and returns ID. |
+| T082 | Implement snapshot creation API | Create snapshots from GitHub URL/local compare/local changes. | Done | T074-T081 | T245 | End-to-end API creates snapshot and returns ID. |
 | T083 | Implement PR previous comments fetch | Fetch existing review comments/timeline comments for duplicate avoidance. | Not started | T074 | T120, T299 | Comments stored as artifact/context items; optional if auth unavailable. |
 | T084 | Implement CODEOWNERS/project rules discovery | Detect CODEOWNERS and common config files. | Not started | T070 | T120 | Rules files discovered and added to context candidates. |
 | T085 | Add PR ingestion UI smoke test | Simulate PR URL and verify snapshot creation flow. | Not started | T082, T245 | T360 | E2E test covers happy path and invalid URL. |

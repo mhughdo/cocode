@@ -237,7 +237,7 @@ Large parallel workstreams:
 | T127 | Add prior decision memory | Include prior dismissals/rules from review_rules. | Done | T058, T120 | T128 | Dismissal memory can be queried and included. |
 | T128 | Add token estimation | Estimate tokens per item and bundle. | Done | T120 | T129 | Estimates appear in API/UI; tests cover known samples. |
 | T129 | Add context budgeter | Select/drop items according to review depth and budget. | Done | T128 | T130 | Budgeting is deterministic and records dropped reasons. |
-| T130 | Add secret redaction | Redact token-like strings, private keys, env values before cloud-backed CLI context. | Not started | T120 | T333 | Tests cover secret fixtures; redaction report artifact created. |
+| T130 | Add secret redaction | Redact token-like strings, private keys, env values before cloud-backed CLI context. | Done | T120 | T333 | Tests cover secret fixtures; redaction report artifact created. |
 | T131 | Store rendered context bundle artifacts | Persist final prompt context sent to each agent. | Not started | T120, T060 | T140 | Agent run links to bundle; user can audit context. |
 | T132 | Build review context API | Endpoint/service to build and preview context for a session. | Not started | T120-T131 | T247 | API returns bundle metadata, items, token estimate. |
 | T133 | Build finding-scoped context | Build context for one finding and evidence bundle. | Not started | T186, T204 | T280 | Follow-up uses finding-scoped bundle by default. |

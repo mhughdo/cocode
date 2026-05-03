@@ -43,12 +43,30 @@ type AskFindingQuestionRequest struct {
 	ContextPolicy json.RawMessage `json:"context_policy"`
 }
 
+type FindingQuickActionRequest struct {
+	Action        string          `json:"action"`
+	Reason        string          `json:"reason"`
+	AgentConfigID string          `json:"agent_config_id"`
+	ContextPolicy json.RawMessage `json:"context_policy"`
+}
+
 type AskFindingQuestionResponse struct {
 	Thread           FindingThreadViewResponse    `json:"thread"`
 	UserMessage      FindingThreadMessageResponse `json:"user_message"`
 	AssistantMessage FindingThreadMessageResponse `json:"assistant_message"`
 	AgentRunID       string                       `json:"agent_run_id,omitempty"`
 	ContextBundleID  string                       `json:"context_bundle_id,omitempty"`
+}
+
+type FindingQuickActionResponse struct {
+	Action           string                        `json:"action"`
+	Thread           FindingThreadViewResponse     `json:"thread"`
+	Finding          FindingResponse               `json:"finding"`
+	Decision         *HumanDecisionResponse        `json:"decision,omitempty"`
+	Message          *FindingThreadMessageResponse `json:"message,omitempty"`
+	AssistantMessage *FindingThreadMessageResponse `json:"assistant_message,omitempty"`
+	AgentRunID       string                        `json:"agent_run_id,omitempty"`
+	ContextBundleID  string                        `json:"context_bundle_id,omitempty"`
 }
 
 func findingThreadHandler(services routerServices) gin.HandlerFunc {
@@ -66,6 +84,37 @@ func findingThreadHandler(services routerServices) gin.HandlerFunc {
 			return
 		}
 		response, appErr := findingThreadViewResponse(view)
+		if appErr != nil {
+			respondError(c, appErr)
+			return
+		}
+		respondOK(c, response)
+	}
+}
+
+func findingQuickActionHandler(services routerServices) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var request FindingQuickActionRequest
+		if !bindJSON(c, &request) {
+			return
+		}
+		service := services.followups
+		if service == nil {
+			service = &followup.Service{Database: services.database, Queries: services.queries}
+		}
+		result, err := service.RunQuickAction(c.Request.Context(), followup.QuickActionParams{
+			FindingID:       c.Param("finding_id"),
+			ReviewSessionID: c.Param("id"),
+			Action:          request.Action,
+			Reason:          request.Reason,
+			AgentConfigID:   request.AgentConfigID,
+			ContextPolicy:   request.ContextPolicy,
+		})
+		if err != nil {
+			respondError(c, followupError(err))
+			return
+		}
+		response, appErr := findingQuickActionResponse(result)
 		if appErr != nil {
 			respondError(c, appErr)
 			return
@@ -118,6 +167,42 @@ func askFindingQuestionHandler(services routerServices) gin.HandlerFunc {
 			ContextBundleID:  result.ContextBundle.ID,
 		})
 	}
+}
+
+func findingQuickActionResponse(result followup.QuickActionResult) (FindingQuickActionResponse, *apperror.Error) {
+	thread, appErr := findingThreadViewResponse(result.View)
+	if appErr != nil {
+		return FindingQuickActionResponse{}, appErr
+	}
+	response := FindingQuickActionResponse{
+		Action:          result.Action,
+		Thread:          thread,
+		Finding:         findingResponse(result.Finding),
+		AgentRunID:      result.AgentRun.ID,
+		ContextBundleID: result.ContextBundle.ID,
+	}
+	if result.Decision.ID != "" {
+		decision, appErr := humanDecisionResponse(result.Decision)
+		if appErr != nil {
+			return FindingQuickActionResponse{}, appErr
+		}
+		response.Decision = &decision
+	}
+	if result.Message.ID != "" {
+		message, appErr := findingThreadMessageResponse(result.Message)
+		if appErr != nil {
+			return FindingQuickActionResponse{}, appErr
+		}
+		response.Message = &message
+	}
+	if result.AssistantMessage.ID != "" {
+		message, appErr := findingThreadMessageResponse(result.AssistantMessage)
+		if appErr != nil {
+			return FindingQuickActionResponse{}, appErr
+		}
+		response.AssistantMessage = &message
+	}
+	return response, nil
 }
 
 func findingThreadViewResponse(view followup.ThreadView) (FindingThreadViewResponse, *apperror.Error) {
@@ -174,6 +259,8 @@ func followupError(err error) *apperror.Error {
 		return apperror.NotFound("finding thread was not found")
 	case errors.Is(err, followup.ErrInvalidMessage):
 		return apperror.InvalidRequest("finding thread message is invalid")
+	case errors.Is(err, followup.ErrInvalidQuickAction):
+		return apperror.InvalidRequest("follow-up quick action is invalid")
 	case errors.Is(err, followup.ErrInvalidAgentConfig):
 		return apperror.InvalidRequest("follow-up agent config is invalid")
 	case errors.Is(err, followup.ErrAgentConfigNotFound):

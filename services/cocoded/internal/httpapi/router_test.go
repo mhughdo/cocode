@@ -1412,6 +1412,120 @@ printf '{"answer":"The scoped evidence still supports the auth finding.","eviden
 	}
 }
 
+func TestFindingQuickActionEndpointAcceptsAndAppendsThreadMessage(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+
+	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/findings/finding_budget/thread/actions", map[string]any{
+		"action": "accept",
+		"reason": "the preview overflow is a real UI regression",
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("quick action status = %d, body = %s", response.Code, response.Body.String())
+	}
+	action := decodeFindingQuickActionResponse(t, response.Body.Bytes())
+	if action.Action != "accept" ||
+		action.Finding.DecisionStatus != "accepted" ||
+		action.Decision == nil ||
+		action.Decision.Decision != "accepted" ||
+		action.Message == nil ||
+		action.Message.Role != "system" ||
+		!strings.Contains(action.Message.Content, "Accepted finding") ||
+		len(action.Thread.Messages) != 1 {
+		t.Fatalf("action = %+v", action)
+	}
+	stored, err := queries.GetFinding(context.Background(), "finding_budget")
+	if err != nil {
+		t.Fatalf("GetFinding() error = %v", err)
+	}
+	if stored.DecisionStatus != "accepted" {
+		t.Fatalf("stored finding = %+v", stored)
+	}
+	decisions, err := queries.ListHumanDecisionsByFinding(context.Background(), "finding_budget")
+	if err != nil {
+		t.Fatalf("ListHumanDecisionsByFinding() error = %v", err)
+	}
+	if len(decisions) != 1 ||
+		decisions[0].Decision != "accepted" ||
+		!strings.Contains(decisions[0].MetadataJson, `"follow_up_quick_action"`) {
+		t.Fatalf("decisions = %+v", decisions)
+	}
+}
+
+func TestFindingQuickActionEndpointMarksCopied(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+
+	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/findings/finding_auth/thread/actions", map[string]any{
+		"action": "copy",
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("copy quick action status = %d, body = %s", response.Code, response.Body.String())
+	}
+	action := decodeFindingQuickActionResponse(t, response.Body.Bytes())
+	if action.Finding.DecisionStatus != "copied" ||
+		action.Decision == nil ||
+		action.Decision.Decision != "copied" ||
+		action.Message == nil ||
+		!strings.Contains(action.Message.Content, "copied") {
+		t.Fatalf("action = %+v", action)
+	}
+}
+
+func TestFindingQuickActionEndpointAsksCounterEvidence(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+	if err := os.MkdirAll("/tmp/cocode", 0o755); err != nil {
+		t.Fatalf("mkdir repo root: %v", err)
+	}
+	command := writeFakeAgentConfigCommand(t, `#!/bin/sh
+cat >/dev/null
+printf '{"answer":"I found no counter-evidence in the scoped bundle.","evidence_refs":[{"evidence_item_id":"evidence_auth_guard"}]}\n'
+`)
+	createHTTPAPIAgentConfigWithCommand(t, queries, "agent_config_counter", "verifier", 1, command, agents.OutputJSON, `{"prompt_delivery":"stdin","timeout_seconds":30}`)
+
+	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/findings/finding_auth/thread/actions", map[string]any{
+		"action":          "ask_counter_evidence",
+		"agent_config_id": "agent_config_counter",
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("counter-evidence status = %d, body = %s", response.Code, response.Body.String())
+	}
+	action := decodeFindingQuickActionResponse(t, response.Body.Bytes())
+	if action.Action != "ask_counter_evidence" ||
+		action.Message == nil ||
+		action.Message.Role != "user" ||
+		!strings.Contains(action.Message.Content, "counter-evidence") ||
+		action.AssistantMessage == nil ||
+		!strings.Contains(action.AssistantMessage.Content, "no counter-evidence") ||
+		string(action.AssistantMessage.EvidenceRefs) == "[]" ||
+		action.AgentRunID == "" ||
+		action.ContextBundleID == "" ||
+		len(action.Thread.Messages) != 2 {
+		t.Fatalf("action = %+v", action)
+	}
+}
+
+func TestFindingQuickActionEndpointRequiresDismissalReason(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+
+	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/findings/finding_budget/thread/actions", map[string]any{
+		"action": "dismiss",
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("dismiss quick action status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
 func TestFindingContextPreviewEndpointBuildsScopedBundle(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
 	createHTTPAPIFindingFixture(t, queries)
@@ -2579,6 +2693,22 @@ func decodeAskFindingQuestionResponse(t *testing.T, content []byte) AskFindingQu
 
 	var envelope struct {
 		Data  AskFindingQuestionResponse `json:"data"`
+		Error any                        `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeFindingQuickActionResponse(t *testing.T, content []byte) FindingQuickActionResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  FindingQuickActionResponse `json:"data"`
 		Error any                        `json:"error"`
 	}
 	if err := json.Unmarshal(content, &envelope); err != nil {

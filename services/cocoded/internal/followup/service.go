@@ -35,9 +35,11 @@ var (
 	ErrAgentConfigNotFound  = errors.New("follow-up agent config was not found")
 	ErrInvalidAgentConfig   = errors.New("follow-up agent config is invalid")
 	ErrAgentRunFailed       = errors.New("follow-up agent run failed")
+	ErrInvalidQuickAction   = errors.New("follow-up quick action is invalid")
 )
 
 type Service struct {
+	Database       *sql.DB
 	Queries        *dbgen.Queries
 	ContextBuilder *contextbundle.Service
 	Artifacts      *artifact.Store

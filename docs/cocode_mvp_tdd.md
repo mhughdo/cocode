@@ -834,6 +834,8 @@ POST   /api/review-sessions/:id/findings/:finding_id/decision
 PATCH  /api/review-sessions/:id/findings/:finding_id/draft-comment
 POST   /api/findings/:id/question
 POST   /api/review-sessions/:id/findings/:finding_id/question
+POST   /api/findings/:id/thread/actions
+POST   /api/review-sessions/:id/findings/:finding_id/thread/actions
 GET    /api/findings/:id/thread
 GET    /api/review-sessions/:id/findings/:finding_id/thread
 GET    /api/findings/:id/evidence-map
@@ -1438,6 +1440,8 @@ Use the evidence bundle first. Do not use unrelated repository assumptions.
 The MVP follow-up foundation creates exactly one thread per finding with `finding_threads.UNIQUE(finding_id)`. `GET /api/findings/:id/thread` and the review-session-scoped equivalent create the thread on first load, return the finding summary plus ordered messages, and preserve existing messages across reloads. Message rows keep role, optional agent config, optional artifact, and JSON evidence references.
 
 `POST /api/findings/:id/question` appends the user question, builds a persisted finding-scoped context bundle, runs a selected `cli_noninteractive` agent or deterministic `local_verifier`, and stores the assistant answer with cited evidence refs plus the stdout artifact for CLI runs. The endpoint accepts an optional context policy override and rejects unsupported/disabled agent configs before execution.
+
+`POST /api/findings/:id/thread/actions` supports follow-up quick actions: `ask_counter_evidence` submits the standard counter-evidence question through the same scoped agent path, while `accept`, `dismiss`, and `copy` update the finding decision, append a human decision audit row, and add a system message to the finding thread. Dismiss requires a reason; copy records the copied state even before copy packet generation exists.
 
 ### 11.10 GitHub comment drafter prompt
 

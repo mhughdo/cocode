@@ -210,6 +210,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 		contextBuilder:    contextBuilder,
 		contextBuilderErr: artifactErr,
 		followups: &followup.Service{
+			Database:       database,
 			Queries:        queries,
 			ContextBuilder: contextBuilder,
 			Artifacts:      artifactStore,
@@ -279,6 +280,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.POST("/review-sessions/:id/findings/:finding_id/evidence-map/context-bundles/preview", buildFindingContextHandler(services, contextbundle.ScopeEvidenceMap))
 	api.GET("/review-sessions/:id/findings/:finding_id/thread", findingThreadHandler(services))
 	api.POST("/review-sessions/:id/findings/:finding_id/question", askFindingQuestionHandler(services))
+	api.POST("/review-sessions/:id/findings/:finding_id/thread/actions", findingQuickActionHandler(services))
 	api.POST("/review-sessions/:id/findings/:finding_id/decision", updateFindingDecisionHandler(services))
 	api.PATCH("/review-sessions/:id/findings/:finding_id/draft-comment", updateDraftCommentHandler(services))
 	api.GET("/findings/:finding_id", findingDetailHandler(queries))
@@ -289,6 +291,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.POST("/findings/:finding_id/evidence-map/context-bundles/preview", buildFindingContextHandler(services, contextbundle.ScopeEvidenceMap))
 	api.GET("/findings/:finding_id/thread", findingThreadHandler(services))
 	api.POST("/findings/:finding_id/question", askFindingQuestionHandler(services))
+	api.POST("/findings/:finding_id/thread/actions", findingQuickActionHandler(services))
 	api.PATCH("/findings/:finding_id/decision", updateFindingDecisionHandler(services))
 	api.PATCH("/findings/:finding_id/draft-comment", updateDraftCommentHandler(services))
 	api.GET("/agents/presets", listAgentPresetsHandler())

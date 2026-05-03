@@ -134,6 +134,134 @@ func TestFetchChangedFilesFollowsPagination(t *testing.T) {
 	}
 }
 
+func TestFetchPreviousCommentsCollectsReviewContext(t *testing.T) {
+	t.Parallel()
+
+	requests := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.URL.String())
+		if r.Header.Get("Authorization") != "Bearer token" {
+			t.Fatalf("Authorization = %q", r.Header.Get("Authorization"))
+		}
+		if r.Header.Get("Accept") != "application/vnd.github+json" {
+			t.Fatalf("Accept = %q", r.Header.Get("Accept"))
+		}
+
+		switch r.URL.Path {
+		case "/repos/openai/codex/issues/123/comments":
+			switch r.URL.Query().Get("page") {
+			case "1":
+				w.Header().Set("Link", `<https://api.github.test/repos/openai/codex/issues/123/comments?per_page=100&page=2>; rel="next"`)
+				_, _ = w.Write([]byte(`[{
+					"id": 10,
+					"body": "Please add a test for this.",
+					"html_url": "https://github.com/openai/codex/pull/123#issuecomment-10",
+					"created_at": "2026-05-03T10:00:00Z",
+					"updated_at": "2026-05-03T10:00:10Z",
+					"author_association": "MEMBER",
+					"user": {"login": "reviewer-a"}
+				}]`))
+			case "2":
+				_, _ = w.Write([]byte(`[{
+					"id": 11,
+					"body": "Looks good after the update.",
+					"html_url": "https://github.com/openai/codex/pull/123#issuecomment-11",
+					"created_at": "2026-05-03T10:03:00Z",
+					"updated_at": "2026-05-03T10:03:00Z",
+					"author_association": "COLLABORATOR",
+					"user": {"login": "reviewer-b"}
+				}]`))
+			default:
+				t.Fatalf("issue comment page = %q", r.URL.Query().Get("page"))
+			}
+		case "/repos/openai/codex/pulls/123/comments":
+			_, _ = w.Write([]byte(`[{
+				"id": 20,
+				"pull_request_review_id": 99,
+				"body": "This duplicates an existing helper.",
+				"html_url": "https://github.com/openai/codex/pull/123#discussion_r20",
+				"path": "api/routes.go",
+				"diff_hunk": "@@ -8,6 +8,7 @@",
+				"commit_id": "head-sha",
+				"original_commit_id": "old-head-sha",
+				"line": 42,
+				"original_line": 40,
+				"start_line": 39,
+				"original_start_line": 38,
+				"side": "RIGHT",
+				"start_side": "RIGHT",
+				"in_reply_to_id": 19,
+				"created_at": "2026-05-03T10:01:00Z",
+				"updated_at": "2026-05-03T10:01:30Z",
+				"author_association": "MEMBER",
+				"user": {"login": "reviewer-a"}
+			}]`))
+		case "/repos/openai/codex/pulls/123/reviews":
+			_, _ = w.Write([]byte(`[{
+				"id": 99,
+				"body": "Leaving a couple of comments.",
+				"state": "COMMENTED",
+				"html_url": "https://github.com/openai/codex/pull/123#pullrequestreview-99",
+				"commit_id": "head-sha",
+				"submitted_at": "2026-05-03T10:02:00Z",
+				"author_association": "MEMBER",
+				"user": {"login": "reviewer-a"}
+			}, {
+				"id": 100,
+				"body": "Draft feedback should not be context yet.",
+				"state": "PENDING",
+				"html_url": "https://github.com/openai/codex/pull/123#pullrequestreview-100",
+				"commit_id": "head-sha",
+				"user": {"login": "reviewer-a"}
+			}]`))
+		default:
+			t.Fatalf("unexpected path = %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	comments, err := (Client{
+		BaseURL: server.URL,
+		Token:   "token",
+		Client:  server.Client(),
+	}).FetchPreviousComments(context.Background(), Reference{Owner: "openai", Repo: "codex", Number: 123})
+	if err != nil {
+		t.Fatalf("FetchPreviousComments() error = %v", err)
+	}
+	if comments.IssueCommentCount != 2 || comments.ReviewCommentCount != 1 || comments.ReviewCount != 1 || len(comments.Comments) != 4 {
+		t.Fatalf("comments counts = %+v", comments)
+	}
+	gotSources := []string{
+		comments.Comments[0].Source,
+		comments.Comments[1].Source,
+		comments.Comments[2].Source,
+		comments.Comments[3].Source,
+	}
+	wantSources := []string{"issue_comment", "review_comment", "review", "issue_comment"}
+	for index, want := range wantSources {
+		if gotSources[index] != want {
+			t.Fatalf("sources = %v, want %v", gotSources, wantSources)
+		}
+	}
+	inline := comments.Comments[1]
+	if inline.ID != 20 ||
+		inline.ReviewID != 99 ||
+		inline.Path != "api/routes.go" ||
+		inline.Line != 42 ||
+		inline.OriginalLine != 40 ||
+		inline.InReplyToID != 19 ||
+		inline.Author != "reviewer-a" {
+		t.Fatalf("inline review comment = %+v", inline)
+	}
+	review := comments.Comments[2]
+	if review.ID != 99 || review.State != "COMMENTED" || review.CommitID != "head-sha" || review.SubmittedAt == "" {
+		t.Fatalf("review = %+v", review)
+	}
+	if len(requests) != 4 {
+		t.Fatalf("requests = %v, want 4 paged requests", requests)
+	}
+}
+
 func TestFetchDiffUsesDiffMediaType(t *testing.T) {
 	t.Parallel()
 

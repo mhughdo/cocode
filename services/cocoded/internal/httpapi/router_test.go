@@ -189,6 +189,37 @@ func TestCreateGitHubSnapshotEndpoint(t *testing.T) {
 			}]`))
 		case r.URL.Path == "/repos/openai/codex/pulls/123" && r.Header.Get("Accept") == "application/vnd.github.diff":
 			_, _ = w.Write([]byte("diff --git a/api/routes.go b/api/routes.go\n@@ -1 +1 @@\n-old\n+new\n"))
+		case r.URL.Path == "/repos/openai/codex/issues/123/comments":
+			_, _ = w.Write([]byte(`[{
+				"id": 10,
+				"body": "Please avoid duplicating the route helper.",
+				"html_url": "https://github.com/openai/codex/pull/123#issuecomment-10",
+				"created_at": "2026-05-03T10:00:00Z",
+				"updated_at": "2026-05-03T10:00:00Z",
+				"user": {"login": "reviewer-a"}
+			}]`))
+		case r.URL.Path == "/repos/openai/codex/pulls/123/comments":
+			_, _ = w.Write([]byte(`[{
+				"id": 20,
+				"pull_request_review_id": 99,
+				"body": "This branch already handles the edge case.",
+				"html_url": "https://github.com/openai/codex/pull/123#discussion_r20",
+				"path": "api/routes.go",
+				"line": 12,
+				"created_at": "2026-05-03T10:01:00Z",
+				"updated_at": "2026-05-03T10:01:00Z",
+				"user": {"login": "reviewer-b"}
+			}]`))
+		case r.URL.Path == "/repos/openai/codex/pulls/123/reviews":
+			_, _ = w.Write([]byte(`[{
+				"id": 99,
+				"body": "One duplicate-avoidance note.",
+				"state": "COMMENTED",
+				"html_url": "https://github.com/openai/codex/pull/123#pullrequestreview-99",
+				"commit_id": "head-sha",
+				"submitted_at": "2026-05-03T10:02:00Z",
+				"user": {"login": "reviewer-b"}
+			}]`))
 		default:
 			t.Fatalf("unexpected GitHub request path=%s accept=%s", r.URL.Path, r.Header.Get("Accept"))
 		}
@@ -219,6 +250,35 @@ func TestCreateGitHubSnapshotEndpoint(t *testing.T) {
 		snapshot.ChangedFileCount != 1 {
 		t.Fatalf("snapshot = %+v", snapshot)
 	}
+	if snapshot.PreviousCommentsArtifactID == "" {
+		t.Fatalf("PreviousCommentsArtifactID is empty: %+v", snapshot)
+	}
+	commentsArtifact, err := queries.GetArtifact(context.Background(), snapshot.PreviousCommentsArtifactID)
+	if err != nil {
+		t.Fatalf("GetArtifact(previous comments) error = %v", err)
+	}
+	if commentsArtifact.Kind != "github_previous_comments" || commentsArtifact.ContentType != "application/json" {
+		t.Fatalf("previous comments artifact = %+v", commentsArtifact)
+	}
+	var metadata struct {
+		PreviousComments struct {
+			ArtifactID         string `json:"artifact_id"`
+			CommentCount       int    `json:"comment_count"`
+			IssueCommentCount  int    `json:"issue_comment_count"`
+			ReviewCommentCount int    `json:"review_comment_count"`
+			ReviewCount        int    `json:"review_count"`
+		} `json:"previous_comments"`
+	}
+	if err := json.Unmarshal(snapshot.Metadata, &metadata); err != nil {
+		t.Fatalf("decode snapshot metadata: %v", err)
+	}
+	if metadata.PreviousComments.ArtifactID != snapshot.PreviousCommentsArtifactID ||
+		metadata.PreviousComments.CommentCount != 3 ||
+		metadata.PreviousComments.IssueCommentCount != 1 ||
+		metadata.PreviousComments.ReviewCommentCount != 1 ||
+		metadata.PreviousComments.ReviewCount != 1 {
+		t.Fatalf("previous comments metadata = %+v", metadata.PreviousComments)
+	}
 	file, err := queries.GetChangedFileByPath(context.Background(), dbgen.GetChangedFileByPathParams{
 		SnapshotID: snapshot.ID,
 		Path:       "api/routes.go",
@@ -228,6 +288,77 @@ func TestCreateGitHubSnapshotEndpoint(t *testing.T) {
 	}
 	if file.Additions != 1 || file.Deletions != 1 || file.PatchArtifactID.String == "" {
 		t.Fatalf("changed file = %+v", file)
+	}
+}
+
+func TestCreateGitHubSnapshotEndpointKeepsSnapshotWhenPreviousCommentsUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer ghp_test" {
+			t.Fatalf("Authorization = %q", r.Header.Get("Authorization"))
+		}
+		switch {
+		case r.URL.Path == "/repos/openai/codex/pulls/123" && r.Header.Get("Accept") == "application/vnd.github+json":
+			_, _ = w.Write([]byte(`{
+				"title": "Add snapshot route",
+				"html_url": "https://github.com/openai/codex/pull/123",
+				"user": {"login": "octocat"},
+				"base": {"ref": "main", "sha": "base-sha"},
+				"head": {"ref": "feature/snapshot", "sha": "head-sha"}
+			}`))
+		case r.URL.Path == "/repos/openai/codex/pulls/123/files":
+			_, _ = w.Write([]byte(`[{
+				"sha": "file-sha",
+				"filename": "api/routes.go",
+				"status": "modified",
+				"additions": 1,
+				"deletions": 1,
+				"changes": 2,
+				"patch": "@@ -1 +1 @@\n-old\n+new\n"
+			}]`))
+		case r.URL.Path == "/repos/openai/codex/pulls/123" && r.Header.Get("Accept") == "application/vnd.github.diff":
+			_, _ = w.Write([]byte("diff --git a/api/routes.go b/api/routes.go\n@@ -1 +1 @@\n-old\n+new\n"))
+		case r.URL.Path == "/repos/openai/codex/issues/123/comments":
+			w.WriteHeader(http.StatusGone)
+		default:
+			t.Fatalf("unexpected GitHub request path=%s accept=%s", r.URL.Path, r.Header.Get("Accept"))
+		}
+	}))
+	defer server.Close()
+
+	router, queries := testRouterWithConfigAndQueries(t, app.Config{GitHubAPIBaseURL: server.URL})
+	createHTTPAPIWorkspaceAndRepository(t, queries, "/tmp/cocode")
+
+	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/pr-snapshots/from-github-url", map[string]any{
+		"workspace_id":  "workspace_1",
+		"repository_id": "repo_1",
+		"url":           "https://github.com/openai/codex/pull/123",
+		"github_token":  "ghp_test",
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, response.Code, response.Body.String())
+	}
+	snapshot := decodeSnapshotResponse(t, response.Body.Bytes())
+	if snapshot.PreviousCommentsArtifactID != "" || snapshot.ChangedFileCount != 1 {
+		t.Fatalf("snapshot = %+v", snapshot)
+	}
+	var metadata struct {
+		PreviousCommentsFetchError string `json:"previous_comments_fetch_error"`
+	}
+	if err := json.Unmarshal(snapshot.Metadata, &metadata); err != nil {
+		t.Fatalf("decode snapshot metadata: %v", err)
+	}
+	if metadata.PreviousCommentsFetchError == "" {
+		t.Fatalf("previous comments fetch error is empty in metadata %s", string(snapshot.Metadata))
+	}
+	artifacts, err := queries.ListArtifactsByWorkspace(context.Background(), "workspace_1")
+	if err != nil {
+		t.Fatalf("ListArtifactsByWorkspace() error = %v", err)
+	}
+	if len(artifacts) != 2 {
+		t.Fatalf("workspace artifacts len = %d, want diff and patch: %+v", len(artifacts), artifacts)
 	}
 }
 

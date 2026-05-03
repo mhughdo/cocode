@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -45,6 +46,38 @@ type ChangedFile struct {
 	Patch            string `json:"patch,omitempty"`
 	BlobURL          string `json:"blob_url,omitempty"`
 	RawURL           string `json:"raw_url,omitempty"`
+}
+
+type PreviousComments struct {
+	Comments           []PreviousComment `json:"comments"`
+	IssueCommentCount  int               `json:"issue_comment_count"`
+	ReviewCommentCount int               `json:"review_comment_count"`
+	ReviewCount        int               `json:"review_count"`
+}
+
+type PreviousComment struct {
+	Source            string `json:"source"`
+	ID                int64  `json:"id"`
+	ReviewID          int64  `json:"review_id,omitempty"`
+	Author            string `json:"author,omitempty"`
+	AuthorAssociation string `json:"author_association,omitempty"`
+	Body              string `json:"body,omitempty"`
+	State             string `json:"state,omitempty"`
+	HTMLURL           string `json:"html_url,omitempty"`
+	Path              string `json:"path,omitempty"`
+	DiffHunk          string `json:"diff_hunk,omitempty"`
+	CommitID          string `json:"commit_id,omitempty"`
+	OriginalCommitID  string `json:"original_commit_id,omitempty"`
+	Line              int64  `json:"line,omitempty"`
+	OriginalLine      int64  `json:"original_line,omitempty"`
+	StartLine         int64  `json:"start_line,omitempty"`
+	OriginalStartLine int64  `json:"original_start_line,omitempty"`
+	Side              string `json:"side,omitempty"`
+	StartSide         string `json:"start_side,omitempty"`
+	InReplyToID       int64  `json:"in_reply_to_id,omitempty"`
+	CreatedAt         string `json:"created_at,omitempty"`
+	UpdatedAt         string `json:"updated_at,omitempty"`
+	SubmittedAt       string `json:"submitted_at,omitempty"`
 }
 
 func (c Client) FetchMetadata(ctx context.Context, ref Reference) (Metadata, error) {
@@ -102,35 +135,8 @@ func (c Client) FetchChangedFiles(ctx context.Context, ref Reference) ([]Changed
 		return nil, apperror.InvalidRequest("GitHub pull request reference is invalid")
 	}
 
-	files := []ChangedFile{}
 	baseEndpoint := pullEndpoint(c.baseURL(), ref) + "/files"
-	for page := int64(1); ; page++ {
-		endpoint := baseEndpoint + "?per_page=100&page=" + strconv.FormatInt(page, 10)
-		resp, err := c.get(ctx, endpoint, "application/vnd.github+json")
-		if err != nil {
-			return nil, err
-		}
-
-		var pageFiles []ChangedFile
-		decodeErr := error(nil)
-		if statusErr := mapGitHubStatus(resp.StatusCode, "GitHub pull request files"); statusErr == nil {
-			decodeErr = json.NewDecoder(resp.Body).Decode(&pageFiles)
-		} else {
-			decodeErr = statusErr
-		}
-		_ = resp.Body.Close()
-		if decodeErr != nil {
-			if _, ok := decodeErr.(*apperror.Error); ok {
-				return nil, decodeErr
-			}
-			return nil, apperror.Internal("failed to decode GitHub pull request files")
-		}
-		files = append(files, pageFiles...)
-		if !hasNextPage(resp.Header.Get("Link")) {
-			break
-		}
-	}
-	return files, nil
+	return fetchPaged[ChangedFile](ctx, c, baseEndpoint, "GitHub pull request files")
 }
 
 func (c Client) FetchDiff(ctx context.Context, ref Reference) ([]byte, error) {
@@ -152,6 +158,97 @@ func (c Client) FetchDiff(ctx context.Context, ref Reference) ([]byte, error) {
 		return nil, apperror.Internal("failed to read GitHub pull request diff")
 	}
 	return content, nil
+}
+
+func (c Client) FetchPreviousComments(ctx context.Context, ref Reference) (PreviousComments, error) {
+	if ref.Owner == "" || ref.Repo == "" || ref.Number <= 0 {
+		return PreviousComments{}, apperror.InvalidRequest("GitHub pull request reference is invalid")
+	}
+
+	baseURL := c.baseURL()
+	issueComments, err := fetchPaged[issueComment](ctx, c, issueCommentsEndpoint(baseURL, ref), "GitHub pull request issue comments")
+	if err != nil {
+		return PreviousComments{}, err
+	}
+	reviewComments, err := fetchPaged[reviewComment](ctx, c, pullEndpoint(baseURL, ref)+"/comments", "GitHub pull request review comments")
+	if err != nil {
+		return PreviousComments{}, err
+	}
+	reviews, err := fetchPaged[pullReview](ctx, c, pullEndpoint(baseURL, ref)+"/reviews", "GitHub pull request reviews")
+	if err != nil {
+		return PreviousComments{}, err
+	}
+
+	result := PreviousComments{
+		IssueCommentCount:  len(issueComments),
+		ReviewCommentCount: len(reviewComments),
+		Comments:           make([]PreviousComment, 0, len(issueComments)+len(reviewComments)+len(reviews)),
+	}
+	for _, comment := range issueComments {
+		result.Comments = append(result.Comments, PreviousComment{
+			Source:            "issue_comment",
+			ID:                comment.ID,
+			Author:            comment.User.Login,
+			AuthorAssociation: comment.AuthorAssociation,
+			Body:              comment.Body,
+			HTMLURL:           comment.HTMLURL,
+			CreatedAt:         comment.CreatedAt,
+			UpdatedAt:         comment.UpdatedAt,
+		})
+	}
+	for _, comment := range reviewComments {
+		result.Comments = append(result.Comments, PreviousComment{
+			Source:            "review_comment",
+			ID:                comment.ID,
+			ReviewID:          comment.PullRequestReviewID,
+			Author:            comment.User.Login,
+			AuthorAssociation: comment.AuthorAssociation,
+			Body:              comment.Body,
+			HTMLURL:           comment.HTMLURL,
+			Path:              comment.Path,
+			DiffHunk:          comment.DiffHunk,
+			CommitID:          comment.CommitID,
+			OriginalCommitID:  comment.OriginalCommitID,
+			Line:              comment.Line,
+			OriginalLine:      comment.OriginalLine,
+			StartLine:         comment.StartLine,
+			OriginalStartLine: comment.OriginalStartLine,
+			Side:              comment.Side,
+			StartSide:         comment.StartSide,
+			InReplyToID:       comment.InReplyToID,
+			CreatedAt:         comment.CreatedAt,
+			UpdatedAt:         comment.UpdatedAt,
+		})
+	}
+	for _, review := range reviews {
+		if strings.EqualFold(review.State, "PENDING") || strings.TrimSpace(review.SubmittedAt) == "" {
+			continue
+		}
+		result.ReviewCount++
+		result.Comments = append(result.Comments, PreviousComment{
+			Source:            "review",
+			ID:                review.ID,
+			Author:            review.User.Login,
+			AuthorAssociation: review.AuthorAssociation,
+			Body:              review.Body,
+			State:             review.State,
+			HTMLURL:           review.HTMLURL,
+			CommitID:          review.CommitID,
+			SubmittedAt:       review.SubmittedAt,
+		})
+	}
+	sort.SliceStable(result.Comments, func(i, j int) bool {
+		left := commentTime(result.Comments[i])
+		right := commentTime(result.Comments[j])
+		if left != right {
+			return left < right
+		}
+		if result.Comments[i].Source != result.Comments[j].Source {
+			return result.Comments[i].Source < result.Comments[j].Source
+		}
+		return result.Comments[i].ID < result.Comments[j].ID
+	})
+	return result, nil
 }
 
 func (c Client) baseURL() string {
@@ -187,6 +284,101 @@ func (c Client) get(ctx context.Context, endpoint string, accept string) (*http.
 
 func pullEndpoint(baseURL string, ref Reference) string {
 	return baseURL + "/repos/" + url.PathEscape(ref.Owner) + "/" + url.PathEscape(ref.Repo) + "/pulls/" + strconv.FormatInt(ref.Number, 10)
+}
+
+func issueCommentsEndpoint(baseURL string, ref Reference) string {
+	return baseURL + "/repos/" + url.PathEscape(ref.Owner) + "/" + url.PathEscape(ref.Repo) + "/issues/" + strconv.FormatInt(ref.Number, 10) + "/comments"
+}
+
+func fetchPaged[T any](ctx context.Context, c Client, baseEndpoint string, resource string) ([]T, error) {
+	items := []T{}
+	for page := int64(1); ; page++ {
+		endpoint := baseEndpoint + "?per_page=100&page=" + strconv.FormatInt(page, 10)
+		resp, err := c.get(ctx, endpoint, "application/vnd.github+json")
+		if err != nil {
+			return nil, err
+		}
+
+		var pageItems []T
+		decodeErr := error(nil)
+		if statusErr := mapGitHubStatus(resp.StatusCode, resource); statusErr == nil {
+			decodeErr = json.NewDecoder(resp.Body).Decode(&pageItems)
+		} else {
+			decodeErr = statusErr
+		}
+		_ = resp.Body.Close()
+		if decodeErr != nil {
+			if _, ok := decodeErr.(*apperror.Error); ok {
+				return nil, decodeErr
+			}
+			return nil, apperror.Internal("failed to decode " + strings.ToLower(resource))
+		}
+		items = append(items, pageItems...)
+		if !hasNextPage(resp.Header.Get("Link")) {
+			break
+		}
+	}
+	return items, nil
+}
+
+type userSummary struct {
+	Login string `json:"login"`
+}
+
+type issueComment struct {
+	ID                int64       `json:"id"`
+	Body              string      `json:"body"`
+	HTMLURL           string      `json:"html_url"`
+	CreatedAt         string      `json:"created_at"`
+	UpdatedAt         string      `json:"updated_at"`
+	AuthorAssociation string      `json:"author_association"`
+	User              userSummary `json:"user"`
+}
+
+type reviewComment struct {
+	ID                  int64       `json:"id"`
+	PullRequestReviewID int64       `json:"pull_request_review_id"`
+	Body                string      `json:"body"`
+	HTMLURL             string      `json:"html_url"`
+	Path                string      `json:"path"`
+	DiffHunk            string      `json:"diff_hunk"`
+	CommitID            string      `json:"commit_id"`
+	OriginalCommitID    string      `json:"original_commit_id"`
+	Line                int64       `json:"line"`
+	OriginalLine        int64       `json:"original_line"`
+	StartLine           int64       `json:"start_line"`
+	OriginalStartLine   int64       `json:"original_start_line"`
+	Side                string      `json:"side"`
+	StartSide           string      `json:"start_side"`
+	InReplyToID         int64       `json:"in_reply_to_id"`
+	CreatedAt           string      `json:"created_at"`
+	UpdatedAt           string      `json:"updated_at"`
+	AuthorAssociation   string      `json:"author_association"`
+	User                userSummary `json:"user"`
+}
+
+type pullReview struct {
+	ID                int64       `json:"id"`
+	Body              string      `json:"body"`
+	State             string      `json:"state"`
+	HTMLURL           string      `json:"html_url"`
+	CommitID          string      `json:"commit_id"`
+	SubmittedAt       string      `json:"submitted_at"`
+	AuthorAssociation string      `json:"author_association"`
+	User              userSummary `json:"user"`
+}
+
+func commentTime(comment PreviousComment) string {
+	switch {
+	case comment.CreatedAt != "":
+		return comment.CreatedAt
+	case comment.SubmittedAt != "":
+		return comment.SubmittedAt
+	case comment.UpdatedAt != "":
+		return comment.UpdatedAt
+	default:
+		return ""
+	}
 }
 
 func mapGitHubStatus(statusCode int, resource string) error {

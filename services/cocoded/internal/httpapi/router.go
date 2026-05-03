@@ -56,22 +56,23 @@ type ChangedFileResponse struct {
 }
 
 type SnapshotResponse struct {
-	ID               string          `json:"id"`
-	RepositoryID     string          `json:"repository_id"`
-	SourceType       string          `json:"source_type"`
-	Provider         string          `json:"provider,omitempty"`
-	Owner            string          `json:"owner,omitempty"`
-	Repo             string          `json:"repo,omitempty"`
-	PRNumber         int64           `json:"pr_number,omitempty"`
-	PRTitle          string          `json:"pr_title,omitempty"`
-	PRURL            string          `json:"pr_url,omitempty"`
-	BaseRef          string          `json:"base_ref,omitempty"`
-	HeadRef          string          `json:"head_ref,omitempty"`
-	BaseSHA          string          `json:"base_sha,omitempty"`
-	HeadSHA          string          `json:"head_sha,omitempty"`
-	DiffArtifactID   string          `json:"diff_artifact_id,omitempty"`
-	Metadata         json.RawMessage `json:"metadata"`
-	ChangedFileCount int             `json:"changed_file_count,omitempty"`
+	ID                         string          `json:"id"`
+	RepositoryID               string          `json:"repository_id"`
+	SourceType                 string          `json:"source_type"`
+	Provider                   string          `json:"provider,omitempty"`
+	Owner                      string          `json:"owner,omitempty"`
+	Repo                       string          `json:"repo,omitempty"`
+	PRNumber                   int64           `json:"pr_number,omitempty"`
+	PRTitle                    string          `json:"pr_title,omitempty"`
+	PRURL                      string          `json:"pr_url,omitempty"`
+	BaseRef                    string          `json:"base_ref,omitempty"`
+	HeadRef                    string          `json:"head_ref,omitempty"`
+	BaseSHA                    string          `json:"base_sha,omitempty"`
+	HeadSHA                    string          `json:"head_sha,omitempty"`
+	DiffArtifactID             string          `json:"diff_artifact_id,omitempty"`
+	PreviousCommentsArtifactID string          `json:"previous_comments_artifact_id,omitempty"`
+	Metadata                   json.RawMessage `json:"metadata"`
+	ChangedFileCount           int             `json:"changed_file_count,omitempty"`
 }
 
 type CreateGitHubSnapshotRequest struct {
@@ -199,13 +200,23 @@ func createGitHubSnapshotHandler(services routerServices) gin.HandlerFunc {
 			respondAppError(c, err)
 			return
 		}
+		var previousComments *githubpr.PreviousComments
+		previousCommentsFetchError := ""
+		fetchedComments, err := client.FetchPreviousComments(c.Request.Context(), ref)
+		if err != nil {
+			previousCommentsFetchError = err.Error()
+		} else {
+			previousComments = &fetchedComments
+		}
 
 		result, err := services.snapshots.CreateGitHubSnapshot(c.Request.Context(), snapshot.GitHubSnapshotParams{
-			WorkspaceID:  strings.TrimSpace(request.WorkspaceID),
-			RepositoryID: strings.TrimSpace(request.RepositoryID),
-			Metadata:     metadata,
-			Files:        files,
-			Diff:         diff,
+			WorkspaceID:                strings.TrimSpace(request.WorkspaceID),
+			RepositoryID:               strings.TrimSpace(request.RepositoryID),
+			Metadata:                   metadata,
+			Files:                      files,
+			Diff:                       diff,
+			PreviousComments:           previousComments,
+			PreviousCommentsFetchError: previousCommentsFetchError,
 		})
 		if err != nil {
 			respondAppError(c, err)
@@ -412,7 +423,9 @@ func changedFileInputs(files []gitrepo.DiffFile) []snapshot.ChangedFileInput {
 }
 
 func respondSnapshotResult(c *gin.Context, result snapshot.SnapshotResult) {
-	respondOK(c, snapshotResponse(result.Snapshot, len(result.ChangedFiles)))
+	response := snapshotResponse(result.Snapshot, len(result.ChangedFiles))
+	response.PreviousCommentsArtifactID = result.PreviousCommentsArtifact.ID
+	respondOK(c, response)
 }
 
 func snapshotResponse(row dbgen.PullRequestSnapshot, changedFileCount int) SnapshotResponse {

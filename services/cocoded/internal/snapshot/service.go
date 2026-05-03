@@ -27,11 +27,13 @@ type Service struct {
 }
 
 type GitHubSnapshotParams struct {
-	WorkspaceID  string
-	RepositoryID string
-	Metadata     githubpr.Metadata
-	Files        []githubpr.ChangedFile
-	Diff         []byte
+	WorkspaceID                string
+	RepositoryID               string
+	Metadata                   githubpr.Metadata
+	Files                      []githubpr.ChangedFile
+	Diff                       []byte
+	PreviousComments           *githubpr.PreviousComments
+	PreviousCommentsFetchError string
 }
 
 type GitSnapshotParams struct {
@@ -62,10 +64,11 @@ type ChangedFileInput struct {
 }
 
 type SnapshotResult struct {
-	Snapshot       dbgen.PullRequestSnapshot
-	ChangedFiles   []dbgen.ChangedFile
-	DiffArtifact   dbgen.Artifact
-	PatchArtifacts []dbgen.Artifact
+	Snapshot                 dbgen.PullRequestSnapshot
+	ChangedFiles             []dbgen.ChangedFile
+	DiffArtifact             dbgen.Artifact
+	PatchArtifacts           []dbgen.Artifact
+	PreviousCommentsArtifact dbgen.Artifact
 }
 
 type GitHubSnapshotResult = SnapshotResult
@@ -118,19 +121,21 @@ func (s *Service) CreateGitHubSnapshot(ctx context.Context, params GitHubSnapsho
 	}
 
 	return s.createSnapshot(ctx, snapshotInput{
-		WorkspaceID:  params.WorkspaceID,
-		RepositoryID: params.RepositoryID,
-		SourceType:   "github_pr",
-		Provider:     "github",
-		Owner:        params.Metadata.Owner,
-		Repo:         params.Metadata.Repo,
-		PRNumber:     params.Metadata.Number,
-		PRTitle:      params.Metadata.Title,
-		PRURL:        params.Metadata.URL,
-		BaseRef:      params.Metadata.BaseRef,
-		HeadRef:      params.Metadata.HeadRef,
-		BaseSHA:      params.Metadata.BaseSHA,
-		HeadSHA:      params.Metadata.HeadSHA,
+		WorkspaceID:                params.WorkspaceID,
+		RepositoryID:               params.RepositoryID,
+		SourceType:                 "github_pr",
+		Provider:                   "github",
+		Owner:                      params.Metadata.Owner,
+		Repo:                       params.Metadata.Repo,
+		PRNumber:                   params.Metadata.Number,
+		PRTitle:                    params.Metadata.Title,
+		PRURL:                      params.Metadata.URL,
+		BaseRef:                    params.Metadata.BaseRef,
+		HeadRef:                    params.Metadata.HeadRef,
+		BaseSHA:                    params.Metadata.BaseSHA,
+		HeadSHA:                    params.Metadata.HeadSHA,
+		PreviousComments:           params.PreviousComments,
+		PreviousCommentsFetchError: params.PreviousCommentsFetchError,
 		Metadata: map[string]any{
 			"source":    "github",
 			"owner":     params.Metadata.Owner,
@@ -165,22 +170,24 @@ func (s *Service) CreateGitSnapshot(ctx context.Context, params GitSnapshotParam
 }
 
 type snapshotInput struct {
-	WorkspaceID  string
-	RepositoryID string
-	SourceType   string
-	Provider     string
-	Owner        string
-	Repo         string
-	PRNumber     int64
-	PRTitle      string
-	PRURL        string
-	BaseRef      string
-	HeadRef      string
-	BaseSHA      string
-	HeadSHA      string
-	Metadata     map[string]any
-	Files        []ChangedFileInput
-	Diff         []byte
+	WorkspaceID                string
+	RepositoryID               string
+	SourceType                 string
+	Provider                   string
+	Owner                      string
+	Repo                       string
+	PRNumber                   int64
+	PRTitle                    string
+	PRURL                      string
+	BaseRef                    string
+	HeadRef                    string
+	BaseSHA                    string
+	HeadSHA                    string
+	PreviousComments           *githubpr.PreviousComments
+	PreviousCommentsFetchError string
+	Metadata                   map[string]any
+	Files                      []ChangedFileInput
+	Diff                       []byte
 }
 
 func (s *Service) createSnapshot(ctx context.Context, params snapshotInput) (SnapshotResult, error) {
@@ -202,6 +209,20 @@ func (s *Service) createSnapshot(ctx context.Context, params snapshotInput) (Sna
 		createdAt,
 	}, "\x00"))
 
+	var previousCommentsArtifact dbgen.Artifact
+	if params.PreviousComments != nil {
+		metadata := githubpr.Metadata{
+			Owner:  params.Owner,
+			Repo:   params.Repo,
+			Number: params.PRNumber,
+		}
+		saved, err := s.storePreviousComments(ctx, params.WorkspaceID, snapshotID, metadata, *params.PreviousComments, createdAt)
+		if err != nil {
+			return SnapshotResult{}, err
+		}
+		previousCommentsArtifact = saved
+	}
+
 	diffMetadata := mergeMetadata(params.Metadata, map[string]any{
 		"source":   params.SourceType,
 		"base_ref": params.BaseRef,
@@ -222,10 +243,17 @@ func (s *Service) createSnapshot(ctx context.Context, params snapshotInput) (Sna
 		return SnapshotResult{}, fmt.Errorf("save diff artifact: %w", err)
 	}
 
-	snapshotMetadata := mergeMetadata(params.Metadata, map[string]any{
+	snapshotMetadataExtras := map[string]any{
 		"file_count":  len(params.Files),
 		"diff_sha256": diffArtifact.Sha256.String,
-	})
+	}
+	if previousCommentsArtifact.ID != "" && params.PreviousComments != nil {
+		snapshotMetadataExtras["previous_comments"] = previousCommentsSummary(previousCommentsArtifact.ID, *params.PreviousComments)
+	}
+	if strings.TrimSpace(params.PreviousCommentsFetchError) != "" {
+		snapshotMetadataExtras["previous_comments_fetch_error"] = strings.TrimSpace(params.PreviousCommentsFetchError)
+	}
+	snapshotMetadata := mergeMetadata(params.Metadata, snapshotMetadataExtras)
 	snapshot, err := s.queries.CreatePullRequestSnapshot(ctx, dbgen.CreatePullRequestSnapshotParams{
 		ID:             snapshotID,
 		RepositoryID:   params.RepositoryID,
@@ -249,8 +277,9 @@ func (s *Service) createSnapshot(ctx context.Context, params snapshotInput) (Sna
 	}
 
 	result := SnapshotResult{
-		Snapshot:     snapshot,
-		DiffArtifact: diffArtifact,
+		Snapshot:                 snapshot,
+		DiffArtifact:             diffArtifact,
+		PreviousCommentsArtifact: previousCommentsArtifact,
 	}
 	for index, file := range params.Files {
 		changedFile, patchArtifact, err := s.createChangedFile(ctx, params.WorkspaceID, snapshotID, params.SourceType, file, index, createdAt)
@@ -334,6 +363,47 @@ func (s *Service) createChangedFile(ctx context.Context, workspaceID string, sna
 	}
 
 	return changedFile, patchArtifact, nil
+}
+
+func (s *Service) storePreviousComments(ctx context.Context, workspaceID string, snapshotID string, metadata githubpr.Metadata, comments githubpr.PreviousComments, createdAt string) (dbgen.Artifact, error) {
+	content, err := json.MarshalIndent(comments, "", "  ")
+	if err != nil {
+		return dbgen.Artifact{}, fmt.Errorf("encode previous comments artifact: %w", err)
+	}
+	artifactMetadata := map[string]any{
+		"source":               "github",
+		"owner":                metadata.Owner,
+		"repo":                 metadata.Repo,
+		"pr_number":            metadata.Number,
+		"snapshot_id":          snapshotID,
+		"comment_count":        len(comments.Comments),
+		"issue_comment_count":  comments.IssueCommentCount,
+		"review_comment_count": comments.ReviewCommentCount,
+		"review_count":         comments.ReviewCount,
+	}
+	saved, err := s.artifacts.Save(ctx, artifact.SaveParams{
+		ID:           stableID("artifact", snapshotID+"\x00github-previous-comments"),
+		WorkspaceID:  workspaceID,
+		Kind:         "github_previous_comments",
+		RelativePath: filepath.ToSlash(filepath.Join("snapshots", snapshotID, "github-previous-comments.json")),
+		ContentType:  "application/json",
+		MetadataJSON: mustJSON(artifactMetadata),
+		CreatedAt:    createdAt,
+	}, content)
+	if err != nil {
+		return dbgen.Artifact{}, fmt.Errorf("save previous comments artifact: %w", err)
+	}
+	return saved, nil
+}
+
+func previousCommentsSummary(artifactID string, comments githubpr.PreviousComments) map[string]any {
+	return map[string]any{
+		"artifact_id":          artifactID,
+		"comment_count":        len(comments.Comments),
+		"issue_comment_count":  comments.IssueCommentCount,
+		"review_comment_count": comments.ReviewCommentCount,
+		"review_count":         comments.ReviewCount,
+	}
 }
 
 func (s *Service) validateSnapshotInput(ctx context.Context, params snapshotInput) error {

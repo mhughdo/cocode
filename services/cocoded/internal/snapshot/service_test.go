@@ -176,6 +176,139 @@ func TestCreateGitHubSnapshotAcceptsEmptyDiff(t *testing.T) {
 	}
 }
 
+func TestCreateGitHubSnapshotStoresPreviousCommentsArtifact(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	database, queries := openSnapshotTestDB(t)
+	artifactRoot := filepath.Join(t.TempDir(), "artifacts")
+	createWorkspaceAndRepository(t, queries)
+
+	service, err := New(database, artifactRoot)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	service.now = fixedSnapshotTime
+
+	result, err := service.CreateGitHubSnapshot(ctx, GitHubSnapshotParams{
+		WorkspaceID:  "workspace_1",
+		RepositoryID: "repo_1",
+		Metadata: githubpr.Metadata{
+			Owner:   "openai",
+			Repo:    "codex",
+			Number:  123,
+			BaseSHA: "base-sha",
+			HeadSHA: "head-sha",
+		},
+		Diff: []byte("diff --git a/api.go b/api.go\n"),
+		PreviousComments: &githubpr.PreviousComments{
+			IssueCommentCount:  1,
+			ReviewCommentCount: 1,
+			ReviewCount:        1,
+			Comments: []githubpr.PreviousComment{
+				{
+					Source:    "issue_comment",
+					ID:        10,
+					Author:    "reviewer-a",
+					Body:      "Please add a test.",
+					CreatedAt: "2026-05-03T10:00:00Z",
+				},
+				{
+					Source:      "review_comment",
+					ID:          20,
+					ReviewID:    99,
+					Author:      "reviewer-b",
+					Path:        "api.go",
+					Line:        12,
+					InReplyToID: 19,
+					CreatedAt:   "2026-05-03T10:01:00Z",
+				},
+				{
+					Source:      "review",
+					ID:          99,
+					Author:      "reviewer-b",
+					State:       "COMMENTED",
+					SubmittedAt: "2026-05-03T10:02:00Z",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateGitHubSnapshot(previous comments) error = %v", err)
+	}
+
+	if result.PreviousCommentsArtifact.ID == "" ||
+		result.PreviousCommentsArtifact.Kind != "github_previous_comments" ||
+		result.PreviousCommentsArtifact.ContentType != "application/json" {
+		t.Fatalf("previous comments artifact = %+v", result.PreviousCommentsArtifact)
+	}
+	if !strings.HasSuffix(result.PreviousCommentsArtifact.RelativePath, "/github-previous-comments.json") {
+		t.Fatalf("previous comments relative path = %q", result.PreviousCommentsArtifact.RelativePath)
+	}
+
+	var metadata struct {
+		Source             string `json:"source"`
+		Owner              string `json:"owner"`
+		Repo               string `json:"repo"`
+		PRNumber           int64  `json:"pr_number"`
+		SnapshotID         string `json:"snapshot_id"`
+		CommentCount       int    `json:"comment_count"`
+		IssueCommentCount  int    `json:"issue_comment_count"`
+		ReviewCommentCount int    `json:"review_comment_count"`
+		ReviewCount        int    `json:"review_count"`
+	}
+	if err := json.Unmarshal([]byte(result.PreviousCommentsArtifact.MetadataJson), &metadata); err != nil {
+		t.Fatalf("decode previous comments metadata: %v", err)
+	}
+	if metadata.Source != "github" ||
+		metadata.Owner != "openai" ||
+		metadata.Repo != "codex" ||
+		metadata.PRNumber != 123 ||
+		metadata.SnapshotID != result.Snapshot.ID ||
+		metadata.CommentCount != 3 ||
+		metadata.IssueCommentCount != 1 ||
+		metadata.ReviewCommentCount != 1 ||
+		metadata.ReviewCount != 1 {
+		t.Fatalf("previous comments metadata = %+v", metadata)
+	}
+	var snapshotMetadata struct {
+		PreviousComments struct {
+			ArtifactID         string `json:"artifact_id"`
+			CommentCount       int    `json:"comment_count"`
+			IssueCommentCount  int    `json:"issue_comment_count"`
+			ReviewCommentCount int    `json:"review_comment_count"`
+			ReviewCount        int    `json:"review_count"`
+		} `json:"previous_comments"`
+	}
+	if err := json.Unmarshal([]byte(result.Snapshot.MetadataJson), &snapshotMetadata); err != nil {
+		t.Fatalf("decode snapshot metadata: %v", err)
+	}
+	if snapshotMetadata.PreviousComments.ArtifactID != result.PreviousCommentsArtifact.ID ||
+		snapshotMetadata.PreviousComments.CommentCount != 3 ||
+		snapshotMetadata.PreviousComments.IssueCommentCount != 1 ||
+		snapshotMetadata.PreviousComments.ReviewCommentCount != 1 ||
+		snapshotMetadata.PreviousComments.ReviewCount != 1 {
+		t.Fatalf("snapshot previous comments metadata = %+v", snapshotMetadata.PreviousComments)
+	}
+
+	content := readArtifact(t, artifactRoot, "workspace_1", result.PreviousCommentsArtifact.RelativePath)
+	var stored githubpr.PreviousComments
+	if err := json.Unmarshal(content, &stored); err != nil {
+		t.Fatalf("decode previous comments content: %v", err)
+	}
+	if len(stored.Comments) != 3 || stored.Comments[1].Path != "api.go" || stored.Comments[1].InReplyToID != 19 {
+		t.Fatalf("stored previous comments = %+v", stored)
+	}
+
+	artifacts, err := queries.ListArtifactsByWorkspace(ctx, "workspace_1")
+	if err != nil {
+		t.Fatalf("ListArtifactsByWorkspace() error = %v", err)
+	}
+	if len(artifacts) != 2 {
+		t.Fatalf("workspace artifacts len = %d, want 2: %+v", len(artifacts), artifacts)
+	}
+}
+
 func TestCreateGitSnapshotStoresBranchCompareOutput(t *testing.T) {
 	t.Parallel()
 

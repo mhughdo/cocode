@@ -1643,6 +1643,113 @@ func TestFindingDecisionEndpointRequiresDismissalReason(t *testing.T) {
 	}
 }
 
+func TestReviewSessionCopyPacketEndpointRendersAcceptedFindings(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+
+	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/review-sessions/review_session_findings/export/copy-packet", map[string]any{
+		"format": "markdown",
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("copy packet status = %d, body = %s", response.Code, response.Body.String())
+	}
+	packet := decodeCreateCopyPacketResponse(t, response.Body.Bytes())
+	if packet.CopyPacketID == "" ||
+		packet.ContentArtifactID == "" ||
+		packet.Format != "markdown" ||
+		packet.FindingCount != 1 ||
+		packet.TokenEstimate == 0 ||
+		!strings.Contains(packet.Content, "Repository settings updates miss the workspace admin guard") ||
+		strings.Contains(packet.Content, "Renderer preview can load") {
+		t.Fatalf("packet = %+v", packet)
+	}
+	stored, err := queries.GetCopyPacket(context.Background(), packet.CopyPacketID)
+	if err != nil {
+		t.Fatalf("GetCopyPacket() error = %v", err)
+	}
+	if stored.ContentArtifactID != packet.ContentArtifactID ||
+		!stored.FindingID.Valid ||
+		stored.FindingID.String != "finding_auth" {
+		t.Fatalf("stored packet = %+v", stored)
+	}
+}
+
+func TestReviewSessionCopyPacketEndpointPreservesSelectedFindingOrder(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+
+	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/review-sessions/review_session_findings/export/copy-packet", map[string]any{
+		"format":      "compact",
+		"finding_ids": []string{"finding_budget", "finding_auth", "finding_budget"},
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("selected copy packet status = %d, body = %s", response.Code, response.Body.String())
+	}
+	packet := decodeCreateCopyPacketResponse(t, response.Body.Bytes())
+	budgetIndex := strings.Index(packet.Content, "Renderer preview can load")
+	authIndex := strings.Index(packet.Content, "Repository settings updates miss")
+	if packet.Format != "compact" ||
+		packet.FindingCount != 2 ||
+		budgetIndex < 0 ||
+		authIndex < 0 ||
+		budgetIndex > authIndex {
+		t.Fatalf("packet = %+v", packet)
+	}
+	stored, err := queries.GetCopyPacket(context.Background(), packet.CopyPacketID)
+	if err != nil {
+		t.Fatalf("GetCopyPacket() error = %v", err)
+	}
+	if stored.FindingID.Valid {
+		t.Fatalf("selected packet should not store one finding id: %+v", stored)
+	}
+}
+
+func TestFindingCopyPacketEndpointRendersSingleJSON(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+
+	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/findings/finding_budget/export/copy-packet", map[string]any{
+		"format":                   "json",
+		"include_code_snippets":    true,
+		"include_evidence":         true,
+		"include_counter_evidence": true,
+		"target_agent":             "codex_cli",
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("finding copy packet status = %d, body = %s", response.Code, response.Body.String())
+	}
+	packet := decodeCreateCopyPacketResponse(t, response.Body.Bytes())
+	var payload struct {
+		Findings []struct {
+			ID    string `json:"id"`
+			Claim string `json:"claim"`
+		} `json:"findings"`
+	}
+	if err := json.Unmarshal([]byte(packet.Content), &payload); err != nil {
+		t.Fatalf("packet JSON parse error = %v\n%s", err, packet.Content)
+	}
+	if packet.Format != "json" ||
+		packet.FindingCount != 1 ||
+		len(payload.Findings) != 1 ||
+		payload.Findings[0].ID != "finding_budget" ||
+		!strings.Contains(payload.Findings[0].Claim, "Renderer preview") {
+		t.Fatalf("packet = %+v payload = %+v", packet, payload)
+	}
+	stored, err := queries.GetCopyPacket(context.Background(), packet.CopyPacketID)
+	if err != nil {
+		t.Fatalf("GetCopyPacket() error = %v", err)
+	}
+	if !stored.FindingID.Valid || stored.FindingID.String != "finding_budget" {
+		t.Fatalf("stored packet = %+v", stored)
+	}
+}
+
 func TestFindingDraftCommentEndpointPersistsEdit(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
 	createHTTPAPIFindingFixture(t, queries)
@@ -2710,6 +2817,22 @@ func decodeFindingQuickActionResponse(t *testing.T, content []byte) FindingQuick
 	var envelope struct {
 		Data  FindingQuickActionResponse `json:"data"`
 		Error any                        `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeCreateCopyPacketResponse(t *testing.T, content []byte) CreateCopyPacketResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  CreateCopyPacketResponse `json:"data"`
+		Error any                      `json:"error"`
 	}
 	if err := json.Unmarshal(content, &envelope); err != nil {
 		t.Fatalf("decode response: %v", err)

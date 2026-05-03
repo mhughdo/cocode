@@ -273,6 +273,20 @@ CREATE INDEX idx_findings_session_status ON findings(review_session_id, decision
 CREATE INDEX idx_findings_path ON findings(review_session_id, primary_path);
 CREATE INDEX idx_decisions_finding ON human_decisions(finding_id, created_at DESC);
 
+CREATE TABLE copy_packets (
+  id TEXT PRIMARY KEY,
+  review_session_id TEXT NOT NULL REFERENCES review_sessions(id) ON DELETE CASCADE,
+  finding_id TEXT REFERENCES findings(id) ON DELETE CASCADE,
+  format TEXT NOT NULL CHECK(format IN ('markdown','xmlish','json','compact','github_summary')),
+  content_artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+  finding_count INTEGER NOT NULL,
+  token_estimate INTEGER NOT NULL DEFAULT 0,
+  copied_at TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX idx_copy_packets_session ON copy_packets(review_session_id, created_at DESC);
+
 CREATE TABLE evidence_items (
   id TEXT PRIMARY KEY,
   finding_id TEXT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,

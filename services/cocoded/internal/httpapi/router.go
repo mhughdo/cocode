@@ -24,6 +24,7 @@ import (
 	"github.com/hughdo/cocode/services/cocoded/internal/eventbus"
 	"github.com/hughdo/cocode/services/cocoded/internal/eventlog"
 	"github.com/hughdo/cocode/services/cocoded/internal/evidence"
+	"github.com/hughdo/cocode/services/cocoded/internal/exports"
 	"github.com/hughdo/cocode/services/cocoded/internal/followup"
 	"github.com/hughdo/cocode/services/cocoded/internal/githubpr"
 	"github.com/hughdo/cocode/services/cocoded/internal/gitrepo"
@@ -150,6 +151,7 @@ type routerServices struct {
 	snapshotInitErr     error
 	contextBuilder      *contextbundle.Service
 	contextBuilderErr   error
+	copyPackets         *exports.Service
 	followups           *followup.Service
 	reviewWorkflow      *orchestrator.Service
 	reviewWorkflowErr   error
@@ -209,6 +211,10 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 		snapshotInitErr:   snapshotErr,
 		contextBuilder:    contextBuilder,
 		contextBuilderErr: artifactErr,
+		copyPackets: &exports.Service{
+			Queries:   queries,
+			Artifacts: artifactStore,
+		},
 		followups: &followup.Service{
 			Database:       database,
 			Queries:        queries,
@@ -272,6 +278,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.GET("/review-sessions/:id/summary", reviewSessionSummaryHandler(services))
 	api.GET("/review-sessions/:id/events", reviewSessionEventsHandler(services))
 	api.GET("/review-sessions/:id/findings", listFindingsHandler(queries))
+	api.POST("/review-sessions/:id/export/copy-packet", createCopyPacketHandler(services))
 	api.GET("/review-sessions/:id/findings/:finding_id", findingDetailHandler(queries))
 	api.GET("/review-sessions/:id/findings/:finding_id/evidence", findingEvidenceHandler(queries))
 	api.GET("/review-sessions/:id/findings/:finding_id/evidence-map", findingEvidenceMapHandler(services, false))
@@ -294,6 +301,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.POST("/findings/:finding_id/thread/actions", findingQuickActionHandler(services))
 	api.PATCH("/findings/:finding_id/decision", updateFindingDecisionHandler(services))
 	api.PATCH("/findings/:finding_id/draft-comment", updateDraftCommentHandler(services))
+	api.POST("/findings/:finding_id/export/copy-packet", createCopyPacketHandler(services))
 	api.GET("/agents/presets", listAgentPresetsHandler())
 	api.GET("/agents/configs", listAgentConfigsHandler(queries))
 	api.POST("/agents/configs", createAgentConfigHandler(queries))

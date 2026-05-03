@@ -119,6 +119,18 @@ type ContextItem struct {
 	MetadataJson      string         `json:"metadata_json"`
 }
 
+type CopyPacket struct {
+	ID                string         `json:"id"`
+	ReviewSessionID   string         `json:"review_session_id"`
+	FindingID         sql.NullString `json:"finding_id"`
+	Format            string         `json:"format"`
+	ContentArtifactID string         `json:"content_artifact_id"`
+	FindingCount      int64          `json:"finding_count"`
+	TokenEstimate     int64          `json:"token_estimate"`
+	CopiedAt          sql.NullString `json:"copied_at"`
+	CreatedAt         string         `json:"created_at"`
+}
+
 type CredentialRef struct {
 	ID              string `json:"id"`
 	Kind            string `json:"kind"`

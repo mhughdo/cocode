@@ -363,7 +363,7 @@ Large parallel workstreams:
 | T282 | Implement follow-up message persistence | Store user/assistant messages with evidence refs and artifacts. | Done | T280 | T265 | Reloading finding shows thread history. |
 | T283 | Implement quick actions from follow-up | Ask counter-evidence, accept, dismiss, copy. | Done | T281, T185 | T265 | Quick actions update finding state. |
 | T290 | Implement copy packet renderer | Render Markdown/XML-ish/JSON/compact/GitHub summary. | Done | T184, T185, T060 | T291 | Snapshot + selected findings render accurately. |
-| T291 | Implement copy packet API | Generate packet, store artifact, return content/token estimate. | Not started | T290, T060 | T292 | API works for single/selected/accepted findings. |
+| T291 | Implement copy packet API | Generate packet, store artifact, return content/token estimate. | Done | T290, T060 | T292 | API works for single/selected/accepted findings. |
 | T292 | Implement clipboard UI action | Use Electron bridge to copy packet/comment. | Not started | T034, T291 | T266 | Copy action works and shows success/failure toast. |
 | T293 | Mark findings copied | Record copied decisions and packet metadata. | Not started | T291, T185 | T266 | Copied state appears on findings/publish screen. |
 | T294 | Implement GitHub diff mapper | Map finding file/line to GitHub diff position/line/side. | Not started | T079, T076 | T295 | Tests cover add/remove/context/multi-hunk cases. |

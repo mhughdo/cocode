@@ -1854,6 +1854,8 @@ Response:
 }
 ```
 
+The copy packet API renders through the deterministic backend renderer, saves a `copy_packet` artifact, and writes a `copy_packets` row. Session-level requests with `finding_ids` preserve the selected order; session-level requests without `finding_ids` render currently accepted findings; finding-level requests render exactly one finding.
+
 ### 16.3 Clipboard flow
 
 ```text

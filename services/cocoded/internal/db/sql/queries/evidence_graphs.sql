@@ -40,6 +40,13 @@ FROM evidence_items
 WHERE finding_id = ?
 ORDER BY created_at ASC, id ASC;
 
+-- name: ListEvidenceItemsBySession :many
+SELECT ei.id, ei.finding_id, ei.kind, ei.title, ei.summary, ei.path, ei.start_line, ei.end_line, ei.artifact_id, ei.confidence, ei.metadata_json, ei.created_at
+FROM evidence_items ei
+JOIN findings f ON f.id = ei.finding_id
+WHERE f.review_session_id = ?
+ORDER BY ei.finding_id ASC, ei.confidence DESC, ei.created_at ASC, ei.id ASC;
+
 -- name: UpdateEvidenceItem :one
 UPDATE evidence_items
 SET

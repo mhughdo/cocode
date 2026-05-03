@@ -696,6 +696,50 @@ func (q *Queries) ListEvidenceItemsByFinding(ctx context.Context, findingID stri
 	return items, nil
 }
 
+const listEvidenceItemsBySession = `-- name: ListEvidenceItemsBySession :many
+SELECT ei.id, ei.finding_id, ei.kind, ei.title, ei.summary, ei.path, ei.start_line, ei.end_line, ei.artifact_id, ei.confidence, ei.metadata_json, ei.created_at
+FROM evidence_items ei
+JOIN findings f ON f.id = ei.finding_id
+WHERE f.review_session_id = ?
+ORDER BY ei.finding_id ASC, ei.confidence DESC, ei.created_at ASC, ei.id ASC
+`
+
+func (q *Queries) ListEvidenceItemsBySession(ctx context.Context, reviewSessionID string) ([]EvidenceItem, error) {
+	rows, err := q.db.QueryContext(ctx, listEvidenceItemsBySession, reviewSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []EvidenceItem{}
+	for rows.Next() {
+		var i EvidenceItem
+		if err := rows.Scan(
+			&i.ID,
+			&i.FindingID,
+			&i.Kind,
+			&i.Title,
+			&i.Summary,
+			&i.Path,
+			&i.StartLine,
+			&i.EndLine,
+			&i.ArtifactID,
+			&i.Confidence,
+			&i.MetadataJson,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listEvidenceNodesByGraph = `-- name: ListEvidenceNodesByGraph :many
 SELECT id, evidence_graph_id, kind, label, path, symbol, start_line, end_line, evidence_item_id, confidence, metadata_json
 FROM evidence_nodes

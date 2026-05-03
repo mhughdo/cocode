@@ -5,7 +5,14 @@
   "description": "Normalized finding candidate ready for persistence with agent provenance.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["claim", "category", "severity", "confidence", "locations", "evidence"],
+  "required": [
+    "claim",
+    "category",
+    "severity",
+    "confidence",
+    "locations",
+    "evidence"
+  ],
   "properties": {
     "schema_version": {
       "type": "string",

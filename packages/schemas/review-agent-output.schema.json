@@ -26,7 +26,14 @@
     "finding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["claim", "category", "severity", "confidence", "locations", "evidence"],
+      "required": [
+        "claim",
+        "category",
+        "severity",
+        "confidence",
+        "locations",
+        "evidence"
+      ],
       "properties": {
         "claim": {
           "type": "string",

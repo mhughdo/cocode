@@ -207,7 +207,7 @@ Large parallel workstreams:
 | T097 | Implement CLI health check | Validate command exists, version if possible, and auth smoke prompt if enabled. | Done | T092, T093 | T248 | Health endpoint reports installed/missing/error states. |
 | T098 | Implement agent run persistence | Create/update agent_runs around CLI execution. | Done | T057, T093 | T140 | Agent run rows include status, duration, artifacts, errors. |
 | T099 | Implement CLI timeout policy | Enforce per-agent and per-review runtime limits. | Done | T093, T098 | T151 | Timeout results in typed error and preserved logs. |
-| T100 | Implement single-agent cancellation | Cancel one running CLI without canceling session. | Not started | T093, T098 | T151 | UI/API can cancel agent; process exits; session continues. |
+| T100 | Implement single-agent cancellation | Cancel one running CLI without canceling session. | Done | T093, T098 | T151 | UI/API can cancel agent; process exits; session continues. |
 | T101 | Implement bounded concurrency | Limit concurrent CLI processes per session/system. | Not started | T098 | T147 | Concurrency limit tested with fake slow agents. |
 | T102 | Implement fake JSON agent | Test fixture CLI that emits valid finding JSON. | Not started | T093 | T170, T360 | Fixture documented and used in tests. |
 | T103 | Implement fake malformed agent | Test fixture CLI that emits malformed output. | Not started | T093 | T178, T360 | Fixture used for repair/error tests. |

@@ -57,6 +57,9 @@ type runOutcome struct {
 
 func (r Runner) Execute(ctx context.Context, params RunParams) (RunResult, error) {
 	ctx = contextOrBackground(ctx)
+	if err := ctx.Err(); err != nil {
+		return RunResult{}, err
+	}
 	if r.Queries == nil {
 		return RunResult{}, errors.New("agent run queries are required")
 	}
@@ -92,7 +95,8 @@ func (r Runner) Execute(ctx context.Context, params RunParams) (RunResult, error
 		return RunResult{}, err
 	}
 
-	run, err := r.Queries.CreateAgentRun(ctx, dbgen.CreateAgentRunParams{
+	persistCtx := context.WithoutCancel(ctx)
+	run, err := r.Queries.CreateAgentRun(persistCtx, dbgen.CreateAgentRunParams{
 		ID:              task.RunID,
 		ReviewSessionID: task.ReviewSessionID,
 		AgentConfigID:   task.AgentConfigID,
@@ -104,7 +108,6 @@ func (r Runner) Execute(ctx context.Context, params RunParams) (RunResult, error
 	if err != nil {
 		return RunResult{}, fmt.Errorf("create agent run: %w", err)
 	}
-	persistCtx := context.WithoutCancel(ctx)
 
 	result := RunResult{
 		Run: run,

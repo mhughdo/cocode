@@ -151,6 +151,7 @@ type routerServices struct {
 	snapshotInitErr     error
 	contextBuilder      *contextbundle.Service
 	contextBuilderErr   error
+	artifacts           *artifact.Store
 	copyPackets         *exports.Service
 	followups           *followup.Service
 	reviewWorkflow      *orchestrator.Service
@@ -211,6 +212,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 		snapshotInitErr:   snapshotErr,
 		contextBuilder:    contextBuilder,
 		contextBuilderErr: artifactErr,
+		artifacts:         artifactStore,
 		copyPackets: &exports.Service{
 			Database:  database,
 			Queries:   queries,
@@ -280,6 +282,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.GET("/review-sessions/:id/events", reviewSessionEventsHandler(services))
 	api.GET("/review-sessions/:id/findings", listFindingsHandler(queries))
 	api.POST("/review-sessions/:id/export/copy-packet", createCopyPacketHandler(services))
+	api.POST("/review-sessions/:id/github/preview", createGitHubPreviewHandler(services))
 	api.POST("/copy-packets/:copy_packet_id/copied", markCopyPacketCopiedHandler(services))
 	api.GET("/review-sessions/:id/findings/:finding_id", findingDetailHandler(queries))
 	api.GET("/review-sessions/:id/findings/:finding_id/evidence", findingEvidenceHandler(queries))

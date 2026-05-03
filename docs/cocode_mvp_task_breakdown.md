@@ -368,7 +368,7 @@ Large parallel workstreams:
 | T293 | Mark findings copied | Record copied decisions and packet metadata. | Done | T291, T185 | T266 | Copied state appears on findings/publish screen. |
 | T294 | Implement GitHub diff mapper | Map finding file/line to GitHub diff position/line/side. | Done | T079, T076 | T295 | Tests cover add/remove/context/multi-hunk cases. |
 | T295 | Implement GitHub review preview service | Build review body and comments JSON from selected findings. | Done | T187, T294 | T296 | Preview returns comment list and anchor warnings. |
-| T296 | Implement GitHub preview API | Endpoint returns publish preview artifact and checklist status. | Not started | T295 | T266 | Publish screen loads preview with seeded findings. |
+| T296 | Implement GitHub preview API | Endpoint returns publish preview artifact and checklist status. | Done | T295 | T266 | Publish screen loads preview with seeded findings. |
 | T297 | Implement GitHub publish service | Submit COMMENT or REQUEST_CHANGES review/comments. | Not started | T073, T296 | T298 | Fake GitHub server test validates payload. |
 | T298 | Track publication state | Store GitHub review/comment IDs and update finding decisions. | Not started | T297, T185 | T299 | Published findings show status and avoid republish. |
 | T299 | Implement duplicate publish prevention | Detect findings already published for same snapshot/location. | Not started | T298 | T266 | Rerun warns/prevents duplicate comments. |

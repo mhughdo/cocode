@@ -364,6 +364,30 @@ CREATE INDEX idx_evidence_finding ON evidence_items(finding_id, kind);
 CREATE INDEX idx_evidence_nodes_graph ON evidence_nodes(evidence_graph_id, kind);
 CREATE INDEX idx_evidence_edges_graph ON evidence_edges(evidence_graph_id, kind);
 
+CREATE TABLE publish_drafts (
+  id TEXT PRIMARY KEY,
+  review_session_id TEXT NOT NULL REFERENCES review_sessions(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL DEFAULT 'github',
+  status TEXT NOT NULL DEFAULT 'draft',
+  review_event TEXT CHECK(review_event IN ('COMMENT','REQUEST_CHANGES','APPROVE')),
+  body TEXT,
+  comments_json TEXT NOT NULL DEFAULT '[]',
+  artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE github_publications (
+  id TEXT PRIMARY KEY,
+  review_session_id TEXT NOT NULL REFERENCES review_sessions(id) ON DELETE CASCADE,
+  publish_draft_id TEXT REFERENCES publish_drafts(id) ON DELETE SET NULL,
+  github_review_id TEXT,
+  github_comment_ids_json TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL,
+  error_message TEXT,
+  created_at TEXT NOT NULL
+);
+
 CREATE VIRTUAL TABLE finding_search USING fts5(
   finding_id UNINDEXED,
   claim,

@@ -1796,6 +1796,44 @@ func TestCopyPacketCopiedEndpointMarksPacketAndFindings(t *testing.T) {
 	}
 }
 
+func TestGitHubPreviewEndpointCreatesDraftWithWarnings(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+
+	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/review-sessions/review_session_findings/github/preview", map[string]any{
+		"finding_ids":  []string{"finding_budget", "finding_auth"},
+		"review_event": "COMMENT",
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("github preview status = %d, body = %s", response.Code, response.Body.String())
+	}
+	preview := decodeGitHubPreviewResponse(t, response.Body.Bytes())
+	if preview.PublishDraftID == "" ||
+		preview.ArtifactID == "" ||
+		preview.ReviewEvent != "COMMENT" ||
+		len(preview.Comments) != 2 ||
+		len(preview.Warnings) == 0 ||
+		!preview.Checklist.HasSelectedFindings ||
+		!preview.Checklist.HasUnanchoredComments ||
+		preview.Checklist.CanPublishInline ||
+		!preview.Checklist.CanPublishSummaryOnly ||
+		!strings.Contains(preview.Body, "Renderer preview can load") {
+		t.Fatalf("preview = %+v", preview)
+	}
+	draft, err := queries.GetPublishDraft(context.Background(), preview.PublishDraftID)
+	if err != nil {
+		t.Fatalf("GetPublishDraft() error = %v", err)
+	}
+	if !draft.ArtifactID.Valid ||
+		draft.ArtifactID.String != preview.ArtifactID ||
+		draft.CommentsJson == "" ||
+		!strings.Contains(nullableValue(draft.Body), "Repository settings updates") {
+		t.Fatalf("draft = %+v", draft)
+	}
+}
+
 func TestFindingDraftCommentEndpointPersistsEdit(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
 	createHTTPAPIFindingFixture(t, queries)
@@ -2895,6 +2933,22 @@ func decodeMarkCopyPacketCopiedResponse(t *testing.T, content []byte) MarkCopyPa
 	var envelope struct {
 		Data  MarkCopyPacketCopiedResponse `json:"data"`
 		Error any                          `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeGitHubPreviewResponse(t *testing.T, content []byte) GitHubPreviewResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  GitHubPreviewResponse `json:"data"`
+		Error any                   `json:"error"`
 	}
 	if err := json.Unmarshal(content, &envelope); err != nil {
 		t.Fatalf("decode response: %v", err)

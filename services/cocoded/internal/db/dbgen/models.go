@@ -290,6 +290,17 @@ type FindingThreadMessage struct {
 	CreatedAt        string         `json:"created_at"`
 }
 
+type GithubPublication struct {
+	ID                   string         `json:"id"`
+	ReviewSessionID      string         `json:"review_session_id"`
+	PublishDraftID       sql.NullString `json:"publish_draft_id"`
+	GithubReviewID       sql.NullString `json:"github_review_id"`
+	GithubCommentIdsJson string         `json:"github_comment_ids_json"`
+	Status               string         `json:"status"`
+	ErrorMessage         sql.NullString `json:"error_message"`
+	CreatedAt            string         `json:"created_at"`
+}
+
 type HumanDecision struct {
 	ID              string         `json:"id"`
 	FindingID       string         `json:"finding_id"`
@@ -298,6 +309,19 @@ type HumanDecision struct {
 	Reason          sql.NullString `json:"reason"`
 	MetadataJson    string         `json:"metadata_json"`
 	CreatedAt       string         `json:"created_at"`
+}
+
+type PublishDraft struct {
+	ID              string         `json:"id"`
+	ReviewSessionID string         `json:"review_session_id"`
+	Provider        string         `json:"provider"`
+	Status          string         `json:"status"`
+	ReviewEvent     sql.NullString `json:"review_event"`
+	Body            sql.NullString `json:"body"`
+	CommentsJson    string         `json:"comments_json"`
+	ArtifactID      sql.NullString `json:"artifact_id"`
+	CreatedAt       string         `json:"created_at"`
+	UpdatedAt       string         `json:"updated_at"`
 }
 
 type PullRequestSnapshot struct {

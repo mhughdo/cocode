@@ -1891,6 +1891,8 @@ The mapper uses parsed unified diffs and returns `path`, `line`, `side`, and dep
 
 The preview builder creates a review summary body plus one comment draft per selected finding. Draft comments are preferred when present, generated comments fall back to the claim and suggested fix, and unanchored comments remain in the preview with explicit warnings for the Publish tab.
 
+`POST /api/review-sessions/:id/github/preview` creates a persisted GitHub publish draft and `github_preview` artifact. It accepts selected `finding_ids` or defaults to accepted findings, returns comment drafts, anchor warnings, and checklist booleans for inline vs summary-only publishing.
+
 If mapping fails:
 
 1. Mark comment as unanchored.

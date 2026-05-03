@@ -254,6 +254,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.POST("/review-sessions/:id/resume", resumeReviewSessionHandler(services))
 	api.POST("/review-sessions/:id/cancel", cancelReviewSessionHandler(services))
 	api.GET("/review-sessions/:id/checkpoint", reviewSessionCheckpointHandler(services))
+	api.GET("/review-sessions/:id/summary", reviewSessionSummaryHandler(services))
 	api.GET("/review-sessions/:id/events", reviewSessionEventsHandler(services))
 	api.GET("/agents/presets", listAgentPresetsHandler())
 	api.GET("/agents/configs", listAgentConfigsHandler(queries))

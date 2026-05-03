@@ -813,6 +813,7 @@ POST   /api/review-sessions/:id/context-bundles/preview
 GET    /api/review-sessions/:id/context-bundles
 POST   /api/review-sessions/:id/start
 GET    /api/review-sessions/:id/checkpoint
+GET    /api/review-sessions/:id/summary
 POST   /api/review-sessions/:id/pause
 POST   /api/review-sessions/:id/resume
 POST   /api/review-sessions/:id/cancel

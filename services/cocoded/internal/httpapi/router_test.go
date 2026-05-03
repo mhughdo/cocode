@@ -1077,6 +1077,21 @@ func TestStartReviewSessionEndpointRunsWorkflow(t *testing.T) {
 	if checkpoint.Status != "completed" || checkpoint.Phase != "draft_comments" || checkpoint.PhaseStatus != "completed" {
 		t.Fatalf("checkpoint = %+v", checkpoint)
 	}
+	summaryRequest := httptest.NewRequest(http.MethodGet, "/api/review-sessions/"+created.ID+"/summary", nil)
+	summaryRequest.Header.Set("X-Cocode-Token", "test-token")
+	summaryResponse := httptest.NewRecorder()
+	router.ServeHTTP(summaryResponse, summaryRequest)
+	if summaryResponse.Code != http.StatusOK {
+		t.Fatalf("summary status = %d, body = %s", summaryResponse.Code, summaryResponse.Body.String())
+	}
+	summary := decodeReviewSummaryResponse(t, summaryResponse.Body.Bytes())
+	if summary.Status != "completed" ||
+		summary.ProgressPercent != 100 ||
+		summary.AgentStatusCounts["succeeded"] != 1 ||
+		summary.ChangedFilesTotal != 2 ||
+		summary.ActiveAgents != 0 {
+		t.Fatalf("summary = %+v", summary)
+	}
 
 	duplicateStart := httptest.NewRequest(http.MethodPost, "/api/review-sessions/"+created.ID+"/start", nil)
 	duplicateStart.Header.Set("X-Cocode-Token", "test-token")
@@ -1859,12 +1874,36 @@ type reviewCheckpointTestResponse struct {
 	PhaseStatus string `json:"phase_status"`
 }
 
+type reviewSummaryTestResponse struct {
+	Status            string         `json:"status"`
+	ProgressPercent   int            `json:"progress_percent"`
+	ChangedFilesTotal int            `json:"changed_files_total"`
+	ActiveAgents      int            `json:"active_agents"`
+	AgentStatusCounts map[string]int `json:"agent_status_counts"`
+}
+
 func decodeReviewCheckpointResponse(t *testing.T, content []byte) reviewCheckpointTestResponse {
 	t.Helper()
 
 	var envelope struct {
 		Data  reviewCheckpointTestResponse `json:"data"`
 		Error any                          `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeReviewSummaryResponse(t *testing.T, content []byte) reviewSummaryTestResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  reviewSummaryTestResponse `json:"data"`
+		Error any                       `json:"error"`
 	}
 	if err := json.Unmarshal(content, &envelope); err != nil {
 		t.Fatalf("decode response: %v", err)

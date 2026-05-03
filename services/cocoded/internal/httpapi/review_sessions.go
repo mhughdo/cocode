@@ -279,6 +279,21 @@ func reviewSessionCheckpointHandler(services routerServices) gin.HandlerFunc {
 	}
 }
 
+func reviewSessionSummaryHandler(services routerServices) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if services.reviewWorkflowErr != nil || services.reviewWorkflow == nil {
+			respondError(c, apperror.Internal("review workflow is not configured"))
+			return
+		}
+		summary, err := services.reviewWorkflow.Summary(c.Request.Context(), c.Param("id"))
+		if err != nil {
+			respondReviewWorkflowError(c, err)
+			return
+		}
+		respondOK(c, summary)
+	}
+}
+
 func normalizeReviewSessionCreate(ctx context.Context, queries *dbgen.Queries, request CreateReviewSessionRequest) (normalizedReviewSessionCreate, *apperror.Error) {
 	snapshotID := strings.TrimSpace(request.SnapshotID)
 	if snapshotID == "" {

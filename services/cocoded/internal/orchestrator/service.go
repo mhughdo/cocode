@@ -99,6 +99,29 @@ type Checkpoint struct {
 	UpdatedAt       string   `json:"updated_at,omitempty"`
 }
 
+type RunSummary struct {
+	ReviewSessionID     string         `json:"review_session_id"`
+	Status              string         `json:"status"`
+	Phase               string         `json:"phase,omitempty"`
+	PhaseStatus         string         `json:"phase_status,omitempty"`
+	ProgressPercent     int            `json:"progress_percent"`
+	ChangedFilesTotal   int            `json:"changed_files_total"`
+	ChangedFilesScanned int            `json:"changed_files_scanned"`
+	AgentRunsTotal      int            `json:"agent_runs_total"`
+	ActiveAgents        int            `json:"active_agents"`
+	AgentStatusCounts   map[string]int `json:"agent_status_counts"`
+	FindingCounts       FindingCounts  `json:"finding_counts"`
+	UpdatedAt           string         `json:"updated_at,omitempty"`
+}
+
+type FindingCounts struct {
+	Candidates           int            `json:"candidates"`
+	Findings             int            `json:"findings"`
+	BySeverity           map[string]int `json:"by_severity"`
+	ByVerificationStatus map[string]int `json:"by_verification_status"`
+	ByDecisionStatus     map[string]int `json:"by_decision_status"`
+}
+
 type runtimeSettings struct {
 	PromptDelivery    agents.PromptDelivery `json:"prompt_delivery"`
 	TimeoutSeconds    int64                 `json:"timeout_seconds"`
@@ -396,6 +419,83 @@ func (s *Service) LoadCheckpoint(ctx context.Context, reviewSessionID string) (C
 		}
 	}
 	return checkpoint, nil
+}
+
+func (s *Service) Summary(ctx context.Context, reviewSessionID string) (RunSummary, error) {
+	if err := s.validate(); err != nil {
+		return RunSummary{}, err
+	}
+	ctx = contextOrBackground(ctx)
+	session, err := s.Queries.GetReviewSession(ctx, strings.TrimSpace(reviewSessionID))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return RunSummary{}, ErrReviewSessionNotFound
+		}
+		return RunSummary{}, fmt.Errorf("read review session: %w", err)
+	}
+	checkpoint, err := s.LoadCheckpoint(ctx, session.ID)
+	if err != nil {
+		return RunSummary{}, err
+	}
+	changedFiles, err := s.Queries.ListChangedFilesBySnapshot(ctx, session.SnapshotID)
+	if err != nil {
+		return RunSummary{}, fmt.Errorf("list changed files: %w", err)
+	}
+	bundles, err := s.Queries.ListContextBundlesBySession(ctx, session.ID)
+	if err != nil {
+		return RunSummary{}, fmt.Errorf("list context bundles: %w", err)
+	}
+	runs, err := s.Queries.ListAgentRunsBySession(ctx, session.ID)
+	if err != nil {
+		return RunSummary{}, fmt.Errorf("list agent runs: %w", err)
+	}
+	candidates, err := s.Queries.ListFindingCandidatesBySession(ctx, session.ID)
+	if err != nil {
+		return RunSummary{}, fmt.Errorf("list finding candidates: %w", err)
+	}
+	findings, err := s.Queries.ListFindingsBySession(ctx, session.ID)
+	if err != nil {
+		return RunSummary{}, fmt.Errorf("list findings: %w", err)
+	}
+
+	agentStatusCounts := map[string]int{}
+	activeAgents := 0
+	for _, run := range runs {
+		agentStatusCounts[run.Status]++
+		if run.Status == agentrun.RunStatusQueued || run.Status == agentrun.RunStatusRunning {
+			activeAgents++
+		}
+	}
+	findingCounts := FindingCounts{
+		Candidates:           len(candidates),
+		Findings:             len(findings),
+		BySeverity:           map[string]int{},
+		ByVerificationStatus: map[string]int{},
+		ByDecisionStatus:     map[string]int{},
+	}
+	for _, finding := range findings {
+		findingCounts.BySeverity[finding.Severity]++
+		findingCounts.ByVerificationStatus[finding.VerificationStatus]++
+		findingCounts.ByDecisionStatus[finding.DecisionStatus]++
+	}
+	filesScanned := 0
+	if len(bundles) > 0 || phaseCompleted(checkpoint.CompletedPhases, PhaseBuildContext) {
+		filesScanned = len(changedFiles)
+	}
+	return RunSummary{
+		ReviewSessionID:     session.ID,
+		Status:              session.Status,
+		Phase:               checkpoint.Phase,
+		PhaseStatus:         checkpoint.PhaseStatus,
+		ProgressPercent:     progressPercent(session.Status, checkpoint.CompletedPhases),
+		ChangedFilesTotal:   len(changedFiles),
+		ChangedFilesScanned: filesScanned,
+		AgentRunsTotal:      len(runs),
+		ActiveAgents:        activeAgents,
+		AgentStatusCounts:   agentStatusCounts,
+		FindingCounts:       findingCounts,
+		UpdatedAt:           session.UpdatedAt,
+	}, nil
 }
 
 func (s *Service) run(ctx context.Context, reviewSessionID string) error {
@@ -994,6 +1094,42 @@ func workflowPhases() []string {
 		PhaseBuildEvidence,
 		PhaseDraftComments,
 	}
+}
+
+func progressPercent(status string, completedPhases []string) int {
+	switch status {
+	case StatusCompleted:
+		return 100
+	case StatusDraft, StatusQueued:
+		return 0
+	}
+	total := len(workflowPhases())
+	if total == 0 {
+		return 0
+	}
+	completed := 0
+	for _, phase := range workflowPhases() {
+		if phaseCompleted(completedPhases, phase) {
+			completed++
+		}
+	}
+	percent := completed * 100 / total
+	if percent < 0 {
+		return 0
+	}
+	if percent > 100 {
+		return 100
+	}
+	return percent
+}
+
+func phaseCompleted(completedPhases []string, phase string) bool {
+	for _, completed := range completedPhases {
+		if completed == phase {
+			return true
+		}
+	}
+	return false
 }
 
 func terminalStatus(status string) bool {

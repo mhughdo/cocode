@@ -141,6 +141,58 @@ func TestWorkflowRunsFakeAgentEndToEnd(t *testing.T) {
 		!strings.Contains(prompt, "src/new.go") {
 		t.Fatalf("agent prompt missing context:\n%s", prompt)
 	}
+	summary, err := env.Service.Summary(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("Summary() error = %v", err)
+	}
+	if summary.Status != StatusCompleted ||
+		summary.ProgressPercent != 100 ||
+		summary.ChangedFilesTotal != 1 ||
+		summary.ChangedFilesScanned != 1 ||
+		summary.AgentRunsTotal != 1 ||
+		summary.ActiveAgents != 0 ||
+		summary.AgentStatusCounts[agentrun.RunStatusSucceeded] != 1 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	if _, err := env.Queries.CreateFindingCandidate(context.Background(), dbgen.CreateFindingCandidateParams{
+		ID:              "candidate_1",
+		ReviewSessionID: session.ID,
+		AgentRunID:      runs[0].ID,
+		Category:        "security",
+		Severity:        "high",
+		Confidence:      0.91,
+		Claim:           "Settings mutation lacks admin guard",
+		LocationsJson:   "[]",
+		EvidenceJson:    "[]",
+		CreatedAt:       "2026-05-03T00:09:00Z",
+	}); err != nil {
+		t.Fatalf("CreateFindingCandidate() error = %v", err)
+	}
+	if _, err := env.Queries.CreateFinding(context.Background(), dbgen.CreateFindingParams{
+		ID:                 "finding_1",
+		ReviewSessionID:    session.ID,
+		CanonicalClaim:     "Settings mutation lacks admin guard",
+		Category:           "security",
+		Severity:           "high",
+		Confidence:         0.91,
+		VerificationStatus: "verified",
+		DecisionStatus:     "accepted",
+		FirstSeenAt:        "2026-05-03T00:09:00Z",
+		UpdatedAt:          "2026-05-03T00:09:00Z",
+	}); err != nil {
+		t.Fatalf("CreateFinding() error = %v", err)
+	}
+	summary, err = env.Service.Summary(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("Summary(with findings) error = %v", err)
+	}
+	if summary.FindingCounts.Candidates != 1 ||
+		summary.FindingCounts.Findings != 1 ||
+		summary.FindingCounts.BySeverity["high"] != 1 ||
+		summary.FindingCounts.ByVerificationStatus["verified"] != 1 ||
+		summary.FindingCounts.ByDecisionStatus["accepted"] != 1 {
+		t.Fatalf("finding summary = %+v", summary.FindingCounts)
+	}
 }
 
 func TestWorkflowRunsSelectedAgentsInParallel(t *testing.T) {

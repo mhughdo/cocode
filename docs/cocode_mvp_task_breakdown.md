@@ -263,7 +263,7 @@ Large parallel workstreams:
 | T150 | Implement workflow cancel | Cancel all running agents and mark session canceled. | Done | T100, T144 | T254 | Cancel stops processes and preserves partial results. |
 | T151 | Implement pause/resume skeleton | Pause new phases and resume where safe. | Done | T143, T144 | T254 | MVP can mark pause/resume; complex active process pausing documented. |
 | T152 | Implement early findings emission | Emit finding events before full workflow completes. | Not started | T170, T145 | T254 | Early findings appear in UI event stream. |
-| T153 | Implement run summary stats | Compute progress %, files scanned, active agents, finding counts. | Not started | T145, T056 | T254 | Review Running screen receives summary model. |
+| T153 | Implement run summary stats | Compute progress %, files scanned, active agents, finding counts. | Done | T145, T056 | T254 | Review Running screen receives summary model. |
 
 ---
 

@@ -585,9 +585,9 @@ func insertAgentRuns(ctx context.Context, tx *sql.Tx, ts func(time.Duration) str
 		errorMessage   any
 		metadata       string
 	}{
-		{"seed_run_codex", completedSessionID, agentCodexID, "seed_bundle_review", "completed", "primary_reviewer", ts(-62 * time.Minute), ts(-54 * time.Minute), 481000, 0, "seed_artifact_codex_stdout", nil, "seed_artifact_parsed_findings", nil, nil, `{"findings":3,"seeded":true}`},
-		{"seed_run_verifier", completedSessionID, agentVerifierID, "seed_bundle_review", "completed", "verifier", ts(-52 * time.Minute), ts(-46 * time.Minute), 392000, 0, "seed_artifact_verifier_stdout", nil, nil, nil, nil, `{"verified":2,"downgraded":1,"seeded":true}`},
-		{"seed_run_static", completedSessionID, agentStaticID, "seed_bundle_review", "completed", "static_analysis", ts(-60 * time.Minute), ts(-57 * time.Minute), 181000, 0, nil, nil, nil, nil, nil, `{"rules":["auth-route-guard","renderer-budget"],"seeded":true}`},
+		{"seed_run_codex", completedSessionID, agentCodexID, "seed_bundle_review", "succeeded", "primary_reviewer", ts(-62 * time.Minute), ts(-54 * time.Minute), 481000, 0, "seed_artifact_codex_stdout", nil, "seed_artifact_parsed_findings", nil, nil, `{"findings":3,"seeded":true}`},
+		{"seed_run_verifier", completedSessionID, agentVerifierID, "seed_bundle_review", "succeeded", "verifier", ts(-52 * time.Minute), ts(-46 * time.Minute), 392000, 0, "seed_artifact_verifier_stdout", nil, nil, nil, nil, `{"verified":2,"downgraded":1,"seeded":true}`},
+		{"seed_run_static", completedSessionID, agentStaticID, "seed_bundle_review", "succeeded", "static_analysis", ts(-60 * time.Minute), ts(-57 * time.Minute), 181000, 0, nil, nil, nil, nil, nil, `{"rules":["auth-route-guard","renderer-budget"],"seeded":true}`},
 		{"seed_run_running_codex", runningSessionID, agentCodexID, "seed_bundle_running_review", "running", "primary_reviewer", ts(-12 * time.Minute), nil, nil, nil, nil, nil, nil, nil, nil, `{"phase":"normalizing candidates","seeded":true}`},
 		{"seed_run_running_verifier", runningSessionID, agentVerifierID, "seed_bundle_running_review", "queued", "verifier", nil, nil, nil, nil, nil, nil, nil, nil, nil, `{"waiting_for":"primary_reviewer","seeded":true}`},
 	}

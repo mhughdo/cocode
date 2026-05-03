@@ -1,0 +1,500 @@
+export type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
+
+export type QueryValue =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | readonly (string | number | boolean)[];
+
+export interface BackendConnection {
+  baseUrl: string;
+  authToken: string;
+}
+
+export interface ApiClientOptions extends BackendConnection {
+  fetch?: FetchLike;
+}
+
+export interface ApiRequestOptions {
+  method?: HttpMethod;
+  body?: unknown;
+  query?: Record<string, QueryValue>;
+  headers?: HeadersInit;
+  signal?: AbortSignal;
+}
+
+export interface ApiEnvelope<T> {
+  data: T | null;
+  error: ApiErrorBody | null;
+  request_id?: string;
+}
+
+export interface ApiErrorBody {
+  code?: string;
+  message?: string;
+  details?: unknown;
+}
+
+export interface ApiSessionResponse {
+  status: "authenticated";
+}
+
+export interface ApiVersionResponse {
+  service: string;
+  version: string;
+  data_dir: string;
+}
+
+export interface AgentCapabilities {
+  can_read?: boolean;
+  can_search?: boolean;
+  can_shell?: boolean;
+  can_write?: boolean;
+  can_publish?: boolean;
+  supports_json?: boolean;
+  supports_jsonl?: boolean;
+  supports_text?: boolean;
+  output_modes?: string[];
+  [key: string]: unknown;
+}
+
+export interface AgentPreset {
+  id: string;
+  name: string;
+  description: string;
+  adapter_kind: string;
+  command: string;
+  args: string[];
+  cwd_mode: string;
+  env_allowlist: string[];
+  output_mode: string;
+  model_label?: string;
+  reasoning_label?: string;
+  settings: Record<string, unknown>;
+  capabilities: AgentCapabilities;
+  local_only?: boolean;
+  provider?: string;
+  egress?: string;
+}
+
+export interface AgentConfig extends AgentPreset {
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentConfigHealth {
+  agent_config_id: string;
+  status: "available" | "degraded" | "unavailable" | "unknown";
+  message: string;
+  checked_at: string;
+  capabilities: AgentCapabilities;
+  metadata: Record<string, unknown>;
+}
+
+export interface ReviewSession {
+  id: string;
+  workspace_id: string;
+  repository_id: string;
+  snapshot_id: string;
+  title: string;
+  status: string;
+  review_depth: string;
+  context_policy: Record<string, unknown>;
+  runtime_limit_seconds: number;
+  focus_prompt?: string;
+  agents: ReviewSessionAgent[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReviewSessionAgent {
+  id: string;
+  review_session_id: string;
+  agent_config_id: string;
+  role: string;
+  run_order: number;
+  enabled: boolean;
+  settings_override: Record<string, unknown>;
+}
+
+export interface ReviewSessionSummary {
+  review_session_id: string;
+  status: string;
+  phase?: string;
+  phase_status?: string;
+  progress_percent: number;
+  changed_files_total: number;
+  changed_files_scanned: number;
+  agent_runs_total: number;
+  active_agents: number;
+  agent_status_counts: Record<string, number>;
+  finding_counts?: Record<string, unknown>;
+}
+
+export interface RedactionReport {
+  bundle_id: string;
+  redaction_count: number;
+  items: RedactionReportItem[];
+}
+
+export interface RedactionReportItem {
+  item_id: string;
+  kind: string;
+  path?: string;
+  title?: string;
+  redaction_count: number;
+  detectors: Record<string, number>;
+}
+
+export interface VisibilityReport {
+  recipient: {
+    agent_config_id?: string;
+    provider?: string;
+    egress?: string;
+    local_only?: boolean;
+  };
+  sent_item_count: number;
+  sent_item_by_kind?: Record<string, number>;
+  omitted?: VisibilityOmission[];
+}
+
+export interface VisibilityOmission {
+  path?: string;
+  item_id?: string;
+  kind?: string;
+  reason: string;
+}
+
+export interface ContextBundlePreview {
+  bundle: {
+    id: string;
+    review_session_id: string;
+    scope: string;
+    token_estimate: number;
+    item_count: number;
+    items: unknown[];
+  };
+  dropped: unknown[];
+  warnings?: string[];
+  redaction_report: RedactionReport;
+  visibility_report: VisibilityReport;
+  persisted: boolean;
+  artifact_id?: string;
+  redaction_report_artifact_id?: string;
+}
+
+export type Loadable<T> =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "success"; data: T }
+  | { status: "error"; error: ApiError };
+
+type FetchLike = (
+  input: RequestInfo | URL,
+  init?: RequestInit,
+) => Promise<Response>;
+
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly details: unknown;
+  readonly requestId?: string;
+
+  constructor(params: {
+    message: string;
+    status: number;
+    code?: string;
+    details?: unknown;
+    requestId?: string;
+    cause?: unknown;
+  }) {
+    super(params.message, { cause: params.cause });
+    this.name = "ApiError";
+    this.status = params.status;
+    this.code = params.code ?? "API_ERROR";
+    this.details = params.details;
+    this.requestId = params.requestId;
+  }
+}
+
+export class ApiClient {
+  private readonly baseUrl: string;
+  private readonly authToken: string;
+  private readonly fetcher: FetchLike;
+
+  constructor(options: ApiClientOptions) {
+    this.baseUrl = options.baseUrl.replace(/\/+$/, "");
+    this.authToken = options.authToken;
+    this.fetcher = options.fetch ?? fetch.bind(globalThis);
+  }
+
+  session(options: Omit<ApiRequestOptions, "method" | "body"> = {}) {
+    return this.get<ApiSessionResponse>("/api/session", options);
+  }
+
+  version(options: Omit<ApiRequestOptions, "method" | "body"> = {}) {
+    return this.get<ApiVersionResponse>("/api/version", options);
+  }
+
+  listAgentPresets(options: Omit<ApiRequestOptions, "method" | "body"> = {}) {
+    return this.get<AgentPreset[]>("/api/agents/presets", options);
+  }
+
+  listAgentConfigs(options: Omit<ApiRequestOptions, "method" | "body"> = {}) {
+    return this.get<AgentConfig[]>("/api/agents/configs", options);
+  }
+
+  testAgentConfig(
+    id: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.post<AgentConfigHealth>(
+      `/api/agents/configs/${encodeURIComponent(id)}/test`,
+      undefined,
+      options,
+    );
+  }
+
+  listReviewSessions(
+    workspaceId: string,
+    options: Omit<ApiRequestOptions, "method" | "body" | "query"> = {},
+  ) {
+    return this.get<ReviewSession[]>("/api/review-sessions", {
+      ...options,
+      query: { workspace_id: workspaceId },
+    });
+  }
+
+  getReviewSession(
+    id: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.get<ReviewSession>(
+      `/api/review-sessions/${encodeURIComponent(id)}`,
+      options,
+    );
+  }
+
+  reviewSessionSummary(
+    id: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.get<ReviewSessionSummary>(
+      `/api/review-sessions/${encodeURIComponent(id)}/summary`,
+      options,
+    );
+  }
+
+  previewReviewContext(
+    id: string,
+    body: {
+      agent_config_id?: string;
+      persist?: boolean;
+      context_policy?: Record<string, unknown>;
+    },
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.post<ContextBundlePreview>(
+      `/api/review-sessions/${encodeURIComponent(id)}/context-bundles/preview`,
+      body,
+      options,
+    );
+  }
+
+  get<T>(
+    path: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.request<T>(path, { ...options, method: "GET" });
+  }
+
+  post<T>(
+    path: string,
+    body?: unknown,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.request<T>(path, { ...options, method: "POST", body });
+  }
+
+  patch<T>(
+    path: string,
+    body?: unknown,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.request<T>(path, { ...options, method: "PATCH", body });
+  }
+
+  delete<T>(
+    path: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.request<T>(path, { ...options, method: "DELETE" });
+  }
+
+  async request<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
+    const response = await this.fetcher(
+      endpointUrl(this.baseUrl, path, options.query),
+      {
+        method: options.method ?? "GET",
+        headers: requestHeaders(this.authToken, options),
+        body: requestBody(options.body),
+        signal: options.signal,
+      },
+    );
+    return parseEnvelopeResponse<T>(response);
+  }
+}
+
+export function createCocodeClient(options: ApiClientOptions): ApiClient {
+  return new ApiClient(options);
+}
+
+export function idleApiState<T>(): Loadable<T> {
+  return { status: "idle" };
+}
+
+export function loadingApiState<T>(): Loadable<T> {
+  return { status: "loading" };
+}
+
+export function successApiState<T>(data: T): Loadable<T> {
+  return { status: "success", data };
+}
+
+export function errorApiState<T>(error: unknown): Loadable<T> {
+  return { status: "error", error: toApiError(error) };
+}
+
+export async function loadApiResource<T>(
+  loader: () => Promise<T>,
+): Promise<Loadable<T>> {
+  try {
+    return successApiState(await loader());
+  } catch (error) {
+    return errorApiState(error);
+  }
+}
+
+export function toApiError(error: unknown): ApiError {
+  if (error instanceof ApiError) {
+    return error;
+  }
+  if (error instanceof Error) {
+    return new ApiError({
+      message: error.message,
+      status: 0,
+      code: "NETWORK_ERROR",
+      cause: error,
+    });
+  }
+  return new ApiError({
+    message: String(error),
+    status: 0,
+    code: "UNKNOWN_ERROR",
+  });
+}
+
+async function parseEnvelopeResponse<T>(response: Response): Promise<T> {
+  const payload = await readJSON(response);
+  if (!isApiEnvelope<T>(payload)) {
+    throw new ApiError({
+      message: "Backend response envelope is invalid",
+      status: response.status,
+      code: "INVALID_ENVELOPE",
+      details: payload,
+    });
+  }
+  if (!response.ok || payload.error) {
+    throw new ApiError({
+      message:
+        payload.error?.message ??
+        `Request failed with status ${response.status}`,
+      status: response.status,
+      code: payload.error?.code,
+      details: payload.error?.details,
+      requestId: payload.request_id,
+    });
+  }
+  return payload.data as T;
+}
+
+async function readJSON(response: Response): Promise<unknown> {
+  const text = await response.text();
+  if (text.trim() === "") {
+    return null;
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch (error) {
+    throw new ApiError({
+      message: "Backend response was not valid JSON",
+      status: response.status,
+      code: "INVALID_JSON",
+      cause: error,
+    });
+  }
+}
+
+function isApiEnvelope<T>(value: unknown): value is ApiEnvelope<T> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "data" in value &&
+    "error" in value
+  );
+}
+
+function endpointUrl(
+  baseUrl: string,
+  path: string,
+  query?: Record<string, QueryValue>,
+): URL {
+  const url = new URL(path.startsWith("/") ? path : `/${path}`, `${baseUrl}/`);
+  for (const [key, value] of Object.entries(query ?? {})) {
+    if (value === null || value === undefined) {
+      continue;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        url.searchParams.append(key, String(item));
+      }
+      continue;
+    }
+    url.searchParams.set(key, String(value));
+  }
+  return url;
+}
+
+function requestHeaders(
+  authToken: string,
+  options: ApiRequestOptions,
+): Headers {
+  const headers = new Headers(options.headers);
+  if (!headers.has("Accept")) {
+    headers.set("Accept", "application/json");
+  }
+  if (authToken !== "" && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${authToken}`);
+  }
+  if (options.body !== undefined && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  return headers;
+}
+
+function requestBody(body: unknown): BodyInit | undefined {
+  if (body === undefined) {
+    return undefined;
+  }
+  if (
+    typeof body === "string" ||
+    body instanceof FormData ||
+    body instanceof Blob
+  ) {
+    return body;
+  }
+  return JSON.stringify(body);
+}

@@ -324,7 +324,7 @@ Large parallel workstreams:
 | ID | Task | Description | Status | Dependencies | Parallelization | Done criteria |
 |---|---|---|---|---|---|---|
 | T240 | Build app shell | Layout with left sidebar, top nav, content area matching mockups. | Not started | T014, T016 | T241 | Shell renders responsive desktop layout with placeholder data. |
-| T241 | Implement API client | Typed REST client with auth token, response envelope, error handling. | Not started | T032, T043 | T242 | Client handles success/error/loading states. |
+| T241 | Implement API client | Typed REST client with auth token, response envelope, error handling. | Done | T032, T043 | T242 | Renderer API client injects local auth, decodes response envelopes, surfaces typed errors, and exposes loading/success/error state helpers. |
 | T242 | Implement shared UI components | Buttons, cards, badges, tabs, dropdowns, command/search, empty/error states. | Not started | T016 | All UI tasks | Components match visual style and are reusable. |
 | T243 | Implement left workspace/thread sidebar | Workspace selector, threads list, saved presets, settings, agents online. | Not started | T240, T054 | T244 | Sidebar renders seeded/API data and active thread state. |
 | T244 | Implement top nav | Repo selector, PR title, search, ask all agents, open repo, new thread, notifications/user. | Not started | T240 | T245 | Top nav matches mockups and handles disabled states. |

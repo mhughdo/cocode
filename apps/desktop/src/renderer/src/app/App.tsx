@@ -24,6 +24,14 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  createCocodeClient,
+  errorApiState,
+  loadApiResource,
+  loadingApiState,
+  type ApiSessionResponse,
+  type Loadable,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const threads = [
@@ -74,19 +82,52 @@ const findings = [
 export function App() {
   const [backendStatus, setBackendStatus] = useState("loading");
   const [backendUrl, setBackendUrl] = useState("");
+  const [apiSession, setApiSession] =
+    useState<Loadable<ApiSessionResponse>>(loadingApiState);
 
   useEffect(() => {
     let canceled = false;
-    void window.cocode
-      ?.getBackendInfo()
-      .then((info) => {
+
+    const bridge = window.cocode;
+    if (!bridge) {
+      queueMicrotask(() => {
         if (!canceled) {
-          setBackendStatus(info.status);
-          setBackendUrl(info.baseUrl);
+          setBackendStatus("unavailable");
+          setApiSession(
+            errorApiState(new Error("Desktop bridge is unavailable")),
+          );
         }
+      });
+      return () => {
+        canceled = true;
+      };
+    }
+
+    void bridge
+      .getBackendInfo()
+      .then((info) => {
+        if (canceled) {
+          return;
+        }
+        setBackendStatus(info.status);
+        setBackendUrl(info.baseUrl);
+
+        const client = createCocodeClient(info);
+        void loadApiResource(() => client.session()).then((state) => {
+          if (canceled) {
+            return;
+          }
+          setApiSession(state);
+          if (state.status === "error") {
+            setBackendStatus("unavailable");
+          }
+        });
       })
       .catch(() => {
         if (!canceled) {
+          setApiSession(
+            errorApiState(new Error("Backend info is unavailable")),
+          );
           setBackendStatus("unavailable");
         }
       });
@@ -95,6 +136,11 @@ export function App() {
       canceled = true;
     };
   }, []);
+
+  const backendDetail =
+    apiSession.status === "error"
+      ? apiSession.error.message
+      : backendUrl || "Waiting for backend info";
 
   return (
     <main className="bg-background text-foreground flex min-h-screen">
@@ -301,7 +347,7 @@ export function App() {
                 </div>
               </div>
               <div className="text-muted-foreground mx-auto mt-2 max-w-3xl truncate text-center text-xs">
-                {backendUrl || "Waiting for backend info"}
+                {backendDetail}
               </div>
             </div>
           </section>

@@ -140,6 +140,8 @@ Claude Code and similar CLIs support programmatic non-interactive use. Claude Co
 | Future Go backend -> Codex App Server | Long-running child process | JSON-RPC over stdio JSONL | Designed but not implemented in MVP. |
 | Future Go backend -> ACP agent | Long-running child process | JSON-RPC over stdio | Designed but not implemented in MVP. |
 
+The renderer talks to the local backend through a typed REST client in `apps/desktop/src/renderer/src/lib/api.ts`. The client receives the per-launch backend URL/token from the preload bridge, injects bearer auth, decodes the backend `Envelope` shape, preserves request IDs on typed errors, supports query/body helpers and `AbortSignal`, and exposes small loading/success/error state helpers for UI screens.
+
 ---
 
 ## 4. Technology Stack

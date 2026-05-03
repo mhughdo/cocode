@@ -113,6 +113,30 @@ type BuildReviewContextResponse struct {
 	RedactionReportArtifactID string                        `json:"redaction_report_artifact_id,omitempty"`
 }
 
+type ContextBundleDebugResponse struct {
+	Bundles  []ContextBundleDebugBundle `json:"bundles"`
+	Warnings []string                   `json:"warnings,omitempty"`
+}
+
+type ContextBundleDebugBundle struct {
+	Bundle        contextbundle.Bundle             `json:"bundle"`
+	Artifact      *ArtifactDebugResponse           `json:"artifact,omitempty"`
+	ItemArtifacts map[string]ArtifactDebugResponse `json:"item_artifacts,omitempty"`
+	AgentRunIDs   []string                         `json:"agent_run_ids,omitempty"`
+}
+
+type ArtifactDebugResponse struct {
+	ID               string          `json:"id"`
+	Kind             string          `json:"kind"`
+	RelativePath     string          `json:"relative_path"`
+	ContentType      string          `json:"content_type"`
+	SizeBytes        int64           `json:"size_bytes"`
+	SHA256           string          `json:"sha256,omitempty"`
+	Metadata         json.RawMessage `json:"metadata"`
+	Content          string          `json:"content,omitempty"`
+	ContentTruncated bool            `json:"content_truncated,omitempty"`
+}
+
 type routerServices struct {
 	queries             *dbgen.Queries
 	snapshots           *snapshot.Service
@@ -191,6 +215,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.POST("/agents/configs/:id/test", testAgentConfigHandler(queries))
 	api.DELETE("/agents/configs/:id", deleteAgentConfigHandler(queries))
 	api.POST("/review-sessions/:id/context-bundles/preview", buildReviewContextHandler(services))
+	api.GET("/review-sessions/:id/context-bundles", contextBundleDebugHandler(services))
 
 	return router
 }
@@ -412,6 +437,26 @@ func buildReviewContextHandler(services routerServices) gin.HandlerFunc {
 	}
 }
 
+func contextBundleDebugHandler(services routerServices) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		sessionID := strings.TrimSpace(c.Param("id"))
+		if sessionID == "" {
+			respondError(c, apperror.InvalidRequest("review session id is required"))
+			return
+		}
+		if err := services.ensureContextBuilder(); err != nil {
+			respondError(c, err)
+			return
+		}
+		response, err := buildContextBundleDebugResponse(c.Request.Context(), services, sessionID)
+		if err != nil {
+			respondReviewContextError(c, err)
+			return
+		}
+		respondOK(c, response)
+	}
+}
+
 func (s routerServices) ensureSnapshots() *apperror.Error {
 	if s.snapshots == nil {
 		message := "snapshot service is not configured"
@@ -535,6 +580,84 @@ func buildReviewContextResponse(result contextbundle.BuildReviewContextResult) B
 	return response
 }
 
+func buildContextBundleDebugResponse(ctx context.Context, services routerServices, sessionID string) (ContextBundleDebugResponse, error) {
+	if _, err := services.queries.GetReviewSession(ctx, sessionID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ContextBundleDebugResponse{}, contextbundle.ErrReviewSessionNotFound
+		}
+		return ContextBundleDebugResponse{}, fmt.Errorf("read review session: %w", err)
+	}
+	rows, err := services.queries.ListContextBundlesBySession(ctx, sessionID)
+	if err != nil {
+		return ContextBundleDebugResponse{}, fmt.Errorf("list context bundles: %w", err)
+	}
+	runs, err := services.queries.ListAgentRunsBySession(ctx, sessionID)
+	if err != nil {
+		return ContextBundleDebugResponse{}, fmt.Errorf("list agent runs: %w", err)
+	}
+	runIDsByBundle := map[string][]string{}
+	for _, run := range runs {
+		if run.ContextBundleID.Valid && strings.TrimSpace(run.ContextBundleID.String) != "" {
+			runIDsByBundle[run.ContextBundleID.String] = append(runIDsByBundle[run.ContextBundleID.String], run.ID)
+		}
+	}
+
+	response := ContextBundleDebugResponse{
+		Bundles: make([]ContextBundleDebugBundle, 0, len(rows)),
+	}
+	for _, row := range rows {
+		itemRows, err := services.queries.ListContextItemsByBundle(ctx, row.ID)
+		if err != nil {
+			return ContextBundleDebugResponse{}, fmt.Errorf("list context items for %s: %w", row.ID, err)
+		}
+		bundle, err := contextbundle.BundleFromRows(row, itemRows)
+		if err != nil {
+			return ContextBundleDebugResponse{}, err
+		}
+		debugBundle := ContextBundleDebugBundle{
+			Bundle:      bundle,
+			AgentRunIDs: append([]string(nil), runIDsByBundle[bundle.ID]...),
+		}
+		if bundle.ArtifactID != "" {
+			artifactResponse, warning, err := artifactDebugResponse(ctx, services.contextBuilder.Artifacts, bundle.ArtifactID)
+			if err != nil {
+				response.Warnings = appendResponseWarning(response.Warnings, warning)
+			} else {
+				debugBundle.Artifact = &artifactResponse
+			}
+		}
+		for _, item := range bundle.Items {
+			if item.ContentArtifactID == "" {
+				continue
+			}
+			artifactResponse, warning, err := artifactDebugResponse(ctx, services.contextBuilder.Artifacts, item.ContentArtifactID)
+			if err != nil {
+				response.Warnings = appendResponseWarning(response.Warnings, warning)
+				continue
+			}
+			if debugBundle.ItemArtifacts == nil {
+				debugBundle.ItemArtifacts = map[string]ArtifactDebugResponse{}
+			}
+			debugBundle.ItemArtifacts[item.ID] = artifactResponse
+		}
+		response.Bundles = append(response.Bundles, debugBundle)
+	}
+	return response, nil
+}
+
+func appendResponseWarning(warnings []string, warning string) []string {
+	warning = strings.TrimSpace(warning)
+	if warning == "" {
+		return warnings
+	}
+	for _, existing := range warnings {
+		if existing == warning {
+			return warnings
+		}
+	}
+	return append(warnings, warning)
+}
+
 func snapshotResponse(row dbgen.PullRequestSnapshot, changedFileCount int) SnapshotResponse {
 	metadata := json.RawMessage(row.MetadataJson)
 	if len(metadata) == 0 || !json.Valid(metadata) {
@@ -582,6 +705,35 @@ func changedFileResponse(file dbgen.ChangedFile) (ChangedFileResponse, error) {
 		LineRanges:      lineRanges,
 		PatchArtifactID: nullableResponseString(file.PatchArtifactID),
 	}, nil
+}
+
+const contextDebugArtifactContentLimit = 256 * 1024
+
+func artifactDebugResponse(ctx context.Context, store *artifact.Store, artifactID string) (ArtifactDebugResponse, string, error) {
+	content, row, err := store.Read(ctx, artifactID)
+	if err != nil {
+		return ArtifactDebugResponse{}, fmt.Sprintf("artifact %s could not be read: %v", artifactID, err), err
+	}
+	metadata := json.RawMessage(row.MetadataJson)
+	if len(metadata) == 0 || !json.Valid(metadata) {
+		metadata = json.RawMessage("{}")
+	}
+	truncated := false
+	if len(content) > contextDebugArtifactContentLimit {
+		content = content[:contextDebugArtifactContentLimit]
+		truncated = true
+	}
+	return ArtifactDebugResponse{
+		ID:               row.ID,
+		Kind:             row.Kind,
+		RelativePath:     row.RelativePath,
+		ContentType:      row.ContentType,
+		SizeBytes:        row.SizeBytes,
+		SHA256:           nullableResponseString(row.Sha256),
+		Metadata:         metadata,
+		Content:          string(content),
+		ContentTruncated: truncated,
+	}, "", nil
 }
 
 func respondReviewContextError(c *gin.Context, err error) {

@@ -979,6 +979,53 @@ func TestBuildReviewContextPreviewEndpointPersistsBundle(t *testing.T) {
 	if len(rows) != len(preview.Bundle.Items) {
 		t.Fatalf("context item rows len = %d, want %d", len(rows), len(preview.Bundle.Items))
 	}
+
+	if _, err := queries.CreateAgentConfig(context.Background(), dbgen.CreateAgentConfigParams{
+		ID:               "agent_config_1",
+		Name:             "Codex reviewer",
+		Role:             "reviewer",
+		AdapterKind:      "cli_noninteractive",
+		Command:          nullableString("codex"),
+		ArgsJson:         "[]",
+		CwdMode:          "repo_root",
+		EnvAllowlistJson: "[]",
+		OutputMode:       "json",
+		CapabilitiesJson: "{}",
+		SettingsJson:     "{}",
+		Enabled:          1,
+		CreatedAt:        "2026-05-03T00:06:00Z",
+		UpdatedAt:        "2026-05-03T00:06:00Z",
+	}); err != nil {
+		t.Fatalf("CreateAgentConfig() error = %v", err)
+	}
+	if _, err := queries.CreateAgentRun(context.Background(), dbgen.CreateAgentRunParams{
+		ID:              "agent_run_1",
+		ReviewSessionID: "review_session_1",
+		AgentConfigID:   "agent_config_1",
+		ContextBundleID: sql.NullString{String: preview.Bundle.ID, Valid: true},
+		Status:          "completed",
+		Role:            "reviewer",
+		MetadataJson:    "{}",
+	}); err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	debugRequest := httptest.NewRequest(http.MethodGet, "/api/review-sessions/review_session_1/context-bundles", nil)
+	debugRequest.Header.Set("X-Cocode-Token", "test-token")
+	debugResponse := httptest.NewRecorder()
+	router.ServeHTTP(debugResponse, debugRequest)
+	if debugResponse.Code != http.StatusOK {
+		t.Fatalf("debug status = %d, body = %s", debugResponse.Code, debugResponse.Body.String())
+	}
+	debug := decodeContextBundleDebugResponse(t, debugResponse.Body.Bytes())
+	if len(debug.Bundles) != 1 ||
+		debug.Bundles[0].Bundle.ID != preview.Bundle.ID ||
+		debug.Bundles[0].Artifact == nil ||
+		!strings.Contains(debug.Bundles[0].Artifact.Content, "[REDACTED]") ||
+		len(debug.Bundles[0].AgentRunIDs) != 1 ||
+		debug.Bundles[0].AgentRunIDs[0] != "agent_run_1" {
+		t.Fatalf("debug response = %+v", debug)
+	}
 }
 
 func TestBuildReviewContextPreviewEndpointMapsMissingSession(t *testing.T) {
@@ -989,6 +1036,14 @@ func TestBuildReviewContextPreviewEndpointMapsMissingSession(t *testing.T) {
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("missing session status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	debugRequest := httptest.NewRequest(http.MethodGet, "/api/review-sessions/missing/context-bundles", nil)
+	debugRequest.Header.Set("X-Cocode-Token", "test-token")
+	debugResponse := httptest.NewRecorder()
+	router.ServeHTTP(debugResponse, debugRequest)
+	if debugResponse.Code != http.StatusNotFound {
+		t.Fatalf("missing debug status = %d, body = %s", debugResponse.Code, debugResponse.Body.String())
 	}
 }
 
@@ -1154,6 +1209,22 @@ func decodeBuildReviewContextResponse(t *testing.T, content []byte) BuildReviewC
 
 	var envelope struct {
 		Data  BuildReviewContextResponse `json:"data"`
+		Error any                        `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeContextBundleDebugResponse(t *testing.T, content []byte) ContextBundleDebugResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  ContextBundleDebugResponse `json:"data"`
 		Error any                        `json:"error"`
 	}
 	if err := json.Unmarshal(content, &envelope); err != nil {

@@ -242,7 +242,7 @@ Large parallel workstreams:
 | T132 | Build review context API | Endpoint/service to build and preview context for a session. | Done | T120-T131 | T247 | API returns bundle metadata, items, token estimate. |
 | T133 | Build finding-scoped context | Build context for one finding and evidence bundle. | Not started | T186, T204 | T280 | Follow-up uses finding-scoped bundle by default. |
 | T134 | Build Evidence Map context | Build graph-specific context from finding/evidence/code relationships. | Not started | T133 | T210 | Evidence Map builder receives bounded relevant context. |
-| T135 | Add context debug viewer API | Return context items and artifacts for developer/provenance panel. | Not started | T131 | T260 | UI can show what each agent saw. |
+| T135 | Add context debug viewer API | Return context items and artifacts for developer/provenance panel. | Done | T131 | T260 | UI can show what each agent saw. |
 
 ---
 

@@ -1889,6 +1889,8 @@ GitHub inline comments require mapping to PR diff lines/positions. Store diff sn
 
 The mapper uses parsed unified diffs and returns `path`, `line`, `side`, and deprecated-compatible `position`. It anchors RIGHT-side added/context lines and LEFT-side deleted/context lines, supports UNKNOWN by trying RIGHT then LEFT, and treats missing lines as unanchored instead of guessing.
 
+The preview builder creates a review summary body plus one comment draft per selected finding. Draft comments are preferred when present, generated comments fall back to the claim and suggested fix, and unanchored comments remain in the preview with explicit warnings for the Publish tab.
+
 If mapping fails:
 
 1. Mark comment as unanchored.

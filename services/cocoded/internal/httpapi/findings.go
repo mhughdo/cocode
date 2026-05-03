@@ -300,9 +300,34 @@ func updateFindingDecisionHandler(services routerServices) gin.HandlerFunc {
 			respondError(c, apperror.Internal("failed to update finding decision"))
 			return
 		}
-		metadata, err := json.Marshal(map[string]string{
-			"rule_memory_suggestion": strings.TrimSpace(request.RuleMemorySuggestion),
-		})
+		ruleSuggestion := strings.TrimSpace(request.RuleMemorySuggestion)
+		ruleID := ""
+		if decision == "dismissed" && ruleSuggestion != "" {
+			session, appErr := getReviewSession(c.Request.Context(), txQueries, updated.ReviewSessionID)
+			if appErr != nil {
+				respondError(c, appErr)
+				return
+			}
+			rule, appErr := createOrReuseReviewRule(c.Request.Context(), txQueries, reviewRuleWrite{
+				WorkspaceID: session.WorkspaceID,
+				Scope:       "workspace",
+				RuleType:    "dismissal",
+				Content:     ruleSuggestion,
+				Enabled:     true,
+			})
+			if appErr != nil {
+				respondError(c, appErr)
+				return
+			}
+			ruleID = rule.ID
+		}
+		decisionMetadata := map[string]string{
+			"rule_memory_suggestion": ruleSuggestion,
+		}
+		if ruleID != "" {
+			decisionMetadata["review_rule_id"] = ruleID
+		}
+		metadata, err := json.Marshal(decisionMetadata)
 		if err != nil {
 			respondError(c, apperror.Internal("failed to encode decision metadata"))
 			return

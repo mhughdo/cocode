@@ -396,7 +396,7 @@ Large parallel workstreams:
 | T332 | Add agent output trust rules | Treat agent output as untrusted until parsed/verified. | Done | T170 | T204 | Parsed output artifacts/events mark agent output untrusted; copy packets carry trust boundaries; GitHub preview/publication require accepted findings before publish side effects. |
 | T333 | Add privacy indicators | UI shows cloud/local status and local-only restrictions. | Done | T326, T247 | T248 | Configure and Review details show provider/egress badges plus local-only visibility omissions before context is sent. |
 | T334 | Implement audit log viewer | Surface events/actions/approvals in Review details. | Done | T252, T061 | T360 | Review details loads a bounded audit log for events, decisions, copy packets, publish drafts, and GitHub publications. |
-| T335 | Implement review rule memory | Convert dismissal reasons into optional local rules. | Not started | T186, T127 | T336 | User can enable/disable stored rules. |
+| T335 | Implement review rule memory | Convert dismissal reasons into optional local rules. | Done | T186, T127 | T336 | Review-rule CRUD/toggle APIs are available, dismissed findings can save deduped workspace-local rules, and Agent settings exposes rule creation, deletion, refresh, and enable/disable controls. |
 | T336 | Implement settings export/import | Export non-secret settings, presets, and rules. | Not started | T248, T335 | T390 | Export does not include secrets; import validates schema. |
 
 ---

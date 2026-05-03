@@ -2035,6 +2035,156 @@ func TestFindingDecisionEndpointRequiresDismissalReason(t *testing.T) {
 	}
 }
 
+func TestFindingDecisionEndpointCreatesReviewRuleMemory(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+
+	body := map[string]any{
+		"decision":               "dismissed",
+		"reason":                 "generated fixture churn",
+		"rule_memory_suggestion": "Do not flag generated fixture churn in renderer snapshots.",
+	}
+	request := newAuthenticatedJSONRequest(t, http.MethodPatch, "/api/findings/finding_budget/decision", body)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("dismiss status = %d, body = %s", response.Code, response.Body.String())
+	}
+	detail := decodeFindingDetailResponse(t, response.Body.Bytes())
+	if detail.Finding.DecisionStatus != "dismissed" {
+		t.Fatalf("detail finding = %+v", detail.Finding)
+	}
+	if len(detail.Decisions) == 0 {
+		t.Fatalf("expected stored human decision")
+	}
+	var metadata map[string]string
+	if err := json.Unmarshal(detail.Decisions[0].Metadata, &metadata); err != nil {
+		t.Fatalf("decode decision metadata: %v", err)
+	}
+	if metadata["review_rule_id"] == "" {
+		t.Fatalf("metadata missing review_rule_id: %+v", metadata)
+	}
+
+	rules, err := queries.ListReviewRulesByWorkspace(context.Background(), "workspace_1")
+	if err != nil {
+		t.Fatalf("ListReviewRulesByWorkspace() error = %v", err)
+	}
+	if len(rules) != 1 ||
+		rules[0].Scope != "workspace" ||
+		rules[0].RuleType != "dismissal" ||
+		rules[0].Enabled != 1 ||
+		!strings.Contains(rules[0].Content, "generated fixture churn") {
+		t.Fatalf("rules = %+v", rules)
+	}
+
+	secondRequest := newAuthenticatedJSONRequest(t, http.MethodPatch, "/api/findings/finding_budget/decision", body)
+	secondResponse := httptest.NewRecorder()
+	router.ServeHTTP(secondResponse, secondRequest)
+	if secondResponse.Code != http.StatusOK {
+		t.Fatalf("second dismiss status = %d, body = %s", secondResponse.Code, secondResponse.Body.String())
+	}
+	rules, err = queries.ListReviewRulesByWorkspace(context.Background(), "workspace_1")
+	if err != nil {
+		t.Fatalf("ListReviewRulesByWorkspace(second) error = %v", err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("duplicate dismissal created rules = %+v", rules)
+	}
+}
+
+func TestReviewRuleEndpointCRUDAndDedup(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIWorkspaceAndRepository(t, queries, "/tmp/cocode")
+
+	createRequest := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/workspaces/workspace_1/review-rules", map[string]any{
+		"scope":     "workspace",
+		"rule_type": "dismissal",
+		"content":   "Do not flag generated file formatting noise.",
+		"enabled":   true,
+	})
+	createResponse := httptest.NewRecorder()
+	router.ServeHTTP(createResponse, createRequest)
+	if createResponse.Code != http.StatusOK {
+		t.Fatalf("create rule status = %d, body = %s", createResponse.Code, createResponse.Body.String())
+	}
+	created := decodeReviewRuleResponse(t, createResponse.Body.Bytes())
+	if created.ID == "" ||
+		created.WorkspaceID != "workspace_1" ||
+		created.Scope != "workspace" ||
+		created.RuleType != "dismissal" ||
+		!created.Enabled {
+		t.Fatalf("created rule = %+v", created)
+	}
+
+	duplicateRequest := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/workspaces/workspace_1/review-rules", map[string]any{
+		"content": " do not flag GENERATED file formatting noise. ",
+	})
+	duplicateResponse := httptest.NewRecorder()
+	router.ServeHTTP(duplicateResponse, duplicateRequest)
+	if duplicateResponse.Code != http.StatusOK {
+		t.Fatalf("duplicate rule status = %d, body = %s", duplicateResponse.Code, duplicateResponse.Body.String())
+	}
+	duplicate := decodeReviewRuleResponse(t, duplicateResponse.Body.Bytes())
+	if duplicate.ID != created.ID {
+		t.Fatalf("duplicate ID = %q, want %q", duplicate.ID, created.ID)
+	}
+
+	disableRequest := newAuthenticatedJSONRequest(t, http.MethodPatch, "/api/review-rules/"+created.ID+"/enabled", map[string]any{
+		"enabled": false,
+	})
+	disableResponse := httptest.NewRecorder()
+	router.ServeHTTP(disableResponse, disableRequest)
+	if disableResponse.Code != http.StatusOK {
+		t.Fatalf("disable rule status = %d, body = %s", disableResponse.Code, disableResponse.Body.String())
+	}
+	disabled := decodeReviewRuleResponse(t, disableResponse.Body.Bytes())
+	if disabled.Enabled {
+		t.Fatalf("disabled rule = %+v", disabled)
+	}
+
+	updateRequest := newAuthenticatedJSONRequest(t, http.MethodPatch, "/api/review-rules/"+created.ID, map[string]any{
+		"scope":     "repository",
+		"rule_type": "review_guidance",
+		"content":   "Prefer deterministic renderer snapshots for UI-only churn.",
+		"enabled":   true,
+	})
+	updateResponse := httptest.NewRecorder()
+	router.ServeHTTP(updateResponse, updateRequest)
+	if updateResponse.Code != http.StatusOK {
+		t.Fatalf("update rule status = %d, body = %s", updateResponse.Code, updateResponse.Body.String())
+	}
+	updated := decodeReviewRuleResponse(t, updateResponse.Body.Bytes())
+	if updated.Scope != "repository" ||
+		updated.RuleType != "review_guidance" ||
+		!updated.Enabled ||
+		!strings.Contains(updated.Content, "deterministic") {
+		t.Fatalf("updated rule = %+v", updated)
+	}
+
+	listRequest := httptest.NewRequest(http.MethodGet, "/api/workspaces/workspace_1/review-rules", nil)
+	listRequest.Header.Set("X-Cocode-Token", "test-token")
+	listResponse := httptest.NewRecorder()
+	router.ServeHTTP(listResponse, listRequest)
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("list rule status = %d, body = %s", listResponse.Code, listResponse.Body.String())
+	}
+	list := decodeReviewRuleListResponse(t, listResponse.Body.Bytes())
+	if len(list.Items) != 1 || list.Items[0].ID != created.ID {
+		t.Fatalf("list = %+v", list)
+	}
+
+	deleteRequest := httptest.NewRequest(http.MethodDelete, "/api/review-rules/"+created.ID, nil)
+	deleteRequest.Header.Set("X-Cocode-Token", "test-token")
+	deleteResponse := httptest.NewRecorder()
+	router.ServeHTTP(deleteResponse, deleteRequest)
+	if deleteResponse.Code != http.StatusOK {
+		t.Fatalf("delete rule status = %d, body = %s", deleteResponse.Code, deleteResponse.Body.String())
+	}
+	if _, err := queries.GetReviewRule(context.Background(), created.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("GetReviewRule(deleted) error = %v, want sql.ErrNoRows", err)
+	}
+}
+
 func TestReviewSessionCopyPacketEndpointRendersAcceptedFindings(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
 	createHTTPAPIFindingFixture(t, queries)
@@ -3348,6 +3498,38 @@ func decodeFindingDetailResponse(t *testing.T, content []byte) FindingDetailResp
 	var envelope struct {
 		Data  FindingDetailResponse `json:"data"`
 		Error any                   `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeReviewRuleResponse(t *testing.T, content []byte) ReviewRuleResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  ReviewRuleResponse `json:"data"`
+		Error any                `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeReviewRuleListResponse(t *testing.T, content []byte) ReviewRuleListResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  ReviewRuleListResponse `json:"data"`
+		Error any                    `json:"error"`
 	}
 	if err := json.Unmarshal(content, &envelope); err != nil {
 		t.Fatalf("decode response: %v", err)

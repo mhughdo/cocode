@@ -716,6 +716,70 @@ describe("ApiClient", () => {
       token: "ghp_secret",
     });
   });
+
+  it("manages workspace review rules", async () => {
+    const seen: { url: string; method: string; body: unknown }[] = [];
+    const fetcher = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        seen.push({
+          url,
+          method,
+          body: init?.body ? JSON.parse(String(init.body)) : null,
+        });
+        if (method === "GET") {
+          return jsonResponse({
+            data: { items: [reviewRuleFixture] },
+            error: null,
+          });
+        }
+        if (method === "DELETE") {
+          return jsonResponse({
+            data: { deleted: true, id: "review_rule_1" },
+            error: null,
+          });
+        }
+        return jsonResponse({ data: reviewRuleFixture, error: null });
+      },
+    );
+    const client = createCocodeClient({
+      baseUrl: "http://127.0.0.1:17658",
+      authToken: "local-token",
+      fetch: fetcher,
+    });
+
+    await expect(client.listReviewRules("workspace_1")).resolves.toEqual({
+      items: [reviewRuleFixture],
+    });
+    await expect(
+      client.createReviewRule("workspace_1", {
+        scope: "workspace",
+        rule_type: "dismissal",
+        content: "Do not flag generated file churn.",
+        enabled: true,
+      }),
+    ).resolves.toMatchObject({ id: "review_rule_1" });
+    await expect(
+      client.setReviewRuleEnabled("review_rule_1", { enabled: false }),
+    ).resolves.toMatchObject({ id: "review_rule_1" });
+    await expect(
+      client.updateReviewRule("review_rule_1", {
+        content: "Prefer deterministic UI snapshots.",
+      }),
+    ).resolves.toMatchObject({ id: "review_rule_1" });
+    await expect(client.deleteReviewRule("review_rule_1")).resolves.toEqual({
+      deleted: true,
+      id: "review_rule_1",
+    });
+    expect(seen.map((request) => `${request.method} ${request.url}`)).toEqual([
+      "GET http://127.0.0.1:17658/api/workspaces/workspace_1/review-rules",
+      "POST http://127.0.0.1:17658/api/workspaces/workspace_1/review-rules",
+      "PATCH http://127.0.0.1:17658/api/review-rules/review_rule_1/enabled",
+      "PATCH http://127.0.0.1:17658/api/review-rules/review_rule_1",
+      "DELETE http://127.0.0.1:17658/api/review-rules/review_rule_1",
+    ]);
+  });
 });
 
 describe("API load states", () => {
@@ -1229,6 +1293,17 @@ const githubCredentialFixture = {
     created_at: "2026-05-04T00:00:00Z",
     updated_at: "2026-05-04T00:00:00Z",
   },
+};
+
+const reviewRuleFixture = {
+  id: "review_rule_1",
+  workspace_id: "workspace_1",
+  scope: "workspace",
+  rule_type: "dismissal",
+  content: "Do not flag generated file churn.",
+  enabled: true,
+  created_at: "2026-05-04T00:00:00Z",
+  updated_at: "2026-05-04T00:00:00Z",
 };
 
 const agentConfigFixture = {

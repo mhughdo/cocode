@@ -3,6 +3,7 @@ import {
   ArrowLeftIcon,
   ArrowUpIcon,
   BellIcon,
+  BookOpenIcon,
   BotIcon,
   CheckIcon,
   ChevronDownIcon,
@@ -30,6 +31,7 @@ import {
   SparklesIcon,
   SquareIcon,
   TerminalIcon,
+  Trash2Icon,
   type LucideIcon,
 } from "lucide-react";
 
@@ -116,6 +118,8 @@ import {
   type ReviewAuditLogEntry,
   type ReviewAuditLogResponse,
   type ReviewEvent,
+  type ReviewRule,
+  type ReviewRuleListResponse,
   type ReviewSessionSummary,
   type ReviewSession,
   type Snapshot,
@@ -609,6 +613,7 @@ export function App() {
         )}
         {mainView === "agent-settings" && (
           <AgentSettingsScreen
+            activeWorkspace={activeWorkspace}
             client={client}
             onBack={() => setMainView("new-thread")}
           />
@@ -1423,10 +1428,19 @@ type AgentConfigFormState = {
   allowRiskyCommand: boolean;
 };
 
+type ReviewRuleDraftState = {
+  scope: string;
+  ruleType: string;
+  content: string;
+  enabled: boolean;
+};
+
 function AgentSettingsScreen({
+  activeWorkspace,
   client,
   onBack,
 }: {
+  activeWorkspace?: Workspace;
   client: ApiClient | null;
   onBack: () => void;
 }) {
@@ -1451,6 +1465,15 @@ function AgentSettingsScreen({
     useState<Loadable<GitHubCredentialStatusResponse>>(idleApiState());
   const [githubDeleteState, setGitHubDeleteState] =
     useState<Loadable<DeleteGitHubCredentialResponse>>(idleApiState());
+  const [reviewRules, setReviewRules] =
+    useState<Loadable<ReviewRuleListResponse>>(idleApiState());
+  const [reviewRuleDraft, setReviewRuleDraft] = useState<ReviewRuleDraftState>(
+    defaultReviewRuleDraft(),
+  );
+  const [reviewRuleAction, setReviewRuleAction] =
+    useState<Loadable<ReviewRule | { deleted: boolean; id: string }>>(
+      idleApiState(),
+    );
 
   const presetList = presets.status === "success" ? presets.data : [];
   const configList = configs.status === "success" ? configs.data : [];
@@ -1470,23 +1493,33 @@ function AgentSettingsScreen({
         setGitHubCredential(
           errorApiState(new Error("Backend client is unavailable")),
         );
+        setReviewRules(
+          errorApiState(new Error("Backend client is unavailable")),
+        );
         return;
       }
 
       setPresets(loadingApiState());
       setConfigs(loadingApiState());
       setGitHubCredential(loadingApiState());
+      setReviewRules(
+        activeWorkspace ? loadingApiState() : successApiState({ items: [] }),
+      );
       void Promise.all([
         loadApiResource(() => client.listAgentPresets()),
         loadApiResource(() => client.listAgentConfigs()),
         loadApiResource(() => client.getGitHubCredential()),
-      ]).then(([presetState, configState, credentialState]) => {
+        activeWorkspace
+          ? loadApiResource(() => client.listReviewRules(activeWorkspace.id))
+          : Promise.resolve(successApiState({ items: [] })),
+      ]).then(([presetState, configState, credentialState, ruleState]) => {
         if (canceled) {
           return;
         }
         setPresets(presetState);
         setConfigs(configState);
         setGitHubCredential(credentialState);
+        setReviewRules(ruleState);
 
         if (configState.status === "success" && configState.data[0]) {
           setFormMode("edit");
@@ -1508,7 +1541,7 @@ function AgentSettingsScreen({
     return () => {
       canceled = true;
     };
-  }, [client]);
+  }, [activeWorkspace, client]);
 
   function selectPreset(preset: AgentPreset) {
     setFormMode("create");
@@ -1562,6 +1595,78 @@ function AgentSettingsScreen({
     setGitHubDeleteState(state);
     if (state.status === "success") {
       setGitHubCredential(successApiState({ configured: false }));
+    }
+  }
+
+  async function reloadReviewRules() {
+    if (!client || !activeWorkspace) {
+      setReviewRules(successApiState<ReviewRuleListResponse>({ items: [] }));
+      return;
+    }
+    setReviewRules(loadingApiState());
+    const state = await loadApiResource(() =>
+      client.listReviewRules(activeWorkspace.id),
+    );
+    setReviewRules(state);
+  }
+
+  async function createReviewRule() {
+    if (!client || !activeWorkspace) {
+      setReviewRuleAction(
+        errorApiState(new Error("Open a workspace before saving rules")),
+      );
+      return;
+    }
+    const content = reviewRuleDraft.content.trim();
+    if (!content) {
+      setReviewRuleAction(errorApiState(new Error("Rule content is required")));
+      return;
+    }
+    setReviewRuleAction(loadingApiState());
+    const state = await loadApiResource(() =>
+      client.createReviewRule(activeWorkspace.id, {
+        scope: reviewRuleDraft.scope,
+        rule_type: reviewRuleDraft.ruleType,
+        content,
+        enabled: reviewRuleDraft.enabled,
+      }),
+    );
+    setReviewRuleAction(state);
+    if (state.status === "success") {
+      setReviewRules((current) => upsertReviewRuleState(current, state.data));
+      setReviewRuleDraft(defaultReviewRuleDraft());
+    }
+  }
+
+  async function toggleReviewRule(rule: ReviewRule, enabled: boolean) {
+    if (!client) {
+      setReviewRuleAction(
+        errorApiState(new Error("Backend client is unavailable")),
+      );
+      return;
+    }
+    setReviewRuleAction(loadingApiState());
+    const state = await loadApiResource(() =>
+      client.setReviewRuleEnabled(rule.id, { enabled }),
+    );
+    setReviewRuleAction(state);
+    if (state.status === "success") {
+      setReviewRules((current) => upsertReviewRuleState(current, state.data));
+    }
+  }
+
+  async function deleteReviewRule(rule: ReviewRule) {
+    if (!client) {
+      setReviewRuleAction(
+        errorApiState(new Error("Backend client is unavailable")),
+      );
+      return;
+    }
+    setReviewRuleAction(loadingApiState());
+    const state = await loadApiResource(() => client.deleteReviewRule(rule.id));
+    setReviewRuleAction(state);
+    if (state.status === "success") {
+      setReviewRules((current) => removeReviewRuleState(current, rule.id));
     }
   }
 
@@ -1647,6 +1752,18 @@ function AgentSettingsScreen({
             onDisplayNameChange={setGitHubDisplayName}
             onSave={() => void saveGitHubToken()}
             onTokenChange={setGitHubToken}
+          />
+
+          <ReviewRuleMemoryPanel
+            actionState={reviewRuleAction}
+            draft={reviewRuleDraft}
+            rules={reviewRules}
+            workspace={activeWorkspace}
+            onCreate={() => void createReviewRule()}
+            onDelete={(rule) => void deleteReviewRule(rule)}
+            onDraftChange={setReviewRuleDraft}
+            onReload={() => void reloadReviewRules()}
+            onToggle={(rule, enabled) => void toggleReviewRule(rule, enabled)}
           />
 
           <div className="grid grid-cols-[320px_minmax(0,1fr)] gap-4">
@@ -2251,6 +2368,230 @@ function GitHubCredentialPanel({
   );
 }
 
+function ReviewRuleMemoryPanel({
+  actionState,
+  draft,
+  rules,
+  workspace,
+  onCreate,
+  onDelete,
+  onDraftChange,
+  onReload,
+  onToggle,
+}: {
+  actionState: Loadable<ReviewRule | { deleted: boolean; id: string }>;
+  draft: ReviewRuleDraftState;
+  rules: Loadable<ReviewRuleListResponse>;
+  workspace?: Workspace;
+  onCreate: () => void;
+  onDelete: (rule: ReviewRule) => void;
+  onDraftChange: (draft: ReviewRuleDraftState) => void;
+  onReload: () => void;
+  onToggle: (rule: ReviewRule, enabled: boolean) => void;
+}) {
+  const items = rules.status === "success" ? rules.data.items : [];
+  const isBusy = actionState.status === "loading";
+
+  return (
+    <section className="bg-surface-raised rounded-lg border">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <BookOpenIcon className="size-4" />
+            Review rule memory
+          </div>
+          <div className="text-muted-foreground mt-1 truncate text-xs">
+            Dismissed findings can become local guidance for future review
+            context.
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Badge variant={items.length > 0 ? "secondary" : "outline"}>
+            {items.length} rules
+          </Badge>
+          <TooltipIconButton
+            disabled={!workspace || rules.status === "loading"}
+            label="Refresh review rules"
+            size="icon-sm"
+            variant="ghost"
+            onClick={onReload}
+          >
+            <RefreshCwIcon />
+          </TooltipIconButton>
+        </div>
+      </div>
+
+      {!workspace ? (
+        <div className="p-4">
+          <EmptyState
+            className="border-0 p-0"
+            title="No workspace selected"
+            description="Open a repository before managing local review guidance."
+            icon={BookOpenIcon}
+          />
+        </div>
+      ) : (
+        <div className="grid gap-4 p-4 lg:grid-cols-[minmax(280px,0.65fr)_minmax(0,1fr)]">
+          <div className="flex min-w-0 flex-col gap-3 rounded-md border p-3">
+            <div className="text-sm font-medium">Add rule</div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="flex min-w-0 flex-col gap-2 text-sm font-medium">
+                Scope
+                <NativeSelect
+                  value={draft.scope}
+                  onChange={(event) =>
+                    onDraftChange({ ...draft, scope: event.target.value })
+                  }
+                >
+                  <NativeSelectOption value="workspace">
+                    workspace
+                  </NativeSelectOption>
+                  <NativeSelectOption value="repository">
+                    repository
+                  </NativeSelectOption>
+                  <NativeSelectOption value="path">path</NativeSelectOption>
+                </NativeSelect>
+              </label>
+              <label className="flex min-w-0 flex-col gap-2 text-sm font-medium">
+                Type
+                <NativeSelect
+                  value={draft.ruleType}
+                  onChange={(event) =>
+                    onDraftChange({ ...draft, ruleType: event.target.value })
+                  }
+                >
+                  <NativeSelectOption value="dismissal">
+                    dismissal
+                  </NativeSelectOption>
+                  <NativeSelectOption value="false_positive">
+                    false_positive
+                  </NativeSelectOption>
+                  <NativeSelectOption value="review_guidance">
+                    review_guidance
+                  </NativeSelectOption>
+                  <NativeSelectOption value="custom">custom</NativeSelectOption>
+                </NativeSelect>
+              </label>
+            </div>
+            <label className="flex min-w-0 flex-col gap-2 text-sm font-medium">
+              Guidance
+              <Textarea
+                className="min-h-24 text-sm"
+                maxLength={2000}
+                placeholder="Do not report generated client snapshots unless runtime behavior changes."
+                value={draft.content}
+                onChange={(event) =>
+                  onDraftChange({ ...draft, content: event.target.value })
+                }
+              />
+            </label>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <label className="flex items-center gap-2 text-sm">
+                <Switch
+                  checked={draft.enabled}
+                  size="sm"
+                  onCheckedChange={(enabled) =>
+                    onDraftChange({ ...draft, enabled })
+                  }
+                />
+                Enabled
+              </label>
+              <Button
+                disabled={isBusy || !draft.content.trim()}
+                size="sm"
+                onClick={onCreate}
+              >
+                <PlusIcon data-icon="inline-start" />
+                Add rule
+              </Button>
+            </div>
+            {actionState.status === "error" && (
+              <ErrorState
+                title="Rule update failed"
+                description={actionState.error.message}
+              />
+            )}
+          </div>
+
+          <div className="min-w-0 rounded-md border">
+            <div className="flex items-center justify-between gap-3 border-b px-3 py-2">
+              <div className="min-w-0">
+                <div className="truncate text-sm font-medium">
+                  {workspace.name}
+                </div>
+                <div className="text-muted-foreground truncate text-xs">
+                  Stored locally and injected only when prior decisions are
+                  included.
+                </div>
+              </div>
+            </div>
+            <div className="flex max-h-80 flex-col gap-2 overflow-auto p-3">
+              {rules.status === "loading" && <LoadingRows rows={4} />}
+              {rules.status === "error" && (
+                <ErrorState
+                  className="border-0 p-0"
+                  title="Rules unavailable"
+                  description={rules.error.message}
+                />
+              )}
+              {rules.status === "success" && items.length === 0 && (
+                <EmptyState
+                  className="border-0 p-0"
+                  title="No remembered rules"
+                  description="Dismissed findings can be saved as local guidance from the findings board."
+                  icon={BookOpenIcon}
+                />
+              )}
+              {items.slice(0, 100).map((rule) => (
+                <div
+                  key={rule.id}
+                  className={cn(
+                    "bg-background flex min-w-0 items-start gap-3 rounded-md border p-3",
+                    !rule.enabled && "opacity-70",
+                  )}
+                >
+                  <Switch
+                    checked={rule.enabled}
+                    className="mt-0.5"
+                    disabled={isBusy}
+                    size="sm"
+                    onCheckedChange={(enabled) => onToggle(rule, enabled)}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="mb-2 flex flex-wrap items-center gap-1">
+                      <Badge variant="outline">{rule.scope}</Badge>
+                      <Badge variant="secondary">{rule.rule_type}</Badge>
+                      {!rule.enabled && <Badge variant="outline">off</Badge>}
+                    </div>
+                    <p className="line-clamp-3 text-sm">{rule.content}</p>
+                    <div className="text-muted-foreground mt-2 truncate text-xs">
+                      Updated {formatRelativeAge(rule.updated_at)}
+                    </div>
+                  </div>
+                  <TooltipIconButton
+                    disabled={isBusy}
+                    label="Delete rule"
+                    size="icon-sm"
+                    variant="ghost"
+                    onClick={() => onDelete(rule)}
+                  >
+                    <Trash2Icon />
+                  </TooltipIconButton>
+                </div>
+              ))}
+              {items.length > 100 && (
+                <div className="text-muted-foreground px-1 text-xs">
+                  Showing 100 of {items.length} rules.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function AgentSettingSwitch({
   checked,
   label,
@@ -2300,6 +2641,39 @@ function HealthSummary({ health }: { health: AgentConfigHealth }) {
       )}
     </div>
   );
+}
+
+function defaultReviewRuleDraft(): ReviewRuleDraftState {
+  return {
+    scope: "workspace",
+    ruleType: "dismissal",
+    content: "",
+    enabled: true,
+  };
+}
+
+function upsertReviewRuleState(
+  current: Loadable<ReviewRuleListResponse>,
+  rule: ReviewRule,
+): Loadable<ReviewRuleListResponse> {
+  const items = current.status === "success" ? current.data.items : [];
+  const exists = items.some((item) => item.id === rule.id);
+  const next = exists
+    ? items.map((item) => (item.id === rule.id ? rule : item))
+    : [rule, ...items];
+  return successApiState({ items: next });
+}
+
+function removeReviewRuleState(
+  current: Loadable<ReviewRuleListResponse>,
+  id: string,
+): Loadable<ReviewRuleListResponse> {
+  if (current.status !== "success") {
+    return successApiState({ items: [] });
+  }
+  return successApiState({
+    items: current.data.items.filter((item) => item.id !== id),
+  });
 }
 
 function defaultAgentConfigForm(): AgentConfigFormState {
@@ -4055,6 +4429,8 @@ function ReviewFindingsBoard({
   const [selectedDetail, setSelectedDetail] =
     useState<Loadable<FindingDetailResponse>>(idleApiState());
   const [dismissReason, setDismissReason] = useState("");
+  const [saveDismissalRule, setSaveDismissalRule] = useState(false);
+  const [ruleMemorySuggestion, setRuleMemorySuggestion] = useState("");
   const [draftComment, setDraftComment] = useState("");
   const [boardReloadKey, setBoardReloadKey] = useState(0);
   const boardSessionId = session?.id;
@@ -4233,12 +4609,21 @@ function ReviewFindingsBoard({
       action: decision,
     });
     const state = await loadApiResource(() =>
-      client.updateFindingDecision(finding.id, { decision, reason }),
+      client.updateFindingDecision(finding.id, {
+        decision,
+        reason,
+        rule_memory_suggestion:
+          decision === "dismissed" && saveDismissalRule
+            ? ruleMemorySuggestion.trim() || reason
+            : undefined,
+      }),
     );
     if (state.status === "success") {
       setSelectedDetail(state);
       setSelectedFindingId(state.data.finding.id);
       setDismissReason("");
+      setSaveDismissalRule(false);
+      setRuleMemorySuggestion("");
       setBoardReloadKey((current) => current + 1);
       setActionState({
         status: "success",
@@ -4662,6 +5047,28 @@ function ReviewFindingsBoard({
                 value={dismissReason}
                 onChange={(event) => setDismissReason(event.target.value)}
               />
+              <div className="bg-surface flex flex-col gap-2 rounded-md border p-3">
+                <label className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={saveDismissalRule}
+                    onCheckedChange={(checked) =>
+                      setSaveDismissalRule(checked === true)
+                    }
+                  />
+                  Save dismissal as local rule
+                </label>
+                {saveDismissalRule && (
+                  <Textarea
+                    aria-label="Review rule suggestion"
+                    className="min-h-20 text-sm"
+                    placeholder="Optional guidance. Defaults to the dismissal reason."
+                    value={ruleMemorySuggestion}
+                    onChange={(event) =>
+                      setRuleMemorySuggestion(event.target.value)
+                    }
+                  />
+                )}
+              </div>
 
               <div className="flex flex-wrap items-center gap-2">
                 <Button

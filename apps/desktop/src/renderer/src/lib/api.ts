@@ -206,6 +206,39 @@ export interface DeleteGitHubCredentialResponse {
   storage_key?: string;
 }
 
+export interface ReviewRule {
+  id: string;
+  workspace_id: string;
+  scope: string;
+  rule_type: string;
+  content: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReviewRuleListResponse {
+  items: ReviewRule[];
+}
+
+export interface CreateReviewRuleRequest {
+  scope?: string;
+  rule_type?: string;
+  content: string;
+  enabled?: boolean;
+}
+
+export interface UpdateReviewRuleRequest {
+  scope?: string;
+  rule_type?: string;
+  content?: string;
+  enabled?: boolean;
+}
+
+export interface SetReviewRuleEnabledRequest {
+  enabled: boolean;
+}
+
 export interface ReviewSession {
   id: string;
   workspace_id: string;
@@ -899,6 +932,62 @@ export class ApiClient {
   ) {
     return this.delete<DeleteGitHubCredentialResponse>(
       "/api/credentials/github",
+      options,
+    );
+  }
+
+  listReviewRules(
+    workspaceId: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.get<ReviewRuleListResponse>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/review-rules`,
+      options,
+    );
+  }
+
+  createReviewRule(
+    workspaceId: string,
+    body: CreateReviewRuleRequest,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.post<ReviewRule>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/review-rules`,
+      body,
+      options,
+    );
+  }
+
+  updateReviewRule(
+    id: string,
+    body: UpdateReviewRuleRequest,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.patch<ReviewRule>(
+      `/api/review-rules/${encodeURIComponent(id)}`,
+      body,
+      options,
+    );
+  }
+
+  setReviewRuleEnabled(
+    id: string,
+    body: SetReviewRuleEnabledRequest,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.patch<ReviewRule>(
+      `/api/review-rules/${encodeURIComponent(id)}/enabled`,
+      body,
+      options,
+    );
+  }
+
+  deleteReviewRule(
+    id: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.delete<{ deleted: boolean; id: string }>(
+      `/api/review-rules/${encodeURIComponent(id)}`,
       options,
     );
   }

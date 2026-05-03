@@ -3,6 +3,9 @@ package agentrun
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -127,12 +130,33 @@ func TestRunnerPersistsTimedOutCommandRun(t *testing.T) {
 
 	env := setupOutputRecorder(t)
 	task := runnerTask(env, "agent_run_timeout")
-	task.Limits.Timeout = 20 * time.Millisecond
-	command := writeFakeAgent(t, "#!/bin/sh\n/bin/sleep 1\n")
-	result, err := runnerWithClock(env).Execute(context.Background(), RunParams{
+	driver := &scriptedDriver{
+		events: []agents.AgentEvent{
+			{
+				Type:     agents.EventOutput,
+				RunID:    task.RunID,
+				Stream:   "stdout",
+				Text:     "partial before timeout\n",
+				Metadata: map[string]any{"limit_bytes": int64(1 << 20)},
+			},
+			{
+				Type:      agents.EventCanceled,
+				RunID:     task.RunID,
+				ErrorCode: "timeout",
+				Error:     context.DeadlineExceeded.Error(),
+			},
+		},
+	}
+	runner := runnerWithClock(env)
+	runner.Driver = driver
+	result, err := runner.Execute(context.Background(), RunParams{
 		WorkspaceID: env.WorkspaceID,
-		Config:      runnerConfig(command),
+		Config:      runnerConfig("fake-agent"),
 		Task:        task,
+		TimeoutPolicy: TimeoutPolicy{
+			AgentTimeout:  time.Second,
+			ReviewTimeout: 200 * time.Millisecond,
+		},
 	})
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -140,8 +164,73 @@ func TestRunnerPersistsTimedOutCommandRun(t *testing.T) {
 	if result.Run.Status != RunStatusTimedOut ||
 		result.Run.ErrorCode.String != "timeout" ||
 		!strings.Contains(result.Run.ErrorMessage.String, "deadline") ||
-		result.Run.DurationMs.Int64 != 2000 {
+		result.Run.DurationMs.Int64 != 2000 ||
+		!result.Run.StdoutArtifactID.Valid {
 		t.Fatalf("run = %+v", result.Run)
+	}
+	stdout, _, err := env.Artifacts.Read(context.Background(), result.Run.StdoutArtifactID.String)
+	if err != nil {
+		t.Fatalf("Read(stdout) error = %v", err)
+	}
+	if string(stdout) != "partial before timeout\n" {
+		t.Fatalf("stdout = %q", string(stdout))
+	}
+	if driver.task.Limits.Timeout != 200*time.Millisecond {
+		t.Fatalf("driver task timeout = %s, want 200ms", driver.task.Limits.Timeout)
+	}
+	assertRunMetadata(t, result.Run.MetadataJson, map[string]any{
+		"agent_config_id": task.AgentConfigID,
+		"task_id":         task.ID,
+	})
+	assertRunTimeoutMetadata(t, result.Run.MetadataJson, "review")
+}
+
+func TestRunnerMarksExpiredReviewLimitWithoutLaunchingCommand(t *testing.T) {
+	t.Parallel()
+
+	env := setupOutputRecorder(t)
+	task := runnerTask(env, "agent_run_review_expired")
+	markerPath := filepath.Join(t.TempDir(), "started")
+	command := writeFakeAgent(t, "#!/bin/sh\nprintf started > \"$1\"\n")
+	start := time.Date(2026, 5, 3, 0, 0, 0, 0, time.UTC)
+	result, err := runnerWithClockAt(env, start).Execute(context.Background(), RunParams{
+		WorkspaceID: env.WorkspaceID,
+		Config:      runnerConfigWithArgs(command, []string{markerPath}),
+		Task:        task,
+		TimeoutPolicy: TimeoutPolicy{
+			ReviewDeadline: start.Add(-time.Millisecond),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if result.Run.Status != RunStatusTimedOut ||
+		result.Run.ErrorCode.String != "timeout" ||
+		!strings.Contains(result.Run.ErrorMessage.String, "runtime limit exceeded") ||
+		result.Run.StdoutArtifactID.Valid ||
+		result.Run.StderrArtifactID.Valid {
+		t.Fatalf("run = %+v", result.Run)
+	}
+	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("marker stat error = %v, want not executed", err)
+	}
+	assertRunTimeoutMetadata(t, result.Run.MetadataJson, "review_deadline")
+}
+
+func TestTimeoutPolicyRejectsNegativeLimits(t *testing.T) {
+	t.Parallel()
+
+	env := setupOutputRecorder(t)
+	_, err := runnerWithClock(env).Execute(context.Background(), RunParams{
+		WorkspaceID: env.WorkspaceID,
+		Config:      runnerConfig(writeFakeAgent(t, "#!/bin/sh\nexit 0\n")),
+		Task:        runnerTask(env, "agent_run_bad_timeout"),
+		TimeoutPolicy: TimeoutPolicy{
+			AgentTimeoutSeconds: -1,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "negative") {
+		t.Fatalf("Execute() error = %v, want negative timeout error", err)
 	}
 }
 
@@ -181,15 +270,23 @@ func runnerTask(env outputRecorderEnv, runID string) agents.AgentTask {
 }
 
 func runnerConfig(command string) agents.ConnectionConfig {
+	return runnerConfigWithArgs(command, nil)
+}
+
+func runnerConfigWithArgs(command string, args []string) agents.ConnectionConfig {
 	return agents.ConnectionConfig{
 		AdapterID: "agent_config_1",
 		Kind:      agents.AdapterCLINonInteractive,
 		Command:   command,
+		Args:      args,
 	}
 }
 
 func runnerWithClock(env outputRecorderEnv) Runner {
-	start := time.Date(2026, 5, 3, 0, 0, 0, 0, time.UTC)
+	return runnerWithClockAt(env, time.Date(2026, 5, 3, 0, 0, 0, 0, time.UTC))
+}
+
+func runnerWithClockAt(env outputRecorderEnv, start time.Time) Runner {
 	calls := 0
 	return Runner{
 		Queries:   env.Queries,
@@ -219,4 +316,47 @@ func assertRunMetadata(t *testing.T, raw string, want map[string]any) {
 			t.Fatalf("metadata[%s] = %v, want %v; metadata = %+v", key, got[key], value, got)
 		}
 	}
+}
+
+func assertRunTimeoutMetadata(t *testing.T, raw string, source string) {
+	t.Helper()
+
+	var got map[string]any
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("Unmarshal(metadata) error = %v", err)
+	}
+	policy, ok := got["timeout_policy"].(map[string]any)
+	if !ok {
+		t.Fatalf("timeout_policy metadata missing in %+v", got)
+	}
+	if policy["effective_timeout_source"] != source {
+		t.Fatalf("timeout source = %v, want %s; policy = %+v", policy["effective_timeout_source"], source, policy)
+	}
+}
+
+type scriptedDriver struct {
+	task   agents.AgentTask
+	events []agents.AgentEvent
+}
+
+func (d *scriptedDriver) Open(context.Context, agents.ConnectionConfig) (agents.Connection, error) {
+	return scriptedConnection{driver: d}, nil
+}
+
+type scriptedConnection struct {
+	driver *scriptedDriver
+}
+
+func (c scriptedConnection) SendTask(_ context.Context, task agents.AgentTask) (<-chan agents.AgentEvent, error) {
+	c.driver.task = task
+	events := make(chan agents.AgentEvent, len(c.driver.events))
+	for _, event := range c.driver.events {
+		events <- event
+	}
+	close(events)
+	return events, nil
+}
+
+func (scriptedConnection) Close(context.Context) error {
+	return nil
 }

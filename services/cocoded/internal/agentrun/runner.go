@@ -35,10 +35,11 @@ type Runner struct {
 }
 
 type RunParams struct {
-	WorkspaceID string
-	Config      agents.ConnectionConfig
-	Task        agents.AgentTask
-	Metadata    map[string]any
+	WorkspaceID   string
+	Config        agents.ConnectionConfig
+	Task          agents.AgentTask
+	TimeoutPolicy TimeoutPolicy
+	Metadata      map[string]any
 }
 
 type RunResult struct {
@@ -81,7 +82,12 @@ func (r Runner) Execute(ctx context.Context, params RunParams) (RunResult, error
 	if strings.TrimSpace(config.AdapterID) == "" {
 		config.AdapterID = task.AgentConfigID
 	}
-	metadataJSON, err := runMetadataJSON(params.Metadata, task)
+	startedAt := r.now()
+	task, timeoutMetadata, preflightOutcome, err := params.TimeoutPolicy.Apply(startedAt, task)
+	if err != nil {
+		return RunResult{}, err
+	}
+	metadataJSON, err := runMetadataJSON(mergeRunMetadata(params.Metadata, map[string]any{"timeout_policy": timeoutMetadata}), task)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -100,7 +106,6 @@ func (r Runner) Execute(ctx context.Context, params RunParams) (RunResult, error
 	}
 	persistCtx := context.WithoutCancel(ctx)
 
-	startedAt := r.now()
 	result := RunResult{
 		Run: run,
 		Events: []agents.AgentEvent{{
@@ -118,6 +123,13 @@ func (r Runner) Execute(ctx context.Context, params RunParams) (RunResult, error
 		return result, fmt.Errorf("mark agent run running: %w", err)
 	}
 	result.Run = run
+	if preflightOutcome != nil {
+		completedAt := r.now()
+		result.Events = append(result.Events, syntheticTerminalEvent(run.ID, completedAt, *preflightOutcome))
+		finished, err := r.finishRun(persistCtx, run, startedAt, completedAt, *preflightOutcome)
+		result.Run = finished
+		return result, err
+	}
 
 	connection, err := r.driver().Open(ctx, config)
 	if err != nil {
@@ -321,6 +333,22 @@ func runMetadataJSON(metadata map[string]any, task agents.AgentTask) (string, er
 		return "", fmt.Errorf("encode agent run metadata: %w", err)
 	}
 	return string(data), nil
+}
+
+func mergeRunMetadata(base map[string]any, extra map[string]any) map[string]any {
+	if len(base) == 0 && len(extra) == 0 {
+		return nil
+	}
+	merged := make(map[string]any, len(base)+len(extra))
+	for key, value := range base {
+		merged[key] = value
+	}
+	for key, value := range extra {
+		if value != nil {
+			merged[key] = value
+		}
+	}
+	return merged
 }
 
 func (r Runner) driver() agents.ConnectionDriver {

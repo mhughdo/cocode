@@ -237,7 +237,7 @@ exit 0
 	}
 }
 
-func TestAgentPresetsEndpointIncludesCodexCLI(t *testing.T) {
+func TestAgentPresetsEndpointIncludesBuiltInCLIs(t *testing.T) {
 	router := testRouter(t)
 
 	request := httptest.NewRequest(http.MethodGet, "/api/agents/presets", nil)
@@ -251,13 +251,7 @@ func TestAgentPresetsEndpointIncludesCodexCLI(t *testing.T) {
 	if len(presets) == 0 {
 		t.Fatal("presets empty")
 	}
-	var codex AgentPresetResponse
-	for _, preset := range presets {
-		if preset.ID == "codex-cli" {
-			codex = preset
-			break
-		}
-	}
+	codex := findAgentPreset(t, presets, "codex-cli")
 	if codex.ID == "" ||
 		codex.Command != "codex" ||
 		len(codex.Args) != 3 ||
@@ -270,6 +264,19 @@ func TestAgentPresetsEndpointIncludesCodexCLI(t *testing.T) {
 		!codex.Capabilities.SupportsOutputMode(agents.OutputJSONL) ||
 		!json.Valid(codex.Settings) {
 		t.Fatalf("codex preset = %+v", codex)
+	}
+	claude := findAgentPreset(t, presets, "claude-code-cli")
+	if claude.Command != "claude" ||
+		len(claude.Args) != 4 ||
+		claude.Args[0] != "-p" ||
+		claude.Args[1] != agents.PromptArgPlaceholder ||
+		claude.Args[2] != "--output-format" ||
+		claude.Args[3] != "json" ||
+		claude.OutputMode != agents.OutputJSON ||
+		claude.ModelLabel != "claude" ||
+		!claude.Capabilities.SupportsOutputMode(agents.OutputJSON) ||
+		!json.Valid(claude.Settings) {
+		t.Fatalf("claude preset = %+v", claude)
 	}
 }
 
@@ -987,6 +994,18 @@ func decodeAgentPresetListResponse(t *testing.T, content []byte) []AgentPresetRe
 		t.Fatalf("agent preset list error = %+v", envelope.Error)
 	}
 	return envelope.Data
+}
+
+func findAgentPreset(t *testing.T, presets []AgentPresetResponse, id string) AgentPresetResponse {
+	t.Helper()
+
+	for _, preset := range presets {
+		if preset.ID == id {
+			return preset
+		}
+	}
+	t.Fatalf("preset %q missing from %+v", id, presets)
+	return AgentPresetResponse{}
 }
 
 func writeFakeAgentConfigCommand(t *testing.T, content string) string {

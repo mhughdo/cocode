@@ -25,7 +25,7 @@ type Preset struct {
 }
 
 func List() []Preset {
-	return []Preset{CodexCLI()}
+	return []Preset{CodexCLI(), ClaudeCodeCLI()}
 }
 
 func CodexCLI() Preset {
@@ -49,6 +49,32 @@ func CodexCLI() Preset {
 			CanRead:           true,
 			CanCancel:         true,
 			OutputModes:       []agents.OutputMode{agents.OutputJSONL, agents.OutputNDJSON, agents.OutputText},
+		},
+		Settings: settings,
+		Enabled:  true,
+	}
+}
+
+func ClaudeCodeCLI() Preset {
+	settings := json.RawMessage(`{"prompt_delivery":"arg","timeout_seconds":1800,"version_args":["--version"],"smoke_prompt_enabled":false}`)
+	return Preset{
+		ID:             "claude-code-cli",
+		Name:           "Claude Code CLI",
+		Description:    "Runs Claude Code in non-interactive print mode and captures a JSON result payload.",
+		Role:           "primary_reviewer",
+		AdapterKind:    agents.AdapterCLINonInteractive,
+		Command:        "claude",
+		Args:           []string{"-p", agents.PromptArgPlaceholder, "--output-format", "json"},
+		CWDMode:        "repo_root",
+		EnvAllowlist:   []string{"ANTHROPIC_API_KEY"},
+		OutputMode:     agents.OutputJSON,
+		ModelLabel:     "claude",
+		ReasoningLabel: "",
+		Capabilities: agents.AgentCapabilities{
+			SupportsJSON: true,
+			CanRead:      true,
+			CanCancel:    true,
+			OutputModes:  []agents.OutputMode{agents.OutputJSON, agents.OutputJSONL, agents.OutputText},
 		},
 		Settings: settings,
 		Enabled:  true,

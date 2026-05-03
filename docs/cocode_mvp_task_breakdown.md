@@ -212,7 +212,7 @@ Large parallel workstreams:
 | T102 | Implement fake JSON agent | Test fixture CLI that emits valid finding JSON. | Done | T093 | T170, T360 | Fixture documented and used in tests. |
 | T103 | Implement fake malformed agent | Test fixture CLI that emits malformed output. | Done | T093 | T178, T360 | Fixture used for repair/error tests. |
 | T104 | Add Codex CLI preset | Add configurable preset for Codex CLI non-interactive usage. | Done | T092, T093 | T105-T107 | Preset appears in UI; health check can validate command if installed. |
-| T105 | Add Claude Code CLI preset | Add configurable preset for Claude `-p`/JSON mode. | Not started | T092, T093 | T104,T106 | Preset appears in UI; docs explain required local auth. |
+| T105 | Add Claude Code CLI preset | Add configurable preset for Claude `-p`/JSON mode. | Done | T092, T093 | T104,T106 | Preset appears in UI; docs explain required local auth. |
 | T106 | Add Gemini CLI preset | Add configurable generic CLI preset for Gemini non-interactive mode; note future ACP. | Not started | T092, T093 | T104,T105 | Preset appears; no ACP assumption in MVP. |
 | T107 | Add custom CLI preset | User can create arbitrary CLI adapter config. | Not started | T092 | T248 | Custom command can be saved, health checked, and used in review. |
 | T108 | Add JSON-RPC stdio skeleton | Create disabled/future connection driver skeleton for Codex App Server/ACP. | Not started | T090 | T109 | Interfaces compile; no MVP feature depends on it; documented as future. |

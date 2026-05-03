@@ -155,8 +155,8 @@ Large parallel workstreams:
 | T050 | Add SQLite connection manager | Open DB, set WAL/foreign keys/busy timeout, close cleanly. | Done | T045 | T051 | DB opens in dev/prod path; pragmas applied; tests use temp DB. |
 | T051 | Add migration runner | Implement migrations with version tracking. | Done | T050 | T052 | Fresh DB migrates; repeated migration is idempotent; migration failure is reported. |
 | T052 | Implement schema v1 | Add core tables from TDD: workspaces, snapshots, sessions, agents, findings, evidence, graph, packets, publications. | Done | T051 | T053 | Schema applies cleanly; foreign keys enforced; indexes created. |
-| T053 | Configure sqlc | Add sqlc config and initial query files. | Not started | T052 | T054 | Generated Go code compiles; queries are type-safe. |
-| T054 | Implement Workspace queries | CRUD/list workspace queries. | Not started | T053 | T070 | Unit tests cover create/get/list/update. |
+| T053 | Configure sqlc | Add sqlc config and initial query files. | Done | T052 | T054 | Generated Go code compiles; queries are type-safe. |
+| T054 | Implement Workspace queries | CRUD/list workspace queries. | Done | T053 | T070 | Unit tests cover create/get/list/update. |
 | T055 | Implement Snapshot queries | CRUD PR snapshot and changed-file queries. | Not started | T053 | T075 | Tests cover snapshot creation and changed file lookup. |
 | T056 | Implement ReviewSession queries | CRUD review sessions and status updates. | Not started | T053 | T140 | Tests cover state transitions. |
 | T057 | Implement Agent queries | CRUD agent configs/session agents/runs. | Not started | T053 | T090 | Tests cover agent config and run lifecycle. |

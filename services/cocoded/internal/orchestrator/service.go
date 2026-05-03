@@ -19,6 +19,7 @@ import (
 	"github.com/hughdo/cocode/services/cocoded/internal/contextbundle"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
 	"github.com/hughdo/cocode/services/cocoded/internal/eventlog"
+	"github.com/hughdo/cocode/services/cocoded/internal/evidence"
 	"github.com/hughdo/cocode/services/cocoded/internal/findingengine"
 )
 
@@ -72,6 +73,7 @@ type Service struct {
 	Artifacts      *artifact.Store
 	Events         EventLog
 	AgentManager   *agentrun.Manager
+	Evidence       *evidence.Service
 	PromptTemplate string
 	Background     context.Context
 	Now            func() time.Time
@@ -656,6 +658,10 @@ func (s *Service) run(ctx context.Context, reviewSessionID string) error {
 			runPhase = func() error {
 				return s.deduplicateFindings(ctx, session)
 			}
+		case PhaseVerifyFindings:
+			runPhase = func() error {
+				return s.verifyFindings(ctx, session, repository)
+			}
 		}
 		if err := s.withPhase(ctx, session.ID, phase, runPhase); err != nil {
 			return err
@@ -1089,6 +1095,30 @@ func candidateLinkRelation(representative dbgen.FindingCandidate, candidate dbge
 		return "exact_duplicate"
 	}
 	return "overlap_duplicate"
+}
+
+func (s *Service) verifyFindings(ctx context.Context, session dbgen.ReviewSession, repository dbgen.Repository) error {
+	verifier := s.Evidence
+	if verifier == nil {
+		verifier = &evidence.Service{Queries: s.Queries}
+	}
+	summary, err := verifier.VerifySession(ctx, session, repository)
+	if err != nil {
+		return err
+	}
+	return s.appendEvent(ctx, appendEventParams{
+		ReviewSessionID: session.ID,
+		Type:            "FindingVerificationCompleted",
+		Payload: map[string]any{
+			"phase":                  PhaseVerifyFindings,
+			"finding_count":          summary.Findings,
+			"evidence_items_created": summary.EvidenceItemsCreated,
+			"by_verification_status": summary.ByVerificationStatus,
+			"supporting_evidence":    summary.SupportingEvidence,
+			"counter_evidence":       summary.CounterEvidence,
+			"missing_evidence":       summary.MissingEvidence,
+		},
+	})
 }
 
 func (s *Service) connectionConfig(item runContext) (agents.ConnectionConfig, agents.TaskLimits, error) {

@@ -19,6 +19,7 @@ import (
 	"github.com/hughdo/cocode/services/cocoded/internal/db"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
 	"github.com/hughdo/cocode/services/cocoded/internal/eventlog"
+	"github.com/hughdo/cocode/services/cocoded/internal/evidence"
 )
 
 func TestReviewSessionStatusTransitionMatrix(t *testing.T) {
@@ -571,6 +572,7 @@ func setupWorkflowEnv(t *testing.T) workflowEnv {
 		ContextBuilder: &contextbundle.Service{Queries: queries, Artifacts: artifactStore},
 		Artifacts:      artifactStore,
 		Events:         events,
+		Evidence:       &evidence.Service{Queries: queries, Searcher: workflowEvidenceSearcher{}},
 		AgentManager: &agentrun.Manager{
 			Runner: agentrun.Runner{
 				Queries:   queries,
@@ -737,6 +739,12 @@ func (d *workflowDriver) Open(context.Context, agents.ConnectionConfig) (agents.
 
 type workflowConnection struct {
 	driver *workflowDriver
+}
+
+type workflowEvidenceSearcher struct{}
+
+func (workflowEvidenceSearcher) Search(context.Context, evidence.SearchOptions) ([]evidence.SearchMatch, error) {
+	return nil, nil
 }
 
 func (c workflowConnection) SendTask(_ context.Context, task agents.AgentTask) (<-chan agents.AgentEvent, error) {

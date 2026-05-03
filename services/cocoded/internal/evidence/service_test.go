@@ -1,0 +1,432 @@
+package evidence
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/hughdo/cocode/services/cocoded/internal/db"
+	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
+)
+
+func TestVerifySessionCreatesPrimaryAndCounterEvidence(t *testing.T) {
+	t.Parallel()
+
+	env := setupEvidenceEnv(t)
+	finding := createEvidenceFinding(t, env.Queries, dbgen.CreateFindingParams{
+		ID:                 "finding_auth",
+		ReviewSessionID:    "session_1",
+		CanonicalClaim:     "Settings mutation lacks admin guard",
+		Category:           "security",
+		Severity:           "high",
+		Confidence:         0.92,
+		VerificationStatus: StatusUnverified,
+		DecisionStatus:     "undecided",
+		PrimaryPath:        nullableTestString("src/handler.go"),
+		PrimaryStartLine:   nullableTestInt64(4),
+		PrimaryEndLine:     nullableTestInt64(4),
+		Fingerprint:        "fp_auth",
+		MergedFromCount:    1,
+		FirstSeenAt:        "2026-05-03T00:04:00Z",
+		UpdatedAt:          "2026-05-03T00:04:00Z",
+	})
+	env.Searcher.matches = map[string][]SearchMatch{
+		"admin": {
+			{Path: "src/auth.go", Line: 2, Text: "func RequireAdmin() bool { return true }"},
+			{Path: "src/handler_test.go", Line: 5, Text: "func TestRequireAdmin(t *testing.T) {}"},
+		},
+	}
+
+	summary, err := env.Service.VerifySession(context.Background(), env.Session, env.Repository)
+	if err != nil {
+		t.Fatalf("VerifySession() error = %v", err)
+	}
+	if summary.Findings != 1 ||
+		summary.EvidenceItemsCreated != 3 ||
+		summary.SupportingEvidence != 1 ||
+		summary.CounterEvidence != 2 ||
+		summary.ByVerificationStatus[StatusPlausible] != 1 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	updated, err := env.Queries.GetFinding(context.Background(), finding.ID)
+	if err != nil {
+		t.Fatalf("GetFinding() error = %v", err)
+	}
+	if updated.VerificationStatus != StatusPlausible ||
+		!strings.Contains(nullableTestValue(updated.EvidenceSummary), "Primary changed code") ||
+		!strings.Contains(nullableTestValue(updated.CounterEvidenceSummary), "Potential counter-evidence") {
+		t.Fatalf("updated finding = %+v", updated)
+	}
+	items, err := env.Queries.ListEvidenceItemsByFinding(context.Background(), finding.ID)
+	if err != nil {
+		t.Fatalf("ListEvidenceItemsByFinding() error = %v", err)
+	}
+	if len(items) != 3 ||
+		countEvidenceKind(items, KindSupporting) != 1 ||
+		countEvidenceKind(items, KindCounter) != 1 ||
+		countEvidenceKind(items, KindTest) != 1 {
+		t.Fatalf("items = %+v", items)
+	}
+	var metadata map[string]any
+	supporting := evidenceItemByKind(t, items, KindSupporting)
+	if err := json.Unmarshal([]byte(supporting.MetadataJson), &metadata); err != nil {
+		t.Fatalf("decode metadata: %v", err)
+	}
+	if metadata["producer"] != "local_verifier" ||
+		metadata["source"] != "primary_location" ||
+		!strings.Contains(metadata["code_snippet"].(string), "RequireAdmin") {
+		t.Fatalf("metadata = %+v", metadata)
+	}
+}
+
+func TestVerifySessionAssignsVerifiedWhenNoCounterEvidence(t *testing.T) {
+	t.Parallel()
+
+	env := setupEvidenceEnv(t)
+	createEvidenceFinding(t, env.Queries, dbgen.CreateFindingParams{
+		ID:                 "finding_verified",
+		ReviewSessionID:    "session_1",
+		CanonicalClaim:     "Settings mutation lacks admin guard",
+		Category:           "security",
+		Severity:           "high",
+		Confidence:         0.92,
+		VerificationStatus: StatusUnverified,
+		DecisionStatus:     "undecided",
+		PrimaryPath:        nullableTestString("src/handler.go"),
+		PrimaryStartLine:   nullableTestInt64(4),
+		PrimaryEndLine:     nullableTestInt64(4),
+		Fingerprint:        "fp_verified",
+		MergedFromCount:    1,
+		FirstSeenAt:        "2026-05-03T00:04:00Z",
+		UpdatedAt:          "2026-05-03T00:04:00Z",
+	})
+
+	summary, err := env.Service.VerifySession(context.Background(), env.Session, env.Repository)
+	if err != nil {
+		t.Fatalf("VerifySession() error = %v", err)
+	}
+	if summary.ByVerificationStatus[StatusVerified] != 1 {
+		t.Fatalf("summary = %+v", summary)
+	}
+}
+
+func TestVerifySessionAssignsNeedsHumanForMissingLocation(t *testing.T) {
+	t.Parallel()
+
+	env := setupEvidenceEnv(t)
+	createEvidenceFinding(t, env.Queries, dbgen.CreateFindingParams{
+		ID:                 "finding_missing",
+		ReviewSessionID:    "session_1",
+		CanonicalClaim:     "A claim without a location",
+		Category:           "correctness",
+		Severity:           "medium",
+		Confidence:         0.5,
+		VerificationStatus: StatusUnverified,
+		DecisionStatus:     "undecided",
+		Fingerprint:        "fp_missing",
+		MergedFromCount:    1,
+		FirstSeenAt:        "2026-05-03T00:04:00Z",
+		UpdatedAt:          "2026-05-03T00:04:00Z",
+	})
+
+	summary, err := env.Service.VerifySession(context.Background(), env.Session, env.Repository)
+	if err != nil {
+		t.Fatalf("VerifySession() error = %v", err)
+	}
+	if summary.ByVerificationStatus[StatusNeedsHuman] != 1 || summary.MissingEvidence != 1 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	items, err := env.Queries.ListEvidenceItemsByFinding(context.Background(), "finding_missing")
+	if err != nil {
+		t.Fatalf("ListEvidenceItemsByFinding() error = %v", err)
+	}
+	if len(items) != 1 || items[0].Kind != KindMissing {
+		t.Fatalf("items = %+v", items)
+	}
+}
+
+func TestVerifySessionAssignsNotActionableForWeakUnlocatedClaim(t *testing.T) {
+	t.Parallel()
+
+	env := setupEvidenceEnv(t)
+	createEvidenceFinding(t, env.Queries, dbgen.CreateFindingParams{
+		ID:                 "finding_weak",
+		ReviewSessionID:    "session_1",
+		CanonicalClaim:     "This might be a little confusing",
+		Category:           "other",
+		Severity:           "low",
+		Confidence:         0.2,
+		VerificationStatus: StatusUnverified,
+		DecisionStatus:     "undecided",
+		Fingerprint:        "fp_weak",
+		MergedFromCount:    1,
+		FirstSeenAt:        "2026-05-03T00:04:00Z",
+		UpdatedAt:          "2026-05-03T00:04:00Z",
+	})
+
+	summary, err := env.Service.VerifySession(context.Background(), env.Session, env.Repository)
+	if err != nil {
+		t.Fatalf("VerifySession() error = %v", err)
+	}
+	if summary.ByVerificationStatus[StatusNotActionable] != 1 {
+		t.Fatalf("summary = %+v", summary)
+	}
+}
+
+func TestVerifySessionReplacesPriorLocalVerifierEvidence(t *testing.T) {
+	t.Parallel()
+
+	env := setupEvidenceEnv(t)
+	createEvidenceFinding(t, env.Queries, dbgen.CreateFindingParams{
+		ID:                 "finding_rerun",
+		ReviewSessionID:    "session_1",
+		CanonicalClaim:     "Settings mutation lacks admin guard",
+		Category:           "security",
+		Severity:           "high",
+		Confidence:         0.92,
+		VerificationStatus: StatusUnverified,
+		DecisionStatus:     "undecided",
+		PrimaryPath:        nullableTestString("src/handler.go"),
+		PrimaryStartLine:   nullableTestInt64(4),
+		PrimaryEndLine:     nullableTestInt64(4),
+		Fingerprint:        "fp_rerun",
+		MergedFromCount:    1,
+		FirstSeenAt:        "2026-05-03T00:04:00Z",
+		UpdatedAt:          "2026-05-03T00:04:00Z",
+	})
+
+	if _, err := env.Queries.CreateEvidenceItem(context.Background(), dbgen.CreateEvidenceItemParams{
+		ID:           "old_local",
+		FindingID:    "finding_rerun",
+		Kind:         KindSupporting,
+		Title:        "old",
+		Summary:      "old local verifier evidence",
+		Confidence:   1,
+		MetadataJson: `{"producer":"local_verifier"}`,
+		CreatedAt:    "2026-05-03T00:05:00Z",
+	}); err != nil {
+		t.Fatalf("CreateEvidenceItem(local) error = %v", err)
+	}
+	if _, err := env.Queries.CreateEvidenceItem(context.Background(), dbgen.CreateEvidenceItemParams{
+		ID:           "agent_evidence",
+		FindingID:    "finding_rerun",
+		Kind:         KindAgent,
+		Title:        "agent",
+		Summary:      "agent evidence should be preserved",
+		Confidence:   1,
+		MetadataJson: `{"producer":"agent"}`,
+		CreatedAt:    "2026-05-03T00:06:00Z",
+	}); err != nil {
+		t.Fatalf("CreateEvidenceItem(agent) error = %v", err)
+	}
+
+	if _, err := env.Service.VerifySession(context.Background(), env.Session, env.Repository); err != nil {
+		t.Fatalf("VerifySession() error = %v", err)
+	}
+	items, err := env.Queries.ListEvidenceItemsByFinding(context.Background(), "finding_rerun")
+	if err != nil {
+		t.Fatalf("ListEvidenceItemsByFinding() error = %v", err)
+	}
+	ids := map[string]bool{}
+	for _, item := range items {
+		ids[item.ID] = true
+	}
+	if ids["old_local"] || !ids["agent_evidence"] || len(items) != 2 {
+		t.Fatalf("items after rerun = %+v", items)
+	}
+}
+
+type evidenceEnv struct {
+	Database   *sql.DB
+	Queries    *dbgen.Queries
+	Service    *Service
+	Searcher   *fakeEvidenceSearcher
+	Session    dbgen.ReviewSession
+	Repository dbgen.Repository
+}
+
+type fakeEvidenceSearcher struct {
+	matches map[string][]SearchMatch
+	err     error
+}
+
+func (s *fakeEvidenceSearcher) Search(_ context.Context, options SearchOptions) ([]SearchMatch, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	matches := append([]SearchMatch(nil), s.matches[options.Query]...)
+	if options.Limit > 0 && len(matches) > options.Limit {
+		matches = matches[:options.Limit]
+	}
+	return matches, nil
+}
+
+func setupEvidenceEnv(t *testing.T) evidenceEnv {
+	t.Helper()
+
+	database, err := db.Open(context.Background(), db.MemoryDatabase)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := db.Apply(context.Background(), database, db.Migrations); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	queries := dbgen.New(database)
+	repoPath := t.TempDir()
+	writeEvidenceRepoFile(t, repoPath, "src/handler.go", strings.Join([]string{
+		"package src",
+		"",
+		"func UpdateSettings() {",
+		"    _ = RequireAdmin()",
+		"}",
+	}, "\n")+"\n")
+	writeEvidenceRepoFile(t, repoPath, "src/auth.go", "package src\n\nfunc RequireAdmin() bool { return true }\n")
+	createEvidenceBaseRows(t, queries, repoPath)
+	searcher := &fakeEvidenceSearcher{matches: map[string][]SearchMatch{}}
+	service := &Service{
+		Queries:  queries,
+		Searcher: searcher,
+		Now: func() time.Time {
+			return time.Date(2026, 5, 3, 0, 10, 0, 0, time.UTC)
+		},
+		ContextLines: 1,
+	}
+	session, err := queries.GetReviewSession(context.Background(), "session_1")
+	if err != nil {
+		t.Fatalf("GetReviewSession() error = %v", err)
+	}
+	repository, err := queries.GetRepository(context.Background(), "repo_1")
+	if err != nil {
+		t.Fatalf("GetRepository() error = %v", err)
+	}
+	return evidenceEnv{
+		Database:   database,
+		Queries:    queries,
+		Service:    service,
+		Searcher:   searcher,
+		Session:    session,
+		Repository: repository,
+	}
+}
+
+func createEvidenceBaseRows(t *testing.T, queries *dbgen.Queries, repoPath string) {
+	t.Helper()
+
+	if _, err := queries.CreateWorkspace(context.Background(), dbgen.CreateWorkspaceParams{
+		ID:           "workspace_1",
+		Name:         "cocode",
+		RootPath:     repoPath,
+		SettingsJson: "{}",
+		CreatedAt:    "2026-05-03T00:00:00Z",
+		UpdatedAt:    "2026-05-03T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace() error = %v", err)
+	}
+	repository, err := queries.CreateRepository(context.Background(), dbgen.CreateRepositoryParams{
+		ID:          "repo_1",
+		WorkspaceID: "workspace_1",
+		Name:        "cocode",
+		LocalPath:   repoPath,
+		CreatedAt:   "2026-05-03T00:01:00Z",
+		UpdatedAt:   "2026-05-03T00:01:00Z",
+	})
+	if err != nil {
+		t.Fatalf("CreateRepository() error = %v", err)
+	}
+	if _, err := queries.CreatePullRequestSnapshot(context.Background(), dbgen.CreatePullRequestSnapshotParams{
+		ID:           "snapshot_1",
+		RepositoryID: repository.ID,
+		SourceType:   "branch_compare",
+		BaseRef:      nullableTestString("main"),
+		HeadRef:      nullableTestString("feature"),
+		HeadSha:      nullableTestString("head-sha"),
+		MetadataJson: "{}",
+		CreatedAt:    "2026-05-03T00:02:00Z",
+	}); err != nil {
+		t.Fatalf("CreatePullRequestSnapshot() error = %v", err)
+	}
+	if _, err := queries.CreateChangedFile(context.Background(), dbgen.CreateChangedFileParams{
+		ID:             "changed_handler",
+		SnapshotID:     "snapshot_1",
+		Path:           "src/handler.go",
+		Status:         "modified",
+		Additions:      1,
+		LineRangesJson: `[[4,4]]`,
+		CreatedAt:      "2026-05-03T00:03:00Z",
+	}); err != nil {
+		t.Fatalf("CreateChangedFile() error = %v", err)
+	}
+	if _, err := queries.CreateReviewSession(context.Background(), dbgen.CreateReviewSessionParams{
+		ID:                  "session_1",
+		WorkspaceID:         "workspace_1",
+		RepositoryID:        repository.ID,
+		SnapshotID:          "snapshot_1",
+		Title:               "Evidence fixture",
+		Status:              "running",
+		ReviewDepth:         "standard",
+		RuntimeLimitSeconds: 300,
+		ContextPolicyJson:   "{}",
+		CreatedAt:           "2026-05-03T00:03:30Z",
+		UpdatedAt:           "2026-05-03T00:03:30Z",
+	}); err != nil {
+		t.Fatalf("CreateReviewSession() error = %v", err)
+	}
+}
+
+func createEvidenceFinding(t *testing.T, queries *dbgen.Queries, params dbgen.CreateFindingParams) dbgen.Finding {
+	t.Helper()
+
+	finding, err := queries.CreateFinding(context.Background(), params)
+	if err != nil {
+		t.Fatalf("CreateFinding() error = %v", err)
+	}
+	return finding
+}
+
+func countEvidenceKind(items []dbgen.EvidenceItem, kind string) int {
+	count := 0
+	for _, item := range items {
+		if item.Kind == kind {
+			count++
+		}
+	}
+	return count
+}
+
+func evidenceItemByKind(t *testing.T, items []dbgen.EvidenceItem, kind string) dbgen.EvidenceItem {
+	t.Helper()
+
+	for _, item := range items {
+		if item.Kind == kind {
+			return item
+		}
+	}
+	t.Fatalf("evidence kind %q missing from %+v", kind, items)
+	return dbgen.EvidenceItem{}
+}
+
+func nullableTestString(value string) sql.NullString {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: value, Valid: true}
+}
+
+func nullableTestInt64(value int64) sql.NullInt64 {
+	if value <= 0 {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: value, Valid: true}
+}
+
+func nullableTestValue(value sql.NullString) string {
+	if !value.Valid {
+		return ""
+	}
+	return value.String
+}

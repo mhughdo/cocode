@@ -1,0 +1,638 @@
+package evidence
+
+import (
+	"bufio"
+	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"time"
+	"unicode"
+
+	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
+)
+
+const (
+	KindSupporting     = "supporting"
+	KindCounter        = "counter"
+	KindNeutral        = "neutral"
+	KindMissing        = "missing"
+	KindTest           = "test"
+	KindSearch         = "search"
+	KindAgent          = "agent"
+	KindStaticAnalysis = "static_analysis"
+)
+
+const (
+	StatusUnverified          = "unverified"
+	StatusVerified            = "verified"
+	StatusPlausible           = "plausible"
+	StatusNeedsHuman          = "needs_human"
+	StatusLikelyFalsePositive = "likely_false_positive"
+	StatusDuplicate           = "duplicate"
+	StatusNotActionable       = "not_actionable"
+)
+
+const (
+	defaultEvidenceContextLines = 3
+	defaultSnippetBytes         = 12 * 1024
+	defaultCounterEvidenceLimit = 6
+)
+
+type Item struct {
+	Kind       string          `json:"kind"`
+	Title      string          `json:"title"`
+	Summary    string          `json:"summary"`
+	Path       string          `json:"path,omitempty"`
+	StartLine  int64           `json:"start_line,omitempty"`
+	EndLine    int64           `json:"end_line,omitempty"`
+	Confidence float64         `json:"confidence"`
+	Metadata   json.RawMessage `json:"metadata,omitempty"`
+}
+
+type Service struct {
+	Queries         *dbgen.Queries
+	Searcher        CodeSearcher
+	Now             func() time.Time
+	NewID           func(prefix string) string
+	ContextLines    int
+	MaxSnippetBytes int64
+}
+
+type VerificationSummary struct {
+	Findings             int            `json:"findings"`
+	EvidenceItemsCreated int            `json:"evidence_items_created"`
+	ByVerificationStatus map[string]int `json:"by_verification_status"`
+	SupportingEvidence   int            `json:"supporting_evidence"`
+	CounterEvidence      int            `json:"counter_evidence"`
+	MissingEvidence      int            `json:"missing_evidence"`
+}
+
+type findingEvidenceResult struct {
+	status                 string
+	evidenceSummary        string
+	counterEvidenceSummary string
+	created                int
+	supporting             int
+	counter                int
+	missing                int
+}
+
+type changedFileIndex struct {
+	byPath map[string]dbgen.ChangedFile
+}
+
+func (s *Service) VerifySession(ctx context.Context, session dbgen.ReviewSession, repository dbgen.Repository) (VerificationSummary, error) {
+	if s == nil || s.Queries == nil {
+		return VerificationSummary{}, errors.New("evidence verifier queries are required")
+	}
+	if strings.TrimSpace(repository.LocalPath) == "" {
+		return VerificationSummary{}, errors.New("repository local path is required")
+	}
+	findings, err := s.Queries.ListFindingsBySession(ctx, session.ID)
+	if err != nil {
+		return VerificationSummary{}, fmt.Errorf("list findings for verification: %w", err)
+	}
+	changedFiles, err := s.Queries.ListChangedFilesBySnapshot(ctx, session.SnapshotID)
+	if err != nil {
+		return VerificationSummary{}, fmt.Errorf("list changed files for verification: %w", err)
+	}
+	index := newChangedFileIndex(changedFiles)
+	summary := VerificationSummary{
+		Findings:             len(findings),
+		ByVerificationStatus: map[string]int{},
+	}
+	for _, finding := range findings {
+		result, err := s.verifyFinding(ctx, repository.LocalPath, index, finding)
+		if err != nil {
+			return VerificationSummary{}, err
+		}
+		summary.EvidenceItemsCreated += result.created
+		summary.SupportingEvidence += result.supporting
+		summary.CounterEvidence += result.counter
+		summary.MissingEvidence += result.missing
+		summary.ByVerificationStatus[result.status]++
+	}
+	return summary, nil
+}
+
+func (s *Service) verifyFinding(ctx context.Context, repoRoot string, index changedFileIndex, finding dbgen.Finding) (findingEvidenceResult, error) {
+	if err := s.deletePreviousVerifierEvidence(ctx, finding.ID); err != nil {
+		return findingEvidenceResult{}, err
+	}
+	result := findingEvidenceResult{}
+	primary, err := s.attachPrimaryLocationEvidence(ctx, repoRoot, index, finding)
+	if err != nil {
+		return findingEvidenceResult{}, err
+	}
+	result.created += primary.created
+	result.supporting += primary.supporting
+	result.missing += primary.missing
+	result.evidenceSummary = primary.evidenceSummary
+
+	counter, err := s.attachCounterEvidence(ctx, repoRoot, finding)
+	if err != nil {
+		return findingEvidenceResult{}, err
+	}
+	result.created += counter.created
+	result.counter += counter.counter
+	result.counterEvidenceSummary = counter.counterEvidenceSummary
+	result.status = assignVerificationStatus(finding, result.supporting, result.counter, result.missing)
+
+	now := s.now().Format(time.RFC3339Nano)
+	if _, err := s.Queries.UpdateFindingVerificationEvidence(ctx, dbgen.UpdateFindingVerificationEvidenceParams{
+		VerificationStatus:     result.status,
+		EvidenceSummary:        nullableString(result.evidenceSummary),
+		CounterEvidenceSummary: nullableString(result.counterEvidenceSummary),
+		UpdatedAt:              now,
+		ID:                     finding.ID,
+	}); err != nil {
+		return findingEvidenceResult{}, fmt.Errorf("update finding verification %s: %w", finding.ID, err)
+	}
+	return result, nil
+}
+
+func (s *Service) attachPrimaryLocationEvidence(ctx context.Context, repoRoot string, index changedFileIndex, finding dbgen.Finding) (findingEvidenceResult, error) {
+	if !finding.PrimaryPath.Valid || strings.TrimSpace(finding.PrimaryPath.String) == "" {
+		item, err := s.createEvidenceItem(ctx, finding.ID, Item{
+			Kind:       KindMissing,
+			Title:      "Primary code location is missing",
+			Summary:    "The finding does not include a concrete changed-file location, so local verification needs human review.",
+			Confidence: 1,
+			Metadata:   mustMetadata(map[string]any{"producer": "local_verifier", "source": "primary_location", "reason": "missing_location"}),
+		})
+		return findingEvidenceResult{
+			created:         1,
+			missing:         1,
+			evidenceSummary: item.Summary,
+		}, err
+	}
+	if !finding.PrimaryStartLine.Valid || finding.PrimaryStartLine.Int64 <= 0 {
+		item, err := s.createMissingPrimaryEvidence(ctx, finding.ID, finding.PrimaryPath.String, "missing_line", "The finding has a file path but no primary line number.")
+		return findingEvidenceResult{created: 1, missing: 1, evidenceSummary: item.Summary}, err
+	}
+	changedFile, ok := index.byPath[cleanPathKey(finding.PrimaryPath.String)]
+	if !ok {
+		item, err := s.createMissingPrimaryEvidence(ctx, finding.ID, finding.PrimaryPath.String, "not_changed_file", "The primary location does not map to this review snapshot's changed files.")
+		return findingEvidenceResult{created: 1, missing: 1, evidenceSummary: item.Summary}, err
+	}
+	if changedFile.IsBinary != 0 || changedFile.IsExcluded != 0 {
+		item, err := s.createMissingPrimaryEvidence(ctx, finding.ID, changedFile.Path, "unreadable_changed_file", "The primary changed file is binary or excluded from review context.")
+		return findingEvidenceResult{created: 1, missing: 1, evidenceSummary: item.Summary}, err
+	}
+	endLine := finding.PrimaryStartLine.Int64
+	if finding.PrimaryEndLine.Valid && finding.PrimaryEndLine.Int64 >= finding.PrimaryStartLine.Int64 {
+		endLine = finding.PrimaryEndLine.Int64
+	}
+	snippet, windowStart, windowEnd, truncated, err := readSnippet(repoRoot, changedFile.Path, finding.PrimaryStartLine.Int64, endLine, s.contextLines(), s.maxSnippetBytes())
+	if err != nil {
+		item, createErr := s.createMissingPrimaryEvidence(ctx, finding.ID, changedFile.Path, "read_failed", "Primary changed code could not be read: "+err.Error())
+		if createErr != nil {
+			return findingEvidenceResult{}, createErr
+		}
+		return findingEvidenceResult{created: 1, missing: 1, evidenceSummary: item.Summary}, nil
+	}
+	title := fmt.Sprintf("Changed code at %s:%d", changedFile.Path, finding.PrimaryStartLine.Int64)
+	if endLine != finding.PrimaryStartLine.Int64 {
+		title = fmt.Sprintf("Changed code at %s:%d-%d", changedFile.Path, finding.PrimaryStartLine.Int64, endLine)
+	}
+	summary := fmt.Sprintf("Primary changed code was found at %s:%d-%d.", changedFile.Path, finding.PrimaryStartLine.Int64, endLine)
+	item, err := s.createEvidenceItem(ctx, finding.ID, Item{
+		Kind:       KindSupporting,
+		Title:      title,
+		Summary:    summary,
+		Path:       changedFile.Path,
+		StartLine:  finding.PrimaryStartLine.Int64,
+		EndLine:    endLine,
+		Confidence: clampConfidence(finding.Confidence),
+		Metadata: mustMetadata(map[string]any{
+			"producer":        "local_verifier",
+			"source":          "primary_location",
+			"changed_file_id": changedFile.ID,
+			"line_window": map[string]any{
+				"start_line": windowStart,
+				"end_line":   windowEnd,
+			},
+			"code_snippet": snippet,
+			"truncated":    truncated,
+		}),
+	})
+	if err != nil {
+		return findingEvidenceResult{}, err
+	}
+	return findingEvidenceResult{created: 1, supporting: 1, evidenceSummary: item.Summary}, nil
+}
+
+func (s *Service) createMissingPrimaryEvidence(ctx context.Context, findingID string, path string, reason string, summary string) (dbgen.EvidenceItem, error) {
+	return s.createEvidenceItem(ctx, findingID, Item{
+		Kind:       KindMissing,
+		Title:      "Primary changed code unavailable",
+		Summary:    summary,
+		Path:       path,
+		Confidence: 1,
+		Metadata:   mustMetadata(map[string]any{"producer": "local_verifier", "source": "primary_location", "reason": reason}),
+	})
+}
+
+func (s *Service) attachCounterEvidence(ctx context.Context, repoRoot string, finding dbgen.Finding) (findingEvidenceResult, error) {
+	searcher := s.searcher()
+	terms := counterEvidenceTerms(finding)
+	seen := map[string]struct{}{}
+	result := findingEvidenceResult{counterEvidenceSummary: "No counter-evidence found by local search."}
+	for _, term := range terms {
+		if result.counter >= defaultCounterEvidenceLimit {
+			break
+		}
+		matches, err := searcher.Search(ctx, SearchOptions{
+			RepoRoot:    repoRoot,
+			Query:       term,
+			ExcludePath: primaryExcludePath(finding),
+			Limit:       defaultCounterEvidenceLimit,
+			OutputLimit: defaultSearchOutputLimit,
+		})
+		if err != nil {
+			return findingEvidenceResult{}, fmt.Errorf("search counter-evidence for finding %s: %w", finding.ID, err)
+		}
+		for _, match := range matches {
+			if result.counter >= defaultCounterEvidenceLimit {
+				break
+			}
+			if !looksLikeCounterEvidence(match) {
+				continue
+			}
+			key := match.Path + ":" + fmt.Sprint(match.Line)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			kind := KindCounter
+			if isLikelyTestPath(match.Path) {
+				kind = KindTest
+			}
+			title := fmt.Sprintf("Potential counter-evidence at %s:%d", match.Path, match.Line)
+			summary := fmt.Sprintf("Local search found %q in a likely guard, config, or test path.", term)
+			if kind == KindTest {
+				summary = fmt.Sprintf("Local search found %q in a likely test path.", term)
+			}
+			if _, err := s.createEvidenceItem(ctx, finding.ID, Item{
+				Kind:       kind,
+				Title:      title,
+				Summary:    summary,
+				Path:       match.Path,
+				StartLine:  match.Line,
+				EndLine:    match.Line,
+				Confidence: 0.6,
+				Metadata: mustMetadata(map[string]any{
+					"producer":     "local_verifier",
+					"source":       "counter_evidence_search",
+					"search_term":  term,
+					"code_snippet": fmt.Sprintf("%d: %s", match.Line, strings.TrimSpace(match.Text)),
+				}),
+			}); err != nil {
+				return findingEvidenceResult{}, err
+			}
+			result.created++
+			result.counter++
+		}
+	}
+	if result.counter > 0 {
+		result.counterEvidenceSummary = fmt.Sprintf("Potential counter-evidence found in %d likely guard, config, or test location(s).", result.counter)
+	}
+	return result, nil
+}
+
+func (s *Service) createEvidenceItem(ctx context.Context, findingID string, item Item) (dbgen.EvidenceItem, error) {
+	created, err := s.Queries.CreateEvidenceItem(ctx, dbgen.CreateEvidenceItemParams{
+		ID:           s.newID("evidence_item_"),
+		FindingID:    findingID,
+		Kind:         normalizeKind(item.Kind),
+		Title:        strings.TrimSpace(item.Title),
+		Summary:      strings.TrimSpace(item.Summary),
+		Path:         nullableString(item.Path),
+		StartLine:    nullablePositiveInt64(item.StartLine),
+		EndLine:      nullablePositiveInt64(item.EndLine),
+		Confidence:   clampConfidence(item.Confidence),
+		MetadataJson: string(defaultMetadata(item.Metadata)),
+		CreatedAt:    s.now().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		return dbgen.EvidenceItem{}, fmt.Errorf("create evidence item for finding %s: %w", findingID, err)
+	}
+	return created, nil
+}
+
+func (s *Service) deletePreviousVerifierEvidence(ctx context.Context, findingID string) error {
+	items, err := s.Queries.ListEvidenceItemsByFinding(ctx, findingID)
+	if err != nil {
+		return fmt.Errorf("list previous verifier evidence: %w", err)
+	}
+	for _, item := range items {
+		if !isLocalVerifierEvidence(item.MetadataJson) {
+			continue
+		}
+		if err := s.Queries.DeleteEvidenceItem(ctx, item.ID); err != nil {
+			return fmt.Errorf("delete previous verifier evidence %s: %w", item.ID, err)
+		}
+	}
+	return nil
+}
+
+func isLocalVerifierEvidence(raw string) bool {
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(raw), &metadata); err != nil {
+		return false
+	}
+	return metadata["producer"] == "local_verifier"
+}
+
+func assignVerificationStatus(finding dbgen.Finding, supporting int, counter int, missing int) string {
+	switch {
+	case supporting > 0 && counter == 0:
+		return StatusVerified
+	case supporting > 0 && counter > 0:
+		return StatusPlausible
+	case supporting == 0 && counter > 0:
+		return StatusLikelyFalsePositive
+	case missing > 0 && finding.Confidence < 0.4 && !finding.SuggestedFix.Valid:
+		return StatusNotActionable
+	case missing > 0:
+		return StatusNeedsHuman
+	default:
+		return StatusNeedsHuman
+	}
+}
+
+func readSnippet(repoRoot string, relativePath string, startLine int64, endLine int64, contextLines int, maxBytes int64) (string, int64, int64, bool, error) {
+	path, cleanPath, err := safeRepoFilePath(repoRoot, relativePath)
+	if err != nil {
+		return "", 0, 0, false, err
+	}
+	stat, err := os.Stat(path)
+	if err != nil {
+		return "", 0, 0, false, fmt.Errorf("inspect %s: %w", cleanPath, err)
+	}
+	if stat.IsDir() {
+		return "", 0, 0, false, fmt.Errorf("%s is a directory", cleanPath)
+	}
+	if maxBytes <= 0 {
+		maxBytes = defaultSnippetBytes
+	}
+	if startLine <= 0 {
+		startLine = 1
+	}
+	if endLine < startLine {
+		endLine = startLine
+	}
+	windowStart := maxInt64(1, startLine-int64(contextLines))
+	windowEnd := endLine + int64(contextLines)
+
+	file, err := os.Open(path)
+	if err != nil {
+		return "", 0, 0, false, fmt.Errorf("open %s: %w", cleanPath, err)
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	var builder strings.Builder
+	var line int64
+	truncated := false
+	for scanner.Scan() {
+		line++
+		if line < windowStart {
+			continue
+		}
+		if line > windowEnd {
+			break
+		}
+		text := fmt.Sprintf("%d: %s\n", line, scanner.Text())
+		if int64(builder.Len()+len(text)) > maxBytes {
+			remaining := int(maxBytes) - builder.Len()
+			if remaining > 0 {
+				builder.WriteString(text[:remaining])
+			}
+			truncated = true
+			break
+		}
+		builder.WriteString(text)
+	}
+	if err := scanner.Err(); err != nil {
+		return "", 0, 0, false, fmt.Errorf("read %s: %w", cleanPath, err)
+	}
+	return strings.TrimRight(builder.String(), "\n"), windowStart, minInt64(windowEnd, line), truncated, nil
+}
+
+func newChangedFileIndex(files []dbgen.ChangedFile) changedFileIndex {
+	index := changedFileIndex{byPath: map[string]dbgen.ChangedFile{}}
+	for _, file := range files {
+		index.byPath[cleanPathKey(file.Path)] = file
+	}
+	return index
+}
+
+func counterEvidenceTerms(finding dbgen.Finding) []string {
+	terms := make([]string, 0, 6)
+	for _, token := range claimTokens(finding.CanonicalClaim) {
+		addTerm(&terms, token)
+		if len(terms) >= 4 {
+			break
+		}
+	}
+	if finding.PrimaryPath.Valid {
+		base := strings.TrimSuffix(filepath.Base(filepath.ToSlash(finding.PrimaryPath.String)), filepath.Ext(finding.PrimaryPath.String))
+		addTerm(&terms, base)
+	}
+	switch finding.Category {
+	case "security":
+		for _, term := range []string{"auth", "guard", "permission", "verify", "signature"} {
+			addTerm(&terms, term)
+		}
+	case "tests":
+		addTerm(&terms, "test")
+		addTerm(&terms, "expect")
+	}
+	if len(terms) > 6 {
+		terms = terms[:6]
+	}
+	return terms
+}
+
+func claimTokens(claim string) []string {
+	stop := map[string]struct{}{
+		"before": {}, "after": {}, "without": {}, "with": {}, "from": {}, "this": {}, "that": {}, "when": {}, "where": {}, "does": {}, "can": {}, "could": {}, "should": {}, "would": {}, "missing": {}, "lacks": {},
+	}
+	fields := strings.FieldsFunc(strings.ToLower(claim), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_'
+	})
+	tokens := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if len(field) < 4 {
+			continue
+		}
+		if _, ok := stop[field]; ok {
+			continue
+		}
+		tokens = append(tokens, field)
+	}
+	return tokens
+}
+
+func looksLikeCounterEvidence(match SearchMatch) bool {
+	path := strings.ToLower(filepath.ToSlash(match.Path))
+	text := strings.ToLower(match.Text)
+	if isLikelyTestPath(path) || strings.Contains(path, "auth") || strings.Contains(path, "guard") ||
+		strings.Contains(path, "middleware") || strings.Contains(path, "permission") || strings.Contains(path, "config") {
+		return true
+	}
+	for _, token := range []string{"require", "authorize", "permission", "auth", "guard", "verify", "signature", "validate", "test", "expect"} {
+		if strings.Contains(text, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func isLikelyTestPath(path string) bool {
+	path = strings.ToLower(filepath.ToSlash(path))
+	return strings.Contains(path, "_test.") ||
+		strings.Contains(path, ".test.") ||
+		strings.Contains(path, ".spec.") ||
+		strings.Contains(path, "/test/") ||
+		strings.Contains(path, "/tests/")
+}
+
+func primaryExcludePath(finding dbgen.Finding) []string {
+	if !finding.PrimaryPath.Valid {
+		return nil
+	}
+	return []string{finding.PrimaryPath.String}
+}
+
+func addTerm(terms *[]string, term string) {
+	term = strings.TrimSpace(term)
+	if len(term) < 3 || slices.Contains(*terms, term) {
+		return
+	}
+	*terms = append(*terms, term)
+}
+
+func normalizeKind(kind string) string {
+	switch strings.TrimSpace(kind) {
+	case KindSupporting, KindCounter, KindNeutral, KindMissing, KindTest, KindSearch, KindAgent, KindStaticAnalysis:
+		return strings.TrimSpace(kind)
+	default:
+		return KindNeutral
+	}
+}
+
+func defaultMetadata(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return json.RawMessage("{}")
+	}
+	return raw
+}
+
+func mustMetadata(payload map[string]any) json.RawMessage {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return json.RawMessage("{}")
+	}
+	return data
+}
+
+func clampConfidence(value float64) float64 {
+	if value < 0 {
+		return 0
+	}
+	if value > 1 {
+		return 1
+	}
+	return value
+}
+
+func (s *Service) searcher() CodeSearcher {
+	if s.Searcher != nil {
+		return s.Searcher
+	}
+	return RipgrepSearcher{}
+}
+
+func (s *Service) contextLines() int {
+	if s.ContextLines < 0 {
+		return 0
+	}
+	if s.ContextLines == 0 {
+		return defaultEvidenceContextLines
+	}
+	return s.ContextLines
+}
+
+func (s *Service) maxSnippetBytes() int64 {
+	if s.MaxSnippetBytes <= 0 {
+		return defaultSnippetBytes
+	}
+	return s.MaxSnippetBytes
+}
+
+func (s *Service) now() time.Time {
+	if s.Now != nil {
+		return s.Now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+func (s *Service) newID(prefix string) string {
+	if s.NewID != nil {
+		if id := strings.TrimSpace(s.NewID(prefix)); id != "" {
+			return id
+		}
+	}
+	var bytes [16]byte
+	if _, err := rand.Read(bytes[:]); err != nil {
+		return prefix + "unavailable"
+	}
+	return prefix + hex.EncodeToString(bytes[:])
+}
+
+func nullableString(value string) sql.NullString {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: value, Valid: true}
+}
+
+func nullablePositiveInt64(value int64) sql.NullInt64 {
+	if value <= 0 {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: value, Valid: true}
+}
+
+func cleanPathKey(path string) string {
+	clean, ok := cleanRelativePath(path)
+	if !ok {
+		return strings.TrimSpace(filepath.ToSlash(path))
+	}
+	return clean
+}
+
+func maxInt64(a int64, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func minInt64(a int64, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
+}

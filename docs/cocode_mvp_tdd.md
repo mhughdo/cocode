@@ -1605,6 +1605,8 @@ For each finding:
 7. Assign verification status.
 8. Build Evidence Map.
 
+The MVP implementation runs a deterministic local verifier during the `verify_findings` workflow phase. It rebuilds cocode-owned evidence items for each canonical finding, reads the primary changed-code snippet inside the repository sandbox, searches likely guard/config/test paths with a bounded `rg --json` wrapper, stores supporting/counter/missing evidence rows, and updates `verification_status`, `evidence_summary`, and `counter_evidence_summary`.
+
 ### 14.2 Local verifier examples
 
 | Finding type | Deterministic checks |
@@ -1625,6 +1627,8 @@ For each finding:
 | likely_false_positive | Counter-evidence contradicts the claim. |
 | duplicate | Same issue already represented by another finding. |
 | not_actionable | Too vague, no location, no concrete fix, or pure preference. |
+
+The app stores the canonical false-positive-like status as `likely_false_positive` so the UI and seed data use one stable enum value.
 
 ---
 

@@ -1165,6 +1165,9 @@ func TestFindingDetailEndpointReturnsProvenanceAndEvidence(t *testing.T) {
 		len(detail.Candidates) != 2 ||
 		len(detail.EvidenceItems) != 1 ||
 		detail.EvidenceItems[0].Kind != "supporting" ||
+		detail.EvidenceItems[0].CodeSnippet == "" ||
+		detail.EvidenceItems[0].LineWindow == nil ||
+		detail.EvidenceItems[0].LineWindow.StartLine != 84 ||
 		len(detail.Decisions) != 1 ||
 		detail.Decisions[0].Decision != "accepted" {
 		t.Fatalf("detail = %+v", detail)
@@ -1901,7 +1904,7 @@ func createHTTPAPIFindingFixture(t *testing.T, queries *dbgen.Queries) {
 		StartLine:    sql.NullInt64{Int64: 87, Valid: true},
 		EndLine:      sql.NullInt64{Int64: 112, Valid: true},
 		Confidence:   0.9,
-		MetadataJson: "{}",
+		MetadataJson: `{"producer":"local_verifier","code_snippet":"87: router.patch('/settings', updateSettings)","line_window":{"start_line":84,"end_line":115}}`,
 		CreatedAt:    "2026-05-03T00:14:00Z",
 	}); err != nil {
 		t.Fatalf("CreateEvidenceItem() error = %v", err)

@@ -118,6 +118,7 @@ type Querier interface {
 	UpdateFinding(ctx context.Context, arg UpdateFindingParams) (Finding, error)
 	UpdateFindingDecisionStatus(ctx context.Context, arg UpdateFindingDecisionStatusParams) (Finding, error)
 	UpdateFindingDraftComment(ctx context.Context, arg UpdateFindingDraftCommentParams) (Finding, error)
+	UpdateFindingVerificationEvidence(ctx context.Context, arg UpdateFindingVerificationEvidenceParams) (Finding, error)
 	UpdateFindingVerificationStatus(ctx context.Context, arg UpdateFindingVerificationStatusParams) (Finding, error)
 	UpdateRepository(ctx context.Context, arg UpdateRepositoryParams) (Repository, error)
 	UpdateReviewRule(ctx context.Context, arg UpdateReviewRuleParams) (ReviewRule, error)

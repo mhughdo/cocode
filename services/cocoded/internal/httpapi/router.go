@@ -23,6 +23,7 @@ import (
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
 	"github.com/hughdo/cocode/services/cocoded/internal/eventbus"
 	"github.com/hughdo/cocode/services/cocoded/internal/eventlog"
+	"github.com/hughdo/cocode/services/cocoded/internal/evidence"
 	"github.com/hughdo/cocode/services/cocoded/internal/githubpr"
 	"github.com/hughdo/cocode/services/cocoded/internal/gitrepo"
 	"github.com/hughdo/cocode/services/cocoded/internal/orchestrator"
@@ -189,6 +190,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 			ContextBuilder: contextBuilder,
 			Artifacts:      artifactStore,
 			Events:         bus,
+			Evidence:       &evidence.Service{Queries: queries},
 			AgentManager: &agentrun.Manager{
 				Runner:                  runner,
 				MaxConcurrent:           2,

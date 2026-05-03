@@ -90,18 +90,25 @@ type HumanDecisionResponse struct {
 }
 
 type EvidenceItemResponse struct {
-	ID         string          `json:"id"`
-	FindingID  string          `json:"finding_id"`
-	Kind       string          `json:"kind"`
-	Title      string          `json:"title"`
-	Summary    string          `json:"summary"`
-	Path       string          `json:"path,omitempty"`
-	StartLine  int64           `json:"start_line,omitempty"`
-	EndLine    int64           `json:"end_line,omitempty"`
-	ArtifactID string          `json:"artifact_id,omitempty"`
-	Confidence float64         `json:"confidence"`
-	Metadata   json.RawMessage `json:"metadata"`
-	CreatedAt  string          `json:"created_at"`
+	ID          string              `json:"id"`
+	FindingID   string              `json:"finding_id"`
+	Kind        string              `json:"kind"`
+	Title       string              `json:"title"`
+	Summary     string              `json:"summary"`
+	Path        string              `json:"path,omitempty"`
+	StartLine   int64               `json:"start_line,omitempty"`
+	EndLine     int64               `json:"end_line,omitempty"`
+	ArtifactID  string              `json:"artifact_id,omitempty"`
+	Confidence  float64             `json:"confidence"`
+	CodeSnippet string              `json:"code_snippet,omitempty"`
+	LineWindow  *EvidenceLineWindow `json:"line_window,omitempty"`
+	Metadata    json.RawMessage     `json:"metadata"`
+	CreatedAt   string              `json:"created_at"`
+}
+
+type EvidenceLineWindow struct {
+	StartLine int64 `json:"start_line"`
+	EndLine   int64 `json:"end_line"`
 }
 
 type UpdateFindingDecisionRequest struct {
@@ -462,20 +469,44 @@ func evidenceItemResponse(row dbgen.EvidenceItem) (EvidenceItemResponse, *apperr
 	if !json.Valid(metadata) {
 		return EvidenceItemResponse{}, apperror.Internal("stored evidence metadata is invalid")
 	}
+	snippet, window := evidenceSnippetFields(metadata)
 	return EvidenceItemResponse{
-		ID:         row.ID,
-		FindingID:  row.FindingID,
-		Kind:       row.Kind,
-		Title:      row.Title,
-		Summary:    row.Summary,
-		Path:       nullableValue(row.Path),
-		StartLine:  nullableInt64Value(row.StartLine),
-		EndLine:    nullableInt64Value(row.EndLine),
-		ArtifactID: nullableValue(row.ArtifactID),
-		Confidence: row.Confidence,
-		Metadata:   metadata,
-		CreatedAt:  row.CreatedAt,
+		ID:          row.ID,
+		FindingID:   row.FindingID,
+		Kind:        row.Kind,
+		Title:       row.Title,
+		Summary:     row.Summary,
+		Path:        nullableValue(row.Path),
+		StartLine:   nullableInt64Value(row.StartLine),
+		EndLine:     nullableInt64Value(row.EndLine),
+		ArtifactID:  nullableValue(row.ArtifactID),
+		Confidence:  row.Confidence,
+		CodeSnippet: snippet,
+		LineWindow:  window,
+		Metadata:    metadata,
+		CreatedAt:   row.CreatedAt,
 	}, nil
+}
+
+func evidenceSnippetFields(metadata json.RawMessage) (string, *EvidenceLineWindow) {
+	var payload struct {
+		CodeSnippet string `json:"code_snippet"`
+		LineWindow  struct {
+			StartLine int64 `json:"start_line"`
+			EndLine   int64 `json:"end_line"`
+		} `json:"line_window"`
+	}
+	if err := json.Unmarshal(metadata, &payload); err != nil {
+		return "", nil
+	}
+	var window *EvidenceLineWindow
+	if payload.LineWindow.StartLine > 0 && payload.LineWindow.EndLine >= payload.LineWindow.StartLine {
+		window = &EvidenceLineWindow{
+			StartLine: payload.LineWindow.StartLine,
+			EndLine:   payload.LineWindow.EndLine,
+		}
+	}
+	return strings.TrimSpace(payload.CodeSnippet), window
 }
 
 func sortFindings(rows []dbgen.Finding) {
@@ -585,8 +616,14 @@ func severityRank(severity string) int {
 func verificationRank(status string) int {
 	switch status {
 	case "verified":
-		return 2
+		return 5
+	case "plausible":
+		return 4
+	case "needs_human":
+		return 3
 	case "unverified":
+		return 2
+	case "likely_false_positive", "duplicate", "not_actionable":
 		return 1
 	default:
 		return 0

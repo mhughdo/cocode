@@ -258,7 +258,7 @@ Large parallel workstreams:
 | T145 | Implement event bus | Append DB events and broadcast to SSE subscribers. | Done | T061, T046 | T146 | UI receives live events; DB retains event log. |
 | T146 | Implement SSE endpoint | Stream session events with sequence IDs. | Done | T145 | T254 | Browser receives real-time events and reconnects. |
 | T147 | Implement parallel agent scheduling | Run selected review agents in parallel with bounded concurrency. | Done | T101, T142 | T148 | Multiple fake agents run; ordering/events deterministic enough for tests. |
-| T148 | Implement Local Verifier scheduling | Run deterministic verifier as part of workflow. | Not started | T142, T200 | T149 | Verifier produces evidence/status for seeded findings. |
+| T148 | Implement Local Verifier scheduling | Run deterministic verifier as part of workflow. | Done | T142, T200 | T149 | Verifier produces evidence/status for seeded findings. |
 | T149 | Implement partial failure handling | Continue workflow when one agent fails if policy allows. | Done | T142, T098 | T150 | Failed agent emits error; other findings survive. |
 | T150 | Implement workflow cancel | Cancel all running agents and mark session canceled. | Done | T100, T144 | T254 | Cancel stops processes and preserves partial results. |
 | T151 | Implement pause/resume skeleton | Pause new phases and resume where safe. | Done | T143, T144 | T254 | MVP can mark pause/resume; complex active process pausing documented. |
@@ -285,7 +285,7 @@ Large parallel workstreams:
 | T181 | Implement severity/category normalization | Normalize agent-specific labels into app enum values. | Done | T171 | T182 | Unknown labels map to safe defaults. |
 | T182 | Implement finding ranking | Sort by severity, verification, confidence, agent agreement. | Done | T180 | T256 | API returns stable sort order. |
 | T183 | Implement finding list API | Return findings with filters/search/status counts. | Done | T180, T062 | T256 | UI can filter all/verified/needs triage/accepted/dismissed. |
-| T184 | Implement finding detail API | Return finding, candidates/provenance, evidence, code snippets, draft comment. | Not started | T180, T204 | T260 | Finding Detail screen has all needed data. |
+| T184 | Implement finding detail API | Return finding, candidates/provenance, evidence, code snippets, draft comment. | Done | T180, T204 | T260 | Finding Detail screen has all needed data. |
 | T185 | Implement decision API | Accept, dismiss, defer, copied, published decisions. | Done | T058, T180 | T256,T290 | Decision updates finding status and appends human_decisions row. |
 | T186 | Implement dismissal reasons | Capture dismissal reason and optional rule-memory suggestion. | Done | T185 | T335 | Dismissal reason persists and can be queried later. |
 | T187 | Implement draft comment storage | Store/edit per-finding draft GitHub comment. | Done | T180 | T296 | User edits persist and are used in GitHub preview. |
@@ -296,15 +296,15 @@ Large parallel workstreams:
 
 | ID | Task | Description | Status | Dependencies | Parallelization | Done criteria |
 |---|---|---|---|---|---|---|
-| T200 | Define EvidenceItem model | Implement domain/API models for supporting/counter/neutral/missing evidence. | Not started | T059, T180 | T201 | Evidence item schema maps to DB/API. |
-| T201 | Implement code search service | Wrapper around ripgrep/git grep with path sandbox, timeout, output limit. | Not started | T071, T044 | T202 | Tests cover search hits, no hits, timeout, path restriction. |
-| T202 | Implement primary location evidence | Attach changed code evidence for finding location. | Not started | T175, T200 | T203 | Every located finding gets primary evidence item. |
-| T203 | Implement counter-evidence search | Search likely guard/config/test paths for contradiction. | Not started | T201, T200 | T204 | Counter-evidence items created when found. |
-| T204 | Implement verification status assignment | Assign verified/plausible/needs_human/false_positive/not_actionable. | Not started | T202, T203 | T205 | Seeded findings produce expected statuses. |
+| T200 | Define EvidenceItem model | Implement domain/API models for supporting/counter/neutral/missing evidence. | Done | T059, T180 | T201 | Evidence item schema maps to DB/API. |
+| T201 | Implement code search service | Wrapper around ripgrep/git grep with path sandbox, timeout, output limit. | Done | T071, T044 | T202 | Tests cover search hits, no hits, timeout, path restriction. |
+| T202 | Implement primary location evidence | Attach changed code evidence for finding location. | Done | T175, T200 | T203 | Every located finding gets primary evidence item. |
+| T203 | Implement counter-evidence search | Search likely guard/config/test paths for contradiction. | Done | T201, T200 | T204 | Counter-evidence items created when found. |
+| T204 | Implement verification status assignment | Assign verified/plausible/needs_human/false_positive/not_actionable. | Done | T202, T203 | T205 | Seeded findings produce expected statuses. |
 | T205 | Implement Local Verifier rules | Deterministic checks for auth guard, webhook validation, tests, idempotency basics. | Not started | T201, T204 | T206 | Golden repo auth bug is verified by local verifier. |
 | T206 | Implement verifier agent prompt runner | Optional CLI verifier task using finding-scoped context. | Not started | T133, T090, T204 | T207 | Verifier CLI can update evidence/status; failures do not block local evidence. |
 | T207 | Implement evidence API | Return evidence items grouped by support/counter/test/search. | Not started | T200-T204 | T260 | Finding Detail evidence cards load correctly. |
-| T208 | Implement evidence summaries | Generate concise evidence_summary and counter_evidence_summary. | Not started | T204 | T184 | Finding cards/details show summaries. |
+| T208 | Implement evidence summaries | Generate concise evidence_summary and counter_evidence_summary. | Done | T204 | T184 | Finding cards/details show summaries. |
 | T209 | Define Evidence Graph view model | Define API types for hierarchy, nodes, edges, call path, legend. | Not started | T059 | T210 | Types documented and used by frontend mock data. |
 | T210 | Implement graph node builder | Create graph nodes from finding, evidence items, code context. | Not started | T134, T209 | T211 | Graph includes primary node and evidence nodes. |
 | T211 | Implement graph edge builder | Create observed and missing edges: calls, mounts, protects, tests, supports, contradicts, missing_guard. | Not started | T210 | T212 | Edges reference valid nodes; missing_guard visual status represented. |

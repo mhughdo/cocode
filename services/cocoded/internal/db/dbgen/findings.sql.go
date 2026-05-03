@@ -767,6 +767,59 @@ func (q *Queries) UpdateFindingDraftComment(ctx context.Context, arg UpdateFindi
 	return i, err
 }
 
+const updateFindingVerificationEvidence = `-- name: UpdateFindingVerificationEvidence :one
+UPDATE findings
+SET
+  verification_status = ?,
+  evidence_summary = ?,
+  counter_evidence_summary = ?,
+  updated_at = ?
+WHERE id = ?
+RETURNING id, review_session_id, canonical_claim, category, severity, confidence, verification_status, decision_status, primary_path, primary_start_line, primary_end_line, evidence_summary, counter_evidence_summary, suggested_fix, draft_comment, fingerprint, merged_from_count, introduced_in_sha, first_seen_at, updated_at
+`
+
+type UpdateFindingVerificationEvidenceParams struct {
+	VerificationStatus     string         `json:"verification_status"`
+	EvidenceSummary        sql.NullString `json:"evidence_summary"`
+	CounterEvidenceSummary sql.NullString `json:"counter_evidence_summary"`
+	UpdatedAt              string         `json:"updated_at"`
+	ID                     string         `json:"id"`
+}
+
+func (q *Queries) UpdateFindingVerificationEvidence(ctx context.Context, arg UpdateFindingVerificationEvidenceParams) (Finding, error) {
+	row := q.db.QueryRowContext(ctx, updateFindingVerificationEvidence,
+		arg.VerificationStatus,
+		arg.EvidenceSummary,
+		arg.CounterEvidenceSummary,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	var i Finding
+	err := row.Scan(
+		&i.ID,
+		&i.ReviewSessionID,
+		&i.CanonicalClaim,
+		&i.Category,
+		&i.Severity,
+		&i.Confidence,
+		&i.VerificationStatus,
+		&i.DecisionStatus,
+		&i.PrimaryPath,
+		&i.PrimaryStartLine,
+		&i.PrimaryEndLine,
+		&i.EvidenceSummary,
+		&i.CounterEvidenceSummary,
+		&i.SuggestedFix,
+		&i.DraftComment,
+		&i.Fingerprint,
+		&i.MergedFromCount,
+		&i.IntroducedInSha,
+		&i.FirstSeenAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateFindingVerificationStatus = `-- name: UpdateFindingVerificationStatus :one
 UPDATE findings
 SET verification_status = ?, updated_at = ?

@@ -129,7 +129,7 @@ func (s Service) answerWithCLI(ctx context.Context, view ThreadView, userMessage
 	if err != nil {
 		return AskQuestionResult{}, err
 	}
-	built, err := s.buildQuestionContext(ctx, view, scope, policy)
+	built, err := s.buildQuestionContext(ctx, view, scope, policy, config.ID)
 	if err != nil {
 		return AskQuestionResult{}, fmt.Errorf("build follow-up context: %w", err)
 	}
@@ -226,11 +226,12 @@ func (s Service) answerWithCLI(ctx context.Context, view ThreadView, userMessage
 	}, nil
 }
 
-func (s Service) buildQuestionContext(ctx context.Context, view ThreadView, scope contextbundle.Scope, policy json.RawMessage) (contextbundle.BuildReviewContextResult, error) {
+func (s Service) buildQuestionContext(ctx context.Context, view ThreadView, scope contextbundle.Scope, policy json.RawMessage, agentConfigID string) (contextbundle.BuildReviewContextResult, error) {
 	if scope == contextbundle.ScopeEvidenceMap {
 		return s.ContextBuilder.BuildEvidenceMapContext(ctx, contextbundle.BuildEvidenceMapContextParams{
 			ReviewSessionID: view.Finding.ReviewSessionID,
 			FindingID:       view.Finding.ID,
+			AgentConfigID:   agentConfigID,
 			PolicyOverride:  policy,
 			Persist:         true,
 		})
@@ -238,6 +239,7 @@ func (s Service) buildQuestionContext(ctx context.Context, view ThreadView, scop
 	return s.ContextBuilder.BuildFindingContext(ctx, contextbundle.BuildFindingContextParams{
 		ReviewSessionID: view.Finding.ReviewSessionID,
 		FindingID:       view.Finding.ID,
+		AgentConfigID:   agentConfigID,
 		PolicyOverride:  policy,
 		Persist:         true,
 	})

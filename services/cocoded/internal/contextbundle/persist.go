@@ -25,6 +25,7 @@ type PersistParams struct {
 	Bundle      Bundle
 	ArtifactID  string
 	CreatedAt   string
+	Visibility  VisibilityReport
 }
 
 type PersistResult struct {
@@ -84,7 +85,7 @@ func (p Persister) PersistRenderedBundle(ctx context.Context, params PersistPara
 	if artifactID == "" {
 		artifactID = renderedBundleArtifactID(bundle.ID)
 	}
-	metadata, err := json.Marshal(map[string]any{
+	metadataMap := map[string]any{
 		"source":          "context_bundle_renderer",
 		"bundle_id":       bundle.ID,
 		"scope":           bundle.Scope,
@@ -92,7 +93,11 @@ func (p Persister) PersistRenderedBundle(ctx context.Context, params PersistPara
 		"item_count":      bundle.ItemCount,
 		"review_session":  bundle.ReviewSessionID,
 		"agent_config_id": bundle.AgentConfigID,
-	})
+	}
+	if params.Visibility.Recipient.Egress != "" {
+		metadataMap = visibilityArtifactMetadata(metadataMap, params.Visibility)
+	}
+	metadata, err := json.Marshal(metadataMap)
 	if err != nil {
 		return PersistResult{}, fmt.Errorf("encode context artifact metadata: %w", err)
 	}

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hughdo/cocode/services/cocoded/internal/agents"
 	"github.com/hughdo/cocode/services/cocoded/internal/artifact"
 	"github.com/hughdo/cocode/services/cocoded/internal/db"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
@@ -139,6 +140,74 @@ func TestServiceBuildReviewContextReturnsTypedErrors(t *testing.T) {
 	}
 }
 
+func TestServiceBuildReviewContextEnforcesLocalOnlyPathsForExternalAgent(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repoPath := t.TempDir()
+	writeRepoFile(t, repoPath, "app/main.go", "package main\n\nfunc Public() {}\n")
+	writeRepoFile(t, repoPath, "config/local.yaml", "token: local-only-token\n")
+
+	queries, store := contextBuilderTestStore(t, repoPath)
+	createContextBundleTestAgentConfig(t, queries, "agent_config_external", agents.AdapterCLINonInteractive, `{"provider":"openai","egress":"external"}`)
+	createContextBundlePatch(t, store, queries, "artifact_patch_public", "file_public", "app/main.go", "@@ -1,2 +1,3 @@\n package main\n+func Public() {}\n")
+	createContextBundlePatch(t, store, queries, "artifact_patch_local", "file_local", "config/local.yaml", "@@ -1 +1 @@\n-token: old\n+token: local-only-token\n")
+
+	service := Service{
+		Queries:   queries,
+		Artifacts: store,
+		Now: func() time.Time {
+			return time.Date(2026, 5, 3, 0, 8, 0, 0, time.UTC)
+		},
+	}
+	result, err := service.BuildReviewContext(ctx, BuildReviewContextParams{
+		ReviewSessionID: "review_session_1",
+		AgentConfigID:   "agent_config_external",
+		Persist:         true,
+		PolicyOverride: json.RawMessage(`{
+			"local_only_paths":["config"],
+			"include_related_call_sites":false,
+			"include_related_tests":false,
+			"include_project_conventions":false,
+			"include_prior_comments":false,
+			"include_prior_decisions":false,
+			"max_tokens":50000,
+			"max_items":80
+		}`),
+	})
+	if err != nil {
+		t.Fatalf("BuildReviewContext() error = %v", err)
+	}
+	if !result.VisibilityReport.LocalOnlyEnforced ||
+		result.VisibilityReport.Recipient.Egress != agents.AgentEgressExternal ||
+		len(result.VisibilityReport.Omitted) == 0 {
+		t.Fatalf("visibility report = %+v", result.VisibilityReport)
+	}
+	for _, item := range result.Bundle.Items {
+		if strings.HasPrefix(item.Path, "config/") ||
+			strings.Contains(item.Content, "local-only-token") ||
+			strings.Contains(string(item.Metadata), "config/local.yaml") {
+			t.Fatalf("local-only item leaked into bundle: %+v", item)
+		}
+	}
+	rendered, _, err := store.Read(ctx, result.Artifact.ID)
+	if err != nil {
+		t.Fatalf("Read(context artifact) error = %v", err)
+	}
+	if strings.Contains(string(rendered), "config/local.yaml") ||
+		strings.Contains(string(rendered), "local-only-token") ||
+		!strings.Contains(string(rendered), "Local-only paths configured: 1") {
+		t.Fatalf("rendered context = %s", string(rendered))
+	}
+	report, ok := VisibilityReportFromArtifactMetadata(json.RawMessage(result.Artifact.MetadataJson))
+	if !ok ||
+		!report.LocalOnlyEnforced ||
+		report.Recipient.Provider != "openai" ||
+		report.SentItemCount != len(result.Bundle.Items) {
+		t.Fatalf("artifact visibility report = %+v ok=%v", report, ok)
+	}
+}
+
 func contextBuilderTestStore(t *testing.T, repoPath string) (*dbgen.Queries, *artifact.Store) {
 	t.Helper()
 
@@ -205,6 +274,58 @@ func contextBuilderTestStore(t *testing.T, repoPath string) (*dbgen.Queries, *ar
 		t.Fatalf("artifact.New() error = %v", err)
 	}
 	return queries, store
+}
+
+func createContextBundleTestAgentConfig(t *testing.T, queries *dbgen.Queries, id string, kind agents.AdapterKind, metadata string) {
+	t.Helper()
+
+	if _, err := queries.CreateAgentConfig(context.Background(), dbgen.CreateAgentConfigParams{
+		ID:               id,
+		Name:             id,
+		Role:             "primary_reviewer",
+		AdapterKind:      string(kind),
+		Command:          sql.NullString{String: "fake-agent", Valid: true},
+		ArgsJson:         "[]",
+		CwdMode:          "repo_root",
+		EnvAllowlistJson: "[]",
+		OutputMode:       string(agents.OutputJSON),
+		CapabilitiesJson: `{"supports_json":true,"can_read":true,"output_modes":["json"],"metadata":` + metadata + `}`,
+		SettingsJson:     "{}",
+		Enabled:          1,
+		CreatedAt:        "2026-05-03T00:06:30Z",
+		UpdatedAt:        "2026-05-03T00:06:30Z",
+	}); err != nil {
+		t.Fatalf("CreateAgentConfig(%s) error = %v", id, err)
+	}
+}
+
+func createContextBundlePatch(t *testing.T, store *artifact.Store, queries *dbgen.Queries, artifactID string, fileID string, path string, patchContent string) {
+	t.Helper()
+
+	patch, err := store.Save(context.Background(), artifact.SaveParams{
+		ID:           artifactID,
+		WorkspaceID:  "workspace_1",
+		Kind:         "patch",
+		RelativePath: "snapshots/snapshot_1/patches/" + fileID + ".patch",
+		ContentType:  "text/x-diff",
+		MetadataJSON: `{"path":"` + path + `"}`,
+		CreatedAt:    "2026-05-03T00:04:00Z",
+	}, []byte(patchContent))
+	if err != nil {
+		t.Fatalf("Save(patch %s) error = %v", artifactID, err)
+	}
+	if _, err := queries.CreateChangedFile(context.Background(), dbgen.CreateChangedFileParams{
+		ID:              fileID,
+		SnapshotID:      "snapshot_1",
+		Path:            path,
+		Status:          "modified",
+		Additions:       1,
+		LineRangesJson:  `[[1,3]]`,
+		PatchArtifactID: sql.NullString{String: patch.ID, Valid: true},
+		CreatedAt:       "2026-05-03T00:05:00Z",
+	}); err != nil {
+		t.Fatalf("CreateChangedFile(%s) error = %v", fileID, err)
+	}
 }
 
 type fakeReviewContextSearcher struct {

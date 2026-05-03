@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/hughdo/cocode/services/cocoded/internal/security"
 )
 
 type ReviewContextPolicy struct {
@@ -58,7 +60,7 @@ func DecodeReviewContextPolicy(raw json.RawMessage) (ReviewContextPolicy, error)
 
 func ApplyReviewContextPolicy(base ReviewContextPolicy, raw json.RawMessage) (ReviewContextPolicy, error) {
 	if isEmptyPolicy(raw) {
-		return base.withCleanLocalOnlyPaths(), nil
+		return base.withCleanLocalOnlyPaths()
 	}
 
 	var patch reviewContextPolicyPatch
@@ -118,20 +120,24 @@ func ApplyReviewContextPolicy(base ReviewContextPolicy, raw json.RawMessage) (Re
 	if base.MaxItems <= 0 {
 		base.MaxItems = defaultBudgetMaxItems
 	}
-	return base.withCleanLocalOnlyPaths(), nil
+	return base.withCleanLocalOnlyPaths()
 }
 
 func (p ReviewContextPolicy) JSON() json.RawMessage {
-	data, err := json.Marshal(p.withCleanLocalOnlyPaths())
+	clean, err := p.withCleanLocalOnlyPaths()
+	if err != nil {
+		clean = p.withBestEffortCleanLocalOnlyPaths()
+	}
+	data, err := json.Marshal(clean)
 	if err != nil {
 		return json.RawMessage("{}")
 	}
 	return data
 }
 
-func (p ReviewContextPolicy) withCleanLocalOnlyPaths() ReviewContextPolicy {
+func (p ReviewContextPolicy) withCleanLocalOnlyPaths() (ReviewContextPolicy, error) {
 	if len(p.LocalOnlyPaths) == 0 {
-		return p
+		return p, nil
 	}
 	seen := map[string]struct{}{}
 	paths := make([]string, 0, len(p.LocalOnlyPaths))
@@ -140,6 +146,11 @@ func (p ReviewContextPolicy) withCleanLocalOnlyPaths() ReviewContextPolicy {
 		if path == "" {
 			continue
 		}
+		clean, err := security.CleanRelativePath(path)
+		if err != nil || clean == "." {
+			return ReviewContextPolicy{}, fmt.Errorf("review context policy local_only_paths contains unsafe path %q", path)
+		}
+		path = clean
 		if _, ok := seen[path]; ok {
 			continue
 		}
@@ -147,6 +158,15 @@ func (p ReviewContextPolicy) withCleanLocalOnlyPaths() ReviewContextPolicy {
 		paths = append(paths, path)
 	}
 	p.LocalOnlyPaths = paths
+	return p, nil
+}
+
+func (p ReviewContextPolicy) withBestEffortCleanLocalOnlyPaths() ReviewContextPolicy {
+	clean, err := p.withCleanLocalOnlyPaths()
+	if err == nil {
+		return clean
+	}
+	p.LocalOnlyPaths = nil
 	return p
 }
 

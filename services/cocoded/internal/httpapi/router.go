@@ -111,13 +111,14 @@ type BuildReviewContextRequest struct {
 }
 
 type BuildReviewContextResponse struct {
-	Bundle                    contextbundle.Bundle          `json:"bundle"`
-	Dropped                   []contextbundle.DroppedItem   `json:"dropped"`
-	Warnings                  []string                      `json:"warnings,omitempty"`
-	RedactionReport           contextbundle.RedactionReport `json:"redaction_report"`
-	Persisted                 bool                          `json:"persisted"`
-	ArtifactID                string                        `json:"artifact_id,omitempty"`
-	RedactionReportArtifactID string                        `json:"redaction_report_artifact_id,omitempty"`
+	Bundle                    contextbundle.Bundle           `json:"bundle"`
+	Dropped                   []contextbundle.DroppedItem    `json:"dropped"`
+	Warnings                  []string                       `json:"warnings,omitempty"`
+	RedactionReport           contextbundle.RedactionReport  `json:"redaction_report"`
+	VisibilityReport          contextbundle.VisibilityReport `json:"visibility_report"`
+	Persisted                 bool                           `json:"persisted"`
+	ArtifactID                string                         `json:"artifact_id,omitempty"`
+	RedactionReportArtifactID string                         `json:"redaction_report_artifact_id,omitempty"`
 }
 
 type ContextBundleDebugResponse struct {
@@ -126,10 +127,11 @@ type ContextBundleDebugResponse struct {
 }
 
 type ContextBundleDebugBundle struct {
-	Bundle        contextbundle.Bundle             `json:"bundle"`
-	Artifact      *ArtifactDebugResponse           `json:"artifact,omitempty"`
-	ItemArtifacts map[string]ArtifactDebugResponse `json:"item_artifacts,omitempty"`
-	AgentRunIDs   []string                         `json:"agent_run_ids,omitempty"`
+	Bundle           contextbundle.Bundle             `json:"bundle"`
+	Artifact         *ArtifactDebugResponse           `json:"artifact,omitempty"`
+	ItemArtifacts    map[string]ArtifactDebugResponse `json:"item_artifacts,omitempty"`
+	AgentRunIDs      []string                         `json:"agent_run_ids,omitempty"`
+	VisibilityReport *contextbundle.VisibilityReport  `json:"visibility_report,omitempty"`
 }
 
 type ArtifactDebugResponse struct {
@@ -563,6 +565,7 @@ func buildFindingContextHandler(services routerServices, scope contextbundle.Sco
 			result, err = services.contextBuilder.BuildFindingContext(c.Request.Context(), contextbundle.BuildFindingContextParams{
 				ReviewSessionID: reviewSessionID,
 				FindingID:       findingID,
+				AgentConfigID:   request.AgentConfigID,
 				PolicyOverride:  request.ContextPolicy,
 				Persist:         request.Persist,
 			})
@@ -570,6 +573,7 @@ func buildFindingContextHandler(services routerServices, scope contextbundle.Sco
 			result, err = services.contextBuilder.BuildEvidenceMapContext(c.Request.Context(), contextbundle.BuildEvidenceMapContextParams{
 				ReviewSessionID: reviewSessionID,
 				FindingID:       findingID,
+				AgentConfigID:   request.AgentConfigID,
 				PolicyOverride:  request.ContextPolicy,
 				Persist:         request.Persist,
 			})
@@ -715,12 +719,13 @@ func respondSnapshotResult(c *gin.Context, result snapshot.SnapshotResult) {
 
 func buildReviewContextResponse(result contextbundle.BuildReviewContextResult) BuildReviewContextResponse {
 	response := BuildReviewContextResponse{
-		Bundle:          result.Bundle,
-		Dropped:         result.Dropped,
-		Warnings:        result.Warnings,
-		RedactionReport: result.RedactionReport,
-		Persisted:       result.Persisted,
-		ArtifactID:      result.Artifact.ID,
+		Bundle:           result.Bundle,
+		Dropped:          result.Dropped,
+		Warnings:         result.Warnings,
+		RedactionReport:  result.RedactionReport,
+		VisibilityReport: result.VisibilityReport,
+		Persisted:        result.Persisted,
+		ArtifactID:       result.Artifact.ID,
 	}
 	if result.RedactionReportArtifact.ID != "" {
 		response.RedactionReportArtifactID = result.RedactionReportArtifact.ID
@@ -772,6 +777,9 @@ func buildContextBundleDebugResponse(ctx context.Context, services routerService
 				response.Warnings = appendResponseWarning(response.Warnings, warning)
 			} else {
 				debugBundle.Artifact = &artifactResponse
+				if report, ok := contextbundle.VisibilityReportFromArtifactMetadata(artifactResponse.Metadata); ok {
+					debugBundle.VisibilityReport = &report
+				}
 			}
 		}
 		for _, item := range bundle.Items {

@@ -109,39 +109,42 @@ func (s *Service) runVerifierAgents(ctx context.Context, session dbgen.ReviewSes
 
 	configs = boundedAgentConfigs(configs, defaultVerifierAgentLimit)
 	for _, finding := range findings {
-		built, err := s.ContextBuilder.BuildFindingContext(ctx, contextbundle.BuildFindingContextParams{
-			ReviewSessionID: session.ID,
-			FindingID:       finding.ID,
-			Persist:         true,
-		})
-		if err != nil {
-			summary.ContextBundleFailures++
-			if eventErr := s.appendVerifierWarning(ctx, session.ID, "", "VerifierContextBuildFailed", map[string]any{
-				"finding_id": finding.ID,
-				"error":      err.Error(),
-			}); eventErr != nil {
-				return summary, eventErr
-			}
-			continue
-		}
-		if err := s.appendEvent(ctx, appendEventParams{
-			ReviewSessionID: session.ID,
-			Type:            "ContextBundleCreated",
-			ArtifactID:      nullableEventString(built.Bundle.ArtifactID),
-			Payload: map[string]any{
-				"phase":             PhaseVerifyFindings,
-				"scope":             string(contextbundle.ScopeFinding),
-				"finding_id":        finding.ID,
-				"context_bundle_id": built.Bundle.ID,
-				"item_count":        built.Bundle.ItemCount,
-				"token_estimate":    built.Bundle.TokenEstimate,
-				"warnings":          built.Warnings,
-			},
-		}); err != nil {
-			return summary, err
-		}
 		summary.FindingsAttempted++
 		for _, config := range configs {
+			built, err := s.ContextBuilder.BuildFindingContext(ctx, contextbundle.BuildFindingContextParams{
+				ReviewSessionID: session.ID,
+				FindingID:       finding.ID,
+				AgentConfigID:   config.ID,
+				Persist:         true,
+			})
+			if err != nil {
+				summary.ContextBundleFailures++
+				if eventErr := s.appendVerifierWarning(ctx, session.ID, "", "VerifierContextBuildFailed", map[string]any{
+					"finding_id":      finding.ID,
+					"agent_config_id": config.ID,
+					"error":           err.Error(),
+				}); eventErr != nil {
+					return summary, eventErr
+				}
+				continue
+			}
+			if err := s.appendEvent(ctx, appendEventParams{
+				ReviewSessionID: session.ID,
+				Type:            "ContextBundleCreated",
+				ArtifactID:      nullableEventString(built.Bundle.ArtifactID),
+				Payload: map[string]any{
+					"phase":             PhaseVerifyFindings,
+					"scope":             string(contextbundle.ScopeFinding),
+					"finding_id":        finding.ID,
+					"agent_config_id":   config.ID,
+					"context_bundle_id": built.Bundle.ID,
+					"item_count":        built.Bundle.ItemCount,
+					"token_estimate":    built.Bundle.TokenEstimate,
+					"warnings":          built.Warnings,
+				},
+			}); err != nil {
+				return summary, err
+			}
 			result, err := s.runVerifierAgent(ctx, session, repository, workspace, config, finding, built.Bundle)
 			if err != nil {
 				summary.RunsFailed++

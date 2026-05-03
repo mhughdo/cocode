@@ -2038,6 +2038,8 @@ CLI command safety is enforced before save, health checks, and runtime driver op
 
 Permission policy now distinguishes read, search, test, shell, write, and publish actions with low through critical risk levels. Review mode approves read/search/test/shell, denies write/publish, records the evaluated decision in agent-run metadata, and rejects write-capable agent configs during review-session creation, finding/evidence-map follow-up selection, and final runtime preflight before an agent process is launched.
 
+Local-only context policy is normalized through the same path sandbox primitives. Before context builders read changed file content, external recipients filter local-only changed files from diff, full-file, related-code, and related-test inputs; a final item pass removes any path-bearing local-only item that could be introduced by another context source. Rendered context only exposes the number of local-only paths configured, while local artifact metadata and API previews record recipient provider/egress, sent item counts by kind, and omitted local-only items for UI provenance.
+
 ---
 
 ## 20. Error Handling

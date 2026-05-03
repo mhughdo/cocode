@@ -386,8 +386,8 @@ Large parallel workstreams:
 | T322 | Implement permission model | Define read/search/test/shell/write/publish risk levels. | Done | T321 | T323 | Permission actions map to risk levels and runner metadata records approved/denied decisions consistently. |
 | T323 | Add review-mode write denial | Ensure review agents cannot modify files through cocode-managed tools. | Done | T322 | T090 | Review-mode sessions, follow-up agents, and runtime runs reject write-capable configs before launching. |
 | T324 | Implement env allowlist | Only pass explicitly allowed env vars to CLI agents. | Done | T093 | T330 | Shared env-name validation and allowlist resolution are enforced for review, follow-up, and command health checks. |
-| T325 | Implement local-only file enforcement | Exclude local-only files from external/cloud-backed CLI context. | Not started | T130, T247 | T326 | Context bundles omit local-only content and record omission. |
-| T326 | Implement provider visibility metadata | Track which files/context items were sent to which agent. | Not started | T131, T325 | T252 | UI/provenance shows context visibility. |
+| T325 | Implement local-only file enforcement | Exclude local-only files from external/cloud-backed CLI context. | Done | T130, T247 | T326 | External agent context excludes local-only changed files/items before reads and records omissions. |
+| T326 | Implement provider visibility metadata | Track which files/context items were sent to which agent. | Done | T131, T325 | T252 | Context artifacts, preview responses, debug responses, and agent runs record recipient provider/egress and sent item counts. |
 | T327 | Implement secret redaction UI | Show redaction status/report in configure/review detail. | Not started | T130, T247 | T333 | User can inspect redaction summary. |
 | T328 | Implement credentials settings | Add GitHub token and optional CLI credential refs/settings. | Not started | T037, T073 | T248 | Secrets are stored outside DB plaintext. |
 | T329 | Implement backend Origin checks | Reject suspicious browser-origin requests to local backend. | Not started | T042 | T330 | Tests cover allowed/disallowed origins. |

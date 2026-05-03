@@ -45,6 +45,7 @@ func TestReviewContextPolicyRejectsInvalidJSON(t *testing.T) {
 	for _, raw := range []string{
 		`{"unknown":true}`,
 		`{"max_tokens":0}`,
+		`{"local_only_paths":["../secrets.env"]}`,
 		`{"include_changed_code":true} {"include_related_tests":false}`,
 	} {
 		if _, err := DecodeReviewContextPolicy(json.RawMessage(raw)); err == nil || !strings.Contains(err.Error(), "policy") && !strings.Contains(err.Error(), "max_") && !strings.Contains(err.Error(), "multiple") {

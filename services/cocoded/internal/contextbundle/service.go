@@ -46,6 +46,7 @@ type BuildReviewContextResult struct {
 	RedactionReportArtifact dbgen.Artifact
 	Persisted               bool
 	ResolvedPolicy          ReviewContextPolicy
+	VisibilityReport        VisibilityReport
 }
 
 func (s Service) BuildReviewContext(ctx context.Context, params BuildReviewContextParams) (BuildReviewContextResult, error) {
@@ -88,13 +89,9 @@ func (s Service) BuildReviewContext(ctx context.Context, params BuildReviewConte
 		return BuildReviewContextResult{}, fmt.Errorf("%w: snapshot does not belong to review session repository", ErrInvalidReviewContextSource)
 	}
 	agentConfigID := strings.TrimSpace(params.AgentConfigID)
-	if agentConfigID != "" {
-		if _, err := s.Queries.GetAgentConfig(ctx, agentConfigID); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return BuildReviewContextResult{}, ErrAgentConfigNotFound
-			}
-			return BuildReviewContextResult{}, fmt.Errorf("read agent config: %w", err)
-		}
+	visibility, err := s.recipientVisibility(ctx, agentConfigID)
+	if err != nil {
+		return BuildReviewContextResult{}, err
 	}
 
 	policy, err := DecodeReviewContextPolicy(json.RawMessage(session.ContextPolicyJson))
@@ -120,17 +117,26 @@ func (s Service) BuildReviewContext(ctx context.Context, params BuildReviewConte
 	if err != nil {
 		return BuildReviewContextResult{}, fmt.Errorf("list changed files: %w", err)
 	}
+	contextFiles := files
+	localOnlyMatcher := localOnlyMatcher{}
+	visibilityOmissions := []VisibilityOmission{}
+	if visibility.IsExternal() && len(policy.LocalOnlyPaths) > 0 {
+		localOnlyMatcher = newLocalOnlyMatcher(policy.LocalOnlyPaths)
+		var omitted []VisibilityOmission
+		contextFiles, omitted = applyLocalOnlyChangedFileFilter(files, localOnlyMatcher)
+		visibilityOmissions = append(visibilityOmissions, omitted...)
+	}
 
 	items := []Item{}
 	if policy.IncludePromptMaterial {
-		item, err := reviewPromptMaterialItem(bundleID, session, snapshot, len(files), policy)
+		item, err := reviewPromptMaterialItem(bundleID, session, snapshot, len(contextFiles), policy)
 		if err != nil {
 			return BuildReviewContextResult{}, err
 		}
 		items = append(items, item)
 	}
 	if policy.IncludeChangedCode {
-		diffFiles, warnings := s.diffContextFiles(ctx, files)
+		diffFiles, warnings := s.diffContextFiles(ctx, contextFiles)
 		result.Warnings = append(result.Warnings, warnings...)
 		diffItems, err := BuildDiffContextItems(bundleID, diffFiles)
 		if err != nil {
@@ -138,7 +144,7 @@ func (s Service) BuildReviewContext(ctx context.Context, params BuildReviewConte
 		}
 		items = append(items, diffItems...)
 
-		contentInputs, err := changedFileContentInputs(files)
+		contentInputs, err := changedFileContentInputs(contextFiles)
 		if err != nil {
 			return BuildReviewContextResult{}, err
 		}
@@ -157,7 +163,7 @@ func (s Service) BuildReviewContext(ctx context.Context, params BuildReviewConte
 			BundleID: bundleID,
 			RepoRoot: repository.LocalPath,
 			Searcher: s.Searcher,
-		}, relatedSearchInputs(files))
+		}, relatedSearchInputs(contextFiles))
 		if err != nil {
 			result.Warnings = appendWarning(result.Warnings, "related code context skipped: "+err.Error())
 		} else {
@@ -168,7 +174,7 @@ func (s Service) BuildReviewContext(ctx context.Context, params BuildReviewConte
 		testItems, err := BuildRelatedTestContextItems(RelatedTestOptions{
 			BundleID: bundleID,
 			RepoRoot: repository.LocalPath,
-		}, relatedTestInputs(files))
+		}, relatedTestInputs(contextFiles))
 		if err != nil {
 			result.Warnings = appendWarning(result.Warnings, "related test context skipped: "+err.Error())
 		} else {
@@ -218,6 +224,11 @@ func (s Service) BuildReviewContext(ctx context.Context, params BuildReviewConte
 		CreatedAt:       createdAt,
 		Items:           items,
 	}
+	if !localOnlyMatcher.empty() {
+		var omitted []VisibilityOmission
+		bundle.Items, omitted = applyLocalOnlyItemFilter(bundle.Items, localOnlyMatcher)
+		visibilityOmissions = append(visibilityOmissions, omitted...)
+	}
 	bundle = ApplyBundleTokenEstimates(bundle)
 	bundle, result.Dropped, err = BudgetBundle(bundle, BudgetOptions{
 		Depth:     depth,
@@ -233,6 +244,8 @@ func (s Service) BuildReviewContext(ctx context.Context, params BuildReviewConte
 			return BuildReviewContextResult{}, err
 		}
 	}
+	result.VisibilityReport = visibilityReport(visibility, policy, bundle, visibilityOmissions)
+	result.Warnings = appendVisibilityWarning(result.Warnings, result.VisibilityReport)
 
 	if params.Persist && result.RedactionReport.RedactionCount > 0 {
 		artifactID := reviewContextArtifactID("redaction", bundle.ID)
@@ -253,6 +266,7 @@ func (s Service) BuildReviewContext(ctx context.Context, params BuildReviewConte
 			Bundle:      bundle,
 			ArtifactID:  reviewContextArtifactID("bundle", bundle.ID),
 			CreatedAt:   createdAt,
+			Visibility:  result.VisibilityReport,
 		})
 		if err != nil {
 			return BuildReviewContextResult{}, err
@@ -371,12 +385,7 @@ func reviewPromptMaterialItem(bundleID string, session dbgen.ReviewSession, snap
 	}
 	builder.WriteString(fmt.Sprintf("Changed files: %d\n", changedFileCount))
 	if len(policy.LocalOnlyPaths) > 0 {
-		builder.WriteString("Local-only paths:\n")
-		for _, path := range policy.LocalOnlyPaths {
-			builder.WriteString("- ")
-			builder.WriteString(path)
-			builder.WriteByte('\n')
-		}
+		builder.WriteString(fmt.Sprintf("Local-only paths configured: %d\n", len(policy.LocalOnlyPaths)))
 	}
 
 	metadata, err := json.Marshal(map[string]any{

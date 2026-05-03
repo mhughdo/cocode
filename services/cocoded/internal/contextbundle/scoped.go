@@ -32,6 +32,7 @@ const (
 type BuildFindingContextParams struct {
 	ReviewSessionID string
 	FindingID       string
+	AgentConfigID   string
 	PolicyOverride  json.RawMessage
 	Persist         bool
 }
@@ -39,6 +40,7 @@ type BuildFindingContextParams struct {
 type BuildEvidenceMapContextParams struct {
 	ReviewSessionID string
 	FindingID       string
+	AgentConfigID   string
 	PolicyOverride  json.RawMessage
 	Persist         bool
 }
@@ -62,6 +64,7 @@ func (s Service) BuildFindingContext(ctx context.Context, params BuildFindingCon
 		policy:  policy,
 		depth:   depth,
 		scope:   ScopeFinding,
+		agentID: strings.TrimSpace(params.AgentConfigID),
 		persist: params.Persist,
 	})
 }
@@ -76,6 +79,7 @@ func (s Service) BuildEvidenceMapContext(ctx context.Context, params BuildEviden
 		policy:             policy,
 		depth:              depth,
 		scope:              ScopeEvidenceMap,
+		agentID:            strings.TrimSpace(params.AgentConfigID),
 		persist:            params.Persist,
 		includeEvidenceMap: true,
 	})
@@ -86,6 +90,7 @@ type scopedContextBuildParams struct {
 	policy             ReviewContextPolicy
 	depth              ReviewDepth
 	scope              Scope
+	agentID            string
 	persist            bool
 	includeEvidenceMap bool
 }
@@ -179,7 +184,11 @@ func (s Service) scopedContextSource(ctx context.Context, reviewSessionID string
 func (s Service) buildScopedContext(ctx context.Context, params scopedContextBuildParams) (BuildReviewContextResult, error) {
 	source := params.source
 	createdAt := s.now().UTC().Format(time.RFC3339Nano)
-	bundleID := scopedContextBundleID(source.session.ID, source.finding.ID, params.scope, createdAt)
+	visibility, err := s.recipientVisibility(ctx, params.agentID)
+	if err != nil {
+		return BuildReviewContextResult{}, err
+	}
+	bundleID := scopedContextBundleID(source.session.ID, source.finding.ID, params.scope, params.agentID, createdAt)
 	result := BuildReviewContextResult{ResolvedPolicy: params.policy}
 	items := []Item{}
 
@@ -208,6 +217,14 @@ func (s Service) buildScopedContext(ctx context.Context, params scopedContextBui
 	}
 
 	scopedFiles := findingScopedChangedFiles(source.finding, source.evidence, source.files)
+	localOnlyMatcher := localOnlyMatcher{}
+	visibilityOmissions := []VisibilityOmission{}
+	if visibility.IsExternal() && len(params.policy.LocalOnlyPaths) > 0 {
+		localOnlyMatcher = newLocalOnlyMatcher(params.policy.LocalOnlyPaths)
+		var omitted []VisibilityOmission
+		scopedFiles, omitted = applyLocalOnlyChangedFileFilter(scopedFiles, localOnlyMatcher)
+		visibilityOmissions = append(visibilityOmissions, omitted...)
+	}
 	if params.policy.IncludeChangedCode {
 		diffFiles, warnings := s.diffContextFiles(ctx, scopedFiles)
 		result.Warnings = append(result.Warnings, warnings...)
@@ -302,10 +319,16 @@ func (s Service) buildScopedContext(ctx context.Context, params scopedContextBui
 	bundle := Bundle{
 		ID:              bundleID,
 		ReviewSessionID: source.session.ID,
+		AgentConfigID:   params.agentID,
 		Scope:           params.scope,
 		Policy:          params.policy.JSON(),
 		CreatedAt:       createdAt,
 		Items:           items,
+	}
+	if !localOnlyMatcher.empty() {
+		var omitted []VisibilityOmission
+		bundle.Items, omitted = applyLocalOnlyItemFilter(bundle.Items, localOnlyMatcher)
+		visibilityOmissions = append(visibilityOmissions, omitted...)
 	}
 	bundle = ApplyBundleTokenEstimates(bundle)
 	bundle, result.Dropped, err = BudgetBundle(bundle, BudgetOptions{
@@ -322,6 +345,8 @@ func (s Service) buildScopedContext(ctx context.Context, params scopedContextBui
 			return BuildReviewContextResult{}, err
 		}
 	}
+	result.VisibilityReport = visibilityReport(visibility, params.policy, bundle, visibilityOmissions)
+	result.Warnings = appendVisibilityWarning(result.Warnings, result.VisibilityReport)
 	if params.persist && result.RedactionReport.RedactionCount > 0 {
 		artifactID := reviewContextArtifactID("redaction", bundle.ID)
 		result.RedactionReportArtifact, err = SaveRedactionReportArtifact(ctx, s.Artifacts, RedactionArtifactParams{
@@ -341,6 +366,7 @@ func (s Service) buildScopedContext(ctx context.Context, params scopedContextBui
 			Bundle:      bundle,
 			ArtifactID:  reviewContextArtifactID("bundle", bundle.ID),
 			CreatedAt:   createdAt,
+			Visibility:  result.VisibilityReport,
 		})
 		if err != nil {
 			return BuildReviewContextResult{}, err
@@ -776,8 +802,8 @@ func addScopedTerm(terms *[]string, term string) {
 	*terms = append(*terms, term)
 }
 
-func scopedContextBundleID(sessionID string, findingID string, scope Scope, createdAt string) string {
-	key := strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(findingID) + "\x00" + string(scope) + "\x00" + createdAt
+func scopedContextBundleID(sessionID string, findingID string, scope Scope, agentConfigID string, createdAt string) string {
+	key := strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(findingID) + "\x00" + string(scope) + "\x00" + strings.TrimSpace(agentConfigID) + "\x00" + createdAt
 	sum := sha256.Sum256([]byte(key))
 	return "bundle_" + hex.EncodeToString(sum[:12])
 }

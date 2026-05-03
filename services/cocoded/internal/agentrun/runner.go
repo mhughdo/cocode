@@ -93,9 +93,11 @@ func (r Runner) Execute(ctx context.Context, params RunParams) (RunResult, error
 		return RunResult{}, err
 	}
 	permissions := params.Permissions.Evaluate(agents.RequiredPermissionsForRun(config, params.Capabilities))
+	visibility := agents.VisibilityForConfig(config, params.Capabilities)
 	metadataJSON, err := runMetadataJSON(mergeRunMetadata(params.Metadata, map[string]any{
 		"timeout_policy":    timeoutMetadata,
 		"permission_policy": permissions.Metadata(),
+		"agent_visibility":  visibility.Metadata(),
 	}), task)
 	if err != nil {
 		return RunResult{}, err

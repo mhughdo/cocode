@@ -430,6 +430,40 @@ func TestSubmitReviewRejectsUnanchoredComments(t *testing.T) {
 	assertClientAppError(t, err, apperror.CodeInvalidRequest)
 }
 
+func TestSubmitSummaryReviewSendsBodyWithoutComments(t *testing.T) {
+	t.Parallel()
+
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":7002,"state":"COMMENTED","html_url":"https://github.com/openai/codex/pull/123#pullrequestreview-7002"}`))
+	}))
+	defer server.Close()
+
+	review, err := (Client{
+		BaseURL: server.URL,
+		Token:   "token",
+		Client:  server.Client(),
+	}).SubmitSummaryReview(context.Background(), Reference{Owner: "openai", Repo: "codex", Number: 123}, "head-sha", "Summary body only.", "COMMENT")
+	if err != nil {
+		t.Fatalf("SubmitSummaryReview() error = %v", err)
+	}
+	if review.ID != 7002 {
+		t.Fatalf("review = %+v", review)
+	}
+	if payload["body"] != "Summary body only." ||
+		payload["event"] != "COMMENT" ||
+		payload["commit_id"] != "head-sha" {
+		t.Fatalf("payload = %+v", payload)
+	}
+	if _, ok := payload["comments"]; ok {
+		t.Fatalf("summary-only payload should omit comments: %+v", payload)
+	}
+}
+
 const serverURLPlaceholder = "https://api.github.test"
 
 func assertClientAppError(t *testing.T, err error, code apperror.Code) {

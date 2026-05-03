@@ -290,6 +290,14 @@ func (c Client) SubmitReview(ctx context.Context, ref Reference, params SubmitRe
 	return body, nil
 }
 
+func (c Client) SubmitSummaryReview(ctx context.Context, ref Reference, commitID string, body string, event string) (PublishedReview, error) {
+	return c.SubmitReview(ctx, ref, SubmitReviewParams{
+		CommitID: commitID,
+		Body:     body,
+		Event:    event,
+	})
+}
+
 func submitReviewPayload(params SubmitReviewParams) (map[string]any, error) {
 	event := strings.ToUpper(strings.TrimSpace(params.Event))
 	switch event {

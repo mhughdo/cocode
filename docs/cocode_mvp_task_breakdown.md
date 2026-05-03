@@ -427,7 +427,7 @@ Large parallel workstreams:
 | T382 | Add update strategy note | Decide no auto-update vs future auto-update. | Done | T380 | T390 | `docs/release_packaging.md` documents MVP manual updates with `--publish never`, GitHub Release attachment, and no background updater. |
 | T383 | Add first-run setup guide | UI/docs for connecting GitHub token and CLI agents. | Done | T248, T328 | T390 | `docs/first_run_setup.md` covers opening a repo, saving a GitHub token, enabling Codex/Gemini/OpenCode/custom CLI presets, running a first review, triage, export, and logs. |
 | T384 | Add troubleshooting guide | Missing CLI, auth errors, invalid output, timeouts, GitHub anchor failures. | Done | T044, T092, T297 | T390 | `docs/troubleshooting.md` covers packaged backend issues, GitHub auth, missing CLI, invalid agent output, timeouts, anchor warnings, partial Evidence Maps, and large-PR slowness. |
-| T390 | MVP release candidate review | Verify all P0 tasks, tests, security, packaging, and docs. | Not started | All P0 tasks | None | Release checklist passes; known issues documented; no auto-publish/write behavior. |
+| T390 | MVP release candidate review | Verify all P0 tasks, tests, security, packaging, and docs. | Done | All P0 tasks | None | `docs/mvp_release_candidate_review.md` records passed automated gates, packaged-app smoke, golden-repo eval metrics, side-effect checks, and known release issues; renderer still exposes preview/copy only, not automatic GitHub publish. |
 
 ---
 

@@ -156,6 +156,8 @@ Finding Detail is currently presented as the selected-detail pane inside the Fin
 
 The Evidence Map opens from a selected finding as a full review subview rather than a narrow nested detail tab. It uses the existing API envelope client for `GET/POST /api/findings/:id/evidence-map`, renders an in-app SVG graph without an added graph dependency, keeps node/edge/call-path selection in local UI state, sends selected graph refs to the evidence-map question endpoint, and resolves backend deep-link paths through the Electron `openFile` bridge.
 
+Finding Follow-up opens from a selected finding and uses the thread, question, and quick-action endpoints under `/api/findings/:id`. The screen loads the finding detail for evidence cards, keeps agent selection optional so the backend can auto-select an enabled verifier/follow-up agent, persists thread messages after asks, and treats accept/copy/dismiss as quick actions that update both the finding decision and the thread.
+
 Electron keeps the renderer sandbox enabled, so the preload bundle is emitted as CommonJS (`out/preload/index.cjs`) and explicitly externalizes `electron`. This preserves `contextIsolation`, `sandbox`, and `nodeIntegration: false` while still exposing the narrow `window.cocode` bridge.
 
 The desktop shell uses shadcn `radix-nova` primitives as the lowest-level UI layer. App-specific chrome lives under `apps/desktop/src/renderer/src/components/app/` and stays limited to layout/navigation/state composition: sidebar sections, pane headers, command-search dialog wiring, and loading/empty/error state blocks. Feature-specific components such as diff rows, evidence cards, and finding cards should stay near their screen implementation until their data contracts stabilize.

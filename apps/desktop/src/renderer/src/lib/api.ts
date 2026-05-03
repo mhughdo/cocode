@@ -528,10 +528,34 @@ export interface AskEvidenceMapQuestionRequest {
   graph_refs?: EvidenceMapGraphRef[];
 }
 
+export interface AskFindingQuestionRequest {
+  question: string;
+  agent_config_id?: string;
+  context_policy?: ReviewContextPolicy;
+}
+
 export interface AskFindingQuestionResponse {
   thread: FindingThreadView;
   user_message: FindingThreadMessage;
   assistant_message: FindingThreadMessage;
+  agent_run_id?: string;
+  context_bundle_id?: string;
+}
+
+export interface FindingQuickActionRequest {
+  action: string;
+  reason?: string;
+  agent_config_id?: string;
+  context_policy?: ReviewContextPolicy;
+}
+
+export interface FindingQuickActionResponse {
+  action: string;
+  thread: FindingThreadView;
+  finding: Finding;
+  decision?: HumanDecision;
+  message?: FindingThreadMessage;
+  assistant_message?: FindingThreadMessage;
   agent_run_id?: string;
   context_bundle_id?: string;
 }
@@ -905,6 +929,40 @@ export class ApiClient {
     return this.patch<Finding>(
       `/api/findings/${encodeURIComponent(findingId)}/draft-comment`,
       { draft_comment: draftComment },
+      options,
+    );
+  }
+
+  getFindingThread(
+    findingId: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.get<FindingThreadView>(
+      `/api/findings/${encodeURIComponent(findingId)}/thread`,
+      options,
+    );
+  }
+
+  askFindingQuestion(
+    findingId: string,
+    body: AskFindingQuestionRequest,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.post<AskFindingQuestionResponse>(
+      `/api/findings/${encodeURIComponent(findingId)}/question`,
+      body,
+      options,
+    );
+  }
+
+  runFindingQuickAction(
+    findingId: string,
+    body: FindingQuickActionRequest,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.post<FindingQuickActionResponse>(
+      `/api/findings/${encodeURIComponent(findingId)}/thread/actions`,
+      body,
       options,
     );
   }

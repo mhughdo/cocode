@@ -101,6 +101,8 @@ import {
   type Finding,
   type FindingDetailResponse,
   type FindingListResponse,
+  type FindingQuickActionResponse,
+  type FindingThreadView,
   type OpenRepositoryResponse,
   type Repository,
   type ReviewContextPolicy,
@@ -2472,6 +2474,7 @@ function ReviewThread({
   const [evidenceMapFinding, setEvidenceMapFinding] = useState<Finding | null>(
     null,
   );
+  const [followUpFinding, setFollowUpFinding] = useState<Finding | null>(null);
   const live = useReviewSessionLiveData(client, session);
 
   useEffect(() => {
@@ -2479,6 +2482,7 @@ function ReviewThread({
     queueMicrotask(() => {
       if (!canceled) {
         setEvidenceMapFinding(null);
+        setFollowUpFinding(null);
       }
     });
     return () => {
@@ -2489,6 +2493,11 @@ function ReviewThread({
   const openEvidenceMap = useCallback((finding: Finding) => {
     setEvidenceMapFinding(finding);
     setActiveTab("evidence-map");
+  }, []);
+
+  const openFollowUp = useCallback((finding: Finding) => {
+    setFollowUpFinding(finding);
+    setActiveTab("follow-up");
   }, []);
 
   const agentList = agentConfigs.status === "success" ? agentConfigs.data : [];
@@ -2546,6 +2555,9 @@ function ReviewThread({
               <TabsTrigger value="evidence-map" disabled={!evidenceMapFinding}>
                 Evidence Map
               </TabsTrigger>
+              <TabsTrigger value="follow-up" disabled={!followUpFinding}>
+                Follow-up
+              </TabsTrigger>
               <TabsTrigger value="publish">Publish</TabsTrigger>
             </TabsList>
 
@@ -2599,6 +2611,7 @@ function ReviewThread({
                 client={client}
                 findings={live.findings}
                 onOpenEvidenceMap={openEvidenceMap}
+                onOpenFollowUp={openFollowUp}
                 session={live.session ?? session}
               />
             </TabsContent>
@@ -2617,6 +2630,23 @@ function ReviewThread({
                   title="Select a finding first"
                   description="Open Evidence Map from a selected finding to inspect graph context."
                   icon={MapIcon}
+                />
+              )}
+            </TabsContent>
+
+            <TabsContent value="follow-up" className="mt-4">
+              {followUpFinding ? (
+                <FindingFollowUpScreen
+                  agentConfigs={agentConfigs}
+                  client={client}
+                  finding={followUpFinding}
+                  onBack={() => setActiveTab("findings")}
+                />
+              ) : (
+                <EmptyState
+                  title="Select a finding first"
+                  description="Open Follow-up from a selected finding to ask scoped questions."
+                  icon={MessageSquareIcon}
                 />
               )}
             </TabsContent>
@@ -3013,11 +3043,13 @@ function ReviewFindingsBoard({
   client,
   findings,
   onOpenEvidenceMap,
+  onOpenFollowUp,
   session,
 }: {
   client: ApiClient | null;
   findings: Loadable<FindingListResponse>;
   onOpenEvidenceMap: (finding: Finding) => void;
+  onOpenFollowUp: (finding: Finding) => void;
   session?: ReviewSession;
 }) {
   const [statusFilter, setStatusFilter] = useState<FindingStatusFilter>("all");
@@ -3658,6 +3690,15 @@ function ReviewFindingsBoard({
                   disabled={actionState.status === "loading"}
                   size="sm"
                   variant="outline"
+                  onClick={() => onOpenFollowUp(selectedFinding)}
+                >
+                  <MessageSquareIcon data-icon="inline-start" />
+                  Follow-up
+                </Button>
+                <Button
+                  disabled={actionState.status === "loading"}
+                  size="sm"
+                  variant="outline"
                   onClick={() => void updateDecision("dismissed")}
                 >
                   Dismiss
@@ -3673,6 +3714,369 @@ function ReviewFindingsBoard({
         </div>
       </div>
     </section>
+  );
+}
+
+function FindingFollowUpScreen({
+  agentConfigs,
+  client,
+  finding,
+  onBack,
+}: {
+  agentConfigs: Loadable<AgentConfig[]>;
+  client: ApiClient | null;
+  finding: Finding;
+  onBack: () => void;
+}) {
+  const [threadState, setThreadState] =
+    useState<Loadable<FindingThreadView>>(idleApiState());
+  const [detailState, setDetailState] =
+    useState<Loadable<FindingDetailResponse>>(idleApiState());
+  const [question, setQuestion] = useState("");
+  const [dismissReason, setDismissReason] = useState("");
+  const [selectedAgentId, setSelectedAgentId] = useState("");
+  const [actionState, setActionState] =
+    useState<Loadable<AskFindingQuestionResponse | FindingQuickActionResponse>>(
+      idleApiState(),
+    );
+
+  useEffect(() => {
+    let canceled = false;
+    queueMicrotask(() => {
+      if (canceled) {
+        return;
+      }
+      if (!client) {
+        const error = new Error("Backend client is unavailable");
+        setThreadState(errorApiState(error));
+        setDetailState(errorApiState(error));
+        return;
+      }
+      setThreadState(loadingApiState());
+      setDetailState(loadingApiState());
+      void Promise.all([
+        loadApiResource(() => client.getFindingThread(finding.id)),
+        loadApiResource(() => client.getFindingDetail(finding.id)),
+      ]).then(([thread, detail]) => {
+        if (canceled) {
+          return;
+        }
+        setThreadState(thread);
+        setDetailState(detail);
+      });
+    });
+    return () => {
+      canceled = true;
+    };
+  }, [client, finding.id]);
+
+  const agentList = agentConfigs.status === "success" ? agentConfigs.data : [];
+  const followUpAgents = agentList.filter(
+    (agent) =>
+      agent.enabled &&
+      (agent.adapter_kind === "local_verifier" ||
+        agent.adapter_kind === "cli_noninteractive" ||
+        agent.adapter_kind === "cli_non_interactive"),
+  );
+  const evidenceItems =
+    detailState.status === "success"
+      ? prioritizedEvidenceItems(detailState.data.evidence_items).slice(0, 8)
+      : [];
+  const messages =
+    threadState.status === "success" ? threadState.data.messages : [];
+  const activeFinding =
+    threadState.status === "success" ? threadState.data.finding : finding;
+  const selectedAgent = followUpAgents.find(
+    (agent) => agent.id === selectedAgentId,
+  );
+
+  async function askQuestion() {
+    if (!client || !question.trim()) {
+      return;
+    }
+    setActionState(loadingApiState());
+    const state = await loadApiResource(() =>
+      client.askFindingQuestion(finding.id, {
+        question: question.trim(),
+        agent_config_id: selectedAgentId || undefined,
+        context_policy: { max_tokens: 8_000, max_items: 80 },
+      }),
+    );
+    setActionState(state);
+    if (state.status === "success") {
+      setQuestion("");
+      setThreadState(successApiState(state.data.thread));
+    }
+  }
+
+  async function runQuickAction(action: string) {
+    if (!client) {
+      return;
+    }
+    if (action === "dismiss" && !dismissReason.trim()) {
+      setActionState(errorApiState(new Error("Dismissal reason is required.")));
+      return;
+    }
+    setActionState(loadingApiState());
+    const state = await loadApiResource(() =>
+      client.runFindingQuickAction(finding.id, {
+        action,
+        reason: action === "dismiss" ? dismissReason.trim() : undefined,
+        agent_config_id: selectedAgentId || undefined,
+        context_policy: { max_tokens: 8_000, max_items: 80 },
+      }),
+    );
+    setActionState(state);
+    if (state.status === "success") {
+      setThreadState(successApiState(state.data.thread));
+      setDismissReason("");
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <PaneHeader
+        title="Finding follow-up"
+        description={activeFinding.canonical_claim}
+        actions={
+          <Button size="sm" variant="outline" onClick={onBack}>
+            <ArrowLeftIcon data-icon="inline-start" />
+            Findings
+          </Button>
+        }
+      />
+
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="flex min-w-0 flex-col gap-4">
+          <div className="rounded-lg border p-4">
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <Badge>{activeFinding.severity}</Badge>
+              <Badge variant="outline">
+                {activeFinding.verification_status}
+              </Badge>
+              <Badge variant="outline">{activeFinding.decision_status}</Badge>
+              <Badge variant="secondary">
+                {activeFinding.merged_from_count} candidates
+              </Badge>
+            </div>
+            <h2 className="text-lg leading-7 font-semibold">
+              {activeFinding.canonical_claim}
+            </h2>
+            <div className="text-muted-foreground mt-2 text-sm">
+              {formatFindingLocation(activeFinding)}
+            </div>
+            {activeFinding.evidence_summary && (
+              <p className="text-muted-foreground mt-3 text-sm leading-6">
+                {activeFinding.evidence_summary}
+              </p>
+            )}
+          </div>
+
+          <div className="rounded-lg border">
+            <div className="flex items-center justify-between gap-2 border-b px-4 py-3">
+              <div>
+                <div className="text-sm font-medium">Thread</div>
+                <div className="text-muted-foreground mt-1 text-xs">
+                  {messages.length} messages
+                </div>
+              </div>
+              {selectedAgent && (
+                <Badge variant="outline">{selectedAgent.name}</Badge>
+              )}
+            </div>
+            {threadState.status === "loading" && (
+              <LoadingRows rows={4} className="p-4" />
+            )}
+            {threadState.status === "error" && (
+              <div className="p-4">
+                <ErrorState
+                  title="Thread failed to load"
+                  description={threadState.error.message}
+                />
+              </div>
+            )}
+            {threadState.status === "success" && (
+              <FollowUpMessages messages={messages} />
+            )}
+          </div>
+
+          <div className="rounded-lg border p-3">
+            <Textarea
+              aria-label="Finding follow-up question"
+              className="min-h-28 border-0 p-1 shadow-none focus-visible:ring-0"
+              placeholder="Ask a finding-scoped follow-up..."
+              value={question}
+              onChange={(event) => setQuestion(event.target.value)}
+            />
+            <div className="mt-2 flex items-center justify-between gap-2">
+              <span className="text-muted-foreground text-xs">
+                Uses finding context and evidence refs.
+              </span>
+              <Button
+                disabled={!question.trim() || actionState.status === "loading"}
+                size="sm"
+                onClick={() => void askQuestion()}
+              >
+                <SendIcon data-icon="inline-start" />
+                Ask
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        <aside className="flex min-w-0 flex-col gap-4">
+          <div className="rounded-lg border p-4">
+            <label className="flex flex-col gap-2 text-sm font-medium">
+              Agent
+              <NativeSelect
+                value={selectedAgentId}
+                onChange={(event) => setSelectedAgentId(event.target.value)}
+              >
+                <NativeSelectOption value="">Auto-select</NativeSelectOption>
+                {followUpAgents.map((agent) => (
+                  <NativeSelectOption key={agent.id} value={agent.id}>
+                    {agent.name}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+            </label>
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <Button
+                disabled={actionState.status === "loading"}
+                size="sm"
+                variant="outline"
+                onClick={() => void runQuickAction("ask_counter_evidence")}
+              >
+                <SearchIcon data-icon="inline-start" />
+                Counter
+              </Button>
+              <Button
+                disabled={actionState.status === "loading"}
+                size="sm"
+                variant="outline"
+                onClick={() => void runQuickAction("accept")}
+              >
+                <CheckIcon data-icon="inline-start" />
+                Accept
+              </Button>
+              <Button
+                disabled={actionState.status === "loading"}
+                size="sm"
+                variant="outline"
+                onClick={() => void runQuickAction("copy")}
+              >
+                <CopyIcon data-icon="inline-start" />
+                Copy
+              </Button>
+              <Button
+                disabled={actionState.status === "loading"}
+                size="sm"
+                variant="outline"
+                onClick={() => void runQuickAction("dismiss")}
+              >
+                Dismiss
+              </Button>
+            </div>
+            <Input
+              aria-label="Follow-up dismissal reason"
+              className="mt-2"
+              placeholder="Dismissal reason"
+              value={dismissReason}
+              onChange={(event) => setDismissReason(event.target.value)}
+            />
+            {actionState.status === "error" && (
+              <p className="text-destructive mt-2 text-sm">
+                {actionState.error.message}
+              </p>
+            )}
+            {actionState.status === "success" && (
+              <p className="text-muted-foreground mt-2 text-sm">
+                Follow-up updated
+              </p>
+            )}
+          </div>
+
+          <div className="rounded-lg border p-4">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <div className="text-sm font-medium">Evidence bundle</div>
+              <Badge variant="outline">{evidenceItems.length}</Badge>
+            </div>
+            <div className="flex flex-col gap-2">
+              {detailState.status === "loading" && <LoadingRows rows={3} />}
+              {evidenceItems.map((item) => (
+                <div key={item.id} className="rounded-md border p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate text-sm font-medium">
+                      {item.title}
+                    </span>
+                    <Badge variant={evidenceBadgeVariant(item.kind)}>
+                      {item.kind}
+                    </Badge>
+                  </div>
+                  <div className="text-muted-foreground mt-1 text-xs">
+                    {formatEvidenceLocation(item)}
+                  </div>
+                  <p className="text-muted-foreground mt-2 line-clamp-3 text-sm leading-6">
+                    {item.summary}
+                  </p>
+                </div>
+              ))}
+              {detailState.status === "success" &&
+                evidenceItems.length === 0 && (
+                  <p className="text-muted-foreground text-sm">
+                    No evidence items are attached yet.
+                  </p>
+                )}
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+function FollowUpMessages({
+  messages,
+}: {
+  messages: FindingThreadView["messages"];
+}) {
+  if (messages.length === 0) {
+    return (
+      <EmptyState
+        title="No follow-ups yet"
+        description="Ask a scoped question or use a quick action to start the thread."
+        icon={MessageSquareIcon}
+      />
+    );
+  }
+  return (
+    <div className="flex flex-col gap-3 p-4">
+      {messages.map((message) => (
+        <div
+          key={message.id}
+          className={cn(
+            "rounded-lg border p-3",
+            message.role === "user" && "bg-surface",
+            message.role === "assistant" && "bg-background",
+            message.role === "system" && "bg-muted/40",
+          )}
+        >
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <Badge
+              variant={message.role === "assistant" ? "secondary" : "outline"}
+            >
+              {message.role}
+            </Badge>
+            <span className="text-muted-foreground text-xs">
+              {formatRelativeAge(message.created_at)}
+            </span>
+          </div>
+          <p className="text-sm leading-6 whitespace-pre-wrap">
+            {message.content}
+          </p>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -4912,7 +5316,7 @@ function MessageComposer({
       </div>
       <div className="text-muted-foreground mx-auto mt-2 max-w-5xl truncate text-center text-xs">
         Review-level follow-up submit needs a backend endpoint; finding-scoped
-        follow-up is wired in a later screen. {backendDetail}
+        follow-up opens from a selected finding. {backendDetail}
       </div>
     </div>
   );

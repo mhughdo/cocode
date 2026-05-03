@@ -226,6 +226,24 @@ describe("ApiClient", () => {
           });
         }
         if (
+          url.endsWith("/api/findings/finding_1/thread") &&
+          method === "GET"
+        ) {
+          return jsonResponse({ data: findingThreadViewFixture, error: null });
+        }
+        if (url.endsWith("/api/findings/finding_1/question")) {
+          return jsonResponse({
+            data: askFindingQuestionFixture,
+            error: null,
+          });
+        }
+        if (url.endsWith("/api/findings/finding_1/thread/actions")) {
+          return jsonResponse({
+            data: findingQuickActionFixture,
+            error: null,
+          });
+        }
+        if (
           url.endsWith("/api/findings/finding_1/evidence-map") &&
           method === "GET"
         ) {
@@ -307,6 +325,26 @@ describe("ApiClient", () => {
       id: "finding_1",
       draft_comment: "Please add the missing middleware.",
     });
+    await expect(client.getFindingThread("finding_1")).resolves.toEqual(
+      findingThreadViewFixture,
+    );
+    await expect(
+      client.askFindingQuestion("finding_1", {
+        question: "Can you check counter-evidence?",
+        agent_config_id: "agent_config_1",
+      }),
+    ).resolves.toMatchObject({
+      assistant_message: { content: "No counter-evidence was found." },
+    });
+    await expect(
+      client.runFindingQuickAction("finding_1", {
+        action: "copy",
+        reason: "sent to agent",
+      }),
+    ).resolves.toMatchObject({
+      action: "copy",
+      finding: { decision_status: "copied" },
+    });
     await expect(client.getFindingEvidenceMap("finding_1")).resolves.toEqual(
       evidenceMapFixture,
     );
@@ -339,6 +377,9 @@ describe("ApiClient", () => {
       "GET http://127.0.0.1:17658/api/findings/finding_1",
       "PATCH http://127.0.0.1:17658/api/findings/finding_1/decision",
       "PATCH http://127.0.0.1:17658/api/findings/finding_1/draft-comment",
+      "GET http://127.0.0.1:17658/api/findings/finding_1/thread",
+      "POST http://127.0.0.1:17658/api/findings/finding_1/question",
+      "POST http://127.0.0.1:17658/api/findings/finding_1/thread/actions",
       "GET http://127.0.0.1:17658/api/findings/finding_1/evidence-map",
       "POST http://127.0.0.1:17658/api/findings/finding_1/evidence-map/rebuild",
       "POST http://127.0.0.1:17658/api/findings/finding_1/evidence-map/question",
@@ -351,7 +392,15 @@ describe("ApiClient", () => {
     expect(seen[6]?.body).toEqual({
       draft_comment: "Please add the missing middleware.",
     });
+    expect(seen[8]?.body).toEqual({
+      question: "Can you check counter-evidence?",
+      agent_config_id: "agent_config_1",
+    });
     expect(seen[9]?.body).toEqual({
+      action: "copy",
+      reason: "sent to agent",
+    });
+    expect(seen[12]?.body).toEqual({
       question: "Does this graph prove the missing guard?",
       agent_config_id: "agent_config_1",
       graph_refs: [{ node_id: "node_1" }],
@@ -786,6 +835,86 @@ const findingThreadViewFixture = {
     updated_at: "2026-05-04T00:00:00Z",
   },
   messages: [],
+};
+
+const askFindingQuestionFixture = {
+  thread: {
+    ...findingThreadViewFixture,
+    messages: [
+      {
+        id: "message_user_counter",
+        thread_id: "thread_1",
+        role: "user",
+        content: "Can you check counter-evidence?",
+        evidence_refs: [],
+        created_at: "2026-05-04T00:00:00Z",
+      },
+      {
+        id: "message_assistant_counter",
+        thread_id: "thread_1",
+        role: "assistant",
+        agent_config_id: "agent_config_1",
+        content: "No counter-evidence was found.",
+        evidence_refs: [],
+        created_at: "2026-05-04T00:00:00Z",
+      },
+    ],
+  },
+  user_message: {
+    id: "message_user_counter",
+    thread_id: "thread_1",
+    role: "user",
+    content: "Can you check counter-evidence?",
+    evidence_refs: [],
+    created_at: "2026-05-04T00:00:00Z",
+  },
+  assistant_message: {
+    id: "message_assistant_counter",
+    thread_id: "thread_1",
+    role: "assistant",
+    agent_config_id: "agent_config_1",
+    content: "No counter-evidence was found.",
+    evidence_refs: [],
+    created_at: "2026-05-04T00:00:00Z",
+  },
+  agent_run_id: "run_counter_1",
+  context_bundle_id: "bundle_counter_1",
+};
+
+const findingQuickActionFixture = {
+  action: "copy",
+  thread: {
+    ...findingThreadViewFixture,
+    finding: { ...findingFixture, decision_status: "copied" },
+    messages: [
+      {
+        id: "message_system_copy",
+        thread_id: "thread_1",
+        role: "system",
+        content: "Marked finding as copied. Note: sent to agent",
+        evidence_refs: [],
+        created_at: "2026-05-04T00:00:00Z",
+      },
+    ],
+  },
+  finding: { ...findingFixture, decision_status: "copied" },
+  decision: {
+    id: "decision_copy",
+    finding_id: "finding_1",
+    review_session_id: "session_1",
+    decision: "copied",
+    reason: "sent to agent",
+    metadata: {},
+    created_at: "2026-05-04T00:00:00Z",
+  },
+  message: {
+    id: "message_system_copy",
+    thread_id: "thread_1",
+    role: "system",
+    content: "Marked finding as copied. Note: sent to agent",
+    evidence_refs: [],
+    created_at: "2026-05-04T00:00:00Z",
+  },
 };
 
 const askEvidenceMapQuestionFixture = {

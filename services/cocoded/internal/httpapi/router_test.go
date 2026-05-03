@@ -278,6 +278,19 @@ func TestAgentPresetsEndpointIncludesBuiltInCLIs(t *testing.T) {
 		!json.Valid(claude.Settings) {
 		t.Fatalf("claude preset = %+v", claude)
 	}
+	gemini := findAgentPreset(t, presets, "gemini-cli")
+	if gemini.Command != "gemini" ||
+		len(gemini.Args) != 4 ||
+		gemini.Args[0] != "--model" ||
+		gemini.Args[1] != "pro" ||
+		gemini.Args[2] != "--output-format" ||
+		gemini.Args[3] != "json" ||
+		gemini.OutputMode != agents.OutputJSON ||
+		gemini.ModelLabel != "pro" ||
+		!gemini.Capabilities.SupportsOutputMode(agents.OutputJSON) ||
+		!json.Valid(gemini.Settings) {
+		t.Fatalf("gemini preset = %+v", gemini)
+	}
 }
 
 func TestAgentConfigEndpointRejectsInvalidInputs(t *testing.T) {

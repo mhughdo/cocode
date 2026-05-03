@@ -66,6 +66,40 @@ func TestClaudeCodeCLIPreset(t *testing.T) {
 	}
 }
 
+func TestGeminiCLIPreset(t *testing.T) {
+	t.Parallel()
+
+	preset := GeminiCLI()
+	if preset.ID != "gemini-cli" ||
+		preset.Command != "gemini" ||
+		preset.AdapterKind != agents.AdapterCLINonInteractive ||
+		preset.OutputMode != agents.OutputJSON ||
+		preset.ModelLabel != "pro" ||
+		!preset.Capabilities.CanCancel ||
+		!preset.Capabilities.SupportsOutputMode(agents.OutputJSON) {
+		t.Fatalf("preset = %+v", preset)
+	}
+	if len(preset.Args) != 4 ||
+		preset.Args[0] != "--model" ||
+		preset.Args[1] != "pro" ||
+		preset.Args[2] != "--output-format" ||
+		preset.Args[3] != "json" {
+		t.Fatalf("preset args = %+v", preset.Args)
+	}
+	settings := decodePresetSettings(t, preset)
+	if settings.PromptDelivery != agents.PromptViaStdin ||
+		settings.TimeoutSeconds != 1800 ||
+		len(settings.VersionArgs) != 1 ||
+		settings.VersionArgs[0] != "--version" ||
+		settings.SmokePromptEnabled {
+		t.Fatalf("settings = %+v", settings)
+	}
+	if !containsString(preset.EnvAllowlist, "GEMINI_API_KEY") ||
+		!containsString(preset.EnvAllowlist, "GOOGLE_APPLICATION_CREDENTIALS") {
+		t.Fatalf("env allowlist = %+v", preset.EnvAllowlist)
+	}
+}
+
 func TestListIncludesKnownPresets(t *testing.T) {
 	t.Parallel()
 
@@ -74,7 +108,7 @@ func TestListIncludesKnownPresets(t *testing.T) {
 	for _, preset := range presets {
 		ids[preset.ID] = struct{}{}
 	}
-	for _, id := range []string{"codex-cli", "claude-code-cli"} {
+	for _, id := range []string{"codex-cli", "claude-code-cli", "gemini-cli"} {
 		if _, ok := ids[id]; !ok {
 			t.Fatalf("preset %q missing from %+v", id, presets)
 		}
@@ -96,4 +130,13 @@ func decodePresetSettings(t *testing.T, preset Preset) presetSettings {
 		t.Fatalf("Unmarshal(settings) error = %v", err)
 	}
 	return settings
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

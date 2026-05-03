@@ -25,7 +25,7 @@ type Preset struct {
 }
 
 func List() []Preset {
-	return []Preset{CodexCLI(), ClaudeCodeCLI()}
+	return []Preset{CodexCLI(), ClaudeCodeCLI(), GeminiCLI()}
 }
 
 func CodexCLI() Preset {
@@ -69,6 +69,32 @@ func ClaudeCodeCLI() Preset {
 		EnvAllowlist:   []string{"ANTHROPIC_API_KEY"},
 		OutputMode:     agents.OutputJSON,
 		ModelLabel:     "claude",
+		ReasoningLabel: "",
+		Capabilities: agents.AgentCapabilities{
+			SupportsJSON: true,
+			CanRead:      true,
+			CanCancel:    true,
+			OutputModes:  []agents.OutputMode{agents.OutputJSON, agents.OutputJSONL, agents.OutputText},
+		},
+		Settings: settings,
+		Enabled:  true,
+	}
+}
+
+func GeminiCLI() Preset {
+	settings := json.RawMessage(`{"prompt_delivery":"stdin","timeout_seconds":1800,"version_args":["--version"],"smoke_prompt_enabled":false}`)
+	return Preset{
+		ID:             "gemini-cli",
+		Name:           "Gemini CLI",
+		Description:    "Runs Gemini CLI in headless mode with JSON output using the Pro model alias.",
+		Role:           "primary_reviewer",
+		AdapterKind:    agents.AdapterCLINonInteractive,
+		Command:        "gemini",
+		Args:           []string{"--model", "pro", "--output-format", "json"},
+		CWDMode:        "repo_root",
+		EnvAllowlist:   []string{"GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"},
+		OutputMode:     agents.OutputJSON,
+		ModelLabel:     "pro",
 		ReasoningLabel: "",
 		Capabilities: agents.AgentCapabilities{
 			SupportsJSON: true,

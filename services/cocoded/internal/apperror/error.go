@@ -37,6 +37,10 @@ func Unauthorized(message string) *Error {
 	return New(CodeUnauthorized, message, http.StatusUnauthorized)
 }
 
+func NotFound(message string) *Error {
+	return New(CodeNotFound, message, http.StatusNotFound)
+}
+
 func Internal(message string) *Error {
 	return New(CodeInternal, message, http.StatusInternalServerError)
 }

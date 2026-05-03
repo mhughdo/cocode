@@ -53,6 +53,10 @@ export function registerIpc(
   });
 
   ipcMain.handle("cocode:select-repository", async () => {
+    const testRepositoryPath = process.env.COCODE_E2E_REPOSITORY_PATH?.trim();
+    if (testRepositoryPath) {
+      return testRepositoryPath;
+    }
     const result = await dialog.showOpenDialog({
       properties: ["openDirectory"],
       title: "Select repository",

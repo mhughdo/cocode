@@ -2185,6 +2185,149 @@ func TestReviewRuleEndpointCRUDAndDedup(t *testing.T) {
 	}
 }
 
+func TestSettingsExportImportEndpointRedactsAndValidates(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIWorkspaceAndRepository(t, queries, "/tmp/cocode")
+	createHTTPAPIAgentConfigWithCommand(t, queries, "agent_config_secret", "primary_reviewer", 1, "codex", agents.OutputJSON, `{
+		"timeout_seconds": 900,
+		"credential_refs": {"OPENAI_API_KEY": "credential:openai"},
+		"api_key": "raw-secret"
+	}`)
+	if _, err := queries.CreateReviewRule(context.Background(), dbgen.CreateReviewRuleParams{
+		ID:          "review_rule_secret",
+		WorkspaceID: "workspace_1",
+		Scope:       "workspace",
+		RuleType:    "dismissal",
+		Content:     "Do not flag generated lockfile churn.",
+		Enabled:     1,
+		CreatedAt:   "2026-05-03T00:16:00Z",
+		UpdatedAt:   "2026-05-03T00:16:00Z",
+	}); err != nil {
+		t.Fatalf("CreateReviewRule() error = %v", err)
+	}
+
+	exportRequest := httptest.NewRequest(http.MethodGet, "/api/workspaces/workspace_1/settings-export", nil)
+	exportRequest.Header.Set("X-Cocode-Token", "test-token")
+	exportResponse := httptest.NewRecorder()
+	router.ServeHTTP(exportResponse, exportRequest)
+	if exportResponse.Code != http.StatusOK {
+		t.Fatalf("export status = %d, body = %s", exportResponse.Code, exportResponse.Body.String())
+	}
+	exported := decodeSettingsExportResponse(t, exportResponse.Body.Bytes())
+	if exported.Schema != settingsExportSchema ||
+		len(exported.AgentPresets) == 0 ||
+		len(exported.AgentConfigs) != 1 ||
+		len(exported.ReviewRules) != 1 {
+		t.Fatalf("exported = %+v", exported)
+	}
+	exportedBytes, err := json.Marshal(exported)
+	if err != nil {
+		t.Fatalf("Marshal(exported) error = %v", err)
+	}
+	if strings.Contains(string(exportedBytes), "raw-secret") ||
+		strings.Contains(string(exportedBytes), "credential_refs") {
+		t.Fatalf("export leaked secret material: %s", string(exportedBytes))
+	}
+
+	importPayload := SettingsExportPayload{
+		Schema: settingsExportSchema,
+		WorkspaceSettings: map[string]any{
+			"theme":   "light",
+			"api_key": "must-not-import",
+		},
+		AgentConfigs: []SettingsAgentConfigExport{
+			{
+				Name:         "Imported reviewer",
+				Role:         "primary_reviewer",
+				AdapterKind:  agents.AdapterCLINonInteractive,
+				Command:      "codex",
+				Args:         []string{"exec", "--json", "-"},
+				CWDMode:      "repo_root",
+				EnvAllowlist: []string{"PATH", "OPENAI_API_KEY"},
+				OutputMode:   agents.OutputJSON,
+				Capabilities: map[string]any{
+					"supports_json": true,
+					"can_read":      true,
+					"output_modes":  []any{"json"},
+				},
+				Settings: map[string]any{
+					"timeout_seconds": 600,
+					"credential_refs": map[string]any{
+						"OPENAI_API_KEY": "credential:openai",
+					},
+				},
+				Enabled: true,
+			},
+		},
+		ReviewRules: []SettingsReviewRuleExport{
+			{
+				Scope:    "workspace",
+				RuleType: "dismissal",
+				Content:  "Do not flag generated fixture churn.",
+				Enabled:  true,
+			},
+		},
+	}
+	importRequest := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/workspaces/workspace_1/settings-import", map[string]any{
+		"payload":          importPayload,
+		"collision_policy": "skip",
+	})
+	importResponse := httptest.NewRecorder()
+	router.ServeHTTP(importResponse, importRequest)
+	if importResponse.Code != http.StatusOK {
+		t.Fatalf("import status = %d, body = %s", importResponse.Code, importResponse.Body.String())
+	}
+	imported := decodeSettingsImportResponse(t, importResponse.Body.Bytes())
+	if imported.WorkspaceSettings.Created != 1 ||
+		imported.WorkspaceSettings.Redacted != 1 ||
+		imported.AgentConfigs.Created != 1 ||
+		imported.AgentConfigs.Redacted != 1 ||
+		imported.ReviewRules.Created != 1 {
+		t.Fatalf("imported = %+v", imported)
+	}
+
+	workspace, err := queries.GetWorkspace(context.Background(), "workspace_1")
+	if err != nil {
+		t.Fatalf("GetWorkspace() error = %v", err)
+	}
+	if !strings.Contains(workspace.SettingsJson, `"theme":"light"`) ||
+		strings.Contains(workspace.SettingsJson, "api_key") {
+		t.Fatalf("workspace settings = %s", workspace.SettingsJson)
+	}
+	configs, err := queries.ListAgentConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("ListAgentConfigs() error = %v", err)
+	}
+	importedConfig := dbgen.AgentConfig{}
+	for _, config := range configs {
+		if config.Name == "Imported reviewer" {
+			importedConfig = config
+			break
+		}
+	}
+	if importedConfig.ID == "" ||
+		!strings.Contains(importedConfig.SettingsJson, "timeout_seconds") ||
+		strings.Contains(importedConfig.SettingsJson, "credential_refs") {
+		t.Fatalf("imported config = %+v", importedConfig)
+	}
+	rules, err := queries.ListReviewRulesByWorkspace(context.Background(), "workspace_1")
+	if err != nil {
+		t.Fatalf("ListReviewRulesByWorkspace() error = %v", err)
+	}
+	if len(rules) != 2 {
+		t.Fatalf("rules = %+v", rules)
+	}
+
+	invalidRequest := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/workspaces/workspace_1/settings-import", map[string]any{
+		"payload": map[string]any{"schema": "wrong"},
+	})
+	invalidResponse := httptest.NewRecorder()
+	router.ServeHTTP(invalidResponse, invalidRequest)
+	if invalidResponse.Code != http.StatusBadRequest {
+		t.Fatalf("invalid import status = %d, body = %s", invalidResponse.Code, invalidResponse.Body.String())
+	}
+}
+
 func TestReviewSessionCopyPacketEndpointRendersAcceptedFindings(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
 	createHTTPAPIFindingFixture(t, queries)
@@ -3529,6 +3672,38 @@ func decodeReviewRuleListResponse(t *testing.T, content []byte) ReviewRuleListRe
 
 	var envelope struct {
 		Data  ReviewRuleListResponse `json:"data"`
+		Error any                    `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeSettingsExportResponse(t *testing.T, content []byte) SettingsExportPayload {
+	t.Helper()
+
+	var envelope struct {
+		Data  SettingsExportPayload `json:"data"`
+		Error any                   `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeSettingsImportResponse(t *testing.T, content []byte) SettingsImportResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  SettingsImportResponse `json:"data"`
 		Error any                    `json:"error"`
 	}
 	if err := json.Unmarshal(content, &envelope); err != nil {

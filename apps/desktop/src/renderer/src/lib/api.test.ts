@@ -8,6 +8,7 @@ import {
   loadApiResource,
   loadingApiState,
   preserveSuccessfulLoadable,
+  type SettingsExportPayload,
   successApiState,
 } from "./api";
 
@@ -780,6 +781,64 @@ describe("ApiClient", () => {
       "DELETE http://127.0.0.1:17658/api/review-rules/review_rule_1",
     ]);
   });
+
+  it("exports and imports portable workspace settings", async () => {
+    const seen: { url: string; method: string; body: unknown }[] = [];
+    const fetcher = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        seen.push({
+          url,
+          method,
+          body: init?.body ? JSON.parse(String(init.body)) : null,
+        });
+        if (method === "GET") {
+          return jsonResponse({
+            data: settingsExportFixture,
+            error: null,
+          });
+        }
+        return jsonResponse({
+          data: {
+            schema: "cocode.settings_export.v1",
+            imported_at: "2026-05-04T00:05:00Z",
+            collision_policy: "skip",
+            workspace_settings: { created: 1, updated: 0, skipped: 0 },
+            agent_configs: { created: 1, updated: 0, skipped: 0 },
+            review_rules: { created: 1, updated: 0, skipped: 0 },
+          },
+          error: null,
+        });
+      },
+    );
+    const client = createCocodeClient({
+      baseUrl: "http://127.0.0.1:17658",
+      authToken: "local-token",
+      fetch: fetcher,
+    });
+
+    await expect(
+      client.exportWorkspaceSettings("workspace_1"),
+    ).resolves.toEqual(settingsExportFixture);
+    await expect(
+      client.importWorkspaceSettings("workspace_1", {
+        payload: settingsExportFixture,
+        collision_policy: "skip",
+      }),
+    ).resolves.toMatchObject({
+      collision_policy: "skip",
+      agent_configs: { created: 1 },
+    });
+    expect(seen.map((request) => `${request.method} ${request.url}`)).toEqual([
+      "GET http://127.0.0.1:17658/api/workspaces/workspace_1/settings-export",
+      "POST http://127.0.0.1:17658/api/workspaces/workspace_1/settings-import",
+    ]);
+    expect(seen[1]?.body).toEqual({
+      payload: settingsExportFixture,
+      collision_policy: "skip",
+    });
+  });
 });
 
 describe("API load states", () => {
@@ -1304,6 +1363,49 @@ const reviewRuleFixture = {
   enabled: true,
   created_at: "2026-05-04T00:00:00Z",
   updated_at: "2026-05-04T00:00:00Z",
+};
+
+const settingsExportFixture: SettingsExportPayload = {
+  schema: "cocode.settings_export.v1",
+  exported_at: "2026-05-04T00:05:00Z",
+  sections: [
+    "workspace_settings",
+    "agent_presets",
+    "agent_configs",
+    "review_rules",
+  ],
+  workspace: { name: "cocode" },
+  workspace_settings: { theme: "system" },
+  agent_presets: [],
+  agent_configs: [
+    {
+      name: "Codex reviewer",
+      role: "primary_reviewer",
+      adapter_kind: "cli_noninteractive",
+      command: "codex",
+      args: ["exec", "--json", "-"],
+      cwd_mode: "repo_root",
+      env_allowlist: ["PATH"],
+      output_mode: "json",
+      model_label: "gpt-5.5",
+      reasoning_label: "high",
+      capabilities: {
+        supports_json: true,
+        can_read: true,
+        output_modes: ["json"],
+      },
+      settings: { timeout_seconds: 900 },
+      enabled: true,
+    },
+  ],
+  review_rules: [
+    {
+      scope: "workspace",
+      rule_type: "dismissal",
+      content: "Do not flag generated file churn.",
+      enabled: true,
+    },
+  ],
 };
 
 const agentConfigFixture = {

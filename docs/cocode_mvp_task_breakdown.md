@@ -397,7 +397,7 @@ Large parallel workstreams:
 | T333 | Add privacy indicators | UI shows cloud/local status and local-only restrictions. | Done | T326, T247 | T248 | Configure and Review details show provider/egress badges plus local-only visibility omissions before context is sent. |
 | T334 | Implement audit log viewer | Surface events/actions/approvals in Review details. | Done | T252, T061 | T360 | Review details loads a bounded audit log for events, decisions, copy packets, publish drafts, and GitHub publications. |
 | T335 | Implement review rule memory | Convert dismissal reasons into optional local rules. | Done | T186, T127 | T336 | Review-rule CRUD/toggle APIs are available, dismissed findings can save deduped workspace-local rules, and Agent settings exposes rule creation, deletion, refresh, and enable/disable controls. |
-| T336 | Implement settings export/import | Export non-secret settings, presets, and rules. | Not started | T248, T335 | T390 | Export does not include secrets; import validates schema. |
+| T336 | Implement settings export/import | Export non-secret settings, presets, and rules. | Done | T248, T335 | T390 | Workspace settings, static preset snapshots, agent configs, and review rules export as `cocode.settings_export.v1`; import validates the schema, strips sensitive keys, and supports skip/replace/rename/fail collision policies. |
 
 ---
 

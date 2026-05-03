@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  ArrowDownIcon,
   ArrowLeftIcon,
   ArrowUpIcon,
   BellIcon,
@@ -122,6 +123,8 @@ import {
   type ReviewRuleListResponse,
   type ReviewSessionSummary,
   type ReviewSession,
+  type SettingsExportPayload,
+  type SettingsImportResponse,
   type Snapshot,
   type Workspace,
 } from "@/lib/api";
@@ -1435,6 +1438,8 @@ type ReviewRuleDraftState = {
   enabled: boolean;
 };
 
+type SettingsCollisionPolicy = "skip" | "replace" | "rename" | "fail";
+
 function AgentSettingsScreen({
   activeWorkspace,
   client,
@@ -1472,6 +1477,14 @@ function AgentSettingsScreen({
   );
   const [reviewRuleAction, setReviewRuleAction] =
     useState<Loadable<ReviewRule | { deleted: boolean; id: string }>>(
+      idleApiState(),
+    );
+  const [settingsExportText, setSettingsExportText] = useState("");
+  const [settingsImportText, setSettingsImportText] = useState("");
+  const [settingsCollisionPolicy, setSettingsCollisionPolicy] =
+    useState<SettingsCollisionPolicy>("skip");
+  const [settingsPortabilityState, setSettingsPortabilityState] =
+    useState<Loadable<SettingsExportPayload | SettingsImportResponse>>(
       idleApiState(),
     );
 
@@ -1670,6 +1683,57 @@ function AgentSettingsScreen({
     }
   }
 
+  async function exportWorkspaceSettings() {
+    if (!client || !activeWorkspace) {
+      setSettingsPortabilityState(
+        errorApiState(new Error("Open a workspace before exporting settings")),
+      );
+      return;
+    }
+    setSettingsPortabilityState(loadingApiState());
+    const state = await loadApiResource(() =>
+      client.exportWorkspaceSettings(activeWorkspace.id),
+    );
+    setSettingsPortabilityState(state);
+    if (state.status === "success") {
+      const text = JSON.stringify(state.data, null, 2);
+      setSettingsExportText(text);
+      setSettingsImportText(text);
+    }
+  }
+
+  async function importWorkspaceSettings() {
+    if (!client || !activeWorkspace) {
+      setSettingsPortabilityState(
+        errorApiState(new Error("Open a workspace before importing settings")),
+      );
+      return;
+    }
+    let payload: SettingsExportPayload;
+    try {
+      payload = JSON.parse(settingsImportText) as SettingsExportPayload;
+    } catch (error) {
+      setSettingsPortabilityState(errorApiState(error));
+      return;
+    }
+    setSettingsPortabilityState(loadingApiState());
+    const state = await loadApiResource(() =>
+      client.importWorkspaceSettings(activeWorkspace.id, {
+        payload,
+        collision_policy: settingsCollisionPolicy,
+      }),
+    );
+    setSettingsPortabilityState(state);
+    if (state.status === "success") {
+      const [configState, ruleState] = await Promise.all([
+        loadApiResource(() => client.listAgentConfigs()),
+        loadApiResource(() => client.listReviewRules(activeWorkspace.id)),
+      ]);
+      setConfigs(configState);
+      setReviewRules(ruleState);
+    }
+  }
+
   async function saveAgentConfig() {
     if (!client) {
       setSaveState(errorApiState(new Error("Backend client is unavailable")));
@@ -1764,6 +1828,18 @@ function AgentSettingsScreen({
             onDraftChange={setReviewRuleDraft}
             onReload={() => void reloadReviewRules()}
             onToggle={(rule, enabled) => void toggleReviewRule(rule, enabled)}
+          />
+
+          <SettingsPortabilityPanel
+            collisionPolicy={settingsCollisionPolicy}
+            exportText={settingsExportText}
+            importText={settingsImportText}
+            state={settingsPortabilityState}
+            workspace={activeWorkspace}
+            onCollisionPolicyChange={setSettingsCollisionPolicy}
+            onExport={() => void exportWorkspaceSettings()}
+            onImport={() => void importWorkspaceSettings()}
+            onImportTextChange={setSettingsImportText}
           />
 
           <div className="grid grid-cols-[320px_minmax(0,1fr)] gap-4">
@@ -2590,6 +2666,167 @@ function ReviewRuleMemoryPanel({
       )}
     </section>
   );
+}
+
+function SettingsPortabilityPanel({
+  collisionPolicy,
+  exportText,
+  importText,
+  state,
+  workspace,
+  onCollisionPolicyChange,
+  onExport,
+  onImport,
+  onImportTextChange,
+}: {
+  collisionPolicy: SettingsCollisionPolicy;
+  exportText: string;
+  importText: string;
+  state: Loadable<SettingsExportPayload | SettingsImportResponse>;
+  workspace?: Workspace;
+  onCollisionPolicyChange: (policy: SettingsCollisionPolicy) => void;
+  onExport: () => void;
+  onImport: () => void;
+  onImportTextChange: (value: string) => void;
+}) {
+  const isBusy = state.status === "loading";
+  const importResult =
+    state.status === "success" && isSettingsImportResponse(state.data)
+      ? state.data
+      : undefined;
+
+  return (
+    <section className="bg-surface-raised rounded-lg border">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <CopyIcon className="size-4" />
+            Settings portability
+          </div>
+          <div className="text-muted-foreground mt-1 truncate text-xs">
+            Portable JSON excludes secrets, local paths, review artifacts, and
+            credential refs.
+          </div>
+        </div>
+        <Badge variant={workspace ? "secondary" : "outline"}>
+          {workspace?.name ?? "no workspace"}
+        </Badge>
+      </div>
+
+      <div className="grid gap-4 p-4 lg:grid-cols-2">
+        <div className="flex min-w-0 flex-col gap-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-sm font-medium">Export</div>
+            <Button
+              disabled={!workspace || isBusy}
+              size="sm"
+              onClick={onExport}
+            >
+              <ArrowUpIcon data-icon="inline-start" />
+              Export JSON
+            </Button>
+          </div>
+          <Textarea
+            aria-label="Settings export JSON"
+            className="min-h-56 font-mono text-xs"
+            readOnly
+            placeholder="Exported settings JSON appears here."
+            value={exportText}
+          />
+        </div>
+
+        <div className="flex min-w-0 flex-col gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="text-sm font-medium">Import</div>
+            <div className="flex items-center gap-2">
+              <NativeSelect
+                className="w-28"
+                value={collisionPolicy}
+                onChange={(event) =>
+                  onCollisionPolicyChange(
+                    event.target.value as SettingsCollisionPolicy,
+                  )
+                }
+              >
+                <NativeSelectOption value="skip">skip</NativeSelectOption>
+                <NativeSelectOption value="replace">replace</NativeSelectOption>
+                <NativeSelectOption value="rename">rename</NativeSelectOption>
+                <NativeSelectOption value="fail">fail</NativeSelectOption>
+              </NativeSelect>
+              <Button
+                disabled={!workspace || isBusy || !importText.trim()}
+                size="sm"
+                variant="outline"
+                onClick={onImport}
+              >
+                <ArrowDownIcon data-icon="inline-start" />
+                Import
+              </Button>
+            </div>
+          </div>
+          <Textarea
+            aria-label="Settings import JSON"
+            className="min-h-56 font-mono text-xs"
+            placeholder="Paste a cocode.settings_export.v1 JSON payload."
+            value={importText}
+            onChange={(event) => onImportTextChange(event.target.value)}
+          />
+        </div>
+      </div>
+
+      {(state.status === "error" || importResult) && (
+        <div className="border-t px-4 py-3">
+          {state.status === "error" && (
+            <ErrorState
+              title="Settings portability failed"
+              description={state.error.message}
+            />
+          )}
+          {importResult && (
+            <div className="grid gap-2 sm:grid-cols-3">
+              <SettingsImportReportChip
+                label="Workspace"
+                report={importResult.workspace_settings}
+              />
+              <SettingsImportReportChip
+                label="Agents"
+                report={importResult.agent_configs}
+              />
+              <SettingsImportReportChip
+                label="Rules"
+                report={importResult.review_rules}
+              />
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SettingsImportReportChip({
+  label,
+  report,
+}: {
+  label: string;
+  report: SettingsImportResponse["agent_configs"];
+}) {
+  return (
+    <div className="bg-background rounded-md border px-3 py-2 text-sm">
+      <div className="font-medium">{label}</div>
+      <div className="text-muted-foreground mt-1 text-xs">
+        {report.created} created, {report.updated} updated, {report.skipped}{" "}
+        skipped
+        {report.redacted ? `, ${report.redacted} redacted` : ""}
+      </div>
+    </div>
+  );
+}
+
+function isSettingsImportResponse(
+  value: SettingsExportPayload | SettingsImportResponse,
+): value is SettingsImportResponse {
+  return "imported_at" in value;
 }
 
 function AgentSettingSwitch({

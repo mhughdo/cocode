@@ -287,6 +287,8 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.GET("/workspaces/:id/repositories", listWorkspaceRepositoriesHandler(services))
 	api.GET("/workspaces/:id/review-rules", listReviewRulesHandler(queries))
 	api.POST("/workspaces/:id/review-rules", createReviewRuleHandler(queries))
+	api.GET("/workspaces/:id/settings-export", exportWorkspaceSettingsHandler(services))
+	api.POST("/workspaces/:id/settings-import", importWorkspaceSettingsHandler(services))
 	api.PATCH("/review-rules/:id", updateReviewRuleHandler(queries))
 	api.PATCH("/review-rules/:id/enabled", setReviewRuleEnabledHandler(queries))
 	api.DELETE("/review-rules/:id", deleteReviewRuleHandler(queries))

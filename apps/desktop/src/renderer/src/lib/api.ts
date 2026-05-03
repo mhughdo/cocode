@@ -239,6 +239,67 @@ export interface SetReviewRuleEnabledRequest {
   enabled: boolean;
 }
 
+export interface SettingsWorkspaceExport {
+  name: string;
+}
+
+export interface SettingsAgentConfigExport {
+  name: string;
+  role: string;
+  adapter_kind: string;
+  command: string;
+  args: string[];
+  cwd_mode: string;
+  env_allowlist: string[];
+  output_mode: string;
+  model_label?: string;
+  reasoning_label?: string;
+  capabilities: Record<string, unknown>;
+  settings: Record<string, unknown>;
+  enabled: boolean;
+}
+
+export interface SettingsReviewRuleExport {
+  scope: string;
+  rule_type: string;
+  content: string;
+  enabled: boolean;
+}
+
+export interface SettingsExportPayload {
+  schema: "cocode.settings_export.v1";
+  exported_at?: string;
+  sections?: string[];
+  workspace?: SettingsWorkspaceExport;
+  workspace_settings: Record<string, unknown>;
+  agent_presets?: AgentPreset[];
+  agent_configs: SettingsAgentConfigExport[];
+  review_rules: SettingsReviewRuleExport[];
+}
+
+export interface SettingsImportRequest {
+  payload: SettingsExportPayload;
+  collision_policy?: "skip" | "replace" | "rename" | "fail";
+}
+
+export interface SettingsImportReport {
+  created: number;
+  updated: number;
+  skipped: number;
+  collisions?: string[];
+  redacted?: number;
+}
+
+export interface SettingsImportResponse {
+  schema: string;
+  imported_at: string;
+  collision_policy: string;
+  workspace_settings: SettingsImportReport;
+  agent_configs: SettingsImportReport;
+  review_rules: SettingsImportReport;
+  warnings?: string[];
+}
+
 export interface ReviewSession {
   id: string;
   workspace_id: string;
@@ -988,6 +1049,28 @@ export class ApiClient {
   ) {
     return this.delete<{ deleted: boolean; id: string }>(
       `/api/review-rules/${encodeURIComponent(id)}`,
+      options,
+    );
+  }
+
+  exportWorkspaceSettings(
+    workspaceId: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.get<SettingsExportPayload>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/settings-export`,
+      options,
+    );
+  }
+
+  importWorkspaceSettings(
+    workspaceId: string,
+    body: SettingsImportRequest,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.post<SettingsImportResponse>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/settings-import`,
+      body,
       options,
     );
   }

@@ -630,6 +630,114 @@ func TestWorkflowContinuesWhenOneAgentFails(t *testing.T) {
 	assertEventTypes(t, events, []string{"AgentRunFailed", "ReviewSessionPartialFailure", "ReviewSessionCompleted"})
 }
 
+func TestWorkflowAgentTimeoutKeepsOtherFindings(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	env.Driver.timeoutConfigs = map[string]bool{"agent_config_2": true}
+	env.Driver.stdout = `{
+		"summary": "one finding",
+		"findings": [
+			{
+				"claim": "Settings mutation lacks admin guard",
+				"category": "security",
+				"severity": "high",
+				"confidence": 0.91,
+				"locations": [{"path":"src/new.go","start_line":3,"end_line":3,"side":"RIGHT"}],
+				"evidence": [{"title":"handler is reachable","summary":"the changed function can be called without an admin guard"}]
+			}
+		]
+	}`
+	if _, err := env.Queries.CreateAgentConfig(context.Background(), dbgen.CreateAgentConfigParams{
+		ID:               "agent_config_2",
+		Name:             "Slow Reviewer",
+		Role:             "secondary_reviewer",
+		AdapterKind:      string(agents.AdapterCLINonInteractive),
+		Command:          nullableTestString("slow-fake-agent"),
+		ArgsJson:         "[]",
+		CwdMode:          "repo_root",
+		EnvAllowlistJson: "[]",
+		OutputMode:       string(agents.OutputJSON),
+		CapabilitiesJson: `{"supports_json":true,"can_read":true,"output_modes":["json"]}`,
+		SettingsJson:     `{"prompt_delivery":"stdin","timeout_seconds":30}`,
+		Enabled:          1,
+		CreatedAt:        "2026-05-03T00:04:00Z",
+		UpdatedAt:        "2026-05-03T00:04:00Z",
+	}); err != nil {
+		t.Fatalf("CreateAgentConfig(slow) error = %v", err)
+	}
+	session := createWorkflowSession(t, env, "review_session_timeout_partial", StatusDraft)
+	if _, err := env.Queries.CreateReviewSessionAgent(context.Background(), dbgen.CreateReviewSessionAgentParams{
+		ID:                   "review_session_agent_timeout_2",
+		ReviewSessionID:      session.ID,
+		AgentConfigID:        "agent_config_2",
+		Role:                 "secondary_reviewer",
+		RunOrder:             2,
+		Enabled:              1,
+		SettingsOverrideJson: "{}",
+	}); err != nil {
+		t.Fatalf("CreateReviewSessionAgent(slow) error = %v", err)
+	}
+	if _, err := env.Service.Transition(context.Background(), session.ID, StatusQueued); err != nil {
+		t.Fatalf("Transition(draft -> queued) error = %v", err)
+	}
+	if err := env.Service.Run(context.Background(), session.ID); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	updated, err := env.Queries.GetReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("GetReviewSession() error = %v", err)
+	}
+	if updated.Status != StatusCompleted {
+		t.Fatalf("session status = %s, want completed", updated.Status)
+	}
+	runs, err := env.Queries.ListAgentRunsBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListAgentRunsBySession() error = %v", err)
+	}
+	statuses := map[string]dbgen.AgentRun{}
+	for _, run := range runs {
+		statuses[run.Status] = run
+	}
+	timedOut := statuses[agentrun.RunStatusTimedOut]
+	if len(runs) != 2 ||
+		statuses[agentrun.RunStatusSucceeded].ID == "" ||
+		timedOut.ID == "" ||
+		timedOut.ErrorCode.String != "timeout" {
+		t.Fatalf("agent runs = %+v", runs)
+	}
+	candidates, err := env.Queries.ListFindingCandidatesBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListFindingCandidatesBySession() error = %v", err)
+	}
+	findings, err := env.Queries.ListFindingsBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListFindingsBySession() error = %v", err)
+	}
+	if len(candidates) != 1 || len(findings) != 1 || candidates[0].Claim != "Settings mutation lacks admin guard" {
+		t.Fatalf("candidates = %+v findings = %+v", candidates, findings)
+	}
+	summary, err := env.Service.Summary(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("Summary() error = %v", err)
+	}
+	if summary.AgentStatusCounts[agentrun.RunStatusSucceeded] != 1 ||
+		summary.AgentStatusCounts[agentrun.RunStatusTimedOut] != 1 ||
+		summary.FindingCounts.Candidates != 1 ||
+		summary.FindingCounts.Findings != 1 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	events, err := env.Events.ListByReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListByReviewSession() error = %v", err)
+	}
+	assertEventTypes(t, events, []string{"AgentRunCanceled", "ReviewSessionPartialFailure", "ReviewSessionCompleted"})
+	payload := eventPayloadByType(t, events, "ReviewSessionPartialFailure")
+	if payload["failed_agent_runs"] != float64(1) || payload["succeeded_agent_runs"] != float64(1) {
+		t.Fatalf("partial failure payload = %+v", payload)
+	}
+}
+
 func TestVerifyFindingsRunsVerifierCLIWithFindingContext(t *testing.T) {
 	t.Parallel()
 
@@ -1080,13 +1188,14 @@ func eventPayloadByType(t *testing.T, events []dbgen.Event, typ string) map[stri
 }
 
 type workflowDriver struct {
-	mu          sync.Mutex
-	prompts     []string
-	delay       time.Duration
-	stdout      string
-	current     int
-	max         int
-	failConfigs map[string]bool
+	mu             sync.Mutex
+	prompts        []string
+	delay          time.Duration
+	stdout         string
+	current        int
+	max            int
+	failConfigs    map[string]bool
+	timeoutConfigs map[string]bool
 }
 
 func (d *workflowDriver) Open(context.Context, agents.ConnectionConfig) (agents.Connection, error) {
@@ -1123,6 +1232,14 @@ func (c workflowConnection) SendTask(_ context.Context, task agents.AgentTask) (
 		events <- agents.AgentEvent{Type: agents.EventStarted, RunID: task.RunID, Message: "fake agent started"}
 		events <- agents.AgentEvent{Type: agents.EventOutput, RunID: task.RunID, Stream: "stderr", Text: "agent failed\n"}
 		events <- agents.AgentEvent{Type: agents.EventFailed, RunID: task.RunID, ExitCode: &exitCode, ErrorCode: "failed", Error: "agent failed"}
+		close(events)
+		return events, nil
+	}
+	if c.driver.shouldTimeout(task.AgentConfigID) {
+		events := make(chan agents.AgentEvent, 3)
+		events <- agents.AgentEvent{Type: agents.EventStarted, RunID: task.RunID, Message: "fake agent started"}
+		events <- agents.AgentEvent{Type: agents.EventOutput, RunID: task.RunID, Stream: "stdout", Text: "partial before timeout\n"}
+		events <- agents.AgentEvent{Type: agents.EventCanceled, RunID: task.RunID, ErrorCode: "timeout", Error: "agent exceeded timeout"}
 		close(events)
 		return events, nil
 	}
@@ -1174,6 +1291,12 @@ func (d *workflowDriver) shouldFail(agentConfigID string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.failConfigs[agentConfigID]
+}
+
+func (d *workflowDriver) shouldTimeout(agentConfigID string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.timeoutConfigs[agentConfigID]
 }
 
 func (d *workflowDriver) stdoutText() string {

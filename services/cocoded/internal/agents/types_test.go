@@ -85,6 +85,7 @@ func TestConnectionConfigValidate(t *testing.T) {
 		Kind:             AdapterCLINonInteractive,
 		Command:          "codex",
 		Args:             []string{"exec", "--json"},
+		PromptDelivery:   PromptViaStdin,
 		WorkingDirectory: "/repo",
 		Env:              map[string]string{"HOME": "/tmp/cocode-home"},
 	}
@@ -120,6 +121,7 @@ func TestConnectionConfigValidate(t *testing.T) {
 	}{
 		{name: "missing adapter", config: ConnectionConfig{Kind: AdapterCLINonInteractive}},
 		{name: "invalid kind", config: ConnectionConfig{AdapterID: "agent_1", Kind: AdapterKind("shell")}},
+		{name: "invalid prompt delivery", config: ConnectionConfig{AdapterID: "agent_1", Kind: AdapterCLINonInteractive, PromptDelivery: PromptDelivery("pipe")}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

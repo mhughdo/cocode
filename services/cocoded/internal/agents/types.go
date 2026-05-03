@@ -45,11 +45,24 @@ const (
 
 type OutputMode string
 
+type PromptDelivery string
+
 const (
 	OutputText   OutputMode = "text"
 	OutputJSON   OutputMode = "json"
 	OutputJSONL  OutputMode = "jsonl"
 	OutputNDJSON OutputMode = "ndjson"
+)
+
+const (
+	PromptViaStdin    PromptDelivery = "stdin"
+	PromptViaArg      PromptDelivery = "arg"
+	PromptViaTempFile PromptDelivery = "temp_file"
+)
+
+const (
+	PromptArgPlaceholder  = "{{prompt}}"
+	PromptFilePlaceholder = "{{prompt_file}}"
 )
 
 type AgentAdapter interface {
@@ -75,6 +88,7 @@ type ConnectionConfig struct {
 	Kind             AdapterKind       `json:"kind"`
 	Command          string            `json:"command,omitempty"`
 	Args             []string          `json:"args,omitempty"`
+	PromptDelivery   PromptDelivery    `json:"prompt_delivery,omitempty"`
 	WorkingDirectory string            `json:"working_directory,omitempty"`
 	Env              map[string]string `json:"env,omitempty"`
 	Metadata         map[string]any    `json:"metadata,omitempty"`
@@ -183,6 +197,22 @@ func (m OutputMode) Valid() bool {
 	default:
 		return false
 	}
+}
+
+func (d PromptDelivery) Valid() bool {
+	switch d {
+	case PromptViaStdin, PromptViaArg, PromptViaTempFile:
+		return true
+	default:
+		return false
+	}
+}
+
+func (d PromptDelivery) Normalize() PromptDelivery {
+	if d == "" {
+		return PromptViaStdin
+	}
+	return d
 }
 
 func DefaultCapabilities(kind AdapterKind) AgentCapabilities {
@@ -392,6 +422,9 @@ func (c ConnectionConfig) Validate() error {
 	}
 	if !c.Kind.Valid() {
 		return errors.New("connection adapter kind is invalid")
+	}
+	if c.PromptDelivery != "" && !c.PromptDelivery.Valid() {
+		return errors.New("connection prompt delivery is invalid")
 	}
 	return nil
 }

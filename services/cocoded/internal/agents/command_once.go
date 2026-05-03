@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -58,6 +59,7 @@ func (d CommandOnceDriver) Open(ctx context.Context, config ConnectionConfig) (C
 	if err := validateEnv(config.Env); err != nil {
 		return nil, err
 	}
+	config.PromptDelivery = config.PromptDelivery.Normalize()
 	return &CommandOnceConnection{config: config}, nil
 }
 
@@ -103,6 +105,13 @@ func (c *CommandOnceConnection) runTask(ctx context.Context, task AgentTask, eve
 	runCtx, cancel := commandContext(ctx, task.Limits)
 	defer cancel()
 
+	delivery, err := c.preparePrompt(task)
+	if err != nil {
+		events <- promptFailedEvent(task.RunID, err)
+		return
+	}
+	defer delivery.cleanup()
+
 	events <- AgentEvent{
 		Type:    EventStarted,
 		RunID:   task.RunID,
@@ -115,18 +124,16 @@ func (c *CommandOnceConnection) runTask(ctx context.Context, task AgentTask, eve
 	stdout := &limitedOutput{limit: stdoutLimit}
 	stderr := &limitedOutput{limit: stderrLimit}
 
-	cmd := exec.CommandContext(runCtx, c.config.Command, c.config.Args...)
+	cmd := exec.CommandContext(runCtx, c.config.Command, delivery.args...)
 	if c.config.WorkingDirectory != "" {
 		cmd.Dir = c.config.WorkingDirectory
 	}
 	cmd.Env = envList(c.config.Env)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	if task.Prompt != "" {
-		cmd.Stdin = strings.NewReader(task.Prompt)
-	}
+	cmd.Stdin = delivery.stdin
 
-	err := cmd.Run()
+	err = cmd.Run()
 	emitCommandOutput(events, task.RunID, stdout, stderr)
 	if err != nil {
 		if runCtx.Err() != nil {
@@ -144,6 +151,75 @@ func (c *CommandOnceConnection) runTask(ctx context.Context, task AgentTask, eve
 		Message:  "command completed",
 		ExitCode: &exitCode,
 	}
+}
+
+type commandPromptDelivery struct {
+	args    []string
+	stdin   io.Reader
+	cleanup func()
+}
+
+func (c *CommandOnceConnection) preparePrompt(task AgentTask) (commandPromptDelivery, error) {
+	delivery := commandPromptDelivery{
+		args:    append([]string(nil), c.config.Args...),
+		cleanup: func() {},
+	}
+	if task.Prompt == "" {
+		return delivery, nil
+	}
+
+	switch c.config.PromptDelivery.Normalize() {
+	case PromptViaStdin:
+		delivery.stdin = strings.NewReader(task.Prompt)
+	case PromptViaArg:
+		delivery.args = applyPromptArgument(delivery.args, PromptArgPlaceholder, task.Prompt)
+	case PromptViaTempFile:
+		path, cleanup, err := writePromptTempFile(task.Prompt)
+		if err != nil {
+			return commandPromptDelivery{}, err
+		}
+		delivery.args = applyPromptArgument(delivery.args, PromptFilePlaceholder, path)
+		delivery.cleanup = cleanup
+	default:
+		return commandPromptDelivery{}, fmt.Errorf("unsupported prompt delivery %q", c.config.PromptDelivery)
+	}
+	return delivery, nil
+}
+
+func writePromptTempFile(prompt string) (string, func(), error) {
+	file, err := os.CreateTemp("", "cocode-prompt-*.txt")
+	if err != nil {
+		return "", nil, fmt.Errorf("create prompt temp file: %w", err)
+	}
+	path := file.Name()
+	cleanup := func() {
+		_ = os.Remove(path)
+	}
+	if _, err := file.WriteString(prompt); err != nil {
+		_ = file.Close()
+		cleanup()
+		return "", nil, fmt.Errorf("write prompt temp file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("close prompt temp file: %w", err)
+	}
+	return path, cleanup, nil
+}
+
+func applyPromptArgument(args []string, placeholder string, value string) []string {
+	out := append([]string(nil), args...)
+	replaced := false
+	for index, arg := range out {
+		if strings.Contains(arg, placeholder) {
+			out[index] = strings.ReplaceAll(arg, placeholder, value)
+			replaced = true
+		}
+	}
+	if !replaced {
+		out = append(out, value)
+	}
+	return out
 }
 
 func commandContextOrBackground(ctx context.Context) context.Context {
@@ -205,6 +281,17 @@ func failedEvent(runID string, err error, stderr string) AgentEvent {
 		}
 	}
 	return event
+}
+
+func promptFailedEvent(runID string, err error) AgentEvent {
+	return AgentEvent{
+		Type:      EventFailed,
+		RunID:     runID,
+		At:        time.Now().UTC(),
+		Message:   "prepare prompt failed",
+		ErrorCode: "prompt_error",
+		Error:     err.Error(),
+	}
 }
 
 func canceledEvent(runID string, err error) AgentEvent {

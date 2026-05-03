@@ -201,7 +201,7 @@ Large parallel workstreams:
 | T091 | Define adapter capability model | Add capabilities such as supports_json, supports_streaming, supports_sessions, can_write, can_read. | Done | T090 | T092 | Capabilities are stored and returned by API. |
 | T092 | Implement agent config API | CRUD agent configs and health test endpoint. | Done | T057, T090 | T248 | API tests cover create/update/test/delete. |
 | T093 | Implement CommandOnceDriver | Spawn one process per task using exec with context cancellation. | Done | T090 | T094 | Can run fake CLI; cancel/timeout works; no shell by default. |
-| T094 | Implement prompt delivery modes | Support prompt via stdin, arg, or temp file. | Not started | T093, T060 | T095 | Tests cover all delivery modes and temp cleanup. |
+| T094 | Implement prompt delivery modes | Support prompt via stdin, arg, or temp file. | Done | T093, T060 | T095 | Tests cover all delivery modes and temp cleanup. |
 | T095 | Implement stdout/stderr capture | Capture outputs separately with size limits and artifacts. | Not started | T093, T060 | T096 | Raw artifacts stored; truncation marked in metadata. |
 | T096 | Implement output parsers | Parse JSON, JSONL/NDJSON, and text fallback. | Not started | T095, T013 | T170 | Parser tests cover valid/invalid/mixed outputs. |
 | T097 | Implement CLI health check | Validate command exists, version if possible, and auth smoke prompt if enabled. | Not started | T092, T093 | T248 | Health endpoint reports installed/missing/error states. |

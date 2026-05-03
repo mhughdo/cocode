@@ -13,7 +13,7 @@ import (
 func TestCommandOnceDriverRunsFakeCLIWithoutShellOrAmbientEnv(t *testing.T) {
 	t.Setenv("COCODE_PARENT_SECRET", "should-not-leak")
 	command := writeFakeCommand(t, `#!/bin/sh
-input=$(cat)
+input=$(/bin/cat)
 printf 'arg=%s prompt=%s explicit=%s secret=%s\n' "$1" "$input" "$COCODE_EXPLICIT" "${COCODE_PARENT_SECRET-unset}"
 printf 'warn\n' >&2
 `)
@@ -48,6 +48,144 @@ printf 'warn\n' >&2
 	terminal := got[len(got)-1]
 	if terminal.Type != EventCompleted || terminal.ExitCode == nil || *terminal.ExitCode != 0 {
 		t.Fatalf("terminal event = %+v, want completed exit 0", terminal)
+	}
+}
+
+func TestCommandOnceDriverDeliversPromptViaArg(t *testing.T) {
+	t.Parallel()
+
+	command := writeFakeCommand(t, `#!/bin/sh
+input=$(/bin/cat)
+printf 'flag=%s prompt=%s stdin=%s count=%s\n' "$1" "$2" "$input" "$#"
+`)
+	connection := openCommandOnce(t, ConnectionConfig{
+		AdapterID:        "agent_1",
+		Kind:             AdapterCLINonInteractive,
+		Command:          command,
+		Args:             []string{"--prompt", PromptArgPlaceholder},
+		PromptDelivery:   PromptViaArg,
+		WorkingDirectory: t.TempDir(),
+	})
+
+	events, err := connection.SendTask(context.Background(), baseCommandTask())
+	if err != nil {
+		t.Fatalf("SendTask() error = %v", err)
+	}
+	got := collectCommandEvents(t, events)
+
+	stdout := outputText(got, "stdout")
+	if !strings.Contains(stdout, "flag=--prompt") ||
+		!strings.Contains(stdout, "prompt=review this diff") ||
+		!strings.Contains(stdout, "stdin=") ||
+		!strings.Contains(stdout, "count=2") {
+		t.Fatalf("stdout = %q", stdout)
+	}
+	if terminal := got[len(got)-1]; terminal.Type != EventCompleted {
+		t.Fatalf("terminal event = %+v, want completed", terminal)
+	}
+}
+
+func TestCommandOnceDriverDeliversPromptViaTempFileAndCleansUp(t *testing.T) {
+	t.Parallel()
+
+	command := writeFakeCommand(t, `#!/bin/sh
+path="${1#--prompt-file=}"
+if [ ! -f "$path" ]; then
+  printf 'missing prompt file\n' >&2
+  exit 6
+fi
+printf 'prompt='
+/bin/cat "$path"
+printf '\npath=%s\n' "$path"
+`)
+	connection := openCommandOnce(t, ConnectionConfig{
+		AdapterID:        "agent_1",
+		Kind:             AdapterCLINonInteractive,
+		Command:          command,
+		Args:             []string{"--prompt-file=" + PromptFilePlaceholder},
+		PromptDelivery:   PromptViaTempFile,
+		WorkingDirectory: t.TempDir(),
+	})
+
+	events, err := connection.SendTask(context.Background(), baseCommandTask())
+	if err != nil {
+		t.Fatalf("SendTask() error = %v", err)
+	}
+	got := collectCommandEvents(t, events)
+
+	stdout := outputText(got, "stdout")
+	if !strings.Contains(stdout, "prompt=review this diff") {
+		t.Fatalf("stdout = %q", stdout)
+	}
+	path := promptPathFromOutput(t, stdout)
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("prompt temp file stat error = %v, want os.ErrNotExist", err)
+	}
+	if terminal := got[len(got)-1]; terminal.Type != EventCompleted {
+		t.Fatalf("terminal event = %+v, want completed", terminal)
+	}
+}
+
+func TestCommandOnceDriverCleansPromptTempFileAfterFailure(t *testing.T) {
+	t.Parallel()
+
+	command := writeFakeCommand(t, "#!/bin/sh\nprintf 'path=%s\\n' \"$1\"\nexit 7\n")
+	connection := openCommandOnce(t, ConnectionConfig{
+		AdapterID:        "agent_1",
+		Kind:             AdapterCLINonInteractive,
+		Command:          command,
+		PromptDelivery:   PromptViaTempFile,
+		WorkingDirectory: t.TempDir(),
+	})
+
+	events, err := connection.SendTask(context.Background(), baseCommandTask())
+	if err != nil {
+		t.Fatalf("SendTask() error = %v", err)
+	}
+	got := collectCommandEvents(t, events)
+
+	path := promptPathFromOutput(t, outputText(got, "stdout"))
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("prompt temp file stat error = %v, want os.ErrNotExist", err)
+	}
+	terminal := got[len(got)-1]
+	if terminal.Type != EventFailed || terminal.ExitCode == nil || *terminal.ExitCode != 7 {
+		t.Fatalf("terminal event = %+v, want failed exit 7", terminal)
+	}
+}
+
+func TestCommandOnceDriverCleansPromptTempFileAfterCancellation(t *testing.T) {
+	t.Parallel()
+
+	markerPath := filepath.Join(t.TempDir(), "prompt-path")
+	command := writeFakeCommand(t, "#!/bin/sh\nprintf '%s\\n' \"$2\" > \"$1\"\nexec /bin/sleep 2\n")
+	connection := openCommandOnce(t, ConnectionConfig{
+		AdapterID:        "agent_1",
+		Kind:             AdapterCLINonInteractive,
+		Command:          command,
+		Args:             []string{markerPath},
+		PromptDelivery:   PromptViaTempFile,
+		WorkingDirectory: t.TempDir(),
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+
+	events, err := connection.SendTask(ctx, baseCommandTask())
+	if err != nil {
+		t.Fatalf("SendTask() error = %v", err)
+	}
+	path := waitForPromptPathMarker(t, markerPath)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("prompt temp file should exist before cancellation: %v", err)
+	}
+	cancel()
+	got := collectCommandEvents(t, events)
+
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("prompt temp file stat error = %v, want os.ErrNotExist", err)
+	}
+	terminal := got[len(got)-1]
+	if terminal.Type != EventCanceled || terminal.ErrorCode != "canceled" {
+		t.Fatalf("terminal event = %+v, want canceled", terminal)
 	}
 }
 
@@ -202,6 +340,15 @@ func TestCommandOnceDriverValidation(t *testing.T) {
 				Env:       map[string]string{"BAD=KEY": "value"},
 			},
 		},
+		{
+			name: "invalid prompt delivery",
+			config: ConnectionConfig{
+				AdapterID:      "agent_1",
+				Kind:           AdapterCLINonInteractive,
+				Command:        command,
+				PromptDelivery: PromptDelivery("pipe"),
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -316,4 +463,35 @@ func outputEvent(events []AgentEvent, stream string) AgentEvent {
 		}
 	}
 	return AgentEvent{}
+}
+
+func promptPathFromOutput(t *testing.T, output string) string {
+	t.Helper()
+
+	for _, line := range strings.Split(output, "\n") {
+		path, ok := strings.CutPrefix(line, "path=")
+		if ok && path != "" {
+			return path
+		}
+	}
+	t.Fatalf("output %q did not include prompt temp path", output)
+	return ""
+}
+
+func waitForPromptPathMarker(t *testing.T, markerPath string) string {
+	t.Helper()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		marker, err := os.ReadFile(markerPath)
+		if err == nil {
+			path := strings.TrimSpace(string(marker))
+			if path != "" {
+				return path
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("prompt path marker %q was not written", markerPath)
+	return ""
 }

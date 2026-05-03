@@ -1412,6 +1412,104 @@ printf '{"answer":"The scoped evidence still supports the auth finding.","eviden
 	}
 }
 
+func TestEvidenceMapQuestionEndpointRunsVerifierWithGraphContext(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+	if err := os.MkdirAll("/tmp/cocode", 0o755); err != nil {
+		t.Fatalf("mkdir repo root: %v", err)
+	}
+	command := writeFakeAgentConfigCommand(t, `#!/bin/sh
+cat >/dev/null
+printf '{"answer":"The graph path still shows the missing guard edge.","evidence_refs":[{"node_id":"graph-node","path":"apps/api/src/routes/repositories.ts","start_line":87}]}\n'
+`)
+	createHTTPAPIAgentConfigWithCommand(t, queries, "agent_config_graph_verifier", "verifier", 1, command, agents.OutputJSON, `{"prompt_delivery":"stdin","timeout_seconds":30}`)
+
+	mapRequest := httptest.NewRequest(http.MethodGet, "/api/findings/finding_auth/evidence-map", nil)
+	mapRequest.Header.Set("X-Cocode-Token", "test-token")
+	mapResponse := httptest.NewRecorder()
+	router.ServeHTTP(mapResponse, mapRequest)
+	if mapResponse.Code != http.StatusOK {
+		t.Fatalf("evidence map status = %d, body = %s", mapResponse.Code, mapResponse.Body.String())
+	}
+	graph := decodeFindingEvidenceMapResponse(t, mapResponse.Body.Bytes())
+	if len(graph.Nodes) == 0 {
+		t.Fatalf("graph nodes = %+v", graph.Nodes)
+	}
+
+	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/findings/finding_auth/evidence-map/question", map[string]any{
+		"question":        "Does this graph path prove the missing guard?",
+		"agent_config_id": "agent_config_graph_verifier",
+		"graph_refs": []map[string]any{{
+			"node_id": graph.Nodes[0].ID,
+		}},
+		"context_policy": map[string]any{
+			"max_tokens": 5000,
+			"max_items":  30,
+		},
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("evidence map question status = %d, body = %s", response.Code, response.Body.String())
+	}
+	answer := decodeAskFindingQuestionResponse(t, response.Body.Bytes())
+	if answer.Thread.Finding.ID != "finding_auth" ||
+		answer.UserMessage.Role != "user" ||
+		!strings.Contains(string(answer.UserMessage.EvidenceRefs), graph.Nodes[0].ID) ||
+		answer.AssistantMessage.AgentConfigID != "agent_config_graph_verifier" ||
+		!strings.Contains(answer.AssistantMessage.Content, "missing guard edge") ||
+		answer.AgentRunID == "" ||
+		answer.ContextBundleID == "" {
+		t.Fatalf("answer = %+v", answer)
+	}
+	bundle, err := queries.GetContextBundle(context.Background(), answer.ContextBundleID)
+	if err != nil {
+		t.Fatalf("GetContextBundle() error = %v", err)
+	}
+	if bundle.Scope != string(contextbundle.ScopeEvidenceMap) {
+		t.Fatalf("bundle scope = %q", bundle.Scope)
+	}
+	runs, err := queries.ListAgentRunsBySession(context.Background(), "review_session_findings")
+	if err != nil {
+		t.Fatalf("ListAgentRunsBySession() error = %v", err)
+	}
+	foundRun := false
+	for _, run := range runs {
+		if run.ID == answer.AgentRunID && run.Role == "verifier" && run.ContextBundleID.Valid && run.ContextBundleID.String == answer.ContextBundleID {
+			foundRun = true
+			break
+		}
+	}
+	if !foundRun {
+		t.Fatalf("agent runs = %+v, want verifier run %s", runs, answer.AgentRunID)
+	}
+}
+
+func TestEvidenceMapQuestionRejectsUnknownGraphRef(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+
+	mapRequest := httptest.NewRequest(http.MethodGet, "/api/findings/finding_auth/evidence-map", nil)
+	mapRequest.Header.Set("X-Cocode-Token", "test-token")
+	mapResponse := httptest.NewRecorder()
+	router.ServeHTTP(mapResponse, mapRequest)
+	if mapResponse.Code != http.StatusOK {
+		t.Fatalf("evidence map status = %d, body = %s", mapResponse.Code, mapResponse.Body.String())
+	}
+	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/findings/finding_auth/evidence-map/question", map[string]any{
+		"question":        "Can you inspect this node?",
+		"agent_config_id": "agent_config_findings",
+		"graph_refs": []map[string]any{{
+			"node_id": "node_missing",
+		}},
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
 func TestFindingQuickActionEndpointAcceptsAndAppendsThreadMessage(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
 	createHTTPAPIFindingFixture(t, queries)

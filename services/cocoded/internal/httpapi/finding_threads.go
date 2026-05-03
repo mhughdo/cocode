@@ -41,6 +41,7 @@ type AskFindingQuestionRequest struct {
 	Question      string          `json:"question"`
 	AgentConfigID string          `json:"agent_config_id"`
 	ContextPolicy json.RawMessage `json:"context_policy"`
+	GraphRefs     json.RawMessage `json:"graph_refs"`
 }
 
 type FindingQuickActionRequest struct {
@@ -139,6 +140,54 @@ func askFindingQuestionHandler(services routerServices) gin.HandlerFunc {
 			Question:        request.Question,
 			AgentConfigID:   request.AgentConfigID,
 			ContextPolicy:   request.ContextPolicy,
+		})
+		if err != nil {
+			respondError(c, followupError(err))
+			return
+		}
+		thread, appErr := findingThreadViewResponse(result.View)
+		if appErr != nil {
+			respondError(c, appErr)
+			return
+		}
+		userMessage, appErr := findingThreadMessageResponse(result.UserMessage)
+		if appErr != nil {
+			respondError(c, appErr)
+			return
+		}
+		assistantMessage, appErr := findingThreadMessageResponse(result.AssistantMessage)
+		if appErr != nil {
+			respondError(c, appErr)
+			return
+		}
+		respondOK(c, AskFindingQuestionResponse{
+			Thread:           thread,
+			UserMessage:      userMessage,
+			AssistantMessage: assistantMessage,
+			AgentRunID:       result.AgentRun.ID,
+			ContextBundleID:  result.ContextBundle.ID,
+		})
+	}
+}
+
+func askEvidenceMapQuestionHandler(services routerServices) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var request AskFindingQuestionRequest
+		if !bindJSON(c, &request) {
+			return
+		}
+		service := services.followups
+		if service == nil {
+			service = &followup.Service{Queries: services.queries}
+		}
+		result, err := service.AskQuestion(c.Request.Context(), followup.AskQuestionParams{
+			FindingID:       c.Param("finding_id"),
+			ReviewSessionID: c.Param("id"),
+			Question:        request.Question,
+			AgentConfigID:   request.AgentConfigID,
+			ContextPolicy:   request.ContextPolicy,
+			ContextScope:    "evidence_map",
+			GraphRefs:       request.GraphRefs,
 		})
 		if err != nil {
 			respondError(c, followupError(err))

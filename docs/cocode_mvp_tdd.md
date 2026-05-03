@@ -830,6 +830,7 @@ GET    /api/review-sessions/:id/findings/:finding_id/evidence-map
 POST   /api/review-sessions/:id/findings/:finding_id/evidence-map/rebuild
 POST   /api/review-sessions/:id/findings/:finding_id/context-bundles/preview
 POST   /api/review-sessions/:id/findings/:finding_id/evidence-map/context-bundles/preview
+POST   /api/review-sessions/:id/findings/:finding_id/evidence-map/question
 POST   /api/review-sessions/:id/findings/:finding_id/decision
 PATCH  /api/review-sessions/:id/findings/:finding_id/draft-comment
 POST   /api/findings/:id/question
@@ -842,6 +843,7 @@ GET    /api/findings/:id/evidence-map
 POST   /api/findings/:id/evidence-map/rebuild
 POST   /api/findings/:id/context-bundles/preview
 POST   /api/findings/:id/evidence-map/context-bundles/preview
+POST   /api/findings/:id/evidence-map/question
 
 POST   /api/review-sessions/:id/export/copy-packet
 POST   /api/findings/:id/export/copy-packet
@@ -1440,6 +1442,8 @@ Use the evidence bundle first. Do not use unrelated repository assumptions.
 The MVP follow-up foundation creates exactly one thread per finding with `finding_threads.UNIQUE(finding_id)`. `GET /api/findings/:id/thread` and the review-session-scoped equivalent create the thread on first load, return the finding summary plus ordered messages, and preserve existing messages across reloads. Message rows keep role, optional agent config, optional artifact, and JSON evidence references.
 
 `POST /api/findings/:id/question` appends the user question, builds a persisted finding-scoped context bundle, runs a selected `cli_noninteractive` agent or deterministic `local_verifier`, and stores the assistant answer with cited evidence refs plus the stdout artifact for CLI runs. The endpoint accepts an optional context policy override and rejects unsupported/disabled agent configs before execution.
+
+`POST /api/findings/:id/evidence-map/question` and the review-session-scoped equivalent reuse the same finding thread, but build persisted `evidence_map` context for CLI verifier runs. Requests may include `graph_refs` with `node_id`, `edge_id`, or `call_path_id`; refs are validated against the current stored graph and persisted on the user message so the UI can recover what the user asked about.
 
 `POST /api/findings/:id/thread/actions` supports follow-up quick actions: `ask_counter_evidence` submits the standard counter-evidence question through the same scoped agent path, while `accept`, `dismiss`, and `copy` update the finding decision, append a human decision audit row, and add a system message to the finding thread. Dismiss requires a reason; copy records the copied state even before copy packet generation exists.
 

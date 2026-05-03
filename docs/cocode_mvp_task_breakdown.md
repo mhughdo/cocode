@@ -314,7 +314,7 @@ Large parallel workstreams:
 | T215 | Implement Evidence Map API | Return complete graph view model for finding. | Done | T214 | T263 | API returns hierarchy, nodes, edges, call path, right-panel data. |
 | T216 | Implement graph rebuild API | Rebuild Evidence Map for a finding. | Done | T215 | T263 | Rebuild updates graph and emits event. |
 | T217 | Handle incomplete graph fallback | Return partial graph with missing reasons instead of failure. | Done | T215 | T263 | UI can render partial/unavailable states. |
-| T218 | Implement Ask Verifier from Evidence Map | Create follow-up/verifier task scoped to graph context. | Not started | T206, T215, T280 | T264 | User can ask verifier about current graph path; response persists. |
+| T218 | Implement Ask Verifier from Evidence Map | Create follow-up/verifier task scoped to graph context. | Done | T206, T215, T280 | T264 | User can ask verifier about current graph path through Evidence Map routes; response persists in the finding thread. |
 | T219 | Evidence Map tests | Unit/integration tests for graph creation and API response. | Done | T210-T217 | T360 | Golden auth repo produces expected nodes/edges/call path. |
 
 ---

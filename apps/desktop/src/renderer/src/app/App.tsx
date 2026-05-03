@@ -6650,7 +6650,7 @@ function EvidenceMapHierarchyPane({
   );
 }
 
-function EvidenceMapGraphCanvas({
+export function EvidenceMapGraphCanvas({
   map,
   onSelect,
   selection,
@@ -7132,7 +7132,7 @@ function EvidenceMapLegend({ map }: { map: EvidenceMapResponse }) {
   );
 }
 
-function FindingCard({
+export function FindingCard({
   actionState,
   finding,
   onAccept,
@@ -7301,7 +7301,7 @@ function AgentConsensusPanel({
   );
 }
 
-function CodeSnippetViewer({
+export function CodeSnippetViewer({
   evidence,
   finding,
   onCopyPath,
@@ -7369,7 +7369,11 @@ function CodeSnippetViewer({
   );
 }
 
-function EvidenceCardList({ detail }: { detail?: FindingDetailResponse }) {
+export function EvidenceCardList({
+  detail,
+}: {
+  detail?: FindingDetailResponse;
+}) {
   if (!detail) {
     return <LoadingRows rows={4} />;
   }

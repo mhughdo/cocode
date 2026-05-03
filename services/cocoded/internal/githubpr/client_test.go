@@ -2,6 +2,7 @@ package githubpr
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -337,6 +338,96 @@ func TestFetchMetadataRejectsInvalidJSON(t *testing.T) {
 		Client:  server.Client(),
 	}).FetchMetadata(context.Background(), Reference{Owner: "openai", Repo: "codex", Number: 123})
 	assertClientAppError(t, err, apperror.CodeInternal)
+}
+
+func TestSubmitReviewSendsReviewPayload(t *testing.T) {
+	t.Parallel()
+
+	const token = "ghp_token"
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/openai/codex/pulls/123/reviews" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s", r.Method)
+		}
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			t.Fatalf("Authorization = %q", r.Header.Get("Authorization"))
+		}
+		if r.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("Content-Type = %q", r.Header.Get("Content-Type"))
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{
+			"id": 7001,
+			"state": "COMMENTED",
+			"html_url": "https://github.com/openai/codex/pull/123#pullrequestreview-7001",
+			"commit_id": "head-sha",
+			"submitted_at": "2026-05-03T12:00:00Z"
+		}`))
+	}))
+	defer server.Close()
+
+	review, err := (Client{
+		BaseURL: server.URL,
+		Token:   token,
+		Client:  server.Client(),
+	}).SubmitReview(context.Background(), Reference{Owner: "openai", Repo: "codex", Number: 123}, SubmitReviewParams{
+		CommitID: "head-sha",
+		Body:     "Please address the selected findings.",
+		Event:    "COMMENT",
+		Comments: []ReviewCommentDraft{{
+			FindingID: "finding_auth",
+			Path:      "app/auth.go",
+			Body:      "Please require admin permissions.",
+			Line:      12,
+			Side:      SideRight,
+			Position:  3,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("SubmitReview() error = %v", err)
+	}
+	if review.ID != 7001 || review.CommitID != "head-sha" || review.HTMLURL == "" {
+		t.Fatalf("review = %+v", review)
+	}
+	comments, ok := payload["comments"].([]any)
+	if payload["event"] != "COMMENT" ||
+		payload["commit_id"] != "head-sha" ||
+		payload["body"] != "Please address the selected findings." ||
+		!ok ||
+		len(comments) != 1 {
+		t.Fatalf("payload = %+v", payload)
+	}
+	comment := comments[0].(map[string]any)
+	if comment["path"] != "app/auth.go" ||
+		comment["body"] != "Please require admin permissions." ||
+		comment["line"].(float64) != 12 ||
+		comment["side"] != SideRight {
+		t.Fatalf("comment payload = %+v", comment)
+	}
+	if _, hasPosition := comment["position"]; hasPosition {
+		t.Fatalf("payload should use line/side instead of deprecated position: %+v", comment)
+	}
+}
+
+func TestSubmitReviewRejectsUnanchoredComments(t *testing.T) {
+	t.Parallel()
+
+	_, err := (Client{Token: "token"}).SubmitReview(context.Background(), Reference{Owner: "openai", Repo: "codex", Number: 123}, SubmitReviewParams{
+		Body:  "Body",
+		Event: "COMMENT",
+		Comments: []ReviewCommentDraft{{
+			FindingID:  "finding_missing",
+			Body:       "Cannot anchor",
+			Unanchored: true,
+		}},
+	})
+	assertClientAppError(t, err, apperror.CodeInvalidRequest)
 }
 
 const serverURLPlaceholder = "https://api.github.test"

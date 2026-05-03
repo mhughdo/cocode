@@ -1893,6 +1893,8 @@ The preview builder creates a review summary body plus one comment draft per sel
 
 `POST /api/review-sessions/:id/github/preview` creates a persisted GitHub publish draft and `github_preview` artifact. It accepts selected `finding_ids` or defaults to accepted findings, returns comment drafts, anchor warnings, and checklist booleans for inline vs summary-only publishing.
 
+The GitHub publish client submits review bodies and anchored comment drafts to `POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews` using current `line`/`side` comment fields. It rejects unanchored comments before the network call so summary-only fallback remains explicit.
+
 If mapping fails:
 
 1. Mark comment as unanchored.

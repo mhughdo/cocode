@@ -1,6 +1,7 @@
 package githubpr
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -78,6 +79,21 @@ type PreviousComment struct {
 	CreatedAt         string `json:"created_at,omitempty"`
 	UpdatedAt         string `json:"updated_at,omitempty"`
 	SubmittedAt       string `json:"submitted_at,omitempty"`
+}
+
+type SubmitReviewParams struct {
+	CommitID string
+	Body     string
+	Event    string
+	Comments []ReviewCommentDraft
+}
+
+type PublishedReview struct {
+	ID          int64  `json:"id"`
+	State       string `json:"state"`
+	HTMLURL     string `json:"html_url"`
+	CommitID    string `json:"commit_id"`
+	SubmittedAt string `json:"submitted_at"`
 }
 
 func (c Client) FetchMetadata(ctx context.Context, ref Reference) (Metadata, error) {
@@ -251,6 +267,64 @@ func (c Client) FetchPreviousComments(ctx context.Context, ref Reference) (Previ
 	return result, nil
 }
 
+func (c Client) SubmitReview(ctx context.Context, ref Reference, params SubmitReviewParams) (PublishedReview, error) {
+	if ref.Owner == "" || ref.Repo == "" || ref.Number <= 0 {
+		return PublishedReview{}, apperror.InvalidRequest("GitHub pull request reference is invalid")
+	}
+	payload, err := submitReviewPayload(params)
+	if err != nil {
+		return PublishedReview{}, err
+	}
+	resp, err := c.postJSON(ctx, pullEndpoint(c.baseURL(), ref)+"/reviews", payload)
+	if err != nil {
+		return PublishedReview{}, err
+	}
+	defer resp.Body.Close()
+	if err := mapGitHubWriteStatus(resp.StatusCode, "GitHub pull request review"); err != nil {
+		return PublishedReview{}, err
+	}
+	var body PublishedReview
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return PublishedReview{}, apperror.Internal("failed to decode GitHub pull request review")
+	}
+	return body, nil
+}
+
+func submitReviewPayload(params SubmitReviewParams) (map[string]any, error) {
+	event := strings.ToUpper(strings.TrimSpace(params.Event))
+	switch event {
+	case "COMMENT", "REQUEST_CHANGES", "APPROVE":
+	default:
+		return nil, apperror.InvalidRequest("GitHub review event is invalid")
+	}
+	payload := map[string]any{
+		"body":  strings.TrimSpace(params.Body),
+		"event": event,
+	}
+	if strings.TrimSpace(params.CommitID) != "" {
+		payload["commit_id"] = strings.TrimSpace(params.CommitID)
+	}
+	comments := make([]map[string]any, 0, len(params.Comments))
+	for _, comment := range params.Comments {
+		if comment.Unanchored {
+			return nil, apperror.InvalidRequest("GitHub review contains unanchored comments")
+		}
+		if strings.TrimSpace(comment.Path) == "" || strings.TrimSpace(comment.Body) == "" || comment.Line <= 0 || strings.TrimSpace(comment.Side) == "" {
+			return nil, apperror.InvalidRequest("GitHub review comment is invalid")
+		}
+		comments = append(comments, map[string]any{
+			"path": strings.TrimSpace(comment.Path),
+			"body": strings.TrimSpace(comment.Body),
+			"line": comment.Line,
+			"side": strings.ToUpper(strings.TrimSpace(comment.Side)),
+		})
+	}
+	if len(comments) > 0 {
+		payload["comments"] = comments
+	}
+	return payload, nil
+}
+
 func (c Client) baseURL() string {
 	baseURL := strings.TrimRight(c.BaseURL, "/")
 	if baseURL == "" {
@@ -269,6 +343,34 @@ func (c Client) get(ctx context.Context, endpoint string, accept string) (*http.
 	}
 	req.Header.Set("Accept", accept)
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(c.Token))
+	req.Header.Set("X-GitHub-Api-Version", gitHubAPIVersion)
+
+	client := c.Client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, apperror.Internal("failed to call GitHub")
+	}
+	return resp, nil
+}
+
+func (c Client) postJSON(ctx context.Context, endpoint string, payload any) (*http.Response, error) {
+	if strings.TrimSpace(c.Token) == "" {
+		return nil, apperror.InvalidRequest("GitHub token is required")
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, apperror.Internal("failed to encode GitHub request")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, apperror.Internal("failed to build GitHub request")
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(c.Token))
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Api-Version", gitHubAPIVersion)
 
 	client := c.Client
@@ -393,6 +495,15 @@ func mapGitHubStatus(statusCode int, resource string) error {
 		return apperror.InvalidRequest(resource + " request was rejected by GitHub")
 	default:
 		return apperror.Internal(resource + " request failed")
+	}
+}
+
+func mapGitHubWriteStatus(statusCode int, resource string) error {
+	switch statusCode {
+	case http.StatusOK, http.StatusCreated:
+		return nil
+	default:
+		return mapGitHubStatus(statusCode, resource)
 	}
 }
 

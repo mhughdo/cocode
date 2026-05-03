@@ -1340,6 +1340,78 @@ func TestFindingThreadEndpointCreatesAndReloadsThread(t *testing.T) {
 	}
 }
 
+func TestFindingQuestionEndpointRunsAgentAndPersistsMessages(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+	if err := os.MkdirAll("/tmp/cocode", 0o755); err != nil {
+		t.Fatalf("mkdir repo root: %v", err)
+	}
+	command := writeFakeAgentConfigCommand(t, `#!/bin/sh
+cat >/dev/null
+printf '{"answer":"The scoped evidence still supports the auth finding.","evidence_refs":[{"evidence_item_id":"evidence_auth_guard","path":"apps/api/src/routes/repositories.ts","start_line":87}]}\n'
+`)
+	createHTTPAPIAgentConfigWithCommand(t, queries, "agent_config_followup", "verifier", 1, command, agents.OutputJSON, `{"prompt_delivery":"stdin","timeout_seconds":30}`)
+
+	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/findings/finding_auth/question", map[string]any{
+		"question":        "Can you re-check the guard evidence?",
+		"agent_config_id": "agent_config_followup",
+		"context_policy": map[string]any{
+			"max_tokens": 4000,
+			"max_items":  24,
+		},
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("question status = %d, body = %s", response.Code, response.Body.String())
+	}
+	answer := decodeAskFindingQuestionResponse(t, response.Body.Bytes())
+	if answer.Thread.Finding.ID != "finding_auth" ||
+		len(answer.Thread.Messages) != 2 ||
+		answer.UserMessage.Role != "user" ||
+		answer.AssistantMessage.Role != "assistant" ||
+		answer.AssistantMessage.AgentConfigID != "agent_config_followup" ||
+		!strings.Contains(answer.AssistantMessage.Content, "supports the auth finding") ||
+		string(answer.AssistantMessage.EvidenceRefs) == "[]" ||
+		answer.AssistantMessage.ArtifactID == "" ||
+		answer.AgentRunID == "" ||
+		answer.ContextBundleID == "" {
+		t.Fatalf("answer = %+v", answer)
+	}
+	runs, err := queries.ListAgentRunsBySession(context.Background(), "review_session_findings")
+	if err != nil {
+		t.Fatalf("ListAgentRunsBySession() error = %v", err)
+	}
+	foundRun := false
+	for _, run := range runs {
+		if run.ID == answer.AgentRunID &&
+			run.Role == "follow_up" &&
+			run.Status == "succeeded" &&
+			run.ContextBundleID.Valid &&
+			run.StdoutArtifactID.Valid {
+			foundRun = true
+			break
+		}
+	}
+	if !foundRun {
+		t.Fatalf("agent runs = %+v, want follow-up run %s", runs, answer.AgentRunID)
+	}
+
+	reloadRequest := httptest.NewRequest(http.MethodGet, "/api/findings/finding_auth/thread", nil)
+	reloadRequest.Header.Set("X-Cocode-Token", "test-token")
+	reloadResponse := httptest.NewRecorder()
+	router.ServeHTTP(reloadResponse, reloadRequest)
+	if reloadResponse.Code != http.StatusOK {
+		t.Fatalf("thread reload status = %d, body = %s", reloadResponse.Code, reloadResponse.Body.String())
+	}
+	reloaded := decodeFindingThreadViewResponse(t, reloadResponse.Body.Bytes())
+	if len(reloaded.Messages) != 2 ||
+		reloaded.Messages[0].Content != "Can you re-check the guard evidence?" ||
+		reloaded.Messages[1].ArtifactID != answer.AssistantMessage.ArtifactID {
+		t.Fatalf("reloaded = %+v", reloaded)
+	}
+}
+
 func TestFindingContextPreviewEndpointBuildsScopedBundle(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
 	createHTTPAPIFindingFixture(t, queries)
@@ -2492,6 +2564,22 @@ func decodeFindingThreadViewResponse(t *testing.T, content []byte) FindingThread
 	var envelope struct {
 		Data  FindingThreadViewResponse `json:"data"`
 		Error any                       `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeAskFindingQuestionResponse(t *testing.T, content []byte) AskFindingQuestionResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  AskFindingQuestionResponse `json:"data"`
+		Error any                        `json:"error"`
 	}
 	if err := json.Unmarshal(content, &envelope); err != nil {
 		t.Fatalf("decode response: %v", err)

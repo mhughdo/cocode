@@ -833,6 +833,7 @@ POST   /api/review-sessions/:id/findings/:finding_id/evidence-map/context-bundle
 POST   /api/review-sessions/:id/findings/:finding_id/decision
 PATCH  /api/review-sessions/:id/findings/:finding_id/draft-comment
 POST   /api/findings/:id/question
+POST   /api/review-sessions/:id/findings/:finding_id/question
 GET    /api/findings/:id/thread
 GET    /api/review-sessions/:id/findings/:finding_id/thread
 GET    /api/findings/:id/evidence-map
@@ -1434,7 +1435,9 @@ Use the evidence bundle first. Do not use unrelated repository assumptions.
 {{question}}
 ```
 
-The MVP follow-up foundation creates exactly one thread per finding with `finding_threads.UNIQUE(finding_id)`. `GET /api/findings/:id/thread` and the review-session-scoped equivalent create the thread on first load, return the finding summary plus ordered messages, and preserve existing messages across reloads. Message rows keep role, optional agent config, optional artifact, and JSON evidence references so the later follow-up submit API can append user/assistant turns without changing the thread model.
+The MVP follow-up foundation creates exactly one thread per finding with `finding_threads.UNIQUE(finding_id)`. `GET /api/findings/:id/thread` and the review-session-scoped equivalent create the thread on first load, return the finding summary plus ordered messages, and preserve existing messages across reloads. Message rows keep role, optional agent config, optional artifact, and JSON evidence references.
+
+`POST /api/findings/:id/question` appends the user question, builds a persisted finding-scoped context bundle, runs a selected `cli_noninteractive` agent or deterministic `local_verifier`, and stores the assistant answer with cited evidence refs plus the stdout artifact for CLI runs. The endpoint accepts an optional context policy override and rejects unsupported/disabled agent configs before execution.
 
 ### 11.10 GitHub comment drafter prompt
 

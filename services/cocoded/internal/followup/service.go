@@ -12,6 +12,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/hughdo/cocode/services/cocoded/internal/agentrun"
+	"github.com/hughdo/cocode/services/cocoded/internal/artifact"
+	"github.com/hughdo/cocode/services/cocoded/internal/contextbundle"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
 )
 
@@ -29,12 +32,18 @@ var (
 	ErrFindingNotFound      = errors.New("finding was not found")
 	ErrThreadNotFound       = errors.New("finding thread was not found")
 	ErrInvalidMessage       = errors.New("finding thread message is invalid")
+	ErrAgentConfigNotFound  = errors.New("follow-up agent config was not found")
+	ErrInvalidAgentConfig   = errors.New("follow-up agent config is invalid")
+	ErrAgentRunFailed       = errors.New("follow-up agent run failed")
 )
 
 type Service struct {
-	Queries *dbgen.Queries
-	Now     func() time.Time
-	NewID   func(prefix string) string
+	Queries        *dbgen.Queries
+	ContextBuilder *contextbundle.Service
+	Artifacts      *artifact.Store
+	AgentManager   *agentrun.Manager
+	Now            func() time.Time
+	NewID          func(prefix string) string
 }
 
 type EnsureThreadParams struct {

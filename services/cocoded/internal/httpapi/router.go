@@ -178,6 +178,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 		bus, busErr = eventbus.New(eventStore)
 	}
 	var reviewWorkflow *orchestrator.Service
+	var agentManager *agentrun.Manager
 	workflowErr := artifactErr
 	if workflowErr == nil {
 		workflowErr = busErr
@@ -187,17 +188,18 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 			Queries:   queries,
 			Artifacts: artifactStore,
 		}
+		agentManager = &agentrun.Manager{
+			Runner:                  runner,
+			MaxConcurrent:           2,
+			MaxConcurrentPerSession: 2,
+		}
 		reviewWorkflow = &orchestrator.Service{
 			Queries:        queries,
 			ContextBuilder: contextBuilder,
 			Artifacts:      artifactStore,
 			Events:         bus,
 			Evidence:       &evidence.Service{Queries: queries},
-			AgentManager: &agentrun.Manager{
-				Runner:                  runner,
-				MaxConcurrent:           2,
-				MaxConcurrentPerSession: 2,
-			},
+			AgentManager:   agentManager,
 		}
 	}
 	services := routerServices{
@@ -207,7 +209,12 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 		snapshotInitErr:   snapshotErr,
 		contextBuilder:    contextBuilder,
 		contextBuilderErr: artifactErr,
-		followups:         &followup.Service{Queries: queries},
+		followups: &followup.Service{
+			Queries:        queries,
+			ContextBuilder: contextBuilder,
+			Artifacts:      artifactStore,
+			AgentManager:   agentManager,
+		},
 		reviewWorkflow:    reviewWorkflow,
 		reviewWorkflowErr: workflowErr,
 		eventBus:          bus,
@@ -271,6 +278,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.POST("/review-sessions/:id/findings/:finding_id/context-bundles/preview", buildFindingContextHandler(services, contextbundle.ScopeFinding))
 	api.POST("/review-sessions/:id/findings/:finding_id/evidence-map/context-bundles/preview", buildFindingContextHandler(services, contextbundle.ScopeEvidenceMap))
 	api.GET("/review-sessions/:id/findings/:finding_id/thread", findingThreadHandler(services))
+	api.POST("/review-sessions/:id/findings/:finding_id/question", askFindingQuestionHandler(services))
 	api.POST("/review-sessions/:id/findings/:finding_id/decision", updateFindingDecisionHandler(services))
 	api.PATCH("/review-sessions/:id/findings/:finding_id/draft-comment", updateDraftCommentHandler(services))
 	api.GET("/findings/:finding_id", findingDetailHandler(queries))
@@ -280,6 +288,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.POST("/findings/:finding_id/context-bundles/preview", buildFindingContextHandler(services, contextbundle.ScopeFinding))
 	api.POST("/findings/:finding_id/evidence-map/context-bundles/preview", buildFindingContextHandler(services, contextbundle.ScopeEvidenceMap))
 	api.GET("/findings/:finding_id/thread", findingThreadHandler(services))
+	api.POST("/findings/:finding_id/question", askFindingQuestionHandler(services))
 	api.PATCH("/findings/:finding_id/decision", updateFindingDecisionHandler(services))
 	api.PATCH("/findings/:finding_id/draft-comment", updateDraftCommentHandler(services))
 	api.GET("/agents/presets", listAgentPresetsHandler())

@@ -37,6 +37,20 @@ type FindingThreadMessageResponse struct {
 	CreatedAt     string          `json:"created_at"`
 }
 
+type AskFindingQuestionRequest struct {
+	Question      string          `json:"question"`
+	AgentConfigID string          `json:"agent_config_id"`
+	ContextPolicy json.RawMessage `json:"context_policy"`
+}
+
+type AskFindingQuestionResponse struct {
+	Thread           FindingThreadViewResponse    `json:"thread"`
+	UserMessage      FindingThreadMessageResponse `json:"user_message"`
+	AssistantMessage FindingThreadMessageResponse `json:"assistant_message"`
+	AgentRunID       string                       `json:"agent_run_id,omitempty"`
+	ContextBundleID  string                       `json:"context_bundle_id,omitempty"`
+}
+
 func findingThreadHandler(services routerServices) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		service := services.followups
@@ -57,6 +71,52 @@ func findingThreadHandler(services routerServices) gin.HandlerFunc {
 			return
 		}
 		respondOK(c, response)
+	}
+}
+
+func askFindingQuestionHandler(services routerServices) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var request AskFindingQuestionRequest
+		if !bindJSON(c, &request) {
+			return
+		}
+		service := services.followups
+		if service == nil {
+			service = &followup.Service{Queries: services.queries}
+		}
+		result, err := service.AskQuestion(c.Request.Context(), followup.AskQuestionParams{
+			FindingID:       c.Param("finding_id"),
+			ReviewSessionID: c.Param("id"),
+			Question:        request.Question,
+			AgentConfigID:   request.AgentConfigID,
+			ContextPolicy:   request.ContextPolicy,
+		})
+		if err != nil {
+			respondError(c, followupError(err))
+			return
+		}
+		thread, appErr := findingThreadViewResponse(result.View)
+		if appErr != nil {
+			respondError(c, appErr)
+			return
+		}
+		userMessage, appErr := findingThreadMessageResponse(result.UserMessage)
+		if appErr != nil {
+			respondError(c, appErr)
+			return
+		}
+		assistantMessage, appErr := findingThreadMessageResponse(result.AssistantMessage)
+		if appErr != nil {
+			respondError(c, appErr)
+			return
+		}
+		respondOK(c, AskFindingQuestionResponse{
+			Thread:           thread,
+			UserMessage:      userMessage,
+			AssistantMessage: assistantMessage,
+			AgentRunID:       result.AgentRun.ID,
+			ContextBundleID:  result.ContextBundle.ID,
+		})
 	}
 }
 
@@ -114,6 +174,12 @@ func followupError(err error) *apperror.Error {
 		return apperror.NotFound("finding thread was not found")
 	case errors.Is(err, followup.ErrInvalidMessage):
 		return apperror.InvalidRequest("finding thread message is invalid")
+	case errors.Is(err, followup.ErrInvalidAgentConfig):
+		return apperror.InvalidRequest("follow-up agent config is invalid")
+	case errors.Is(err, followup.ErrAgentConfigNotFound):
+		return apperror.NotFound("follow-up agent config was not found")
+	case errors.Is(err, followup.ErrAgentRunFailed):
+		return apperror.Internal("follow-up agent run failed")
 	default:
 		return apperror.Internal("failed to load finding thread")
 	}

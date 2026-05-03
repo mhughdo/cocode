@@ -6,11 +6,13 @@ package dbgen
 
 import (
 	"context"
+	"database/sql"
 )
 
 type Querier interface {
 	CreateAgentConfig(ctx context.Context, arg CreateAgentConfigParams) (AgentConfig, error)
 	CreateAgentRun(ctx context.Context, arg CreateAgentRunParams) (AgentRun, error)
+	CreateArtifact(ctx context.Context, arg CreateArtifactParams) (Artifact, error)
 	CreateCallPath(ctx context.Context, arg CreateCallPathParams) (CallPath, error)
 	CreateCallPathStep(ctx context.Context, arg CreateCallPathStepParams) (CallPathStep, error)
 	CreateChangedFile(ctx context.Context, arg CreateChangedFileParams) (ChangedFile, error)
@@ -27,6 +29,7 @@ type Querier interface {
 	CreateReviewSessionAgent(ctx context.Context, arg CreateReviewSessionAgentParams) (ReviewSessionAgent, error)
 	CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) (Workspace, error)
 	DeleteAgentConfig(ctx context.Context, id string) error
+	DeleteArtifact(ctx context.Context, id string) error
 	DeleteCallPath(ctx context.Context, id string) error
 	DeleteEvidenceEdge(ctx context.Context, id string) error
 	DeleteEvidenceGraph(ctx context.Context, id string) error
@@ -40,6 +43,7 @@ type Querier interface {
 	DeleteWorkspace(ctx context.Context, id string) error
 	GetAgentConfig(ctx context.Context, id string) (AgentConfig, error)
 	GetAgentRun(ctx context.Context, id string) (AgentRun, error)
+	GetArtifact(ctx context.Context, id string) (Artifact, error)
 	GetChangedFile(ctx context.Context, id string) (ChangedFile, error)
 	GetChangedFileByPath(ctx context.Context, arg GetChangedFileByPathParams) (ChangedFile, error)
 	GetEvidenceGraph(ctx context.Context, id string) (EvidenceGraph, error)
@@ -57,6 +61,8 @@ type Querier interface {
 	LinkFindingCandidate(ctx context.Context, arg LinkFindingCandidateParams) error
 	ListAgentConfigs(ctx context.Context) ([]AgentConfig, error)
 	ListAgentRunsBySession(ctx context.Context, reviewSessionID string) ([]AgentRun, error)
+	ListArtifactsByReviewSession(ctx context.Context, reviewSessionID sql.NullString) ([]Artifact, error)
+	ListArtifactsByWorkspace(ctx context.Context, workspaceID string) ([]Artifact, error)
 	ListCallPathStepsByCallPath(ctx context.Context, callPathID string) ([]CallPathStep, error)
 	ListCallPathsByGraph(ctx context.Context, evidenceGraphID string) ([]CallPath, error)
 	ListChangedFilesBySnapshot(ctx context.Context, snapshotID string) ([]ChangedFile, error)

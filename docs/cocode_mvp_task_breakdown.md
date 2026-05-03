@@ -240,8 +240,8 @@ Large parallel workstreams:
 | T130 | Add secret redaction | Redact token-like strings, private keys, env values before cloud-backed CLI context. | Done | T120 | T333 | Tests cover secret fixtures; redaction report artifact created. |
 | T131 | Store rendered context bundle artifacts | Persist final prompt context sent to each agent. | Done | T120, T060 | T140 | Agent run links to bundle; user can audit context. |
 | T132 | Build review context API | Endpoint/service to build and preview context for a session. | Done | T120-T131 | T247 | API returns bundle metadata, items, token estimate. |
-| T133 | Build finding-scoped context | Build context for one finding and evidence bundle. | Not started | T186, T204 | T280 | Follow-up uses finding-scoped bundle by default. |
-| T134 | Build Evidence Map context | Build graph-specific context from finding/evidence/code relationships. | Not started | T133 | T210 | Evidence Map builder receives bounded relevant context. |
+| T133 | Build finding-scoped context | Build context for one finding and evidence bundle. | Done | T186, T204 | T280 | Follow-up uses finding-scoped bundle by default. |
+| T134 | Build Evidence Map context | Build graph-specific context from finding/evidence/code relationships. | Done | T133 | T210 | Evidence Map builder receives bounded relevant context. |
 | T135 | Add context debug viewer API | Return context items and artifacts for developer/provenance panel. | Done | T131 | T260 | UI can show what each agent saw. |
 
 ---

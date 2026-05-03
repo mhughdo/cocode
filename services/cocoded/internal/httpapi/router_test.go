@@ -20,6 +20,7 @@ import (
 	"github.com/hughdo/cocode/services/cocoded/internal/agents"
 	"github.com/hughdo/cocode/services/cocoded/internal/app"
 	"github.com/hughdo/cocode/services/cocoded/internal/artifact"
+	"github.com/hughdo/cocode/services/cocoded/internal/contextbundle"
 	"github.com/hughdo/cocode/services/cocoded/internal/db"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
 	evidencepkg "github.com/hughdo/cocode/services/cocoded/internal/evidence"
@@ -1259,6 +1260,81 @@ func TestFindingEvidenceMapEndpointBuildsAndRebuilds(t *testing.T) {
 	}
 }
 
+func TestFindingContextPreviewEndpointBuildsScopedBundle(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+
+	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/findings/finding_auth/context-bundles/preview", map[string]any{
+		"persist": true,
+		"context_policy": map[string]any{
+			"max_tokens": 4000,
+			"max_items":  20,
+		},
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("finding context status = %d, body = %s", response.Code, response.Body.String())
+	}
+	preview := decodeBuildReviewContextResponse(t, response.Body.Bytes())
+	if !preview.Persisted ||
+		preview.Bundle.Scope != contextbundle.ScopeFinding ||
+		preview.Bundle.ArtifactID == "" ||
+		preview.ArtifactID == "" ||
+		preview.Bundle.ItemCount == 0 ||
+		!hasContextBundleItemKind(preview.Bundle.Items, contextbundle.ItemEvidence) {
+		t.Fatalf("preview = %+v", preview)
+	}
+}
+
+func TestEvidenceMapContextPreviewEndpointIncludesGraph(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+	if _, err := queries.CreateEvidenceGraph(context.Background(), dbgen.CreateEvidenceGraphParams{
+		ID:              "graph_auth_context",
+		FindingID:       "finding_auth",
+		ReviewSessionID: "review_session_findings",
+		Status:          "ready",
+		LayoutJson:      `{"direction":"LR"}`,
+		Summary:         nullableString("Auth evidence map context."),
+		CreatedAt:       "2026-05-03T00:16:00Z",
+		UpdatedAt:       "2026-05-03T00:16:00Z",
+	}); err != nil {
+		t.Fatalf("CreateEvidenceGraph() error = %v", err)
+	}
+	if _, err := queries.CreateEvidenceNode(context.Background(), dbgen.CreateEvidenceNodeParams{
+		ID:              "node_auth_context_route",
+		EvidenceGraphID: "graph_auth_context",
+		Kind:            "changed_code",
+		Label:           "Repository settings route",
+		Path:            nullableString("apps/api/src/routes/repositories.ts"),
+		StartLine:       sql.NullInt64{Int64: 87, Valid: true},
+		EndLine:         sql.NullInt64{Int64: 112, Valid: true},
+		EvidenceItemID:  nullableString("evidence_auth_guard"),
+		Confidence:      0.9,
+		MetadataJson:    `{}`,
+	}); err != nil {
+		t.Fatalf("CreateEvidenceNode() error = %v", err)
+	}
+
+	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/findings/finding_auth/evidence-map/context-bundles/preview", map[string]any{
+		"context_policy": map[string]any{
+			"max_tokens": 5000,
+			"max_items":  30,
+		},
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("evidence map context status = %d, body = %s", response.Code, response.Body.String())
+	}
+	preview := decodeBuildReviewContextResponse(t, response.Body.Bytes())
+	if preview.Bundle.Scope != contextbundle.ScopeEvidenceMap ||
+		!hasContextBundleItemTitle(preview.Bundle.Items, "Evidence Map graph") {
+		t.Fatalf("preview = %+v", preview)
+	}
+}
+
 func TestFindingDecisionEndpointUpdatesStatusAndAppendsDecision(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
 	createHTTPAPIFindingFixture(t, queries)
@@ -2349,6 +2425,24 @@ func decodeFindingResponse(t *testing.T, content []byte) FindingResponse {
 func hasEvidenceMapEdge(edges []evidencepkg.EdgeView, kind string, status string) bool {
 	for _, edge := range edges {
 		if edge.Kind == kind && edge.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
+func hasContextBundleItemKind(items []contextbundle.Item, kind contextbundle.ItemKind) bool {
+	for _, item := range items {
+		if item.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func hasContextBundleItemTitle(items []contextbundle.Item, title string) bool {
+	for _, item := range items {
+		if item.Title == title {
 			return true
 		}
 	}

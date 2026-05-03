@@ -828,12 +828,16 @@ GET    /api/review-sessions/:id/findings/:finding_id
 GET    /api/review-sessions/:id/findings/:finding_id/evidence
 GET    /api/review-sessions/:id/findings/:finding_id/evidence-map
 POST   /api/review-sessions/:id/findings/:finding_id/evidence-map/rebuild
+POST   /api/review-sessions/:id/findings/:finding_id/context-bundles/preview
+POST   /api/review-sessions/:id/findings/:finding_id/evidence-map/context-bundles/preview
 POST   /api/review-sessions/:id/findings/:finding_id/decision
 PATCH  /api/review-sessions/:id/findings/:finding_id/draft-comment
 POST   /api/findings/:id/question
 GET    /api/findings/:id/thread
 GET    /api/findings/:id/evidence-map
 POST   /api/findings/:id/evidence-map/rebuild
+POST   /api/findings/:id/context-bundles/preview
+POST   /api/findings/:id/evidence-map/context-bundles/preview
 
 POST   /api/review-sessions/:id/export/copy-packet
 POST   /api/findings/:id/export/copy-packet
@@ -1610,6 +1614,8 @@ For each finding:
 8. Build Evidence Map.
 
 The MVP implementation runs a deterministic local verifier during the `verify_findings` workflow phase. It rebuilds cocode-owned evidence items for each canonical finding, reads the primary changed-code snippet inside the repository sandbox, searches likely guard/config/test paths with a bounded `rg --json` wrapper, stores supporting/counter/missing/test evidence rows, and updates `verification_status`, `evidence_summary`, and `counter_evidence_summary`. The local verifier starts with rule profiles for auth guards, webhook validation, test coverage, and idempotency so search terms and evidence metadata are predictable.
+
+Finding-scoped and Evidence Map-scoped context bundles reuse the same context item model with `scope` set to `finding` or `evidence_map`. They include finding prompt material, bounded evidence rows, scoped changed-code snippets, related tests/search hits when available, and optionally a compact Evidence Map graph summary. Scoped bundles cap tokens/items below the broad review defaults so follow-up/verifier tasks stay fast on large PRs.
 
 ### 14.2 Local verifier examples
 

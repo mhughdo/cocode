@@ -265,12 +265,16 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.GET("/review-sessions/:id/findings/:finding_id/evidence", findingEvidenceHandler(queries))
 	api.GET("/review-sessions/:id/findings/:finding_id/evidence-map", findingEvidenceMapHandler(services, false))
 	api.POST("/review-sessions/:id/findings/:finding_id/evidence-map/rebuild", findingEvidenceMapHandler(services, true))
+	api.POST("/review-sessions/:id/findings/:finding_id/context-bundles/preview", buildFindingContextHandler(services, contextbundle.ScopeFinding))
+	api.POST("/review-sessions/:id/findings/:finding_id/evidence-map/context-bundles/preview", buildFindingContextHandler(services, contextbundle.ScopeEvidenceMap))
 	api.POST("/review-sessions/:id/findings/:finding_id/decision", updateFindingDecisionHandler(services))
 	api.PATCH("/review-sessions/:id/findings/:finding_id/draft-comment", updateDraftCommentHandler(services))
 	api.GET("/findings/:finding_id", findingDetailHandler(queries))
 	api.GET("/findings/:finding_id/evidence", findingEvidenceHandler(queries))
 	api.GET("/findings/:finding_id/evidence-map", findingEvidenceMapHandler(services, false))
 	api.POST("/findings/:finding_id/evidence-map/rebuild", findingEvidenceMapHandler(services, true))
+	api.POST("/findings/:finding_id/context-bundles/preview", buildFindingContextHandler(services, contextbundle.ScopeFinding))
+	api.POST("/findings/:finding_id/evidence-map/context-bundles/preview", buildFindingContextHandler(services, contextbundle.ScopeEvidenceMap))
 	api.PATCH("/findings/:finding_id/decision", updateFindingDecisionHandler(services))
 	api.PATCH("/findings/:finding_id/draft-comment", updateDraftCommentHandler(services))
 	api.GET("/agents/presets", listAgentPresetsHandler())
@@ -494,6 +498,53 @@ func buildReviewContextHandler(services routerServices) gin.HandlerFunc {
 			PolicyOverride:  request.ContextPolicy,
 			Persist:         request.Persist,
 		})
+		if err != nil {
+			respondReviewContextError(c, err)
+			return
+		}
+		respondOK(c, buildReviewContextResponse(result))
+	}
+}
+
+func buildFindingContextHandler(services routerServices, scope contextbundle.Scope) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var request BuildReviewContextRequest
+		if !bindOptionalJSON(c, &request) {
+			return
+		}
+		if err := services.ensureContextBuilder(); err != nil {
+			respondError(c, err)
+			return
+		}
+		reviewSessionID := strings.TrimSpace(c.Param("id"))
+		findingID := strings.TrimSpace(c.Param("finding_id"))
+		if findingID == "" {
+			respondError(c, apperror.InvalidRequest("finding id is required"))
+			return
+		}
+		var (
+			result contextbundle.BuildReviewContextResult
+			err    error
+		)
+		switch scope {
+		case contextbundle.ScopeFinding:
+			result, err = services.contextBuilder.BuildFindingContext(c.Request.Context(), contextbundle.BuildFindingContextParams{
+				ReviewSessionID: reviewSessionID,
+				FindingID:       findingID,
+				PolicyOverride:  request.ContextPolicy,
+				Persist:         request.Persist,
+			})
+		case contextbundle.ScopeEvidenceMap:
+			result, err = services.contextBuilder.BuildEvidenceMapContext(c.Request.Context(), contextbundle.BuildEvidenceMapContextParams{
+				ReviewSessionID: reviewSessionID,
+				FindingID:       findingID,
+				PolicyOverride:  request.ContextPolicy,
+				Persist:         request.Persist,
+			})
+		default:
+			respondError(c, apperror.InvalidRequest("context scope is invalid"))
+			return
+		}
 		if err != nil {
 			respondReviewContextError(c, err)
 			return

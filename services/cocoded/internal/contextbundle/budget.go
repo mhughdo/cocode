@@ -147,10 +147,10 @@ func normalizeBudgetOptions(options BudgetOptions) BudgetOptions {
 func depthAllowsKind(depth ReviewDepth, kind ItemKind) bool {
 	switch depth {
 	case ReviewDepthQuick:
-		return kind == ItemPromptMaterial || kind == ItemChangedHunk
+		return kind == ItemPromptMaterial || kind == ItemChangedHunk || kind == ItemEvidence
 	case ReviewDepthStandard:
 		switch kind {
-		case ItemPromptMaterial, ItemChangedHunk, ItemFullFile, ItemFileSlice, ItemRelatedCode, ItemRelatedTest:
+		case ItemPromptMaterial, ItemChangedHunk, ItemFullFile, ItemFileSlice, ItemRelatedCode, ItemRelatedTest, ItemEvidence:
 			return true
 		default:
 			return false
@@ -166,6 +166,8 @@ func budgetKindPriority(kind ItemKind) int {
 	switch kind {
 	case ItemPromptMaterial:
 		return -10
+	case ItemEvidence:
+		return -5
 	case ItemChangedHunk:
 		return 0
 	case ItemFullFile, ItemFileSlice:
@@ -180,8 +182,6 @@ func budgetKindPriority(kind ItemKind) int {
 		return 50
 	case ItemPriorDecision:
 		return 60
-	case ItemEvidence:
-		return 70
 	case ItemRedactionNote:
 		return 80
 	default:

@@ -276,12 +276,12 @@ Large parallel workstreams:
 | T172 | Implement JSONL/NDJSON parser | Parse streaming/event outputs into final candidate set. | Done | T096, T170 | T173 | Tests cover line-by-line agent output. |
 | T173 | Implement text output normalizer | Convert text agent output into candidates using deterministic heuristics and optional repair prompt. | Done | T096, T170 | T174 | Text fixture produces reasonable candidates or clear low-confidence output. |
 | T174 | Implement malformed output repair | Attempt one repair pass for malformed structured output. | Done | T173, T103 | T175 | Broken JSON fixture repaired or marked invalid with raw artifact. |
-| T175 | Implement location normalization | Normalize path/line ranges and map to changed files where possible. | Not started | T079, T171 | T176 | Invalid paths flagged; line ranges validated. |
+| T175 | Implement location normalization | Normalize path/line ranges and map to changed files where possible. | Done | T079, T171 | T176 | Invalid paths flagged; line ranges validated. |
 | T176 | Implement candidate persistence | Store FindingCandidate rows with raw artifact links. | Done | T058, T171 | T177 | Candidates persist with agent provenance. |
-| T177 | Implement finding fingerprinting | Compute stable fingerprints for duplicate detection. | Not started | T176 | T178 | Similar samples produce same/near fingerprints. |
-| T178 | Implement dedupe exact/overlap | Merge candidates by fingerprint and line overlap. | Not started | T177 | T179 | Duplicate candidates merge into one finding. |
+| T177 | Implement finding fingerprinting | Compute stable fingerprints for duplicate detection. | Done | T176 | T178 | Similar samples produce same/near fingerprints. |
+| T178 | Implement dedupe exact/overlap | Merge candidates by fingerprint and line overlap. | Done | T177 | T179 | Duplicate candidates merge into one finding. |
 | T179 | Implement optional LLM dedupe hook | Add interface for future/optional LLM dedupe when deterministic merge is uncertain. | Not started | T178 | T180 | Hook is feature-flagged; default deterministic path works. |
-| T180 | Implement canonical finding creation | Create Finding rows and candidate links. | Not started | T178, T058 | T181 | Canonical findings include merged count and provenance. |
+| T180 | Implement canonical finding creation | Create Finding rows and candidate links. | Done | T178, T058 | T181 | Canonical findings include merged count and provenance. |
 | T181 | Implement severity/category normalization | Normalize agent-specific labels into app enum values. | Not started | T171 | T182 | Unknown labels map to safe defaults. |
 | T182 | Implement finding ranking | Sort by severity, verification, confidence, agent agreement. | Not started | T180 | T256 | API returns stable sort order. |
 | T183 | Implement finding list API | Return findings with filters/search/status counts. | Not started | T180, T062 | T256 | UI can filter all/verified/needs triage/accepted/dismissed. |

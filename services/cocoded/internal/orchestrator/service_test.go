@@ -237,6 +237,7 @@ func TestWorkflowPersistsStructuredFindingCandidates(t *testing.T) {
 		candidate.PrimaryPath.String != "src/new.go" ||
 		candidate.PrimaryStartLine.Int64 != 3 ||
 		!candidate.RawArtifactID.Valid ||
+		!candidate.Fingerprint.Valid ||
 		!strings.Contains(candidate.EvidenceJson, `"kind":"unknown"`) {
 		t.Fatalf("candidate = %+v", candidate)
 	}
@@ -255,9 +256,71 @@ func TestWorkflowPersistsStructuredFindingCandidates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Summary() error = %v", err)
 	}
-	if summary.FindingCounts.Candidates != 1 {
+	if summary.FindingCounts.Candidates != 1 || summary.FindingCounts.Findings != 1 {
 		t.Fatalf("finding summary = %+v", summary.FindingCounts)
 	}
+}
+
+func TestWorkflowDeduplicatesCandidatesIntoCanonicalFinding(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	env.Driver.stdout = `{
+		"summary": "duplicate findings",
+		"findings": [
+			{
+				"claim": "Settings mutation lacks admin guard",
+				"category": "security",
+				"severity": "high",
+				"confidence": 0.91,
+				"locations": [{"path":"src/new.go","start_line":2,"end_line":3,"side":"RIGHT"}],
+				"evidence": [{"title":"route is unguarded","summary":"the mutation is reachable without admin authorization"}],
+				"suggested_fix": "Require admin before mutation.",
+				"draft_comment": "Please require admin permission before mutating settings."
+			},
+			{
+				"claim": "settings mutation lacks admin guard",
+				"category": "security",
+				"severity": "medium",
+				"confidence": 0.74,
+				"locations": [{"path":"b/src/new.go","start_line":2,"end_line":3,"side":"RIGHT"}],
+				"evidence": [{"title":"same route","summary":"another agent reported the same missing guard"}]
+			}
+		]
+	}`
+	session := createWorkflowSession(t, env, "review_session_dedupe", StatusDraft)
+	if _, err := env.Service.Transition(context.Background(), session.ID, StatusQueued); err != nil {
+		t.Fatalf("Transition(draft -> queued) error = %v", err)
+	}
+	if err := env.Service.Run(context.Background(), session.ID); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	candidates, err := env.Queries.ListFindingCandidatesBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListFindingCandidatesBySession() error = %v", err)
+	}
+	if len(candidates) != 2 || candidates[0].Fingerprint.String != candidates[1].Fingerprint.String {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+	findings, err := env.Queries.ListFindingsBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListFindingsBySession() error = %v", err)
+	}
+	if len(findings) != 1 || findings[0].MergedFromCount != 2 || findings[0].Severity != "high" {
+		t.Fatalf("findings = %+v", findings)
+	}
+	links, err := env.Queries.ListFindingCandidateLinks(context.Background(), findings[0].ID)
+	if err != nil {
+		t.Fatalf("ListFindingCandidateLinks() error = %v", err)
+	}
+	if len(links) != 2 {
+		t.Fatalf("links = %+v", links)
+	}
+	events, err := env.Events.ListByReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListByReviewSession() error = %v", err)
+	}
+	assertEventTypes(t, events, []string{"FindingMerged", "FindingDeduplicated"})
 }
 
 func TestWorkflowPersistsDelimitedFindingCandidateEvents(t *testing.T) {

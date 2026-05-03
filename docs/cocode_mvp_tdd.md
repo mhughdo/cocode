@@ -1546,6 +1546,7 @@ RawAgentOutput
 
 The MVP implementation persists structured JSON and JSONL/NDJSON candidates during the `normalize_outputs` phase. Each candidate keeps the agent run ID plus the raw stdout artifact as provenance, while `FindingCandidateCreated` events allow the running review stream to surface candidates before the whole workflow completes.
 When output is not structured, candidate extraction first applies one deterministic repair pass for simple malformed JSON such as trailing commas. If repair fails, it falls back to a conservative text candidate with low confidence and raw-output evidence.
+Candidate persistence normalizes paths against the snapshot changed-file list, records changed-file IDs and validity messages in `locations_json`, and computes an app-owned fingerprint. The dedupe phase currently merges exact fingerprints and overlapping same-category candidates with similar claim terms, then materializes canonical `findings` rows and candidate links.
 
 ### 13.2 Fingerprint strategy
 

@@ -19,6 +19,7 @@ import (
 	"github.com/hughdo/cocode/services/cocoded/internal/contextbundle"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
 	"github.com/hughdo/cocode/services/cocoded/internal/eventlog"
+	"github.com/hughdo/cocode/services/cocoded/internal/findingengine"
 )
 
 const (
@@ -646,9 +647,14 @@ func (s *Service) run(ctx context.Context, reviewSessionID string) error {
 			return err
 		}
 		runPhase := func() error { return nil }
-		if phase == PhaseNormalizeOutputs {
+		switch phase {
+		case PhaseNormalizeOutputs:
 			runPhase = func() error {
 				return s.normalizeAgentOutputs(ctx, session, runResults)
+			}
+		case PhaseDeduplicate:
+			runPhase = func() error {
+				return s.deduplicateFindings(ctx, session)
 			}
 		}
 		if err := s.withPhase(ctx, session.ID, phase, runPhase); err != nil {
@@ -890,6 +896,10 @@ func (s *Service) parseAgentOutput(ctx context.Context, item runContext, result 
 }
 
 func (s *Service) normalizeAgentOutputs(ctx context.Context, session dbgen.ReviewSession, results []agentrun.RunResult) error {
+	changedFiles, err := s.Queries.ListChangedFilesBySnapshot(ctx, session.SnapshotID)
+	if err != nil {
+		return fmt.Errorf("list changed files for candidate normalization: %w", err)
+	}
 	totalCandidates := 0
 	totalDiagnostics := 0
 	for _, result := range results {
@@ -925,7 +935,7 @@ func (s *Service) normalizeAgentOutputs(ctx context.Context, session dbgen.Revie
 			}
 		}
 		for _, candidate := range extracted.Candidates {
-			created, err := s.createFindingCandidate(ctx, session, run, candidate)
+			created, err := s.createFindingCandidate(ctx, session, run, findingengine.NormalizeCandidate(candidate, changedFiles))
 			if err != nil {
 				return err
 			}
@@ -994,6 +1004,91 @@ func (s *Service) createFindingCandidate(ctx context.Context, session dbgen.Revi
 		return dbgen.FindingCandidate{}, fmt.Errorf("create finding candidate for run %s: %w", run.ID, err)
 	}
 	return created, nil
+}
+
+func (s *Service) deduplicateFindings(ctx context.Context, session dbgen.ReviewSession) error {
+	candidates, err := s.Queries.ListFindingCandidatesBySession(ctx, session.ID)
+	if err != nil {
+		return fmt.Errorf("list finding candidates for dedupe: %w", err)
+	}
+	clusters := findingengine.Deduplicate(candidates)
+	snapshot, err := s.Queries.GetPullRequestSnapshot(ctx, session.SnapshotID)
+	if err != nil {
+		return fmt.Errorf("read snapshot for findings: %w", err)
+	}
+	for _, cluster := range clusters {
+		representative := findingengine.Representative(cluster)
+		if representative.ID == "" || !representative.Fingerprint.Valid {
+			continue
+		}
+		now := s.now().Format(time.RFC3339Nano)
+		finding, err := s.Queries.CreateFinding(ctx, dbgen.CreateFindingParams{
+			ID:                 s.newID("finding_"),
+			ReviewSessionID:    session.ID,
+			CanonicalClaim:     representative.Claim,
+			Category:           representative.Category,
+			Severity:           representative.Severity,
+			Confidence:         representative.Confidence,
+			VerificationStatus: "unverified",
+			DecisionStatus:     "undecided",
+			PrimaryPath:        representative.PrimaryPath,
+			PrimaryStartLine:   representative.PrimaryStartLine,
+			PrimaryEndLine:     representative.PrimaryEndLine,
+			EvidenceSummary:    findingengine.EvidenceSummary(representative),
+			SuggestedFix:       representative.SuggestedFix,
+			DraftComment:       representative.DraftComment,
+			Fingerprint:        representative.Fingerprint.String,
+			MergedFromCount:    int64(len(cluster.Candidates)),
+			IntroducedInSha:    snapshot.HeadSha,
+			FirstSeenAt:        now,
+			UpdatedAt:          now,
+		})
+		if err != nil {
+			return fmt.Errorf("create canonical finding: %w", err)
+		}
+		for _, candidate := range cluster.Candidates {
+			if err := s.Queries.LinkFindingCandidate(ctx, dbgen.LinkFindingCandidateParams{
+				FindingID:          finding.ID,
+				FindingCandidateID: candidate.ID,
+				Relation:           candidateLinkRelation(representative, candidate),
+			}); err != nil {
+				return fmt.Errorf("link candidate %s to finding %s: %w", candidate.ID, finding.ID, err)
+			}
+		}
+		if err := s.appendEvent(ctx, appendEventParams{
+			ReviewSessionID: session.ID,
+			Type:            "FindingMerged",
+			Payload: map[string]any{
+				"phase":             PhaseDeduplicate,
+				"finding_id":        finding.ID,
+				"fingerprint":       finding.Fingerprint,
+				"candidate_count":   len(cluster.Candidates),
+				"canonical_claim":   finding.CanonicalClaim,
+				"merged_from_count": finding.MergedFromCount,
+			},
+		}); err != nil {
+			return err
+		}
+	}
+	return s.appendEvent(ctx, appendEventParams{
+		ReviewSessionID: session.ID,
+		Type:            "FindingDeduplicated",
+		Payload: map[string]any{
+			"phase":           PhaseDeduplicate,
+			"candidate_count": len(candidates),
+			"finding_count":   len(clusters),
+		},
+	})
+}
+
+func candidateLinkRelation(representative dbgen.FindingCandidate, candidate dbgen.FindingCandidate) string {
+	if representative.ID == candidate.ID {
+		return "primary"
+	}
+	if representative.Fingerprint.Valid && candidate.Fingerprint.Valid && representative.Fingerprint.String == candidate.Fingerprint.String {
+		return "exact_duplicate"
+	}
+	return "overlap_duplicate"
 }
 
 func (s *Service) connectionConfig(item runContext) (agents.ConnectionConfig, agents.TaskLimits, error) {

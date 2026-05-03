@@ -659,6 +659,63 @@ describe("ApiClient", () => {
       "http://127.0.0.1:17658/api/review-sessions/session_1/audit-log",
     );
   });
+
+  it("manages sanitized GitHub credential refs", async () => {
+    const seen: { url: string; method: string; body: unknown }[] = [];
+    const fetcher = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        seen.push({
+          url,
+          method,
+          body: init?.body ? JSON.parse(String(init.body)) : null,
+        });
+        if (method === "GET") {
+          return jsonResponse({ data: githubCredentialFixture, error: null });
+        }
+        if (method === "POST") {
+          return jsonResponse({ data: githubCredentialFixture, error: null });
+        }
+        if (method === "DELETE") {
+          return jsonResponse({
+            data: { deleted: true, storage_key: "github:default" },
+            error: null,
+          });
+        }
+        return jsonResponse({ data: null, error: null });
+      },
+    );
+    const client = createCocodeClient({
+      baseUrl: "http://127.0.0.1:17658",
+      authToken: "local-token",
+      fetch: fetcher,
+    });
+
+    await expect(client.getGitHubCredential()).resolves.toMatchObject({
+      configured: true,
+      credential: { display_name: "GitHub token (octocat)" },
+    });
+    await expect(
+      client.saveGitHubCredential({
+        storage_key: "github:default",
+        token: "ghp_secret",
+      }),
+    ).resolves.toMatchObject({ configured: true });
+    await expect(client.deleteGitHubCredential()).resolves.toEqual({
+      deleted: true,
+      storage_key: "github:default",
+    });
+    expect(seen.map((request) => `${request.method} ${request.url}`)).toEqual([
+      "GET http://127.0.0.1:17658/api/credentials/github",
+      "POST http://127.0.0.1:17658/api/credentials/github",
+      "DELETE http://127.0.0.1:17658/api/credentials/github",
+    ]);
+    expect(seen[1]?.body).toEqual({
+      storage_key: "github:default",
+      token: "ghp_secret",
+    });
+  });
 });
 
 describe("API load states", () => {
@@ -1154,6 +1211,24 @@ const auditLogFixture = {
       metadata: { source: "triage" },
     },
   ],
+};
+
+const githubCredentialFixture = {
+  configured: true,
+  credential: {
+    id: "github_default",
+    kind: "github",
+    display_name: "GitHub token (octocat)",
+    storage_provider: "electron_safe_storage",
+    storage_key: "github:default",
+    metadata: {
+      login: "octocat",
+      scopes: ["repo", "read:user"],
+      validated_at: "2026-05-04T00:00:00Z",
+    },
+    created_at: "2026-05-04T00:00:00Z",
+    updated_at: "2026-05-04T00:00:00Z",
+  },
 };
 
 const agentConfigFixture = {

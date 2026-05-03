@@ -28,6 +28,7 @@ import (
 	"github.com/hughdo/cocode/services/cocoded/internal/evidence"
 	"github.com/hughdo/cocode/services/cocoded/internal/exports"
 	"github.com/hughdo/cocode/services/cocoded/internal/followup"
+	"github.com/hughdo/cocode/services/cocoded/internal/githubauth"
 	"github.com/hughdo/cocode/services/cocoded/internal/githubpr"
 	"github.com/hughdo/cocode/services/cocoded/internal/gitrepo"
 	"github.com/hughdo/cocode/services/cocoded/internal/orchestrator"
@@ -161,6 +162,8 @@ type routerServices struct {
 	reviewWorkflow      *orchestrator.Service
 	reviewWorkflowErr   error
 	eventBus            *eventbus.Bus
+	githubAuth          *githubauth.Service
+	githubAuthErr       error
 	gitCollector        gitrepo.Collector
 	gitRepositories     *gitrepo.Service
 	gitRepositoriesErr  error
@@ -212,6 +215,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 		}
 	}
 	gitRepositories, gitRepositoriesErr := gitrepo.New(database)
+	githubAuth, githubAuthErr := githubauth.New(database, githubauth.HTTPTokenValidator{BaseURL: config.GitHubAPIBaseURL})
 	services := routerServices{
 		database:          database,
 		queries:           queries,
@@ -235,6 +239,8 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 		reviewWorkflow:     reviewWorkflow,
 		reviewWorkflowErr:  workflowErr,
 		eventBus:           bus,
+		githubAuth:         githubAuth,
+		githubAuthErr:      githubAuthErr,
 		gitCollector:       gitrepo.NewCollector(gitrepo.DefaultRunner()),
 		gitRepositories:    gitRepositories,
 		gitRepositoriesErr: gitRepositoriesErr,
@@ -281,6 +287,9 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.GET("/workspaces/:id/repositories", listWorkspaceRepositoriesHandler(services))
 	api.POST("/pr-snapshots/from-local-compare", createLocalCompareSnapshotHandler(services))
 	api.POST("/pr-snapshots/from-local-changes", createLocalChangesSnapshotHandler(services))
+	api.GET("/credentials/github", getGitHubCredentialHandler(services))
+	api.POST("/credentials/github", saveGitHubCredentialHandler(services))
+	api.DELETE("/credentials/github", deleteGitHubCredentialHandler(services))
 	api.GET("/pr-snapshots/:id", snapshotHandler(services))
 	api.GET("/pr-snapshots/:id/changed-files", changedFilesHandler(queries))
 	api.POST("/review-sessions", createReviewSessionHandler(queries))

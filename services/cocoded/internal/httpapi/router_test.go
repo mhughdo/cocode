@@ -973,6 +973,96 @@ func TestCreateGitHubSnapshotEndpointKeepsSnapshotWhenPreviousCommentsUnavailabl
 	}
 }
 
+func TestGitHubCredentialEndpointsStoreOnlyReference(t *testing.T) {
+	const token = "ghp_secret_for_settings"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/user" {
+			t.Fatalf("path = %q, want /user", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			t.Fatalf("Authorization = %q", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("X-OAuth-Scopes", "repo, read:user")
+		_, _ = w.Write([]byte(`{"login":"octocat"}`))
+	}))
+	defer server.Close()
+
+	router, queries := testRouterWithConfigAndQueries(t, app.Config{GitHubAPIBaseURL: server.URL})
+	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/credentials/github", map[string]any{
+		"display_name": "Work GitHub",
+		"storage_key":  "github:default",
+		"token":        token,
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("save status = %d, body = %s", response.Code, response.Body.String())
+	}
+	saved := decodeGitHubCredentialStatusResponse(t, response.Body.Bytes())
+	if !saved.Configured ||
+		saved.Credential == nil ||
+		saved.Credential.DisplayName != "Work GitHub" ||
+		saved.Credential.StorageProvider != "electron_safe_storage" ||
+		strings.Contains(string(saved.Credential.Metadata), token) {
+		t.Fatalf("saved credential = %+v", saved)
+	}
+
+	ref, err := queries.GetLatestCredentialRefByKind(context.Background(), "github")
+	if err != nil {
+		t.Fatalf("GetLatestCredentialRefByKind() error = %v", err)
+	}
+	if strings.Contains(ref.DisplayName, token) ||
+		strings.Contains(ref.MetadataJson, token) ||
+		strings.Contains(ref.StorageKey, token) {
+		t.Fatalf("credential ref leaked token: %+v", ref)
+	}
+
+	getRequest := httptest.NewRequest(http.MethodGet, "/api/credentials/github", nil)
+	getRequest.Header.Set("X-Cocode-Token", "test-token")
+	getResponse := httptest.NewRecorder()
+	router.ServeHTTP(getResponse, getRequest)
+	if getResponse.Code != http.StatusOK {
+		t.Fatalf("get status = %d, body = %s", getResponse.Code, getResponse.Body.String())
+	}
+	loaded := decodeGitHubCredentialStatusResponse(t, getResponse.Body.Bytes())
+	if !loaded.Configured || loaded.Credential == nil || loaded.Credential.ID != saved.Credential.ID {
+		t.Fatalf("loaded credential = %+v", loaded)
+	}
+
+	deleteRequest := httptest.NewRequest(http.MethodDelete, "/api/credentials/github", nil)
+	deleteRequest.Header.Set("X-Cocode-Token", "test-token")
+	deleteResponse := httptest.NewRecorder()
+	router.ServeHTTP(deleteResponse, deleteRequest)
+	if deleteResponse.Code != http.StatusOK {
+		t.Fatalf("delete status = %d, body = %s", deleteResponse.Code, deleteResponse.Body.String())
+	}
+	deleted := decodeDeleteGitHubCredentialResponse(t, deleteResponse.Body.Bytes())
+	if !deleted.Deleted || deleted.StorageKey != "github:default" {
+		t.Fatalf("deleted = %+v", deleted)
+	}
+}
+
+func TestGitHubCredentialEndpointRejectsInvalidToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	router, queries := testRouterWithConfigAndQueries(t, app.Config{GitHubAPIBaseURL: server.URL})
+	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/credentials/github", map[string]any{
+		"storage_key": "github:default",
+		"token":       "bad-token",
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid token status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if _, err := queries.GetLatestCredentialRefByKind(context.Background(), "github"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("credential ref error = %v, want sql.ErrNoRows", err)
+	}
+}
+
 func TestCreateLocalCompareSnapshotEndpoint(t *testing.T) {
 	repoPath := initHTTPAPIGitRepo(t)
 	runHTTPAPIGit(t, repoPath, "checkout", "-B", "main")
@@ -3402,6 +3492,38 @@ func decodeGitHubPreviewResponse(t *testing.T, content []byte) GitHubPreviewResp
 	var envelope struct {
 		Data  GitHubPreviewResponse `json:"data"`
 		Error any                   `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeGitHubCredentialStatusResponse(t *testing.T, content []byte) GitHubCredentialStatusResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  GitHubCredentialStatusResponse `json:"data"`
+		Error any                            `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeDeleteGitHubCredentialResponse(t *testing.T, content []byte) DeleteGitHubCredentialResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  DeleteGitHubCredentialResponse `json:"data"`
+		Error any                            `json:"error"`
 	}
 	if err := json.Unmarshal(content, &envelope); err != nil {
 		t.Fatalf("decode response: %v", err)

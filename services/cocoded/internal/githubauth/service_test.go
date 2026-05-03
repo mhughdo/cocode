@@ -79,6 +79,16 @@ func TestSaveReferenceValidatesAndStoresOnlyReference(t *testing.T) {
 	if loaded.ID != ref.ID || loaded.StorageKey != ref.StorageKey {
 		t.Fatalf("GetReference() = %+v, want %+v", loaded, ref)
 	}
+
+	deletedKey, err := service.DeleteReference(context.Background())
+	if err != nil {
+		t.Fatalf("DeleteReference() error = %v", err)
+	}
+	if deletedKey != "github:default" {
+		t.Fatalf("DeleteReference() storage key = %q", deletedKey)
+	}
+	_, err = service.GetReference(context.Background())
+	assertAppError(t, err, apperror.CodeInvalidRequest)
 }
 
 func TestSaveReferenceRejectsMissingInputs(t *testing.T) {

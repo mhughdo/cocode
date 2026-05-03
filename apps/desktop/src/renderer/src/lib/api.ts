@@ -179,6 +179,33 @@ export interface AgentConfigHealth {
   metadata: Record<string, unknown>;
 }
 
+export interface CredentialRef {
+  id: string;
+  kind: string;
+  display_name: string;
+  storage_provider: string;
+  storage_key: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GitHubCredentialStatusResponse {
+  configured: boolean;
+  credential?: CredentialRef;
+}
+
+export interface SaveGitHubCredentialRequest {
+  display_name?: string;
+  storage_key?: string;
+  token: string;
+}
+
+export interface DeleteGitHubCredentialResponse {
+  deleted: boolean;
+  storage_key?: string;
+}
+
 export interface ReviewSession {
   id: string;
   workspace_id: string;
@@ -845,6 +872,35 @@ export class ApiClient {
 
   listAgentConfigs(options: Omit<ApiRequestOptions, "method" | "body"> = {}) {
     return this.get<AgentConfig[]>("/api/agents/configs", options);
+  }
+
+  getGitHubCredential(
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.get<GitHubCredentialStatusResponse>(
+      "/api/credentials/github",
+      options,
+    );
+  }
+
+  saveGitHubCredential(
+    body: SaveGitHubCredentialRequest,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.post<GitHubCredentialStatusResponse>(
+      "/api/credentials/github",
+      body,
+      options,
+    );
+  }
+
+  deleteGitHubCredential(
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.delete<DeleteGitHubCredentialResponse>(
+      "/api/credentials/github",
+      options,
+    );
   }
 
   createAgentConfig(

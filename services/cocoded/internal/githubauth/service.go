@@ -133,6 +133,17 @@ func (s *Service) GetReference(ctx context.Context) (dbgen.CredentialRef, error)
 	return dbgen.CredentialRef{}, apperror.Internal("failed to read GitHub token reference")
 }
 
+func (s *Service) DeleteReference(ctx context.Context) (string, error) {
+	ref, err := s.GetReference(ctx)
+	if err != nil {
+		return "", err
+	}
+	if err := s.queries.DeleteCredentialRef(ctx, ref.ID); err != nil {
+		return "", apperror.Internal("failed to delete GitHub token reference")
+	}
+	return ref.StorageKey, nil
+}
+
 func (v HTTPTokenValidator) Validate(ctx context.Context, token string) (ValidationResult, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {

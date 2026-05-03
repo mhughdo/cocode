@@ -82,7 +82,9 @@ import {
   type ChangedFile,
   type ContextBundlePreview,
   createCocodeClient,
+  type DeleteGitHubCredentialResponse,
   errorApiState,
+  type GitHubCredentialStatusResponse,
   idleApiState,
   loadApiResource,
   loadingApiState,
@@ -422,11 +424,13 @@ export function App() {
       setSnapshot(loadingApiState());
       const nextSnapshot = await loadApiResource(() => {
         if (request.source === "github") {
-          return client.createGitHubSnapshot({
-            workspace_id: activeWorkspace.id,
-            repository_id: activeRepository.id,
+          if (!window.cocode?.createGitHubSnapshot) {
+            throw new Error("Desktop GitHub credential bridge is unavailable.");
+          }
+          return window.cocode.createGitHubSnapshot({
+            workspaceId: activeWorkspace.id,
+            repositoryId: activeRepository.id,
             url: request.githubUrl,
-            github_token: "",
           });
         }
         if (request.source === "branch-compare") {
@@ -1406,6 +1410,7 @@ type AgentConfigFormState = {
   outputMode: string;
   modelLabel: string;
   reasoningLabel: string;
+  credentialRefsText: string;
   enabled: boolean;
   capabilities: AgentConfigInput["capabilities"];
   settings: Record<string, unknown>;
@@ -1438,6 +1443,14 @@ function AgentSettingsScreen({
   const [healthByConfigId, setHealthByConfigId] = useState<
     Record<string, Loadable<AgentConfigHealth>>
   >({});
+  const [githubCredential, setGitHubCredential] =
+    useState<Loadable<GitHubCredentialStatusResponse>>(idleApiState());
+  const [githubToken, setGitHubToken] = useState("");
+  const [githubDisplayName, setGitHubDisplayName] = useState("");
+  const [githubSaveState, setGitHubSaveState] =
+    useState<Loadable<GitHubCredentialStatusResponse>>(idleApiState());
+  const [githubDeleteState, setGitHubDeleteState] =
+    useState<Loadable<DeleteGitHubCredentialResponse>>(idleApiState());
 
   const presetList = presets.status === "success" ? presets.data : [];
   const configList = configs.status === "success" ? configs.data : [];
@@ -1454,20 +1467,26 @@ function AgentSettingsScreen({
       if (!client) {
         setPresets(errorApiState(new Error("Backend client is unavailable")));
         setConfigs(errorApiState(new Error("Backend client is unavailable")));
+        setGitHubCredential(
+          errorApiState(new Error("Backend client is unavailable")),
+        );
         return;
       }
 
       setPresets(loadingApiState());
       setConfigs(loadingApiState());
+      setGitHubCredential(loadingApiState());
       void Promise.all([
         loadApiResource(() => client.listAgentPresets()),
         loadApiResource(() => client.listAgentConfigs()),
-      ]).then(([presetState, configState]) => {
+        loadApiResource(() => client.getGitHubCredential()),
+      ]).then(([presetState, configState, credentialState]) => {
         if (canceled) {
           return;
         }
         setPresets(presetState);
         setConfigs(configState);
+        setGitHubCredential(credentialState);
 
         if (configState.status === "success" && configState.data[0]) {
           setFormMode("edit");
@@ -1501,6 +1520,49 @@ function AgentSettingsScreen({
     setFormMode("edit");
     setForm(formFromAgentConfig(config));
     setSaveState(idleApiState());
+  }
+
+  async function saveGitHubToken() {
+    if (!window.cocode?.saveGitHubToken) {
+      setGitHubSaveState(
+        errorApiState(new Error("Desktop secure storage is unavailable")),
+      );
+      return;
+    }
+    if (!githubToken.trim()) {
+      setGitHubSaveState(errorApiState(new Error("GitHub token is required")));
+      return;
+    }
+    setGitHubSaveState(loadingApiState());
+    const state = await loadApiResource(() =>
+      window.cocode!.saveGitHubToken({
+        token: githubToken,
+        displayName: githubDisplayName.trim() || undefined,
+      }),
+    );
+    setGitHubSaveState(state);
+    if (state.status === "success") {
+      setGitHubCredential(state);
+      setGitHubToken("");
+      setGitHubDisplayName("");
+    }
+  }
+
+  async function deleteGitHubToken() {
+    if (!window.cocode?.deleteGitHubToken) {
+      setGitHubDeleteState(
+        errorApiState(new Error("Desktop secure storage is unavailable")),
+      );
+      return;
+    }
+    setGitHubDeleteState(loadingApiState());
+    const state = await loadApiResource(() =>
+      window.cocode!.deleteGitHubToken(),
+    );
+    setGitHubDeleteState(state);
+    if (state.status === "success") {
+      setGitHubCredential(successApiState({ configured: false }));
+    }
   }
 
   async function saveAgentConfig() {
@@ -1574,6 +1636,18 @@ function AgentSettingsScreen({
               <ArrowUpIcon data-icon="inline-end" />
             </Button>
           </div>
+
+          <GitHubCredentialPanel
+            deleteState={githubDeleteState}
+            displayName={githubDisplayName}
+            saveState={githubSaveState}
+            status={githubCredential}
+            token={githubToken}
+            onDelete={() => void deleteGitHubToken()}
+            onDisplayNameChange={setGitHubDisplayName}
+            onSave={() => void saveGitHubToken()}
+            onTokenChange={setGitHubToken}
+          />
 
           <div className="grid grid-cols-[320px_minmax(0,1fr)] gap-4">
             <div className="flex min-w-0 flex-col gap-4">
@@ -1904,6 +1978,26 @@ function AgentSettingsScreen({
                     }
                   />
                 </label>
+                <label className="col-span-2 flex flex-col gap-2 text-sm font-medium">
+                  Credential refs
+                  <InputGroup className="min-h-20 items-stretch">
+                    <InputGroupTextarea
+                      className="min-h-16 font-mono text-xs"
+                      placeholder={"OPENAI_API_KEY=credential:openai"}
+                      value={form.credentialRefsText}
+                      onChange={(event) =>
+                        setForm((current) => ({
+                          ...current,
+                          credentialRefsText: event.target.value,
+                        }))
+                      }
+                    />
+                  </InputGroup>
+                  <span className="text-muted-foreground text-xs font-normal">
+                    References only. Secret values stay in desktop safe storage
+                    or each CLI provider's own auth store.
+                  </span>
+                </label>
 
                 <div className="col-span-2 grid grid-cols-3 gap-3">
                   <AgentSettingSwitch
@@ -2000,6 +2094,163 @@ function AgentSettingsScreen({
   );
 }
 
+function GitHubCredentialPanel({
+  deleteState,
+  displayName,
+  saveState,
+  status,
+  token,
+  onDelete,
+  onDisplayNameChange,
+  onSave,
+  onTokenChange,
+}: {
+  deleteState: Loadable<DeleteGitHubCredentialResponse>;
+  displayName: string;
+  saveState: Loadable<GitHubCredentialStatusResponse>;
+  status: Loadable<GitHubCredentialStatusResponse>;
+  token: string;
+  onDelete: () => void;
+  onDisplayNameChange: (value: string) => void;
+  onSave: () => void;
+  onTokenChange: (value: string) => void;
+}) {
+  const credential =
+    status.status === "success" && status.data.configured
+      ? status.data.credential
+      : undefined;
+  const metadata = credential?.metadata ?? {};
+  const login = typeof metadata.login === "string" ? metadata.login : "";
+  const scopes = Array.isArray(metadata.scopes)
+    ? metadata.scopes.filter(
+        (scope): scope is string => typeof scope === "string",
+      )
+    : [];
+  const validatedAt =
+    typeof metadata.validated_at === "string" ? metadata.validated_at : "";
+  const isSaving = saveState.status === "loading";
+  const isDeleting = deleteState.status === "loading";
+
+  return (
+    <section className="bg-surface-raised rounded-lg border">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <GitPullRequestIcon className="size-4" />
+            GitHub credentials
+          </div>
+          <div className="text-muted-foreground mt-1 text-xs">
+            Token value is encrypted by the desktop safe store; cocoded keeps
+            only a credential reference.
+          </div>
+        </div>
+        {status.status === "loading" ? (
+          <Badge variant="outline">checking</Badge>
+        ) : credential ? (
+          <Badge variant="secondary">configured</Badge>
+        ) : (
+          <Badge variant="outline">missing</Badge>
+        )}
+      </div>
+
+      <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.7fr)]">
+        <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)]">
+          <label className="flex min-w-0 flex-col gap-2 text-sm font-medium">
+            Display name
+            <Input
+              placeholder="GitHub token"
+              value={displayName}
+              onChange={(event) => onDisplayNameChange(event.target.value)}
+            />
+          </label>
+          <label className="flex min-w-0 flex-col gap-2 text-sm font-medium">
+            Token
+            <Input
+              placeholder="ghp_..."
+              type="password"
+              value={token}
+              onChange={(event) => onTokenChange(event.target.value)}
+            />
+          </label>
+          <div className="flex flex-wrap items-center gap-2 sm:col-span-2">
+            <Button disabled={isSaving || !token.trim()} onClick={onSave}>
+              <CheckIcon data-icon="inline-start" />
+              {isSaving ? "Saving..." : "Save token"}
+            </Button>
+            <Button
+              disabled={!credential || isDeleting}
+              variant="outline"
+              onClick={onDelete}
+            >
+              {isDeleting ? "Deleting..." : "Delete token"}
+            </Button>
+          </div>
+          {saveState.status === "error" && (
+            <ErrorState
+              className="sm:col-span-2"
+              title="Could not save GitHub token"
+              description={saveState.error.message}
+            />
+          )}
+          {deleteState.status === "error" && (
+            <ErrorState
+              className="sm:col-span-2"
+              title="Could not delete GitHub token"
+              description={deleteState.error.message}
+            />
+          )}
+        </div>
+
+        <div className="rounded-md border p-3">
+          {status.status === "loading" && <LoadingRows rows={3} />}
+          {status.status === "error" && (
+            <ErrorState
+              className="border-0 p-0"
+              title="Credential status unavailable"
+              description={status.error.message}
+            />
+          )}
+          {status.status === "success" && !credential && (
+            <EmptyState
+              className="border-0 p-0"
+              title="No GitHub token"
+              description="GitHub PR ingestion will ask for a saved token before it calls the API."
+              icon={GitPullRequestIcon}
+            />
+          )}
+          {credential && (
+            <div className="space-y-3 text-sm">
+              <div>
+                <div className="truncate font-medium">
+                  {credential.display_name}
+                </div>
+                <div className="text-muted-foreground mt-1 truncate text-xs">
+                  {login || credential.kind}
+                  {validatedAt ? ` • ${formatRelativeAge(validatedAt)}` : ""}
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {scopes.length > 0 ? (
+                  scopes.slice(0, 6).map((scope) => (
+                    <Badge key={scope} variant="outline">
+                      {scope}
+                    </Badge>
+                  ))
+                ) : (
+                  <Badge variant="outline">no scopes reported</Badge>
+                )}
+              </div>
+              <div className="text-muted-foreground truncate font-mono text-xs">
+                {credential.storage_provider}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function AgentSettingSwitch({
   checked,
   label,
@@ -2063,6 +2314,7 @@ function defaultAgentConfigForm(): AgentConfigFormState {
     outputMode: "text",
     modelLabel: "custom",
     reasoningLabel: "",
+    credentialRefsText: "",
     enabled: false,
     capabilities: {
       can_read: true,
@@ -2121,6 +2373,7 @@ function formFromAgentLike(
     outputMode: source.output_mode || "text",
     modelLabel: source.model_label ?? "",
     reasoningLabel: source.reasoning_label ?? "",
+    credentialRefsText: credentialRefsTextSetting(settings.credential_refs),
     enabled: source.enabled,
     capabilities: source.capabilities,
     settings,
@@ -2170,6 +2423,15 @@ function agentConfigBodyFromForm(
     settings.smoke_prompt = form.smokePrompt.trim();
   } else {
     delete settings.smoke_prompt;
+  }
+  const credentialRefs = parseCredentialRefs(form.credentialRefsText);
+  if (credentialRefs instanceof Error) {
+    return credentialRefs;
+  }
+  if (Object.keys(credentialRefs).length > 0) {
+    settings.credential_refs = credentialRefs;
+  } else {
+    delete settings.credential_refs;
   }
 
   return {
@@ -2228,6 +2490,19 @@ function stringArraySetting(value: unknown) {
     : [];
 }
 
+function credentialRefsTextSetting(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return "";
+  }
+  return Object.entries(value as Record<string, unknown>)
+    .filter(
+      (entry): entry is [string, string] =>
+        typeof entry[1] === "string" && entry[1].trim() !== "",
+    )
+    .map(([name, ref]) => `${name}=${ref}`)
+    .join("\n");
+}
+
 function parseArgLines(value: string) {
   return value
     .split(/\r?\n/)
@@ -2240,6 +2515,26 @@ function parseInlineList(value: string) {
     .split(/[\n,]+/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function parseCredentialRefs(value: string): Record<string, string> | Error {
+  const refs: Record<string, string> = {};
+  for (const item of parseInlineList(value)) {
+    const separator = item.indexOf("=");
+    if (separator <= 0 || separator === item.length - 1) {
+      return new Error("Credential refs must use ENV_NAME=credential:key.");
+    }
+    const name = item.slice(0, separator).trim();
+    const ref = item.slice(separator + 1).trim();
+    if (!/^[A-Z_][A-Z0-9_]*$/.test(name)) {
+      return new Error(`Credential ref env name is invalid: ${name}`);
+    }
+    if (!/^[a-zA-Z0-9_.:-]{1,120}$/.test(ref)) {
+      return new Error(`Credential ref key is invalid: ${name}`);
+    }
+    refs[name] = ref;
+  }
+  return refs;
 }
 
 function nextLocalOnlyPaths(paths: string[], path: string, enabled: boolean) {

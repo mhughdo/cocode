@@ -67,7 +67,7 @@ void app.whenReady().then(async () => {
   logMainEvent("backend ready", { backend: backend.getInfo() });
   const secretStoreReady = await secretStore.selfTest();
   logMainEvent("secret store ready", { ok: secretStoreReady });
-  registerIpc(backend);
+  registerIpc(backend, secretStore);
   createWindow();
 
   app.on("activate", () => {

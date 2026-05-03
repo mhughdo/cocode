@@ -95,6 +95,52 @@ func TestExtractCandidatesSkipsInvalidFinding(t *testing.T) {
 	assertDiagnosticCode(t, result.Diagnostics, "invalid_location_range")
 }
 
+func TestExtractCandidatesNormalizesTextOutput(t *testing.T) {
+	t.Parallel()
+
+	output := runFakeAgent(t, "text-agent.sh", "review this fixture")
+	parsed := Parse(output, agents.OutputText)
+	result := ExtractCandidates(parsed)
+	if len(result.Candidates) != 1 {
+		t.Fatalf("Candidates = %+v Diagnostics = %+v", result.Candidates, result.Diagnostics)
+	}
+	candidate := result.Candidates[0]
+	if candidate.Claim != "Repository settings can be changed without proving workspace admin permission." ||
+		candidate.Category != "security" ||
+		candidate.Severity != "medium" ||
+		candidate.Confidence != 0.62 ||
+		candidate.PrimaryPath != "apps/api/src/routes/repositories.ts" ||
+		candidate.PrimaryStartLine != 87 ||
+		candidate.SuggestedFix == "" ||
+		candidate.DraftComment == "" {
+		t.Fatalf("candidate = %+v", candidate)
+	}
+	assertDiagnosticCode(t, result.Diagnostics, "text_output_normalized")
+}
+
+func TestExtractCandidatesRepairsMalformedStructuredOutput(t *testing.T) {
+	t.Parallel()
+
+	output := runFakeAgent(t, "malformed-agent.sh", "review this fixture")
+	parsed := ParseAuto(output)
+	if parsed.Structured {
+		t.Fatalf("parsed = %+v, want initial text fallback before repair", parsed)
+	}
+	result := ExtractCandidates(parsed)
+	if len(result.Candidates) != 1 {
+		t.Fatalf("Candidates = %+v Diagnostics = %+v", result.Candidates, result.Diagnostics)
+	}
+	candidate := result.Candidates[0]
+	if candidate.Claim != "A route appears to mutate state without validation." ||
+		candidate.Category != "correctness" ||
+		candidate.Severity != "medium" ||
+		candidate.PrimaryPath != "apps/api/src/routes/repositories.ts" {
+		t.Fatalf("candidate = %+v", candidate)
+	}
+	assertDiagnosticCode(t, result.Diagnostics, "invalid_json")
+	assertDiagnosticCode(t, result.Diagnostics, "repaired_json")
+}
+
 func assertDiagnosticCode(t *testing.T, diagnostics []Diagnostic, code string) {
 	t.Helper()
 

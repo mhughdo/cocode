@@ -3,10 +3,14 @@ package agentoutput
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
 const CandidateSchemaVersion = "finding-candidate/v1"
+
+var trailingJSONCommaRE = regexp.MustCompile(`,\s*([}\]])`)
 
 type CandidateParseResult struct {
 	Candidates  []Candidate  `json:"candidates"`
@@ -55,6 +59,18 @@ func ExtractCandidates(parsed ParsedOutput) CandidateParseResult {
 		Diagnostics: append([]Diagnostic(nil), parsed.Diagnostics...),
 	}
 	if !parsed.Structured {
+		if repaired, diagnostics := repairMalformedStructuredOutput(parsed.Text); repaired.Structured {
+			result.Diagnostics = append(result.Diagnostics, diagnostics...)
+			for index, document := range repaired.Documents {
+				candidates, diagnostics := candidatesFromDocument(document, index+1)
+				result.Candidates = append(result.Candidates, candidates...)
+				result.Diagnostics = append(result.Diagnostics, diagnostics...)
+			}
+			return result
+		}
+		candidates, diagnostics := candidatesFromText(parsed.Text)
+		result.Candidates = append(result.Candidates, candidates...)
+		result.Diagnostics = append(result.Diagnostics, diagnostics...)
 		return result
 	}
 	for index, document := range parsed.Documents {
@@ -63,6 +79,201 @@ func ExtractCandidates(parsed ParsedOutput) CandidateParseResult {
 		result.Diagnostics = append(result.Diagnostics, diagnostics...)
 	}
 	return result
+}
+
+func repairMalformedStructuredOutput(text string) (ParsedOutput, []Diagnostic) {
+	trimmed := strings.TrimSpace(stripJSONFence(text))
+	if trimmed == "" || (!strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[")) {
+		return ParsedOutput{}, nil
+	}
+	repaired := trailingJSONCommaRE.ReplaceAllString(trimmed, "$1")
+	if repaired == trimmed {
+		return ParsedOutput{}, nil
+	}
+	parsed := parseJSON([]byte(repaired))
+	if !parsed.Structured {
+		return ParsedOutput{}, nil
+	}
+	return parsed, []Diagnostic{{
+		Code:    "repaired_json",
+		Message: "removed trailing commas from malformed structured output",
+	}}
+}
+
+func stripJSONFence(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "```") {
+		return trimmed
+	}
+	lines := strings.Split(trimmed, "\n")
+	if len(lines) < 2 {
+		return trimmed
+	}
+	if !strings.HasPrefix(strings.TrimSpace(lines[len(lines)-1]), "```") {
+		return trimmed
+	}
+	return strings.Join(lines[1:len(lines)-1], "\n")
+}
+
+func candidatesFromText(text string) ([]Candidate, []Diagnostic) {
+	fields, firstLine := textFields(text)
+	claim := firstNonEmpty(fields["claim"], fields["finding"], firstLine)
+	if claim == "" {
+		return nil, []Diagnostic{{Code: "empty_text_output", Message: "text output does not contain a finding"}}
+	}
+
+	candidate := Candidate{
+		SchemaVersion: CandidateSchemaVersion,
+		Claim:         claim,
+		Category:      textCategory(fields["category"]),
+		Severity:      textSeverity(fields["severity"]),
+		Confidence:    textConfidence(fields["confidence"], 0.35),
+		Evidence: []CandidateEvidence{{
+			Title:   firstNonEmpty(fields["evidence"], "Raw text finding"),
+			Summary: firstNonEmpty(fields["evidence"], summarizeText(text)),
+			Kind:    "unknown",
+		}},
+		SuggestedFix: fields["suggested_fix"],
+		DraftComment: fields["draft_comment"],
+	}
+	if location, ok := textLocation(fields["location"]); ok {
+		candidate.Locations = []CandidateLocation{location}
+	}
+	candidate = normalizeCandidate(candidate)
+	if diagnostics := validateCandidate(candidate, 1, 1); len(diagnostics) > 0 {
+		return nil, diagnostics
+	}
+	return []Candidate{candidate}, []Diagnostic{{
+		Code:    "text_output_normalized",
+		Message: "converted text output into a low-confidence finding candidate",
+	}}
+}
+
+func textFields(text string) (map[string]string, string) {
+	fields := map[string]string{}
+	firstLine := ""
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(strings.TrimLeft(line, "-*0123456789. "))
+		if line == "" {
+			continue
+		}
+		if firstLine == "" {
+			firstLine = line
+		}
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		key = strings.ToLower(strings.TrimSpace(key))
+		key = strings.ReplaceAll(key, " ", "_")
+		value = strings.TrimSpace(value)
+		switch key {
+		case "claim", "finding", "category", "severity", "confidence", "location", "evidence":
+			fields[key] = value
+		case "suggested_fix", "suggested_fix_direction", "fix":
+			fields["suggested_fix"] = value
+		case "draft_comment", "comment":
+			fields["draft_comment"] = value
+		}
+	}
+	return fields, firstLine
+}
+
+func textCategory(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if knownCategory(value) {
+		return value
+	}
+	switch value {
+	case "bug", "logic", "correctness issue":
+		return "correctness"
+	case "test", "tests":
+		return "testing"
+	case "perf":
+		return "performance"
+	case "maintainability issue":
+		return "maintainability"
+	default:
+		return "other"
+	}
+}
+
+func textSeverity(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if knownSeverity(value) {
+		return value
+	}
+	switch value {
+	case "critical":
+		return "blocker"
+	case "major":
+		return "high"
+	case "minor", "info":
+		return "low"
+	default:
+		return "low"
+	}
+}
+
+func textConfidence(value string, fallback float64) float64 {
+	value = strings.TrimSuffix(strings.TrimSpace(value), "%")
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return fallback
+	}
+	if parsed > 1 && parsed <= 100 {
+		parsed = parsed / 100
+	}
+	if parsed < 0 || parsed > 1 {
+		return fallback
+	}
+	return parsed
+}
+
+func textLocation(value string) (CandidateLocation, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return CandidateLocation{}, false
+	}
+	path, lineSpec, ok := strings.Cut(value, ":")
+	if !ok {
+		return CandidateLocation{}, false
+	}
+	path = strings.TrimSpace(path)
+	lineSpec = strings.TrimPrefix(strings.TrimSpace(lineSpec), "L")
+	startSpec, endSpec, hasEnd := strings.Cut(lineSpec, "-")
+	start, err := strconv.ParseInt(strings.TrimPrefix(strings.TrimSpace(startSpec), "L"), 10, 64)
+	if err != nil {
+		return CandidateLocation{}, false
+	}
+	end := start
+	if hasEnd {
+		end, err = strconv.ParseInt(strings.TrimPrefix(strings.TrimSpace(endSpec), "L"), 10, 64)
+		if err != nil {
+			return CandidateLocation{}, false
+		}
+	}
+	return CandidateLocation{
+		Path:      path,
+		StartLine: start,
+		EndLine:   end,
+		Side:      "RIGHT",
+	}, true
+}
+
+func summarizeText(text string) string {
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return ""
+	}
+	summary := strings.Join(fields, " ")
+	if len(summary) <= 280 {
+		return summary
+	}
+	return strings.TrimSpace(summary[:280]) + "..."
 }
 
 type structuredDocument struct {

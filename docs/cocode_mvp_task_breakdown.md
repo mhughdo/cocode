@@ -274,8 +274,8 @@ Large parallel workstreams:
 | T170 | Define finding schemas | Create JSON schemas for agent output and finding candidate. | Done | T013 | T171 | Schemas validate sample outputs; versioned. |
 | T171 | Implement structured output parser | Parse valid JSON agent output into candidates. | Done | T096, T170 | T172 | Valid fake JSON agent produces candidate rows. |
 | T172 | Implement JSONL/NDJSON parser | Parse streaming/event outputs into final candidate set. | Done | T096, T170 | T173 | Tests cover line-by-line agent output. |
-| T173 | Implement text output normalizer | Convert text agent output into candidates using deterministic heuristics and optional repair prompt. | Not started | T096, T170 | T174 | Text fixture produces reasonable candidates or clear low-confidence output. |
-| T174 | Implement malformed output repair | Attempt one repair pass for malformed structured output. | Not started | T173, T103 | T175 | Broken JSON fixture repaired or marked invalid with raw artifact. |
+| T173 | Implement text output normalizer | Convert text agent output into candidates using deterministic heuristics and optional repair prompt. | Done | T096, T170 | T174 | Text fixture produces reasonable candidates or clear low-confidence output. |
+| T174 | Implement malformed output repair | Attempt one repair pass for malformed structured output. | Done | T173, T103 | T175 | Broken JSON fixture repaired or marked invalid with raw artifact. |
 | T175 | Implement location normalization | Normalize path/line ranges and map to changed files where possible. | Not started | T079, T171 | T176 | Invalid paths flagged; line ranges validated. |
 | T176 | Implement candidate persistence | Store FindingCandidate rows with raw artifact links. | Done | T058, T171 | T177 | Candidates persist with agent provenance. |
 | T177 | Implement finding fingerprinting | Compute stable fingerprints for duplicate detection. | Not started | T176 | T178 | Similar samples produce same/near fingerprints. |

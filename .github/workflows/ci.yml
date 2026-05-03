@@ -41,5 +41,8 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Security smoke tests
+        run: pnpm backend:security-smoke
+
       - name: Build
         run: pnpm build

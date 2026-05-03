@@ -18,6 +18,7 @@
     "backend:generate": "cd services/cocoded && go tool sqlc generate",
     "backend:fmt": "gofmt -w services/cocoded",
     "backend:fmt:check": "scripts/go-fmt-check.sh services/cocoded",
+    "backend:security-smoke": "cd services/cocoded && go test ./internal/securitysmoke",
     "backend:test": "cd services/cocoded && go test ./...",
     "backend:vet": "cd services/cocoded && go vet ./...",
     "check": "pnpm verify",

@@ -392,8 +392,8 @@ Large parallel workstreams:
 | T328 | Implement credentials settings | Add GitHub token and optional CLI credential refs/settings. | Not started | T037, T073 | T248 | Secrets are stored outside DB plaintext. |
 | T329 | Implement backend Origin checks | Reject suspicious browser-origin requests to local backend. | Done | T042 | T330 | Origin middleware accepts loopback/file/app origins, rejects non-local browser origins, and handles local CORS preflight without auth. |
 | T330 | Security smoke tests | Test local auth, Origin, path sandbox, env allowlist, secret redaction. | Not started | T320-T329 | T360 | Security test suite runs in CI. |
-| T331 | Add prompt-injection guardrails | Wrap repo/PR content as untrusted data in prompts. | Not started | T120, T170 | T332 | Prompt templates clearly separate instructions from code/PR text. |
-| T332 | Add agent output trust rules | Treat agent output as untrusted until parsed/verified. | Not started | T170 | T204 | Malicious output cannot trigger publish/write side effects. |
+| T331 | Add prompt-injection guardrails | Wrap repo/PR content as untrusted data in prompts. | Done | T120, T170 | T332 | Rendered context and review/verifier/follow-up prompts label repo/PR/agent content as untrusted evidence; Markdown fences expand around nested fences. |
+| T332 | Add agent output trust rules | Treat agent output as untrusted until parsed/verified. | Done | T170 | T204 | Parsed output artifacts/events mark agent output untrusted; copy packets carry trust boundaries; GitHub preview/publication require accepted findings before publish side effects. |
 | T333 | Add privacy indicators | UI shows cloud/local status and local-only restrictions. | Not started | T326, T247 | T248 | User sees which agents may receive code. |
 | T334 | Implement audit log viewer | Surface events/actions/approvals in Review details. | Not started | T252, T061 | T360 | User can inspect decisions, copies, publish actions. |
 | T335 | Implement review rule memory | Convert dismissal reasons into optional local rules. | Not started | T186, T127 | T336 | User can enable/disable stored rules. |

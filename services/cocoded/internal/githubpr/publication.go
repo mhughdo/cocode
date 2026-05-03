@@ -54,6 +54,12 @@ func (s PublicationService) RecordPublication(ctx context.Context, params Record
 		}
 		return RecordPublicationResult{}, fmt.Errorf("read publish draft: %w", err)
 	}
+	if strings.TrimSpace(draft.Provider) != "github" {
+		return RecordPublicationResult{}, fmt.Errorf("%w: publish draft provider is not github", ErrPublicationInvalid)
+	}
+	if strings.TrimSpace(draft.Status) != "draft" {
+		return RecordPublicationResult{}, fmt.Errorf("%w: publish draft is not publishable", ErrPublicationInvalid)
+	}
 	findingIDs, err := findingIDsFromComments(draft.CommentsJson)
 	if err != nil {
 		return RecordPublicationResult{}, err
@@ -114,6 +120,9 @@ func (s PublicationService) markFindingsPublished(ctx context.Context, queries *
 		}
 		if finding.ReviewSessionID != reviewSessionID {
 			return nil, fmt.Errorf("%w: finding %s is outside publish draft session", ErrPublicationInvalid, findingID)
+		}
+		if finding.DecisionStatus != "accepted" {
+			return nil, fmt.Errorf("%w: finding %s must be accepted before publishing", ErrPublicationInvalid, findingID)
 		}
 		if _, err := queries.UpdateFindingDecisionStatus(ctx, dbgen.UpdateFindingDecisionStatusParams{
 			ID:             finding.ID,

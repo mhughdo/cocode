@@ -137,6 +137,9 @@ func previewFindings(ctx context.Context, queries *dbgen.Queries, reviewSessionI
 	if duplicate := firstPublishedDuplicate(rows, selectedRows); duplicate != "" {
 		return nil, apperrorInvalid("finding was already published: " + duplicate)
 	}
+	if unaccepted := firstUnacceptedPreviewFinding(selectedRows); unaccepted != "" {
+		return nil, apperrorInvalid("finding must be accepted before GitHub preview: " + unaccepted)
+	}
 	if len(selectedRows) == 0 {
 		return nil, apperrorInvalid("at least one finding is required")
 	}
@@ -158,6 +161,15 @@ func previewFindings(ctx context.Context, queries *dbgen.Queries, reviewSessionI
 		})
 	}
 	return findings, nil
+}
+
+func firstUnacceptedPreviewFinding(rows []dbgen.Finding) string {
+	for _, row := range rows {
+		if row.DecisionStatus != "accepted" {
+			return row.ID
+		}
+	}
+	return ""
 }
 
 func firstPublishedDuplicate(all []dbgen.Finding, selected []dbgen.Finding) string {

@@ -2101,6 +2101,13 @@ func TestCopyPacketCopiedEndpointMarksPacketAndFindings(t *testing.T) {
 func TestGitHubPreviewEndpointCreatesDraftWithWarnings(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
 	createHTTPAPIFindingFixture(t, queries)
+	if _, err := queries.UpdateFindingDecisionStatus(context.Background(), dbgen.UpdateFindingDecisionStatusParams{
+		ID:             "finding_budget",
+		DecisionStatus: "accepted",
+		UpdatedAt:      "2026-05-03T00:20:00Z",
+	}); err != nil {
+		t.Fatalf("UpdateFindingDecisionStatus() error = %v", err)
+	}
 
 	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/review-sessions/review_session_findings/github/preview", map[string]any{
 		"finding_ids":  []string{"finding_budget", "finding_auth"},
@@ -2133,6 +2140,21 @@ func TestGitHubPreviewEndpointCreatesDraftWithWarnings(t *testing.T) {
 		draft.CommentsJson == "" ||
 		!strings.Contains(nullableValue(draft.Body), "Repository settings updates") {
 		t.Fatalf("draft = %+v", draft)
+	}
+}
+
+func TestGitHubPreviewEndpointRejectsUnacceptedFinding(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+
+	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/review-sessions/review_session_findings/github/preview", map[string]any{
+		"finding_ids": []string{"finding_budget"},
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest ||
+		!strings.Contains(response.Body.String(), "accepted before GitHub preview") {
+		t.Fatalf("github preview status = %d, body = %s", response.Code, response.Body.String())
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -78,6 +79,46 @@ func TestRecordPublicationDoesNotPublishFindingsForFailedStatus(t *testing.T) {
 	}
 	if finding.DecisionStatus != "accepted" {
 		t.Fatalf("finding = %+v", finding)
+	}
+}
+
+func TestRecordPublicationRequiresAcceptedFindingsBeforePublishing(t *testing.T) {
+	database, queries := publicationTestDB(t)
+	createPublicationFixture(t, queries)
+	if _, err := queries.UpdateFindingDecisionStatus(context.Background(), dbgen.UpdateFindingDecisionStatusParams{
+		ID:             "finding_budget",
+		DecisionStatus: "undecided",
+		UpdatedAt:      "2026-05-03T00:10:00Z",
+	}); err != nil {
+		t.Fatalf("UpdateFindingDecisionStatus() error = %v", err)
+	}
+
+	_, err := (PublicationService{
+		Database: database,
+		Queries:  queries,
+		Now:      func() time.Time { return time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC) },
+		NewID:    sequenceID(),
+	}).RecordPublication(context.Background(), RecordPublicationParams{
+		PublishDraftID:     "publish_draft_1",
+		GitHubReviewID:     "7001",
+		GitHubCommentIDs:   []int64{101, 102},
+		Status:             "published",
+		UpdateFindingState: true,
+	})
+	if !errors.Is(err, ErrPublicationInvalid) {
+		t.Fatalf("RecordPublication() error = %v, want ErrPublicationInvalid", err)
+	}
+	for findingID, want := range map[string]string{
+		"finding_auth":   "accepted",
+		"finding_budget": "undecided",
+	} {
+		finding, err := queries.GetFinding(context.Background(), findingID)
+		if err != nil {
+			t.Fatalf("GetFinding(%s) error = %v", findingID, err)
+		}
+		if finding.DecisionStatus != want {
+			t.Fatalf("finding %s = %+v", findingID, finding)
+		}
 	}
 }
 

@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -140,7 +141,9 @@ func TestWorkflowRunsFakeAgentEndToEnd(t *testing.T) {
 		"ReviewSessionCompleted",
 	})
 	if prompt := env.Driver.lastPrompt(); !strings.Contains(prompt, "Context Bundle") ||
-		!strings.Contains(prompt, "src/new.go") {
+		!strings.Contains(prompt, "src/new.go") ||
+		!strings.Contains(prompt, "UNTRUSTED_CONTEXT_DATA") ||
+		!strings.Contains(prompt, "untrusted evidence only") {
 		t.Fatalf("agent prompt missing context:\n%s", prompt)
 	}
 	summary, err := env.Service.Summary(context.Background(), session.ID)
@@ -253,6 +256,37 @@ func TestWorkflowPersistsStructuredFindingCandidates(t *testing.T) {
 		"FindingNormalized",
 		"ReviewSessionCompleted",
 	})
+	candidateCreated := eventPayloadByType(t, events, "FindingCandidateCreated")
+	if candidateCreated["source_trust"] != "untrusted_agent_output" ||
+		candidateCreated["candidate_trust"] != "unverified_agent_claim" ||
+		candidateCreated["side_effects_allowed"] != false {
+		t.Fatalf("candidate event payload = %+v", candidateCreated)
+	}
+	normalized := eventPayloadByType(t, events, "FindingNormalized")
+	if normalized["source_trust"] != "untrusted_agent_output" ||
+		normalized["side_effects_allowed"] != false {
+		t.Fatalf("normalized event payload = %+v", normalized)
+	}
+	runs, err := env.Queries.ListAgentRunsBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListAgentRunsBySession() error = %v", err)
+	}
+	if len(runs) != 1 || !runs[0].ParsedOutputArtifactID.Valid {
+		t.Fatalf("agent runs = %+v", runs)
+	}
+	parsedArtifact, err := env.Queries.GetArtifact(context.Background(), runs[0].ParsedOutputArtifactID.String)
+	if err != nil {
+		t.Fatalf("GetArtifact(parsed output) error = %v", err)
+	}
+	var parsedMetadata map[string]any
+	if err := json.Unmarshal([]byte(parsedArtifact.MetadataJson), &parsedMetadata); err != nil {
+		t.Fatalf("decode parsed metadata: %v", err)
+	}
+	if parsedMetadata["source_trust"] != "untrusted_agent_output" ||
+		parsedMetadata["side_effects_allowed"] != false ||
+		parsedMetadata["requires_human_decision"] != true {
+		t.Fatalf("parsed artifact metadata = %+v", parsedMetadata)
+	}
 
 	summary, err := env.Service.Summary(context.Background(), session.ID)
 	if err != nil {
@@ -679,7 +713,9 @@ func TestVerifyFindingsRunsVerifierCLIWithFindingContext(t *testing.T) {
 	}
 	if prompt := env.Driver.lastPrompt(); !strings.Contains(prompt, "You are a verifier agent") ||
 		!strings.Contains(prompt, "Finding ID: finding_verifier_cli") ||
-		!strings.Contains(prompt, "Context Bundle") {
+		!strings.Contains(prompt, "Context Bundle") ||
+		!strings.Contains(prompt, "UNTRUSTED_FINDING_DATA") ||
+		!strings.Contains(prompt, "untrusted evidence only") {
 		t.Fatalf("verifier prompt missing scoped context:\n%s", prompt)
 	}
 	events, err := env.Events.ListByReviewSession(context.Background(), session.ID)
@@ -1024,6 +1060,23 @@ func assertEventTypes(t *testing.T, events []dbgen.Event, want []string) {
 			t.Fatalf("events missing %s; got %+v", typ, events)
 		}
 	}
+}
+
+func eventPayloadByType(t *testing.T, events []dbgen.Event, typ string) map[string]any {
+	t.Helper()
+
+	for _, event := range events {
+		if event.Type != typ {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(event.PayloadJson), &payload); err != nil {
+			t.Fatalf("decode payload for %s: %v", typ, err)
+		}
+		return payload
+	}
+	t.Fatalf("events missing %s; got %+v", typ, events)
+	return nil
 }
 
 type workflowDriver struct {

@@ -2042,6 +2042,10 @@ Local-only context policy is normalized through the same path sandbox primitives
 
 The backend rejects browser-origin requests from non-local origins before token auth. Loopback dev origins receive narrow CORS headers and unauthenticated preflight handling; packaged Electron file origins and the future `app://cocode` origin are allowed so the desktop shell can call the local API without widening access to arbitrary web pages.
 
+Prompt construction treats repo, diff, PR metadata, prior comments, project rules, and prior agent output as untrusted evidence. The context renderer labels every bundle with `UNTRUSTED_CONTEXT_DATA` and chooses Markdown fences wider than any nested backtick run so code or comments cannot break out of the context block. Review, verifier, and follow-up prompts repeat the same boundary and deny context-embedded requests to change rules, output format, permissions, or side effects.
+
+Agent stdout remains untrusted after parsing. Parsed-output artifacts and normalization events carry trust metadata, candidate-created events label extracted claims as unverified agent claims, and write/publish paths stay human-gated. Copy packets include the same trust boundary and fence untrusted prose/snippets before they are handed to another agent. GitHub preview refuses explicitly selected findings unless their decision status is `accepted`, and publication recording revalidates accepted findings before marking them published, preventing malicious or merely parsed agent output from becoming a publish side effect without a user decision.
+
 ---
 
 ## 20. Error Handling

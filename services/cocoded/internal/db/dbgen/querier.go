@@ -32,6 +32,7 @@ type Querier interface {
 	DeleteAgentConfig(ctx context.Context, id string) error
 	DeleteArtifact(ctx context.Context, id string) error
 	DeleteCallPath(ctx context.Context, id string) error
+	DeleteCredentialRef(ctx context.Context, id string) error
 	DeleteEvidenceEdge(ctx context.Context, id string) error
 	DeleteEvidenceGraph(ctx context.Context, id string) error
 	DeleteEvidenceItem(ctx context.Context, id string) error
@@ -49,6 +50,7 @@ type Querier interface {
 	GetArtifact(ctx context.Context, id string) (Artifact, error)
 	GetChangedFile(ctx context.Context, id string) (ChangedFile, error)
 	GetChangedFileByPath(ctx context.Context, arg GetChangedFileByPathParams) (ChangedFile, error)
+	GetCredentialRef(ctx context.Context, id string) (CredentialRef, error)
 	GetEvent(ctx context.Context, id string) (Event, error)
 	GetEvidenceGraph(ctx context.Context, id string) (EvidenceGraph, error)
 	GetEvidenceGraphByFinding(ctx context.Context, findingID string) (EvidenceGraph, error)
@@ -56,6 +58,7 @@ type Querier interface {
 	GetEvidenceNode(ctx context.Context, id string) (EvidenceNode, error)
 	GetFinding(ctx context.Context, id string) (Finding, error)
 	GetFindingCandidate(ctx context.Context, id string) (FindingCandidate, error)
+	GetLatestCredentialRefByKind(ctx context.Context, kind string) (CredentialRef, error)
 	GetPullRequestSnapshot(ctx context.Context, id string) (PullRequestSnapshot, error)
 	GetRepository(ctx context.Context, id string) (Repository, error)
 	GetRepositoryByLocalPath(ctx context.Context, arg GetRepositoryByLocalPathParams) (Repository, error)
@@ -105,6 +108,7 @@ type Querier interface {
 	UpdateReviewSessionAgentEnabled(ctx context.Context, arg UpdateReviewSessionAgentEnabledParams) (ReviewSessionAgent, error)
 	UpdateReviewSessionStatus(ctx context.Context, arg UpdateReviewSessionStatusParams) (ReviewSession, error)
 	UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams) (Workspace, error)
+	UpsertCredentialRef(ctx context.Context, arg UpsertCredentialRefParams) (CredentialRef, error)
 }
 
 var _ Querier = (*Queries)(nil)

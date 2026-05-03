@@ -106,6 +106,17 @@ type ContextBundle struct {
 	CreatedAt       string         `json:"created_at"`
 }
 
+type CredentialRef struct {
+	ID              string `json:"id"`
+	Kind            string `json:"kind"`
+	DisplayName     string `json:"display_name"`
+	StorageProvider string `json:"storage_provider"`
+	StorageKey      string `json:"storage_key"`
+	MetadataJson    string `json:"metadata_json"`
+	CreatedAt       string `json:"created_at"`
+	UpdatedAt       string `json:"updated_at"`
+}
+
 type Event struct {
 	ID              string         `json:"id"`
 	ReviewSessionID sql.NullString `json:"review_session_id"`

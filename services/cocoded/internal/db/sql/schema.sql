@@ -325,3 +325,14 @@ CREATE VIRTUAL TABLE evidence_search USING fts5(
   summary,
   path
 );
+
+CREATE TABLE credential_refs (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  storage_provider TEXT NOT NULL,
+  storage_key TEXT NOT NULL,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);

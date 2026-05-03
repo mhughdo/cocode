@@ -823,7 +823,9 @@ GET    /api/review-sessions/:id/findings
 GET    /api/findings/:id
 PATCH  /api/findings/:id/decision
 PATCH  /api/findings/:id/draft-comment
+GET    /api/findings/:id/evidence
 GET    /api/review-sessions/:id/findings/:finding_id
+GET    /api/review-sessions/:id/findings/:finding_id/evidence
 POST   /api/review-sessions/:id/findings/:finding_id/decision
 PATCH  /api/review-sessions/:id/findings/:finding_id/draft-comment
 POST   /api/findings/:id/question
@@ -1605,7 +1607,7 @@ For each finding:
 7. Assign verification status.
 8. Build Evidence Map.
 
-The MVP implementation runs a deterministic local verifier during the `verify_findings` workflow phase. It rebuilds cocode-owned evidence items for each canonical finding, reads the primary changed-code snippet inside the repository sandbox, searches likely guard/config/test paths with a bounded `rg --json` wrapper, stores supporting/counter/missing evidence rows, and updates `verification_status`, `evidence_summary`, and `counter_evidence_summary`.
+The MVP implementation runs a deterministic local verifier during the `verify_findings` workflow phase. It rebuilds cocode-owned evidence items for each canonical finding, reads the primary changed-code snippet inside the repository sandbox, searches likely guard/config/test paths with a bounded `rg --json` wrapper, stores supporting/counter/missing/test evidence rows, and updates `verification_status`, `evidence_summary`, and `counter_evidence_summary`. The local verifier starts with rule profiles for auth guards, webhook validation, test coverage, and idempotency so search terms and evidence metadata are predictable.
 
 ### 14.2 Local verifier examples
 

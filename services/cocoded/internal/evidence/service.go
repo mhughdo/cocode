@@ -89,6 +89,12 @@ type changedFileIndex struct {
 	byPath map[string]dbgen.ChangedFile
 }
 
+type ruleProfile struct {
+	ID          string
+	DisplayName string
+	Terms       []string
+}
+
 func (s *Service) VerifySession(ctx context.Context, session dbgen.ReviewSession, repository dbgen.Repository) (VerificationSummary, error) {
 	if s == nil || s.Queries == nil {
 		return VerificationSummary{}, errors.New("evidence verifier queries are required")
@@ -243,7 +249,8 @@ func (s *Service) createMissingPrimaryEvidence(ctx context.Context, findingID st
 
 func (s *Service) attachCounterEvidence(ctx context.Context, repoRoot string, finding dbgen.Finding) (findingEvidenceResult, error) {
 	searcher := s.searcher()
-	terms := counterEvidenceTerms(finding)
+	profile := classifyRuleProfile(finding)
+	terms := counterEvidenceTerms(finding, profile)
 	seen := map[string]struct{}{}
 	result := findingEvidenceResult{counterEvidenceSummary: "No counter-evidence found by local search."}
 	for _, term := range terms {
@@ -277,9 +284,9 @@ func (s *Service) attachCounterEvidence(ctx context.Context, repoRoot string, fi
 				kind = KindTest
 			}
 			title := fmt.Sprintf("Potential counter-evidence at %s:%d", match.Path, match.Line)
-			summary := fmt.Sprintf("Local search found %q in a likely guard, config, or test path.", term)
+			summary := fmt.Sprintf("Local %s check found %q in a likely guard, config, or test path.", profile.DisplayName, term)
 			if kind == KindTest {
-				summary = fmt.Sprintf("Local search found %q in a likely test path.", term)
+				summary = fmt.Sprintf("Local %s check found %q in a likely test path.", profile.DisplayName, term)
 			}
 			if _, err := s.createEvidenceItem(ctx, finding.ID, Item{
 				Kind:       kind,
@@ -292,6 +299,7 @@ func (s *Service) attachCounterEvidence(ctx context.Context, repoRoot string, fi
 				Metadata: mustMetadata(map[string]any{
 					"producer":     "local_verifier",
 					"source":       "counter_evidence_search",
+					"rule":         profile.ID,
 					"search_term":  term,
 					"code_snippet": fmt.Sprintf("%d: %s", match.Line, strings.TrimSpace(match.Text)),
 				}),
@@ -436,11 +444,55 @@ func newChangedFileIndex(files []dbgen.ChangedFile) changedFileIndex {
 	return index
 }
 
-func counterEvidenceTerms(finding dbgen.Finding) []string {
+func classifyRuleProfile(finding dbgen.Finding) ruleProfile {
+	text := strings.ToLower(strings.Join([]string{
+		finding.CanonicalClaim,
+		finding.Category,
+		nullableStringValue(finding.SuggestedFix),
+		nullableStringValue(finding.DraftComment),
+	}, " "))
+	switch {
+	case containsAny(text, "webhook", "signature", "hmac", "secret", "payload"):
+		return ruleProfile{
+			ID:          "webhook_validation",
+			DisplayName: "webhook validation",
+			Terms:       []string{"signature", "hmac", "verify", "validate", "secret", "webhook", "event type"},
+		}
+	case containsAny(text, "test", "coverage", "assert", "regression"):
+		return ruleProfile{
+			ID:          "test_coverage",
+			DisplayName: "test coverage",
+			Terms:       []string{"test", "expect", "assert", "require", "describe"},
+		}
+	case containsAny(text, "idempot", "duplicate", "replay", "retry", "nonce", "unique"):
+		return ruleProfile{
+			ID:          "idempotency",
+			DisplayName: "idempotency",
+			Terms:       []string{"idempotency", "unique", "retry", "idempotent", "constraint", "dedupe", "nonce"},
+		}
+	case containsAny(text, "auth", "admin", "permission", "authorize", "guard", "middleware", "role"):
+		return ruleProfile{
+			ID:          "auth_guard",
+			DisplayName: "auth guard",
+			Terms:       []string{"auth", "RequireAdmin", "authorize", "permission", "admin", "guard", "middleware", "role"},
+		}
+	default:
+		return ruleProfile{
+			ID:          "generic",
+			DisplayName: "evidence",
+			Terms:       []string{"validate", "guard", "test"},
+		}
+	}
+}
+
+func counterEvidenceTerms(finding dbgen.Finding, profile ruleProfile) []string {
 	terms := make([]string, 0, 6)
+	for _, term := range profile.Terms {
+		addTerm(&terms, term)
+	}
 	for _, token := range claimTokens(finding.CanonicalClaim) {
 		addTerm(&terms, token)
-		if len(terms) >= 4 {
+		if len(terms) >= 6 {
 			break
 		}
 	}
@@ -448,19 +500,26 @@ func counterEvidenceTerms(finding dbgen.Finding) []string {
 		base := strings.TrimSuffix(filepath.Base(filepath.ToSlash(finding.PrimaryPath.String)), filepath.Ext(finding.PrimaryPath.String))
 		addTerm(&terms, base)
 	}
-	switch finding.Category {
-	case "security":
-		for _, term := range []string{"auth", "guard", "permission", "verify", "signature"} {
-			addTerm(&terms, term)
-		}
-	case "tests":
-		addTerm(&terms, "test")
-		addTerm(&terms, "expect")
-	}
 	if len(terms) > 6 {
 		terms = terms[:6]
 	}
 	return terms
+}
+
+func containsAny(text string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(text, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func nullableStringValue(value sql.NullString) string {
+	if !value.Valid {
+		return ""
+	}
+	return value.String
 }
 
 func claimTokens(claim string) []string {

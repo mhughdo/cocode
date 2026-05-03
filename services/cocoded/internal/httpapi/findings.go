@@ -52,10 +52,29 @@ type FindingResponse struct {
 }
 
 type FindingDetailResponse struct {
-	Finding       FindingResponse            `json:"finding"`
-	Candidates    []FindingCandidateResponse `json:"candidates"`
-	EvidenceItems []EvidenceItemResponse     `json:"evidence_items"`
-	Decisions     []HumanDecisionResponse    `json:"decisions"`
+	Finding        FindingResponse            `json:"finding"`
+	Candidates     []FindingCandidateResponse `json:"candidates"`
+	EvidenceItems  []EvidenceItemResponse     `json:"evidence_items"`
+	EvidenceGroups EvidenceGroupsResponse     `json:"evidence_groups"`
+	Decisions      []HumanDecisionResponse    `json:"decisions"`
+}
+
+type FindingEvidenceResponse struct {
+	Finding FindingResponse        `json:"finding"`
+	Items   []EvidenceItemResponse `json:"items"`
+	Groups  EvidenceGroupsResponse `json:"groups"`
+	Counts  map[string]int         `json:"counts"`
+}
+
+type EvidenceGroupsResponse struct {
+	Supporting     []EvidenceItemResponse `json:"supporting"`
+	Counter        []EvidenceItemResponse `json:"counter"`
+	Neutral        []EvidenceItemResponse `json:"neutral"`
+	Missing        []EvidenceItemResponse `json:"missing"`
+	Test           []EvidenceItemResponse `json:"test"`
+	Search         []EvidenceItemResponse `json:"search"`
+	Agent          []EvidenceItemResponse `json:"agent"`
+	StaticAnalysis []EvidenceItemResponse `json:"static_analysis"`
 }
 
 type FindingCandidateResponse struct {
@@ -153,6 +172,27 @@ func findingDetailHandler(queries *dbgen.Queries) gin.HandlerFunc {
 			return
 		}
 		respondOK(c, detail)
+	}
+}
+
+func findingEvidenceHandler(queries *dbgen.Queries) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		finding, appErr := getFindingScoped(c.Request.Context(), queries, c.Param("id"), c.Param("finding_id"))
+		if appErr != nil {
+			respondError(c, appErr)
+			return
+		}
+		items, appErr := evidenceItemsForFinding(c.Request.Context(), queries, finding.ID)
+		if appErr != nil {
+			respondError(c, appErr)
+			return
+		}
+		respondOK(c, FindingEvidenceResponse{
+			Finding: findingResponse(finding),
+			Items:   items,
+			Groups:  groupEvidenceItems(items),
+			Counts:  evidenceCounts(items),
+		})
 	}
 }
 
@@ -314,17 +354,9 @@ func findingDetailResponse(ctx context.Context, queries *dbgen.Queries, reviewSe
 	if err != nil {
 		return FindingDetailResponse{}, apperror.Internal("failed to list finding decisions")
 	}
-	evidenceItems, err := queries.ListEvidenceItemsByFinding(ctx, finding.ID)
-	if err != nil {
-		return FindingDetailResponse{}, apperror.Internal("failed to list finding evidence")
-	}
-	evidenceResponses := make([]EvidenceItemResponse, 0, len(evidenceItems))
-	for _, item := range evidenceItems {
-		response, appErr := evidenceItemResponse(item)
-		if appErr != nil {
-			return FindingDetailResponse{}, appErr
-		}
-		evidenceResponses = append(evidenceResponses, response)
+	evidenceResponses, appErr := evidenceItemsForFinding(ctx, queries, finding.ID)
+	if appErr != nil {
+		return FindingDetailResponse{}, appErr
 	}
 	decisionResponses := make([]HumanDecisionResponse, 0, len(decisions))
 	for _, decision := range decisions {
@@ -335,11 +367,74 @@ func findingDetailResponse(ctx context.Context, queries *dbgen.Queries, reviewSe
 		decisionResponses = append(decisionResponses, item)
 	}
 	return FindingDetailResponse{
-		Finding:       findingResponse(finding),
-		Candidates:    candidates,
-		EvidenceItems: evidenceResponses,
-		Decisions:     decisionResponses,
+		Finding:        findingResponse(finding),
+		Candidates:     candidates,
+		EvidenceItems:  evidenceResponses,
+		EvidenceGroups: groupEvidenceItems(evidenceResponses),
+		Decisions:      decisionResponses,
 	}, nil
+}
+
+func evidenceItemsForFinding(ctx context.Context, queries *dbgen.Queries, findingID string) ([]EvidenceItemResponse, *apperror.Error) {
+	evidenceItems, err := queries.ListEvidenceItemsByFinding(ctx, findingID)
+	if err != nil {
+		return nil, apperror.Internal("failed to list finding evidence")
+	}
+	evidenceResponses := make([]EvidenceItemResponse, 0, len(evidenceItems))
+	for _, item := range evidenceItems {
+		response, appErr := evidenceItemResponse(item)
+		if appErr != nil {
+			return nil, appErr
+		}
+		evidenceResponses = append(evidenceResponses, response)
+	}
+	return evidenceResponses, nil
+}
+
+func groupEvidenceItems(items []EvidenceItemResponse) EvidenceGroupsResponse {
+	groups := EvidenceGroupsResponse{}
+	for _, item := range items {
+		switch item.Kind {
+		case "supporting":
+			groups.Supporting = append(groups.Supporting, item)
+		case "counter":
+			groups.Counter = append(groups.Counter, item)
+		case "missing":
+			groups.Missing = append(groups.Missing, item)
+		case "test":
+			groups.Test = append(groups.Test, item)
+		case "search":
+			groups.Search = append(groups.Search, item)
+		case "agent":
+			groups.Agent = append(groups.Agent, item)
+		case "static_analysis":
+			groups.StaticAnalysis = append(groups.StaticAnalysis, item)
+		default:
+			groups.Neutral = append(groups.Neutral, item)
+		}
+	}
+	return groups
+}
+
+func evidenceCounts(items []EvidenceItemResponse) map[string]int {
+	counts := map[string]int{
+		"supporting":      0,
+		"counter":         0,
+		"neutral":         0,
+		"missing":         0,
+		"test":            0,
+		"search":          0,
+		"agent":           0,
+		"static_analysis": 0,
+	}
+	for _, item := range items {
+		if _, ok := counts[item.Kind]; ok {
+			counts[item.Kind]++
+			continue
+		}
+		counts["neutral"]++
+	}
+	return counts
 }
 
 func getFindingScoped(ctx context.Context, queries *dbgen.Queries, reviewSessionID string, findingID string) (dbgen.Finding, *apperror.Error) {

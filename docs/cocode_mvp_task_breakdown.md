@@ -301,9 +301,9 @@ Large parallel workstreams:
 | T202 | Implement primary location evidence | Attach changed code evidence for finding location. | Done | T175, T200 | T203 | Every located finding gets primary evidence item. |
 | T203 | Implement counter-evidence search | Search likely guard/config/test paths for contradiction. | Done | T201, T200 | T204 | Counter-evidence items created when found. |
 | T204 | Implement verification status assignment | Assign verified/plausible/needs_human/false_positive/not_actionable. | Done | T202, T203 | T205 | Seeded findings produce expected statuses. |
-| T205 | Implement Local Verifier rules | Deterministic checks for auth guard, webhook validation, tests, idempotency basics. | Not started | T201, T204 | T206 | Golden repo auth bug is verified by local verifier. |
+| T205 | Implement Local Verifier rules | Deterministic checks for auth guard, webhook validation, tests, idempotency basics. | Done | T201, T204 | T206 | Golden repo auth bug is verified by local verifier. |
 | T206 | Implement verifier agent prompt runner | Optional CLI verifier task using finding-scoped context. | Not started | T133, T090, T204 | T207 | Verifier CLI can update evidence/status; failures do not block local evidence. |
-| T207 | Implement evidence API | Return evidence items grouped by support/counter/test/search. | Not started | T200-T204 | T260 | Finding Detail evidence cards load correctly. |
+| T207 | Implement evidence API | Return evidence items grouped by support/counter/test/search. | Done | T200-T204 | T260 | Finding Detail evidence cards load correctly. |
 | T208 | Implement evidence summaries | Generate concise evidence_summary and counter_evidence_summary. | Done | T204 | T184 | Finding cards/details show summaries. |
 | T209 | Define Evidence Graph view model | Define API types for hierarchy, nodes, edges, call path, legend. | Not started | T059 | T210 | Types documented and used by frontend mock data. |
 | T210 | Implement graph node builder | Create graph nodes from finding, evidence items, code context. | Not started | T134, T209 | T211 | Graph includes primary node and evidence nodes. |

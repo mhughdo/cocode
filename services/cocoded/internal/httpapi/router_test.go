@@ -1165,12 +1165,51 @@ func TestFindingDetailEndpointReturnsProvenanceAndEvidence(t *testing.T) {
 		len(detail.Candidates) != 2 ||
 		len(detail.EvidenceItems) != 1 ||
 		detail.EvidenceItems[0].Kind != "supporting" ||
+		len(detail.EvidenceGroups.Supporting) != 1 ||
 		detail.EvidenceItems[0].CodeSnippet == "" ||
 		detail.EvidenceItems[0].LineWindow == nil ||
 		detail.EvidenceItems[0].LineWindow.StartLine != 84 ||
 		len(detail.Decisions) != 1 ||
 		detail.Decisions[0].Decision != "accepted" {
 		t.Fatalf("detail = %+v", detail)
+	}
+}
+
+func TestFindingEvidenceEndpointGroupsItems(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+	if _, err := queries.CreateEvidenceItem(context.Background(), dbgen.CreateEvidenceItemParams{
+		ID:           "evidence_auth_test",
+		FindingID:    "finding_auth",
+		Kind:         "test",
+		Title:        "Admin route test exists",
+		Summary:      "A local verifier found a related test path.",
+		Path:         nullableString("apps/api/src/routes/repositories.test.ts"),
+		StartLine:    sql.NullInt64{Int64: 19, Valid: true},
+		EndLine:      sql.NullInt64{Int64: 19, Valid: true},
+		Confidence:   0.6,
+		MetadataJson: `{"producer":"local_verifier","code_snippet":"19: expect(adminOnly).toBe(true)"}`,
+		CreatedAt:    "2026-05-03T00:15:00Z",
+	}); err != nil {
+		t.Fatalf("CreateEvidenceItem(test) error = %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/findings/finding_auth/evidence", nil)
+	request.Header.Set("X-Cocode-Token", "test-token")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("evidence status = %d, body = %s", response.Code, response.Body.String())
+	}
+	evidence := decodeFindingEvidenceResponse(t, response.Body.Bytes())
+	if evidence.Finding.ID != "finding_auth" ||
+		len(evidence.Items) != 2 ||
+		len(evidence.Groups.Supporting) != 1 ||
+		len(evidence.Groups.Test) != 1 ||
+		evidence.Counts["supporting"] != 1 ||
+		evidence.Counts["test"] != 1 ||
+		evidence.Groups.Test[0].CodeSnippet == "" {
+		t.Fatalf("evidence = %+v", evidence)
 	}
 }
 
@@ -2203,6 +2242,22 @@ func decodeFindingDetailResponse(t *testing.T, content []byte) FindingDetailResp
 	var envelope struct {
 		Data  FindingDetailResponse `json:"data"`
 		Error any                   `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeFindingEvidenceResponse(t *testing.T, content []byte) FindingEvidenceResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  FindingEvidenceResponse `json:"data"`
+		Error any                     `json:"error"`
 	}
 	if err := json.Unmarshal(content, &envelope); err != nil {
 		t.Fatalf("decode response: %v", err)

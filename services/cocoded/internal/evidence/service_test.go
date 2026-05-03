@@ -239,6 +239,62 @@ func TestVerifySessionReplacesPriorLocalVerifierEvidence(t *testing.T) {
 	}
 }
 
+func TestRuleProfilesAddDeterministicSearchTerms(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		finding dbgen.Finding
+		rule    string
+		terms   []string
+	}{
+		{
+			name: "auth guard",
+			finding: dbgen.Finding{
+				CanonicalClaim: "Repository update lacks admin permission guard",
+				Category:       "security",
+			},
+			rule:  "auth_guard",
+			terms: []string{"auth", "permission", "RequireAdmin"},
+		},
+		{
+			name: "webhook",
+			finding: dbgen.Finding{
+				CanonicalClaim: "Webhook handler accepts payload without signature verification",
+				Category:       "security",
+			},
+			rule:  "webhook_validation",
+			terms: []string{"signature", "hmac", "webhook"},
+		},
+		{
+			name: "idempotency",
+			finding: dbgen.Finding{
+				CanonicalClaim: "Retry can create duplicate payment without idempotency key",
+				Category:       "reliability",
+			},
+			rule:  "idempotency",
+			terms: []string{"idempotency", "unique", "retry"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			profile := classifyRuleProfile(tt.finding)
+			if profile.ID != tt.rule {
+				t.Fatalf("profile = %+v, want rule %q", profile, tt.rule)
+			}
+			terms := counterEvidenceTerms(tt.finding, profile)
+			for _, term := range tt.terms {
+				if !containsString(terms, term) {
+					t.Fatalf("terms = %+v, want %q", terms, term)
+				}
+			}
+		})
+	}
+}
+
 type evidenceEnv struct {
 	Database   *sql.DB
 	Queries    *dbgen.Queries
@@ -407,6 +463,15 @@ func evidenceItemByKind(t *testing.T, items []dbgen.EvidenceItem, kind string) d
 	}
 	t.Fatalf("evidence kind %q missing from %+v", kind, items)
 	return dbgen.EvidenceItem{}
+}
+
+func containsString(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
 }
 
 func nullableTestString(value string) sql.NullString {

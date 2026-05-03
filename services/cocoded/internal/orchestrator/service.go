@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -133,6 +132,7 @@ type FindingCounts struct {
 
 type runtimeSettings struct {
 	PromptDelivery    agents.PromptDelivery `json:"prompt_delivery"`
+	AllowRiskyCommand bool                  `json:"allow_risky_command"`
 	TimeoutSeconds    int64                 `json:"timeout_seconds"`
 	MaxStdoutBytes    int64                 `json:"max_stdout_bytes"`
 	MaxStderrBytes    int64                 `json:"max_stderr_bytes"`
@@ -1224,6 +1224,10 @@ func (s *Service) connectionConfig(item runContext) (agents.ConnectionConfig, ag
 	if err != nil {
 		return agents.ConnectionConfig{}, agents.TaskLimits{}, err
 	}
+	env, err := agents.ResolveAllowedEnvironment(envNames)
+	if err != nil {
+		return agents.ConnectionConfig{}, agents.TaskLimits{}, fmt.Errorf("%w: agent env_allowlist is invalid: %v", ErrInvalidAgentConfiguration, err)
+	}
 	settings, err := decodeRuntimeSettings(item.AgentConfig.SettingsJson)
 	if err != nil {
 		return agents.ConnectionConfig{}, agents.TaskLimits{}, err
@@ -1238,8 +1242,9 @@ func (s *Service) connectionConfig(item runContext) (agents.ConnectionConfig, ag
 			Command:          nullableValue(item.AgentConfig.Command),
 			Args:             args,
 			PromptDelivery:   settings.PromptDelivery,
+			CommandSafety:    agents.CommandSafetyOptions{AllowRiskyCommand: settings.AllowRiskyCommand},
 			WorkingDirectory: workingDirectory,
-			Env:              allowedEnvironment(envNames),
+			Env:              env,
 			Metadata: map[string]any{
 				"output_mode": string(item.AgentConfig.OutputMode),
 			},
@@ -1539,20 +1544,6 @@ func workingDirectoryForAgent(cwdMode string, repository dbgen.Repository, works
 	default:
 		return "", fmt.Errorf("%w: cwd_mode %q is unsupported", ErrInvalidAgentConfiguration, cwdMode)
 	}
-}
-
-func allowedEnvironment(names []string) map[string]string {
-	env := map[string]string{}
-	for _, name := range names {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		if value, ok := os.LookupEnv(name); ok {
-			env[name] = value
-		}
-	}
-	return env
 }
 
 func (s *Service) validate() error {

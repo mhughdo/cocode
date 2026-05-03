@@ -13,6 +13,7 @@ const defaultCommandHealthOutputLimit int64 = 16 << 10
 
 type CommandHealthSettings struct {
 	PromptDelivery        PromptDelivery `json:"prompt_delivery,omitempty"`
+	AllowRiskyCommand     bool           `json:"allow_risky_command,omitempty"`
 	VersionArgs           []string       `json:"version_args,omitempty"`
 	SkipVersion           bool           `json:"skip_version,omitempty"`
 	SmokePromptEnabled    bool           `json:"smoke_prompt_enabled,omitempty"`
@@ -42,6 +43,9 @@ func CheckCommandHealth(ctx context.Context, config ConnectionConfig, settings C
 	}
 	if strings.TrimSpace(config.Command) == "" {
 		return commandHealth(HealthUnavailable, "command is not configured", checkedAt, metadata, nil)
+	}
+	if err := ValidateCommandSafety(config.Command, CommandSafetyOptions{AllowRiskyCommand: settings.AllowRiskyCommand}); err != nil {
+		return commandHealth(HealthUnavailable, "agent command is blocked by safety policy", checkedAt, metadata, err)
 	}
 	if err := validateEnv(config.Env); err != nil {
 		return commandHealth(HealthUnavailable, "agent command environment is invalid", checkedAt, metadata, err)

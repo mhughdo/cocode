@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"slices"
 	"strings"
 	"time"
 
@@ -194,12 +193,24 @@ func testAgentConfigHandler(queries *dbgen.Queries) gin.HandlerFunc {
 				respondError(c, appErr)
 				return
 			}
+			envNames, err := decodeStringArray(row.EnvAllowlistJson)
+			if err != nil {
+				respondError(c, apperror.Internal("stored agent env allowlist is invalid"))
+				return
+			}
+			env, err := agents.ResolveAllowedEnvironment(envNames)
+			if err != nil {
+				respondError(c, apperror.Internal("stored agent env allowlist is invalid"))
+				return
+			}
 			health = agents.CheckCommandHealth(c.Request.Context(), agents.ConnectionConfig{
 				AdapterID:      row.ID,
 				Kind:           kind,
 				Command:        nullableResponseString(row.Command),
 				Args:           args,
 				PromptDelivery: settings.PromptDelivery,
+				CommandSafety:  agents.CommandSafetyOptions{AllowRiskyCommand: settings.AllowRiskyCommand},
+				Env:            env,
 			}, settings)
 		}
 
@@ -441,6 +452,15 @@ func normalizeAgentConfigInput(input agentConfigInput) (normalizedAgentConfigInp
 	if appErr != nil {
 		return normalizedAgentConfigInput{}, appErr
 	}
+	if kind == agents.AdapterCLINonInteractive {
+		commandSafety, err := agents.DecodeCommandSafetyOptionsJSON(settingsJSON)
+		if err != nil {
+			return normalizedAgentConfigInput{}, apperror.InvalidRequest("settings.allow_risky_command must be a boolean")
+		}
+		if err := agents.ValidateCommandSafety(command, commandSafety); err != nil {
+			return normalizedAgentConfigInput{}, apperror.InvalidRequest(err.Error())
+		}
+	}
 
 	return normalizedAgentConfigInput{
 		Name:             name,
@@ -488,19 +508,9 @@ func normalizeEnvAllowlistJSON(values []string, existingJSON string) (string, *a
 }
 
 func encodeEnvAllowlist(values []string) (string, *apperror.Error) {
-	if values == nil {
-		values = []string{}
-	}
-	normalized := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			return "", apperror.InvalidRequest("env_allowlist cannot contain empty names")
-		}
-		if slices.Contains(normalized, value) {
-			continue
-		}
-		normalized = append(normalized, value)
+	normalized, err := agents.NormalizeEnvAllowlist(values)
+	if err != nil {
+		return "", apperror.InvalidRequest(err.Error())
 	}
 	data, err := json.Marshal(normalized)
 	if err != nil {
@@ -579,6 +589,10 @@ func agentConfigResponse(row dbgen.AgentConfig) (AgentConfigResponse, *apperror.
 		return AgentConfigResponse{}, apperror.Internal("stored agent args are invalid")
 	}
 	envAllowlist, err := decodeStringArray(row.EnvAllowlistJson)
+	if err != nil {
+		return AgentConfigResponse{}, apperror.Internal("stored agent env allowlist is invalid")
+	}
+	envAllowlist, err = agents.NormalizeEnvAllowlist(envAllowlist)
 	if err != nil {
 		return AgentConfigResponse{}, apperror.Internal("stored agent env allowlist is invalid")
 	}

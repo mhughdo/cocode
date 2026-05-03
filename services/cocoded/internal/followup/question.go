@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -42,6 +41,7 @@ type AskQuestionResult struct {
 
 type runtimeSettings struct {
 	PromptDelivery     agents.PromptDelivery `json:"prompt_delivery"`
+	AllowRiskyCommand  bool                  `json:"allow_risky_command"`
 	TimeoutSeconds     int64                 `json:"timeout_seconds"`
 	MaxStdoutBytes     int64                 `json:"max_stdout_bytes"`
 	MaxStderrBytes     int64                 `json:"max_stderr_bytes"`
@@ -444,6 +444,10 @@ func (s Service) connectionConfig(config dbgen.AgentConfig, repository dbgen.Rep
 	if err != nil {
 		return agents.ConnectionConfig{}, agents.TaskLimits{}, err
 	}
+	env, err := agents.ResolveAllowedEnvironment(envNames)
+	if err != nil {
+		return agents.ConnectionConfig{}, agents.TaskLimits{}, fmt.Errorf("%w: agent env_allowlist is invalid: %v", ErrInvalidAgentConfig, err)
+	}
 	settings, err := decodeRuntimeSettings(config.SettingsJson)
 	if err != nil {
 		return agents.ConnectionConfig{}, agents.TaskLimits{}, err
@@ -458,8 +462,9 @@ func (s Service) connectionConfig(config dbgen.AgentConfig, repository dbgen.Rep
 			Command:          nullableSQLStringValue(config.Command),
 			Args:             args,
 			PromptDelivery:   settings.PromptDelivery,
+			CommandSafety:    agents.CommandSafetyOptions{AllowRiskyCommand: settings.AllowRiskyCommand},
 			WorkingDirectory: workingDirectory,
-			Env:              allowedEnvironment(envNames),
+			Env:              env,
 			Metadata: map[string]any{
 				"output_mode": config.OutputMode,
 			},
@@ -529,16 +534,6 @@ func workingDirectoryForAgent(cwdMode string, repository dbgen.Repository, works
 	default:
 		return "", fmt.Errorf("%w: cwd_mode %q is unsupported", ErrInvalidAgentConfig, cwdMode)
 	}
-}
-
-func allowedEnvironment(names []string) map[string]string {
-	env := map[string]string{}
-	for _, name := range names {
-		if value, ok := os.LookupEnv(name); ok {
-			env[name] = value
-		}
-	}
-	return env
 }
 
 func (s Service) contextArtifactRefs(ctx context.Context, bundle contextbundle.Bundle) []agents.ArtifactRef {

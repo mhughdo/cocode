@@ -36,6 +36,53 @@ func TestCheckCommandHealthReportsMissingCommand(t *testing.T) {
 	}
 }
 
+func TestCheckCommandHealthRejectsRiskyCommandByDefault(t *testing.T) {
+	t.Parallel()
+
+	health := CheckCommandHealth(context.Background(), healthConfig("sh"), CommandHealthSettings{})
+	if health.Status != HealthUnavailable ||
+		health.Message != "agent command is blocked by safety policy" ||
+		!strings.Contains(health.Metadata["error"].(string), "blocked by default") {
+		t.Fatalf("health = %+v", health)
+	}
+}
+
+func TestCheckCommandHealthAllowsExplicitRiskyCommand(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "sh")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf 'safe shell wrapper 1.0\\n'\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	health := CheckCommandHealth(context.Background(), healthConfig(path), CommandHealthSettings{
+		AllowRiskyCommand: true,
+	})
+	if health.Status != HealthAvailable ||
+		health.Metadata["version"] != "safe shell wrapper 1.0" {
+		t.Fatalf("health = %+v", health)
+	}
+}
+
+func TestCheckCommandHealthUsesExplicitEnvOnly(t *testing.T) {
+	t.Setenv("COCODE_HEALTH_TOKEN", "visible")
+	t.Setenv("COCODE_PARENT_SECRET", "hidden")
+	command := writeFakeHealthCommand(t, `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'token=%s secret=%s\n' "${COCODE_HEALTH_TOKEN-unset}" "${COCODE_PARENT_SECRET-unset}"
+  exit 0
+fi
+exit 1
+`)
+	config := healthConfig(command)
+	config.Env = map[string]string{"COCODE_HEALTH_TOKEN": "visible"}
+
+	health := CheckCommandHealth(context.Background(), config, CommandHealthSettings{})
+	if health.Status != HealthAvailable ||
+		health.Metadata["version"] != "token=visible secret=unset" {
+		t.Fatalf("health = %+v", health)
+	}
+}
+
 func TestCheckCommandHealthReportsVersionFailureAsDegraded(t *testing.T) {
 	t.Parallel()
 

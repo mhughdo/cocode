@@ -332,6 +332,14 @@ func TestCommandOnceDriverValidation(t *testing.T) {
 			},
 		},
 		{
+			name: "risky command rejected by default",
+			config: ConnectionConfig{
+				AdapterID: "agent_1",
+				Kind:      AdapterCLINonInteractive,
+				Command:   "sh",
+			},
+		},
+		{
 			name: "invalid env name",
 			config: ConnectionConfig{
 				AdapterID: "agent_1",
@@ -357,6 +365,23 @@ func TestCommandOnceDriverValidation(t *testing.T) {
 				t.Fatalf("Open(%+v) error = nil, want error", tt.config)
 			}
 		})
+	}
+}
+
+func TestCommandOnceDriverAllowsExplicitRiskyCommand(t *testing.T) {
+	t.Parallel()
+
+	connection, err := (CommandOnceDriver{}).Open(context.Background(), ConnectionConfig{
+		AdapterID:     "agent_1",
+		Kind:          AdapterCLINonInteractive,
+		Command:       "sh",
+		CommandSafety: CommandSafetyOptions{AllowRiskyCommand: true},
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	if err := connection.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
 	}
 }
 

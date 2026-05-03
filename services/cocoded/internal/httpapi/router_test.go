@@ -380,6 +380,78 @@ exit 2
 	}
 }
 
+func TestAgentConfigHealthUsesEnvAllowlist(t *testing.T) {
+	t.Setenv("COCODE_HEALTH_TOKEN", "visible")
+	t.Setenv("COCODE_PARENT_SECRET", "hidden")
+	router, _ := testRouterWithQueries(t)
+	command := writeFakeAgentConfigCommand(t, `#!/bin/sh
+if [ "$1" = "--check-env" ]; then
+  printf 'token=%s secret=%s\n' "${COCODE_HEALTH_TOKEN-unset}" "${COCODE_PARENT_SECRET-unset}"
+  if [ "$COCODE_HEALTH_TOKEN" = "visible" ] && [ "${COCODE_PARENT_SECRET-unset}" = "unset" ]; then
+    exit 0
+  fi
+  exit 7
+fi
+exit 2
+`)
+
+	createRequest := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/agents/configs", map[string]any{
+		"name":          "Env health reviewer",
+		"role":          "reviewer",
+		"adapter_kind":  "cli_noninteractive",
+		"command":       command,
+		"output_mode":   "text",
+		"env_allowlist": []string{"COCODE_HEALTH_TOKEN"},
+		"settings": map[string]any{
+			"version_args": []string{"--check-env"},
+		},
+	})
+	createResponse := httptest.NewRecorder()
+	router.ServeHTTP(createResponse, createRequest)
+	if createResponse.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createResponse.Code, createResponse.Body.String())
+	}
+	created := decodeAgentConfigResponse(t, createResponse.Body.Bytes())
+
+	healthRequest := httptest.NewRequest(http.MethodPost, "/api/agents/configs/"+created.ID+"/test", nil)
+	healthRequest.Header.Set("X-Cocode-Token", "test-token")
+	healthResponse := httptest.NewRecorder()
+	router.ServeHTTP(healthResponse, healthRequest)
+	if healthResponse.Code != http.StatusOK {
+		t.Fatalf("health status = %d, body = %s", healthResponse.Code, healthResponse.Body.String())
+	}
+	health := decodeAgentConfigHealthResponse(t, healthResponse.Body.Bytes())
+	if health.Status != agents.HealthAvailable ||
+		health.Metadata["version"] != "token=visible secret=unset" {
+		t.Fatalf("health = %+v", health)
+	}
+}
+
+func TestAgentConfigEndpointAllowsExplicitRiskyCommand(t *testing.T) {
+	router, _ := testRouterWithQueries(t)
+
+	createRequest := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/agents/configs", map[string]any{
+		"name":         "Explicit shell reviewer",
+		"role":         "reviewer",
+		"adapter_kind": "cli_noninteractive",
+		"command":      "sh",
+		"output_mode":  "text",
+		"settings": map[string]any{
+			"allow_risky_command": true,
+			"skip_version":        true,
+		},
+	})
+	createResponse := httptest.NewRecorder()
+	router.ServeHTTP(createResponse, createRequest)
+	if createResponse.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createResponse.Code, createResponse.Body.String())
+	}
+	created := decodeAgentConfigResponse(t, createResponse.Body.Bytes())
+	if created.Command != "sh" || !bytes.Contains(created.Settings, []byte("allow_risky_command")) {
+		t.Fatalf("created explicit risky config = %+v", created)
+	}
+}
+
 func TestAgentConfigEndpointRejectsInvalidInputs(t *testing.T) {
 	router, _ := testRouterWithQueries(t)
 
@@ -413,6 +485,50 @@ func TestAgentConfigEndpointRejectsInvalidInputs(t *testing.T) {
 				"adapter_kind": "cli_noninteractive",
 				"command":      "codex",
 				"output_mode":  "yaml",
+			},
+		},
+		{
+			name: "command with inline args",
+			body: map[string]any{
+				"name":         "Codex reviewer",
+				"role":         "reviewer",
+				"adapter_kind": "cli_noninteractive",
+				"command":      "codex --json",
+				"output_mode":  "text",
+			},
+		},
+		{
+			name: "risky command without explicit setup",
+			body: map[string]any{
+				"name":         "Shell reviewer",
+				"role":         "reviewer",
+				"adapter_kind": "cli_noninteractive",
+				"command":      "sh",
+				"output_mode":  "text",
+			},
+		},
+		{
+			name: "invalid env allowlist name",
+			body: map[string]any{
+				"name":          "Codex reviewer",
+				"role":          "reviewer",
+				"adapter_kind":  "cli_noninteractive",
+				"command":       "codex",
+				"output_mode":   "text",
+				"env_allowlist": []string{"1BAD"},
+			},
+		},
+		{
+			name: "invalid risky command setting",
+			body: map[string]any{
+				"name":         "Codex reviewer",
+				"role":         "reviewer",
+				"adapter_kind": "cli_noninteractive",
+				"command":      "codex",
+				"output_mode":  "text",
+				"settings": map[string]any{
+					"allow_risky_command": "yes",
+				},
 			},
 		},
 		{

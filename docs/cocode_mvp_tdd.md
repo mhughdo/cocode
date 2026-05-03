@@ -2034,6 +2034,8 @@ Never expose raw `ipcRenderer`.
 
 Path sandboxing is centralized in the backend security package and used at file/artifact choke points. It normalizes relative paths, rejects absolute/traversal input, resolves symlinks, and verifies existing reads plus artifact writes remain inside the intended workspace or app-managed artifact root. Snapshot ingestion also rejects unsafe changed-file paths before rows or artifacts are persisted.
 
+CLI command safety is enforced before save, health checks, and runtime driver open. Command strings must be a single executable name/path with flags kept in `args`; shell syntax and risky command names such as shell interpreters or destructive file commands are blocked by default. A custom CLI can opt in with `settings.allow_risky_command=true`, which keeps the risk explicit in the agent config. Environment exposure remains deny-by-default: env allowlists use backend validation, duplicate normalization, and one resolver shared by review runs, follow-up runs, and health smoke/version checks.
+
 ---
 
 ## 20. Error Handling

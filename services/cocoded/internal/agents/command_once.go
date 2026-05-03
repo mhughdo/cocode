@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +40,9 @@ func (d CommandOnceDriver) Open(ctx context.Context, config ConnectionConfig) (C
 	}
 	if strings.TrimSpace(config.Command) == "" {
 		return nil, errors.New("command once driver requires a command")
+	}
+	if err := ValidateCommandSafety(config.Command, config.CommandSafety); err != nil {
+		return nil, err
 	}
 	if strings.TrimSpace(config.WorkingDirectory) != "" {
 		abs, err := filepath.Abs(config.WorkingDirectory)
@@ -373,31 +375,6 @@ func outputLimit(value int64, fallback int64) int64 {
 		return value
 	}
 	return fallback
-}
-
-func envList(env map[string]string) []string {
-	if len(env) == 0 {
-		return []string{}
-	}
-	keys := make([]string, 0, len(env))
-	for key := range env {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	out := make([]string, 0, len(keys))
-	for _, key := range keys {
-		out = append(out, key+"="+env[key])
-	}
-	return out
-}
-
-func validateEnv(env map[string]string) error {
-	for key := range env {
-		if strings.TrimSpace(key) == "" || strings.Contains(key, "=") {
-			return fmt.Errorf("invalid environment variable name %q", key)
-		}
-	}
-	return nil
 }
 
 func truncateMessage(value string) string {

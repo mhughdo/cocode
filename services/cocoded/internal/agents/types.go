@@ -84,14 +84,15 @@ type Connection interface {
 }
 
 type ConnectionConfig struct {
-	AdapterID        string            `json:"adapter_id"`
-	Kind             AdapterKind       `json:"kind"`
-	Command          string            `json:"command,omitempty"`
-	Args             []string          `json:"args,omitempty"`
-	PromptDelivery   PromptDelivery    `json:"prompt_delivery,omitempty"`
-	WorkingDirectory string            `json:"working_directory,omitempty"`
-	Env              map[string]string `json:"env,omitempty"`
-	Metadata         map[string]any    `json:"metadata,omitempty"`
+	AdapterID        string               `json:"adapter_id"`
+	Kind             AdapterKind          `json:"kind"`
+	Command          string               `json:"command,omitempty"`
+	Args             []string             `json:"args,omitempty"`
+	PromptDelivery   PromptDelivery       `json:"prompt_delivery,omitempty"`
+	CommandSafety    CommandSafetyOptions `json:"command_safety,omitempty"`
+	WorkingDirectory string               `json:"working_directory,omitempty"`
+	Env              map[string]string    `json:"env,omitempty"`
+	Metadata         map[string]any       `json:"metadata,omitempty"`
 }
 
 type AgentTask struct {

@@ -236,7 +236,7 @@ Large parallel workstreams:
 | T126 | Add prior comments context | Include previous PR comments when available. | Done | T083, T120 | T127 | Duplicate avoidance context stored as items. |
 | T127 | Add prior decision memory | Include prior dismissals/rules from review_rules. | Done | T058, T120 | T128 | Dismissal memory can be queried and included. |
 | T128 | Add token estimation | Estimate tokens per item and bundle. | Done | T120 | T129 | Estimates appear in API/UI; tests cover known samples. |
-| T129 | Add context budgeter | Select/drop items according to review depth and budget. | Not started | T128 | T130 | Budgeting is deterministic and records dropped reasons. |
+| T129 | Add context budgeter | Select/drop items according to review depth and budget. | Done | T128 | T130 | Budgeting is deterministic and records dropped reasons. |
 | T130 | Add secret redaction | Redact token-like strings, private keys, env values before cloud-backed CLI context. | Not started | T120 | T333 | Tests cover secret fixtures; redaction report artifact created. |
 | T131 | Store rendered context bundle artifacts | Persist final prompt context sent to each agent. | Not started | T120, T060 | T140 | Agent run links to bundle; user can audit context. |
 | T132 | Build review context API | Endpoint/service to build and preview context for a session. | Not started | T120-T131 | T247 | API returns bundle metadata, items, token estimate. |

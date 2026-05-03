@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  type FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import {
   ArrowDownIcon,
   ArrowLeftIcon,
@@ -142,6 +148,33 @@ const EVIDENCE_MAP_NODE_WIDTH = 190;
 const EVIDENCE_MAP_NODE_HEIGHT = 68;
 const EVIDENCE_MAP_COLUMN_GAP = 250;
 const EVIDENCE_MAP_ROW_GAP = 104;
+
+const COMPOSER_RUNTIME_POLICIES = {
+  quick: { max_tokens: 4_000, max_items: 40 },
+  standard: { max_tokens: 8_000, max_items: 80 },
+  deep: { max_tokens: 12_000, max_items: 120 },
+} satisfies Record<
+  ComposerRuntime,
+  Pick<ReviewContextPolicy, "max_tokens" | "max_items">
+>;
+
+type ComposerMode = "review" | "finding follow-up";
+type ComposerRuntime = "quick" | "standard" | "deep";
+type ComposerReasoning = "low" | "medium" | "high";
+type ComposerPermission = "review-mode" | "local-only";
+
+export function composerContextPolicy(
+  runtime: ComposerRuntime,
+  permission: ComposerPermission,
+): ReviewContextPolicy {
+  const limits = COMPOSER_RUNTIME_POLICIES[runtime];
+  return {
+    ...limits,
+    redact_secrets: true,
+    include_prior_comments: permission === "review-mode",
+    include_prior_decisions: true,
+  };
+}
 
 type MainView = "new-thread" | "configure" | "review" | "agent-settings";
 type SnapshotSource = "github" | "local-changes" | "branch-compare";
@@ -3656,7 +3689,12 @@ function ReviewThread({
       <MessageComposer
         agentConfigs={agentConfigs}
         backendDetail={backendDetail}
-        disabled={!session}
+        disabled
+        disabledReason={
+          session
+            ? "Open Follow-up from a selected finding to ask scoped questions."
+            : "Start a review before asking follow-up questions."
+        }
       />
     </section>
   );
@@ -5966,16 +6004,19 @@ function FindingFollowUpScreen({
     (agent) => agent.id === selectedAgentId,
   );
 
-  async function askQuestion() {
-    if (!client || !question.trim()) {
+  async function askQuestion(
+    nextQuestion: string,
+    contextPolicy: ReviewContextPolicy,
+  ) {
+    if (!client || !nextQuestion.trim()) {
       return;
     }
     setActionState(loadingApiState());
     const state = await loadApiResource(() =>
       client.askFindingQuestion(finding.id, {
-        question: question.trim(),
+        question: nextQuestion.trim(),
         agent_config_id: selectedAgentId || undefined,
-        context_policy: { max_tokens: 8_000, max_items: 80 },
+        context_policy: contextPolicy,
       }),
     );
     setActionState(state);
@@ -6076,47 +6117,35 @@ function FindingFollowUpScreen({
             )}
           </div>
 
-          <div className="rounded-lg border p-3">
-            <Textarea
-              aria-label="Finding follow-up question"
-              className="min-h-28 border-0 p-1 shadow-none focus-visible:ring-0"
-              placeholder="Ask a finding-scoped follow-up..."
-              value={question}
-              onChange={(event) => setQuestion(event.target.value)}
-            />
-            <div className="mt-2 flex items-center justify-between gap-2">
-              <span className="text-muted-foreground text-xs">
-                Uses finding context and evidence refs.
-              </span>
-              <Button
-                disabled={!question.trim() || actionState.status === "loading"}
-                size="sm"
-                onClick={() => void askQuestion()}
-              >
-                <SendIcon data-icon="inline-start" />
-                Ask
-              </Button>
-            </div>
-          </div>
+          <MessageComposer
+            agents={followUpAgents}
+            backendDetail="Uses finding context and evidence refs."
+            defaultMode="finding follow-up"
+            disabled={!client}
+            disabledReason={
+              client ? undefined : "Connect to cocoded before asking follow-up."
+            }
+            onQuestionChange={setQuestion}
+            onSelectedAgentIdChange={setSelectedAgentId}
+            onSubmit={(nextQuestion, options) =>
+              askQuestion(nextQuestion, options.contextPolicy)
+            }
+            question={question}
+            selectedAgentId={selectedAgentId}
+            submitting={actionState.status === "loading"}
+          />
         </div>
 
         <aside className="flex min-w-0 flex-col gap-4">
           <div className="rounded-lg border p-4">
-            <label className="flex flex-col gap-2 text-sm font-medium">
-              Agent
-              <NativeSelect
-                disabled={agentConfigs.status === "loading"}
-                value={selectedAgentId}
-                onChange={(event) => setSelectedAgentId(event.target.value)}
-              >
-                <NativeSelectOption value="">Auto-select</NativeSelectOption>
-                {followUpAgents.map((agent) => (
-                  <NativeSelectOption key={agent.id} value={agent.id}>
-                    {agent.name}
-                  </NativeSelectOption>
-                ))}
-              </NativeSelect>
-            </label>
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <div className="text-sm font-medium">Quick actions</div>
+              {selectedAgent ? (
+                <Badge variant="outline">{selectedAgent.name}</Badge>
+              ) : (
+                <Badge variant="secondary">Auto-select</Badge>
+              )}
+            </div>
             {agentConfigs.status === "loading" && (
               <LoadingRows rows={2} className="mt-3" />
             )}
@@ -7482,91 +7511,199 @@ function FindingsPanel() {
   );
 }
 
-function MessageComposer({
+export function MessageComposer({
+  agents: directAgents,
   agentConfigs,
   backendDetail,
   disabled,
+  disabledReason,
+  defaultMode = "review",
+  onQuestionChange,
+  onSelectedAgentIdChange,
+  onSubmit,
+  question,
+  selectedAgentId,
+  submitting,
 }: {
+  agents?: AgentConfig[];
   agentConfigs?: Loadable<AgentConfig[]>;
-  backendDetail: string;
+  backendDetail?: string;
   disabled?: boolean;
+  disabledReason?: string;
+  defaultMode?: ComposerMode;
+  onQuestionChange?: (value: string) => void;
+  onSelectedAgentIdChange?: (value: string) => void;
+  onSubmit?: (
+    question: string,
+    options: {
+      agentConfigId?: string;
+      contextPolicy: ReviewContextPolicy;
+      mode: ComposerMode;
+      permission: ComposerPermission;
+      reasoning: ComposerReasoning;
+      runtime: ComposerRuntime;
+    },
+  ) => void | Promise<void>;
+  question?: string;
+  selectedAgentId?: string;
+  submitting?: boolean;
 }) {
-  const [mode, setMode] = useState("review");
-  const [runtime, setRuntime] = useState("standard");
-  const [reasoning, setReasoning] = useState("high");
-  const [permission, setPermission] = useState("review-mode");
-  const agents = agentConfigs?.status === "success" ? agentConfigs.data : [];
-  const availableAgentCount = agents.filter(
+  const [mode, setMode] = useState<ComposerMode>(defaultMode);
+  const [runtime, setRuntime] = useState<ComposerRuntime>("standard");
+  const [reasoning, setReasoning] = useState<ComposerReasoning>("high");
+  const [permission, setPermission] =
+    useState<ComposerPermission>("review-mode");
+  const [draftQuestion, setDraftQuestion] = useState("");
+  const allAgents =
+    directAgents ??
+    (agentConfigs?.status === "success" ? agentConfigs.data : []);
+  const safeAgents = allAgents.filter(
     (agent) => agent.enabled && !agent.capabilities.can_write,
-  ).length;
+  );
+  const composerAgents =
+    permission === "local-only"
+      ? safeAgents.filter((agent) => agentEgress(agent) === "local")
+      : safeAgents;
+  const selectedAgent = composerAgents.find(
+    (agent) => agent.id === selectedAgentId,
+  );
+  const effectiveQuestion = question ?? draftQuestion;
+  const canSubmit =
+    Boolean(onSubmit) &&
+    !disabled &&
+    !submitting &&
+    Boolean(effectiveQuestion.trim());
+  const detailMessage =
+    disabledReason ??
+    (onSubmit
+      ? backendDetail
+      : "Open Follow-up from a finding to send a scoped question.");
+
+  function updateQuestion(value: string) {
+    if (onQuestionChange) {
+      onQuestionChange(value);
+      return;
+    }
+    setDraftQuestion(value);
+  }
+
+  async function submitComposer(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!canSubmit || !onSubmit) {
+      return;
+    }
+    const trimmedQuestion = effectiveQuestion.trim();
+    await onSubmit(trimmedQuestion, {
+      agentConfigId: selectedAgent?.id,
+      contextPolicy: composerContextPolicy(runtime, permission),
+      mode,
+      permission,
+      reasoning,
+      runtime,
+    });
+    if (!onQuestionChange) {
+      setDraftQuestion("");
+    }
+  }
 
   return (
     <div className="bg-surface-raised border-t p-4">
-      <div className="bg-background mx-auto max-w-5xl rounded-2xl border shadow-sm">
+      <form
+        className="bg-background mx-auto max-w-5xl rounded-2xl border shadow-sm"
+        onSubmit={(event) => void submitComposer(event)}
+      >
         <InputGroup className="min-h-24 items-stretch border-0">
           <InputGroupTextarea
             aria-label="Follow-up prompt"
             disabled={disabled}
+            value={effectiveQuestion}
             placeholder={
               disabled
                 ? "Start a review before asking follow-up questions..."
                 : "Ask a follow-up grounded in this review context..."
             }
             className="min-h-20"
+            onChange={(event) => updateQuestion(event.target.value)}
           />
         </InputGroup>
-        <div className="flex items-center justify-between border-t px-3 py-2">
-          <div className="flex items-center gap-2">
-            <Button disabled={disabled} size="sm" variant="ghost">
-              <MessageSquareIcon data-icon="inline-start" />
-              {mode}
-            </Button>
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t px-3 py-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             <ComposerDropdown
-              label={runtime}
+              label={`Tool: ${mode}`}
+              onSelect={setMode}
+              options={["review", "finding follow-up"]}
+            />
+            {composerAgents.length > 0 && (
+              <NativeSelect
+                aria-label="Follow-up agent"
+                className="max-w-56"
+                disabled={disabled || submitting}
+                size="sm"
+                value={selectedAgent?.id ?? ""}
+                onChange={(event) =>
+                  onSelectedAgentIdChange?.(event.target.value)
+                }
+              >
+                <NativeSelectOption value="">
+                  Auto-select agent
+                </NativeSelectOption>
+                {composerAgents.map((agent) => (
+                  <NativeSelectOption key={agent.id} value={agent.id}>
+                    {formatComposerAgentLabel(agent)}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+            )}
+            {composerAgents.length === 0 && (
+              <Button disabled size="sm" variant="ghost">
+                <MessageSquareIcon data-icon="inline-start" />
+                No read-only agents
+              </Button>
+            )}
+            <ComposerDropdown
+              label={`Context: ${runtime}`}
               onSelect={setRuntime}
               options={["quick", "standard", "deep"]}
             />
             <ComposerDropdown
-              label={reasoning}
+              label={`Reasoning: ${reasoning}`}
               onSelect={setReasoning}
               options={["low", "medium", "high"]}
             />
             <ComposerDropdown
-              label={permission}
+              label={`Permission: ${permission}`}
               onSelect={setPermission}
               options={["review-mode", "local-only"]}
             />
-            <ComposerDropdown
-              label={`${availableAgentCount} agents`}
-              onSelect={setMode}
-              options={["review", "finding follow-up"]}
-            />
           </div>
           <InputGroupButton
-            disabled
+            disabled={!canSubmit}
             size="icon-sm"
-            aria-label="Review-level follow-up submit is not available yet"
+            type="submit"
+            variant={canSubmit ? "default" : "ghost"}
+            aria-label="Send follow-up question"
           >
             <ArrowUpIcon />
           </InputGroupButton>
         </div>
-      </div>
-      <div className="text-muted-foreground mx-auto mt-2 max-w-5xl truncate text-center text-xs">
-        Review-level follow-up submit needs a backend endpoint; finding-scoped
-        follow-up opens from a selected finding. {backendDetail}
-      </div>
+      </form>
+      {detailMessage && (
+        <div className="text-muted-foreground mx-auto mt-2 max-w-5xl truncate text-center text-xs">
+          {detailMessage}
+        </div>
+      )}
     </div>
   );
 }
 
-function ComposerDropdown({
+function ComposerDropdown<T extends string>({
   label,
   onSelect,
   options,
 }: {
   label: string;
-  onSelect?: (value: string) => void;
-  options?: string[];
+  onSelect?: (value: T) => void;
+  options: readonly T[];
 }) {
   return (
     <DropdownMenu>
@@ -7578,7 +7715,7 @@ function ComposerDropdown({
       </DropdownMenuTrigger>
       <DropdownMenuContent>
         <DropdownMenuGroup>
-          {(options ?? ["Fast", "Balanced", "Deep"]).map((option) => (
+          {options.map((option) => (
             <DropdownMenuItem key={option} onSelect={() => onSelect?.(option)}>
               {option}
             </DropdownMenuItem>
@@ -7587,6 +7724,11 @@ function ComposerDropdown({
       </DropdownMenuContent>
     </DropdownMenu>
   );
+}
+
+function formatComposerAgentLabel(agent: AgentConfig) {
+  const modelLabel = agent.model_label?.trim();
+  return modelLabel ? `${agent.name} - ${modelLabel}` : agent.name;
 }
 
 function ReviewPane() {

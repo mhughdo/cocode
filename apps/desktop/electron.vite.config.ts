@@ -18,6 +18,14 @@ export default defineConfig({
     build: {
       lib: {
         entry: resolve("src/electron/preload/index.ts"),
+        formats: ["cjs"],
+        fileName: () => "index.js",
+      },
+      rollupOptions: {
+        external: ["electron"],
+        output: {
+          format: "cjs",
+        },
       },
     },
     plugins: [externalizeDepsPlugin()],

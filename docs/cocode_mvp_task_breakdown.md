@@ -323,9 +323,9 @@ Large parallel workstreams:
 
 | ID | Task | Description | Status | Dependencies | Parallelization | Done criteria |
 |---|---|---|---|---|---|---|
-| T240 | Build app shell | Layout with left sidebar, top nav, content area matching mockups. | Not started | T014, T016 | T241 | Shell renders responsive desktop layout with placeholder data. |
+| T240 | Build app shell | Layout with left sidebar, top nav, content area matching mockups. | Done | T014, T016 | T241 | Renderer shell uses a reusable sidebar/header/content/detail-pane chrome, responsive desktop grid constraints, and placeholder review data matching the Codex Desktop design direction. |
 | T241 | Implement API client | Typed REST client with auth token, response envelope, error handling. | Done | T032, T043 | T242 | Renderer API client injects local auth, decodes response envelopes, surfaces typed errors, and exposes loading/success/error state helpers. |
-| T242 | Implement shared UI components | Buttons, cards, badges, tabs, dropdowns, command/search, empty/error states. | Not started | T016 | All UI tasks | Components match visual style and are reusable. |
+| T242 | Implement shared UI components | Buttons, cards, badges, tabs, dropdowns, command/search, empty/error states. | Done | T016 | All UI tasks | shadcn primitives cover buttons, cards, badges, tabs, dropdowns, command/search, inputs, scroll areas, tooltips, separators, skeletons, alerts, and empty states; app chrome helpers reuse them for shell/sidebar/pane/state UI. |
 | T243 | Implement left workspace/thread sidebar | Workspace selector, threads list, saved presets, settings, agents online. | Not started | T240, T054 | T244 | Sidebar renders seeded/API data and active thread state. |
 | T244 | Implement top nav | Repo selector, PR title, search, ask all agents, open repo, new thread, notifications/user. | Not started | T240 | T245 | Top nav matches mockups and handles disabled states. |
 | T245 | Implement New Thread screen | Source selector for PR URL, local changes, branch compare, suggested setup, composer. | Not started | T082, T243 | T246 | User can create snapshot and continue to configure. |

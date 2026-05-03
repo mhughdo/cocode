@@ -142,6 +142,10 @@ Claude Code and similar CLIs support programmatic non-interactive use. Claude Co
 
 The renderer talks to the local backend through a typed REST client in `apps/desktop/src/renderer/src/lib/api.ts`. The client receives the per-launch backend URL/token from the preload bridge, injects bearer auth, decodes the backend `Envelope` shape, preserves request IDs on typed errors, supports query/body helpers and `AbortSignal`, and exposes small loading/success/error state helpers for UI screens.
 
+Electron keeps the renderer sandbox enabled, so the preload bundle is emitted as CommonJS (`out/preload/index.cjs`) and explicitly externalizes `electron`. This preserves `contextIsolation`, `sandbox`, and `nodeIntegration: false` while still exposing the narrow `window.cocode` bridge.
+
+The desktop shell uses shadcn `radix-nova` primitives as the lowest-level UI layer. App-specific chrome lives under `apps/desktop/src/renderer/src/components/app/` and stays limited to layout/navigation/state composition: sidebar sections, pane headers, command-search dialog wiring, and loading/empty/error state blocks. Feature-specific components such as diff rows, evidence cards, and finding cards should stay near their screen implementation until their data contracts stabilize.
+
 ---
 
 ## 4. Technology Stack

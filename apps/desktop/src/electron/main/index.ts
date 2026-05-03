@@ -20,7 +20,7 @@ function createWindow(): void {
     show: false,
     title: "cocode",
     webPreferences: {
-      preload: join(__dirname, "../preload/index.mjs"),
+      preload: join(__dirname, "../preload/index.cjs"),
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,

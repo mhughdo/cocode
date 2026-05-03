@@ -237,6 +237,42 @@ exit 0
 	}
 }
 
+func TestAgentPresetsEndpointIncludesCodexCLI(t *testing.T) {
+	router := testRouter(t)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/agents/presets", nil)
+	request.Header.Set("X-Cocode-Token", "test-token")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("presets status = %d, body = %s", response.Code, response.Body.String())
+	}
+	presets := decodeAgentPresetListResponse(t, response.Body.Bytes())
+	if len(presets) == 0 {
+		t.Fatal("presets empty")
+	}
+	var codex AgentPresetResponse
+	for _, preset := range presets {
+		if preset.ID == "codex-cli" {
+			codex = preset
+			break
+		}
+	}
+	if codex.ID == "" ||
+		codex.Command != "codex" ||
+		len(codex.Args) != 3 ||
+		codex.Args[0] != "exec" ||
+		codex.Args[1] != "--json" ||
+		codex.Args[2] != "-" ||
+		codex.OutputMode != agents.OutputJSONL ||
+		codex.ModelLabel != "gpt-5.3-codex" ||
+		!codex.Capabilities.CanCancel ||
+		!codex.Capabilities.SupportsOutputMode(agents.OutputJSONL) ||
+		!json.Valid(codex.Settings) {
+		t.Fatalf("codex preset = %+v", codex)
+	}
+}
+
 func TestAgentConfigEndpointRejectsInvalidInputs(t *testing.T) {
 	router, _ := testRouterWithQueries(t)
 
@@ -933,6 +969,22 @@ func decodeAgentConfigHealthResponse(t *testing.T, content []byte) AgentConfigHe
 	}
 	if envelope.Error != nil {
 		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeAgentPresetListResponse(t *testing.T, content []byte) []AgentPresetResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  []AgentPresetResponse `json:"data"`
+		Error any                   `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("Unmarshal(agent preset list) error = %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("agent preset list error = %+v", envelope.Error)
 	}
 	return envelope.Data
 }

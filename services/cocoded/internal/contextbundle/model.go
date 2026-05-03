@@ -56,6 +56,7 @@ type Item struct {
 	StartLine         int64           `json:"start_line,omitempty"`
 	EndLine           int64           `json:"end_line,omitempty"`
 	Title             string          `json:"title,omitempty"`
+	Content           string          `json:"content,omitempty"`
 	ContentArtifactID string          `json:"content_artifact_id,omitempty"`
 	TokenEstimate     int64           `json:"token_estimate"`
 	Metadata          json.RawMessage `json:"metadata"`

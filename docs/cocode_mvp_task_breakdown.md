@@ -217,7 +217,7 @@ Large parallel workstreams:
 | T107 | Add custom CLI preset | User can create arbitrary CLI adapter config. | Done | T092 | T248 | Custom command can be saved, health checked, and used in review. |
 | T108 | Add JSON-RPC stdio skeleton | Create disabled/future connection driver skeleton for Codex App Server/ACP. | Done | T090 | T109 | Interfaces compile; no MVP feature depends on it; documented as future. |
 | T109 | Add Codex App Server adapter stub | Add feature-flagged stub mapping future Codex app-server events to AgentEvents. | Done | T108 | T110 | Stub is disabled; tests verify unsupported feature returns clear error. |
-| T110 | Add ACP adapter stub | Add feature-flagged stub for future ACP agent integration. | Not started | T108 | T111 | Stub is disabled; code structure is clear. |
+| T110 | Add ACP adapter stub | Add feature-flagged stub for future ACP agent integration. | Done | T108 | T111 | Stub is disabled; code structure is clear. |
 | T111 | Document adapter extension guide | Write developer docs for adding new CLI or protocol adapter. | Not started | T090-T110 | T006 | Guide includes config, parser, health check, tests, and security rules. |
 
 ---

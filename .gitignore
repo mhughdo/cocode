@@ -1,0 +1,19 @@
+.DS_Store
+node_modules/
+dist/
+out/
+coverage/
+.vite/
+*.log
+
+# Electron build artifacts
+release/
+*.dmg
+*.zip
+
+# Go
+bin/
+*.test
+
+# Local app data
+.cocode/

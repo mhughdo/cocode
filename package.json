@@ -1,0 +1,26 @@
+{
+  "name": "cocode",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first desktop multi-agent code review cockpit.",
+  "packageManager": "pnpm@10.33.2",
+  "scripts": {
+    "dev": "pnpm --filter @cocode/desktop dev",
+    "build": "pnpm --filter @cocode/desktop build",
+    "typecheck": "pnpm --filter @cocode/desktop typecheck",
+    "lint": "pnpm --filter @cocode/desktop lint",
+    "backend:dev": "cd services/cocoded && go run ./cmd/cocoded",
+    "backend:test": "cd services/cocoded && go test ./...",
+    "check": "pnpm typecheck && pnpm backend:test"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild"
+    ]
+  },
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=10.0.0"
+  }
+}

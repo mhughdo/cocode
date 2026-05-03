@@ -225,6 +225,21 @@ func cancelReviewSessionHandler(services routerServices) gin.HandlerFunc {
 	}
 }
 
+func cancelAgentRunHandler(services routerServices) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if services.reviewWorkflowErr != nil || services.reviewWorkflow == nil {
+			respondError(c, apperror.Internal("review workflow is not configured"))
+			return
+		}
+		run, err := services.reviewWorkflow.CancelAgentRun(c.Request.Context(), c.Param("id"), c.Param("agent_run_id"))
+		if err != nil {
+			respondReviewWorkflowError(c, err)
+			return
+		}
+		respondOK(c, agentRunResponse(run))
+	}
+}
+
 func pauseReviewSessionHandler(services routerServices) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if services.reviewWorkflowErr != nil || services.reviewWorkflow == nil {
@@ -458,6 +473,21 @@ func reviewSessionAgentResponse(row dbgen.ReviewSessionAgent) (ReviewSessionAgen
 	}, nil
 }
 
+func agentRunResponse(run dbgen.AgentRun) orchestrator.AgentRun {
+	return orchestrator.AgentRun{
+		ID:              run.ID,
+		ReviewSessionID: run.ReviewSessionID,
+		AgentConfigID:   run.AgentConfigID,
+		ContextBundleID: nullableResponseString(run.ContextBundleID),
+		Status:          run.Status,
+		Role:            run.Role,
+		StartedAt:       nullableResponseString(run.StartedAt),
+		CompletedAt:     nullableResponseString(run.CompletedAt),
+		ErrorCode:       nullableResponseString(run.ErrorCode),
+		ErrorMessage:    nullableResponseString(run.ErrorMessage),
+	}
+}
+
 func getReviewSession(ctx context.Context, queries *dbgen.Queries, id string) (dbgen.ReviewSession, *apperror.Error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -477,6 +507,8 @@ func respondReviewWorkflowError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, orchestrator.ErrReviewSessionNotFound):
 		respondError(c, apperror.NotFound("review session was not found"))
+	case errors.Is(err, orchestrator.ErrAgentRunNotFound):
+		respondError(c, apperror.NotFound("agent run was not found"))
 	case errors.Is(err, orchestrator.ErrInvalidStatusTransition):
 		respondError(c, apperror.InvalidRequest(err.Error()))
 	case errors.Is(err, orchestrator.ErrNoEnabledReviewAgents):

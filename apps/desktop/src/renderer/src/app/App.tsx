@@ -81,6 +81,7 @@ import {
   type AgentConfigHealth,
   type AgentConfigInput,
   type AgentPreset,
+  type AgentRunSummary,
   type ApiClient,
   type ChangedFile,
   type ContextBundlePreview,
@@ -3550,6 +3551,7 @@ function ReviewThread({
                 <>
                   <ReviewRunningPanel
                     agents={selectedAgents}
+                    client={client}
                     summary={live.summary}
                     session={live.session ?? session}
                   />
@@ -4415,24 +4417,68 @@ function ReviewControlButtons({
 
 function ReviewRunningPanel({
   agents,
+  client,
   session,
   summary,
 }: {
   agents: AgentConfig[];
+  client: ApiClient | null;
   session: ReviewSession;
   summary: Loadable<ReviewSessionSummary>;
 }) {
+  const [cancelingRunId, setCancelingRunId] = useState<string | null>(null);
+  const [cancelError, setCancelError] = useState("");
   const data = summary.status === "success" ? summary.data : undefined;
   const progress = data?.progress_percent ?? statusProgress(session.status);
   const activeAgents = data?.active_agents ?? 0;
   const agentCounts = data?.agent_status_counts ?? {};
-  const agentCards =
-    agents.length > 0
-      ? agents.map((agent) => ({ id: agent.id, name: agent.name }))
-      : session.agents.map((agent) => ({
-          id: agent.id,
-          name: agent.agent_config_id,
-        }));
+  const runs = data?.agent_runs ?? [];
+  const agentCards: { id: string; name: string; run?: AgentRunSummary }[] =
+    runs.length > 0
+      ? runs.map((run) => ({
+          id: run.id,
+          name:
+            agents.find((agent) => agent.id === run.agent_config_id)?.name ??
+            run.agent_config_id,
+          run,
+          status: run.status,
+        }))
+      : agents.length > 0
+        ? agents.map((agent) => ({ id: agent.id, name: agent.name }))
+        : session.agents.map((agent) => ({
+            id: agent.id,
+            name: agent.agent_config_id,
+          }));
+
+  async function cancelAgentRun(run: AgentRunSummary) {
+    if (!client) {
+      setCancelError("Backend client is unavailable");
+      return;
+    }
+    setCancelError("");
+    setCancelingRunId(run.id);
+    const state = await loadApiResource(() =>
+      client.cancelAgentRun(session.id, run.id),
+    );
+    setCancelingRunId(null);
+    if (state.status === "error") {
+      setCancelError(state.error.message);
+    }
+  }
+
+  function fallbackStatus(index: number) {
+    return agentCounts.succeeded && index < Number(agentCounts.succeeded)
+      ? "succeeded"
+      : activeAgents > index
+        ? "running"
+        : "queued";
+  }
+
+  function canCancelRun(run?: AgentRunSummary) {
+    return Boolean(
+      run && (run.status === "queued" || run.status === "running"),
+    );
+  }
 
   return (
     <section className="bg-surface-raised rounded-lg border">
@@ -4452,6 +4498,12 @@ function ReviewRunningPanel({
             description={summary.error.message}
           />
         )}
+        {cancelError && (
+          <ErrorState
+            title="Could not cancel agent"
+            description={cancelError}
+          />
+        )}
         <div className="flex items-center gap-3">
           <Progress value={progress} />
           <span className="w-12 text-right text-xs">{progress}%</span>
@@ -4467,12 +4519,7 @@ function ReviewRunningPanel({
         </div>
         <div className="grid grid-cols-2 gap-2">
           {agentCards.map((agent, index) => {
-            const status =
-              agentCounts.succeeded && index < Number(agentCounts.succeeded)
-                ? "succeeded"
-                : activeAgents > index
-                  ? "running"
-                  : "queued";
+            const status = agent.run ? agent.run.status : fallbackStatus(index);
             return (
               <div
                 key={agent.id}
@@ -4486,6 +4533,21 @@ function ReviewRunningPanel({
                   <div className="text-muted-foreground text-xs">{status}</div>
                 </div>
                 <Badge variant="outline">{status}</Badge>
+                {canCancelRun(agent.run) && (
+                  <TooltipIconButton
+                    disabled={cancelingRunId === agent.run?.id}
+                    label={`Cancel ${agent.name}`}
+                    size="icon-sm"
+                    variant="ghost"
+                    onClick={() => {
+                      if (agent.run) {
+                        void cancelAgentRun(agent.run);
+                      }
+                    }}
+                  >
+                    <SquareIcon />
+                  </TooltipIconButton>
+                )}
               </div>
             );
           })}

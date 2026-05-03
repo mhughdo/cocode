@@ -204,6 +204,22 @@ describe("ApiClient", () => {
             error: null,
           });
         }
+        if (
+          url.endsWith(
+            "/api/review-sessions/session_1/agent-runs/agent_run_1/cancel",
+          )
+        ) {
+          return jsonResponse({
+            data: {
+              id: "agent_run_1",
+              review_session_id: "session_1",
+              agent_config_id: "agent_config_1",
+              status: "running",
+              role: "primary_reviewer",
+            },
+            error: null,
+          });
+        }
         if (url.includes("/api/review-sessions/session_1/findings")) {
           return jsonResponse({ data: findingListFixture, error: null });
         }
@@ -320,6 +336,12 @@ describe("ApiClient", () => {
       client.cancelReviewSession("session_1"),
     ).resolves.toMatchObject({ status: "canceled" });
     await expect(
+      client.cancelAgentRun("session_1", "agent_run_1"),
+    ).resolves.toMatchObject({
+      id: "agent_run_1",
+      status: "running",
+    });
+    await expect(
       client.listFindings("session_1", {
         status: "needs_triage",
         severity: "high",
@@ -418,6 +440,7 @@ describe("ApiClient", () => {
       "POST http://127.0.0.1:17658/api/review-sessions/session_1/pause",
       "POST http://127.0.0.1:17658/api/review-sessions/session_1/resume",
       "POST http://127.0.0.1:17658/api/review-sessions/session_1/cancel",
+      "POST http://127.0.0.1:17658/api/review-sessions/session_1/agent-runs/agent_run_1/cancel",
       "GET http://127.0.0.1:17658/api/review-sessions/session_1/findings?status=needs_triage&severity=high&q=auth",
       "GET http://127.0.0.1:17658/api/findings/finding_1",
       "PATCH http://127.0.0.1:17658/api/findings/finding_1/decision",
@@ -433,30 +456,30 @@ describe("ApiClient", () => {
       "POST http://127.0.0.1:17658/api/findings/finding_1/evidence-map/question",
       "GET http://127.0.0.1:17658/api/review-sessions/session_1/events?after_sequence=2",
     ]);
-    expect(seen[5]?.body).toEqual({
+    expect(seen[6]?.body).toEqual({
       decision: "accepted",
       reason: "verified from board",
     });
-    expect(seen[6]?.body).toEqual({
+    expect(seen[7]?.body).toEqual({
       draft_comment: "Please add the missing middleware.",
     });
-    expect(seen[8]?.body).toEqual({
+    expect(seen[9]?.body).toEqual({
       question: "Can you check counter-evidence?",
       agent_config_id: "agent_config_1",
     });
-    expect(seen[9]?.body).toEqual({
+    expect(seen[10]?.body).toEqual({
       action: "copy",
       reason: "sent to agent",
     });
-    expect(seen[10]?.body).toEqual({
+    expect(seen[11]?.body).toEqual({
       finding_ids: ["finding_1"],
       format: "markdown",
     });
-    expect(seen[12]?.body).toEqual({
+    expect(seen[13]?.body).toEqual({
       finding_ids: ["finding_1"],
       review_event: "COMMENT",
     });
-    expect(seen[15]?.body).toEqual({
+    expect(seen[16]?.body).toEqual({
       question: "Does this graph prove the missing guard?",
       agent_config_id: "agent_config_1",
       graph_refs: [{ node_id: "node_1" }],

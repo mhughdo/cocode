@@ -363,7 +363,21 @@ export interface ReviewSessionSummary {
   agent_runs_total: number;
   active_agents: number;
   agent_status_counts: Record<string, number>;
+  agent_runs?: AgentRunSummary[];
   finding_counts?: Record<string, unknown>;
+}
+
+export interface AgentRunSummary {
+  id: string;
+  review_session_id: string;
+  agent_config_id: string;
+  context_bundle_id?: string;
+  status: string;
+  role: string;
+  started_at?: string;
+  completed_at?: string;
+  error_code?: string;
+  error_message?: string;
 }
 
 export interface ReviewEvent {
@@ -1201,6 +1215,18 @@ export class ApiClient {
   ) {
     return this.post<ReviewSession>(
       `/api/review-sessions/${encodeURIComponent(id)}/cancel`,
+      undefined,
+      options,
+    );
+  }
+
+  cancelAgentRun(
+    reviewSessionId: string,
+    agentRunId: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.post<AgentRunSummary>(
+      `/api/review-sessions/${encodeURIComponent(reviewSessionId)}/agent-runs/${encodeURIComponent(agentRunId)}/cancel`,
       undefined,
       options,
     );

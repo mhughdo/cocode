@@ -24,6 +24,7 @@ import (
 	"github.com/hughdo/cocode/services/cocoded/internal/db"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
 	evidencepkg "github.com/hughdo/cocode/services/cocoded/internal/evidence"
+	"github.com/hughdo/cocode/services/cocoded/internal/orchestrator"
 )
 
 func TestHealthEndpoint(t *testing.T) {
@@ -2840,6 +2841,87 @@ func TestCancelReviewSessionEndpointStopsRunningWorkflow(t *testing.T) {
 	}
 }
 
+func TestCancelAgentRunEndpointStopsOneRunningAgent(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	repoPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoPath, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, "src", "new.go"), []byte("package src\n\nfunc RequireAdmin() bool { return true }\n"), 0o644); err != nil {
+		t.Fatalf("write repo file: %v", err)
+	}
+	createHTTPAPISnapshotAt(t, queries, repoPath)
+	createHTTPAPIAgentConfigWithCommand(t, queries, "agent_config_slow_a", "primary_reviewer", 1, writeSlowHTTPAPIAgent(t), agents.OutputJSON, `{"prompt_delivery":"stdin","timeout_seconds":30}`)
+	createHTTPAPIAgentConfigWithCommand(t, queries, "agent_config_slow_b", "secondary_reviewer", 1, writeSlowHTTPAPIAgent(t), agents.OutputJSON, `{"prompt_delivery":"stdin","timeout_seconds":30}`)
+	session := createHTTPAPIReviewSessionRow(t, queries, "review_session_cancel_one", []string{"agent_config_slow_a", "agent_config_slow_b"})
+
+	startRequest := httptest.NewRequest(http.MethodPost, "/api/review-sessions/"+session.ID+"/start", nil)
+	startRequest.Header.Set("X-Cocode-Token", "test-token")
+	startResponse := httptest.NewRecorder()
+	router.ServeHTTP(startResponse, startRequest)
+	if startResponse.Code != http.StatusOK {
+		t.Fatalf("start status = %d, body = %s", startResponse.Code, startResponse.Body.String())
+	}
+	running := waitForHTTPAPIAgentRunCount(t, queries, session.ID, "running", 2)
+	targetRun := running[0]
+
+	cancelRequest := httptest.NewRequest(http.MethodPost, "/api/review-sessions/"+session.ID+"/agent-runs/"+targetRun.ID+"/cancel", nil)
+	cancelRequest.Header.Set("X-Cocode-Token", "test-token")
+	cancelResponse := httptest.NewRecorder()
+	router.ServeHTTP(cancelResponse, cancelRequest)
+	if cancelResponse.Code != http.StatusOK {
+		t.Fatalf("cancel agent status = %d, body = %s", cancelResponse.Code, cancelResponse.Body.String())
+	}
+	canceledRun := decodeAgentRunResponse(t, cancelResponse.Body.Bytes())
+	if canceledRun.ID != targetRun.ID || canceledRun.ReviewSessionID != session.ID {
+		t.Fatalf("cancel response = %+v", canceledRun)
+	}
+	waitForHTTPAPIAgentRunIDStatus(t, queries, targetRun.ID, "canceled")
+
+	runs, err := queries.ListAgentRunsBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListAgentRunsBySession() error = %v", err)
+	}
+	statusByID := map[string]string{}
+	for _, run := range runs {
+		statusByID[run.ID] = run.Status
+	}
+	if statusByID[targetRun.ID] != "canceled" {
+		t.Fatalf("runs = %+v", runs)
+	}
+	otherActive := false
+	for _, run := range running[1:] {
+		if statusByID[run.ID] == "running" {
+			otherActive = true
+		}
+	}
+	if !otherActive {
+		t.Fatalf("canceling one run stopped all runs: %+v", runs)
+	}
+	events, err := queries.ListEventsByReviewSession(context.Background(), nullableString(session.ID))
+	if err != nil {
+		t.Fatalf("ListEventsByReviewSession() error = %v", err)
+	}
+	seenRequest := false
+	for _, event := range events {
+		if event.Type == "AgentRunCancelRequested" && event.AgentRunID.Valid && event.AgentRunID.String == targetRun.ID {
+			seenRequest = true
+			break
+		}
+	}
+	if !seenRequest {
+		t.Fatalf("missing AgentRunCancelRequested for %s: %+v", targetRun.ID, events)
+	}
+
+	cancelSessionRequest := httptest.NewRequest(http.MethodPost, "/api/review-sessions/"+session.ID+"/cancel", nil)
+	cancelSessionRequest.Header.Set("X-Cocode-Token", "test-token")
+	cancelSessionResponse := httptest.NewRecorder()
+	router.ServeHTTP(cancelSessionResponse, cancelSessionRequest)
+	if cancelSessionResponse.Code != http.StatusOK {
+		t.Fatalf("cleanup cancel session status = %d, body = %s", cancelSessionResponse.Code, cancelSessionResponse.Body.String())
+	}
+}
+
 func TestPauseResumeReviewSessionEndpoint(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
 	repoPath := t.TempDir()
@@ -3466,6 +3548,56 @@ func waitForHTTPAPIAgentRunStatus(t *testing.T, queries *dbgen.Queries, reviewSe
 	return dbgen.AgentRun{}
 }
 
+func waitForHTTPAPIAgentRunIDStatus(t *testing.T, queries *dbgen.Queries, runID string, status string) dbgen.AgentRun {
+	t.Helper()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		run, err := queries.GetAgentRun(context.Background(), runID)
+		if err != nil {
+			t.Fatalf("GetAgentRun(%s) error = %v", runID, err)
+		}
+		if run.Status == status {
+			return run
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	run, err := queries.GetAgentRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("GetAgentRun(%s) after timeout error = %v", runID, err)
+	}
+	t.Fatalf("agent run %s status = %s after timeout, want %s", runID, run.Status, status)
+	return dbgen.AgentRun{}
+}
+
+func waitForHTTPAPIAgentRunCount(t *testing.T, queries *dbgen.Queries, reviewSessionID string, status string, count int) []dbgen.AgentRun {
+	t.Helper()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		runs, err := queries.ListAgentRunsBySession(context.Background(), reviewSessionID)
+		if err != nil {
+			t.Fatalf("ListAgentRunsBySession(%s) error = %v", reviewSessionID, err)
+		}
+		matching := make([]dbgen.AgentRun, 0, len(runs))
+		for _, run := range runs {
+			if run.Status == status {
+				matching = append(matching, run)
+			}
+		}
+		if len(matching) >= count {
+			return matching
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	runs, err := queries.ListAgentRunsBySession(context.Background(), reviewSessionID)
+	if err != nil {
+		t.Fatalf("ListAgentRunsBySession(%s) after timeout error = %v", reviewSessionID, err)
+	}
+	t.Fatalf("agent runs with status %s = %+v after timeout, want %d", status, runs, count)
+	return nil
+}
+
 func fakeJSONAgentPath(t *testing.T) string {
 	t.Helper()
 
@@ -3609,6 +3741,22 @@ func decodeReviewSummaryResponse(t *testing.T, content []byte) reviewSummaryTest
 	var envelope struct {
 		Data  reviewSummaryTestResponse `json:"data"`
 		Error any                       `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeAgentRunResponse(t *testing.T, content []byte) orchestrator.AgentRun {
+	t.Helper()
+
+	var envelope struct {
+		Data  orchestrator.AgentRun `json:"data"`
+		Error any                   `json:"error"`
 	}
 	if err := json.Unmarshal(content, &envelope); err != nil {
 		t.Fatalf("decode response: %v", err)

@@ -61,6 +61,7 @@ Review the provided diff and bounded repository context. Return evidence-backed 
 var (
 	ErrServiceNotConfigured      = errors.New("review workflow service is not configured")
 	ErrReviewSessionNotFound     = errors.New("review session was not found")
+	ErrAgentRunNotFound          = errors.New("agent run was not found")
 	ErrInvalidStatusTransition   = errors.New("invalid review session status transition")
 	ErrNoEnabledReviewAgents     = errors.New("review session has no enabled agents")
 	ErrInvalidAgentConfiguration = errors.New("agent configuration is invalid")
@@ -119,8 +120,22 @@ type RunSummary struct {
 	AgentRunsTotal      int            `json:"agent_runs_total"`
 	ActiveAgents        int            `json:"active_agents"`
 	AgentStatusCounts   map[string]int `json:"agent_status_counts"`
+	AgentRuns           []AgentRun     `json:"agent_runs,omitempty"`
 	FindingCounts       FindingCounts  `json:"finding_counts"`
 	UpdatedAt           string         `json:"updated_at,omitempty"`
+}
+
+type AgentRun struct {
+	ID              string `json:"id"`
+	ReviewSessionID string `json:"review_session_id"`
+	AgentConfigID   string `json:"agent_config_id"`
+	ContextBundleID string `json:"context_bundle_id,omitempty"`
+	Status          string `json:"status"`
+	Role            string `json:"role"`
+	StartedAt       string `json:"started_at,omitempty"`
+	CompletedAt     string `json:"completed_at,omitempty"`
+	ErrorCode       string `json:"error_code,omitempty"`
+	ErrorMessage    string `json:"error_message,omitempty"`
 }
 
 type FindingCounts struct {
@@ -263,6 +278,56 @@ func (s *Service) Cancel(ctx context.Context, reviewSessionID string) (dbgen.Rev
 		}
 	}
 	return updated, nil
+}
+
+func (s *Service) CancelAgentRun(ctx context.Context, reviewSessionID string, agentRunID string) (dbgen.AgentRun, error) {
+	if err := s.validate(); err != nil {
+		return dbgen.AgentRun{}, err
+	}
+	ctx = contextOrBackground(ctx)
+	reviewSessionID = strings.TrimSpace(reviewSessionID)
+	agentRunID = strings.TrimSpace(agentRunID)
+	if reviewSessionID == "" || agentRunID == "" {
+		return dbgen.AgentRun{}, fmt.Errorf("%w: review session id and agent run id are required", ErrInvalidStatusTransition)
+	}
+	if _, err := s.Queries.GetReviewSession(ctx, reviewSessionID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return dbgen.AgentRun{}, ErrReviewSessionNotFound
+		}
+		return dbgen.AgentRun{}, fmt.Errorf("read review session: %w", err)
+	}
+	run, err := s.Queries.GetAgentRun(ctx, agentRunID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return dbgen.AgentRun{}, ErrAgentRunNotFound
+		}
+		return dbgen.AgentRun{}, fmt.Errorf("read agent run: %w", err)
+	}
+	if run.ReviewSessionID != reviewSessionID {
+		return dbgen.AgentRun{}, ErrAgentRunNotFound
+	}
+	if run.Status != agentrun.RunStatusQueued && run.Status != agentrun.RunStatusRunning {
+		return run, nil
+	}
+	if err := s.AgentManager.Cancel(ctx, run.ID); err != nil {
+		if errors.Is(err, agentrun.ErrRunNotActive) {
+			return run, nil
+		}
+		return dbgen.AgentRun{}, fmt.Errorf("cancel agent run %s: %w", run.ID, err)
+	}
+	if err := s.appendEvent(ctx, appendEventParams{
+		ReviewSessionID: reviewSessionID,
+		AgentRunID:      nullableEventString(run.ID),
+		Type:            "AgentRunCancelRequested",
+		Payload: map[string]any{
+			"agent_run_id":    run.ID,
+			"agent_config_id": run.AgentConfigID,
+			"status":          run.Status,
+		},
+	}); err != nil {
+		return dbgen.AgentRun{}, err
+	}
+	return run, nil
 }
 
 func (s *Service) Pause(ctx context.Context, reviewSessionID string) (dbgen.ReviewSession, error) {
@@ -470,11 +535,13 @@ func (s *Service) Summary(ctx context.Context, reviewSessionID string) (RunSumma
 
 	agentStatusCounts := map[string]int{}
 	activeAgents := 0
+	agentRuns := make([]AgentRun, 0, len(runs))
 	for _, run := range runs {
 		agentStatusCounts[run.Status]++
 		if run.Status == agentrun.RunStatusQueued || run.Status == agentrun.RunStatusRunning {
 			activeAgents++
 		}
+		agentRuns = append(agentRuns, agentRunSummary(run))
 	}
 	findingCounts := FindingCounts{
 		Candidates:           len(candidates),
@@ -503,6 +570,7 @@ func (s *Service) Summary(ctx context.Context, reviewSessionID string) (RunSumma
 		AgentRunsTotal:      len(runs),
 		ActiveAgents:        activeAgents,
 		AgentStatusCounts:   agentStatusCounts,
+		AgentRuns:           agentRuns,
 		FindingCounts:       findingCounts,
 		UpdatedAt:           session.UpdatedAt,
 	}, nil
@@ -1653,6 +1721,21 @@ func contextOrBackground(ctx context.Context) context.Context {
 		return context.Background()
 	}
 	return ctx
+}
+
+func agentRunSummary(run dbgen.AgentRun) AgentRun {
+	return AgentRun{
+		ID:              run.ID,
+		ReviewSessionID: run.ReviewSessionID,
+		AgentConfigID:   run.AgentConfigID,
+		ContextBundleID: nullableValue(run.ContextBundleID),
+		Status:          run.Status,
+		Role:            run.Role,
+		StartedAt:       nullableValue(run.StartedAt),
+		CompletedAt:     nullableValue(run.CompletedAt),
+		ErrorCode:       nullableValue(run.ErrorCode),
+		ErrorMessage:    nullableValue(run.ErrorMessage),
+	}
 }
 
 func nullableString(value string) sql.NullString {

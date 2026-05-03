@@ -229,7 +229,7 @@ Large parallel workstreams:
 |---|---|---|---|---|---|---|
 | T120 | Define ContextBundle model | Implement domain/API models for bundles and items. | Done | T058, T060 | T121 | Model maps to DB; artifacts can store rendered bundle. |
 | T121 | Build diff context items | Convert changed file hunks into context items. | Done | T079, T120 | T122 | Context includes file/path/line/content; tests cover multiple hunks. |
-| T122 | Add changed-file full/slice context | Include full small files or slices around changed lines. | Not started | T071, T121 | T123 | Respects size/token budgets and exclusions. |
+| T122 | Add changed-file full/slice context | Include full small files or slices around changed lines. | Done | T071, T121 | T123 | Respects size/token budgets and exclusions. |
 | T123 | Add related call-site search | Use ripgrep/code search to find references to changed symbols/paths. | Not started | T071, T121 | T124 | Returns bounded related items with file/line refs. |
 | T124 | Add related test discovery | Find likely tests by path/name/import references. | Not started | T071, T121 | T125 | Test files added when found; absence recorded. |
 | T125 | Add project convention discovery | Include CODEOWNERS, lint/config, README snippets, package/build config. | Not started | T084, T120 | T126 | Project rules context is bounded and auditable. |

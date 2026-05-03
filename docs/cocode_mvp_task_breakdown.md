@@ -234,7 +234,7 @@ Large parallel workstreams:
 | T124 | Add related test discovery | Find likely tests by path/name/import references. | Done | T071, T121 | T125 | Test files added when found; absence recorded. |
 | T125 | Add project convention discovery | Include CODEOWNERS, lint/config, README snippets, package/build config. | Done | T084, T120 | T126 | Project rules context is bounded and auditable. |
 | T126 | Add prior comments context | Include previous PR comments when available. | Done | T083, T120 | T127 | Duplicate avoidance context stored as items. |
-| T127 | Add prior decision memory | Include prior dismissals/rules from review_rules. | Not started | T058, T120 | T128 | Dismissal memory can be queried and included. |
+| T127 | Add prior decision memory | Include prior dismissals/rules from review_rules. | Done | T058, T120 | T128 | Dismissal memory can be queried and included. |
 | T128 | Add token estimation | Estimate tokens per item and bundle. | Not started | T120 | T129 | Estimates appear in API/UI; tests cover known samples. |
 | T129 | Add context budgeter | Select/drop items according to review depth and budget. | Not started | T128 | T130 | Budgeting is deterministic and records dropped reasons. |
 | T130 | Add secret redaction | Redact token-like strings, private keys, env values before cloud-backed CLI context. | Not started | T120 | T333 | Tests cover secret fixtures; redaction report artifact created. |

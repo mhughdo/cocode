@@ -28,6 +28,7 @@ type Querier interface {
 	CreateHumanDecision(ctx context.Context, arg CreateHumanDecisionParams) (HumanDecision, error)
 	CreatePullRequestSnapshot(ctx context.Context, arg CreatePullRequestSnapshotParams) (PullRequestSnapshot, error)
 	CreateRepository(ctx context.Context, arg CreateRepositoryParams) (Repository, error)
+	CreateReviewRule(ctx context.Context, arg CreateReviewRuleParams) (ReviewRule, error)
 	CreateReviewSession(ctx context.Context, arg CreateReviewSessionParams) (ReviewSession, error)
 	CreateReviewSessionAgent(ctx context.Context, arg CreateReviewSessionAgentParams) (ReviewSessionAgent, error)
 	CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) (Workspace, error)
@@ -47,6 +48,7 @@ type Querier interface {
 	DeleteFindingSearch(ctx context.Context, findingID string) error
 	DeletePullRequestSnapshot(ctx context.Context, id string) error
 	DeleteRepository(ctx context.Context, id string) error
+	DeleteReviewRule(ctx context.Context, id string) error
 	DeleteReviewSession(ctx context.Context, id string) error
 	DeleteWorkspace(ctx context.Context, id string) error
 	GetAgentConfig(ctx context.Context, id string) (AgentConfig, error)
@@ -68,6 +70,7 @@ type Querier interface {
 	GetPullRequestSnapshot(ctx context.Context, id string) (PullRequestSnapshot, error)
 	GetRepository(ctx context.Context, id string) (Repository, error)
 	GetRepositoryByLocalPath(ctx context.Context, arg GetRepositoryByLocalPathParams) (Repository, error)
+	GetReviewRule(ctx context.Context, id string) (ReviewRule, error)
 	GetReviewSession(ctx context.Context, id string) (ReviewSession, error)
 	GetWorkspace(ctx context.Context, id string) (Workspace, error)
 	GetWorkspaceByRootPath(ctx context.Context, rootPath string) (Workspace, error)
@@ -83,6 +86,7 @@ type Querier interface {
 	ListChangedFilesBySnapshot(ctx context.Context, snapshotID string) ([]ChangedFile, error)
 	ListContextBundlesBySession(ctx context.Context, reviewSessionID string) ([]ContextBundle, error)
 	ListContextItemsByBundle(ctx context.Context, contextBundleID string) ([]ContextItem, error)
+	ListEnabledReviewRulesByWorkspace(ctx context.Context, workspaceID string) ([]ReviewRule, error)
 	ListEventsByReviewSession(ctx context.Context, reviewSessionID sql.NullString) ([]Event, error)
 	ListEvidenceEdgesByGraph(ctx context.Context, evidenceGraphID string) ([]EvidenceEdge, error)
 	ListEvidenceItemsByFinding(ctx context.Context, findingID string) ([]EvidenceItem, error)
@@ -94,12 +98,14 @@ type Querier interface {
 	ListHumanDecisionsBySession(ctx context.Context, reviewSessionID string) ([]HumanDecision, error)
 	ListPullRequestSnapshotsByRepository(ctx context.Context, repositoryID string) ([]PullRequestSnapshot, error)
 	ListRepositoriesByWorkspace(ctx context.Context, workspaceID string) ([]Repository, error)
+	ListReviewRulesByWorkspace(ctx context.Context, workspaceID string) ([]ReviewRule, error)
 	ListReviewSessionAgents(ctx context.Context, reviewSessionID string) ([]ReviewSessionAgent, error)
 	ListReviewSessionsByWorkspace(ctx context.Context, workspaceID string) ([]ReviewSession, error)
 	ListWorkspaces(ctx context.Context) ([]Workspace, error)
 	NextEventSequence(ctx context.Context, reviewSessionID sql.NullString) (int64, error)
 	SearchEvidence(ctx context.Context, arg SearchEvidenceParams) ([]string, error)
 	SearchFindings(ctx context.Context, arg SearchFindingsParams) ([]string, error)
+	SetReviewRuleEnabled(ctx context.Context, arg SetReviewRuleEnabledParams) (ReviewRule, error)
 	UpdateAgentConfig(ctx context.Context, arg UpdateAgentConfigParams) (AgentConfig, error)
 	UpdateAgentRunStatus(ctx context.Context, arg UpdateAgentRunStatusParams) (AgentRun, error)
 	UpdateCallPath(ctx context.Context, arg UpdateCallPathParams) (CallPath, error)
@@ -113,6 +119,7 @@ type Querier interface {
 	UpdateFindingDecisionStatus(ctx context.Context, arg UpdateFindingDecisionStatusParams) (Finding, error)
 	UpdateFindingVerificationStatus(ctx context.Context, arg UpdateFindingVerificationStatusParams) (Finding, error)
 	UpdateRepository(ctx context.Context, arg UpdateRepositoryParams) (Repository, error)
+	UpdateReviewRule(ctx context.Context, arg UpdateReviewRuleParams) (ReviewRule, error)
 	UpdateReviewSession(ctx context.Context, arg UpdateReviewSessionParams) (ReviewSession, error)
 	UpdateReviewSessionAgentEnabled(ctx context.Context, arg UpdateReviewSessionAgentEnabledParams) (ReviewSessionAgent, error)
 	UpdateReviewSessionStatus(ctx context.Context, arg UpdateReviewSessionStatusParams) (ReviewSession, error)

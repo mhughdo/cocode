@@ -299,6 +299,17 @@ type Repository struct {
 	UpdatedAt     string         `json:"updated_at"`
 }
 
+type ReviewRule struct {
+	ID          string `json:"id"`
+	WorkspaceID string `json:"workspace_id"`
+	Scope       string `json:"scope"`
+	RuleType    string `json:"rule_type"`
+	Content     string `json:"content"`
+	Enabled     int64  `json:"enabled"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+}
+
 type ReviewSession struct {
 	ID                  string         `json:"id"`
 	WorkspaceID         string         `json:"workspace_id"`

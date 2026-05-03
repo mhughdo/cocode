@@ -1193,6 +1193,61 @@ func TestReviewSessionEventsEndpointStreamsLiveWorkflowEvents(t *testing.T) {
 	t.Fatal("replay stream did not emit an event after Last-Event-ID")
 }
 
+func TestCancelReviewSessionEndpointStopsRunningWorkflow(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	repoPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoPath, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, "src", "new.go"), []byte("package src\n\nfunc RequireAdmin() bool { return true }\n"), 0o644); err != nil {
+		t.Fatalf("write repo file: %v", err)
+	}
+	createHTTPAPISnapshotAt(t, queries, repoPath)
+	createHTTPAPIAgentConfigWithCommand(t, queries, "agent_config_slow", "primary_reviewer", 1, writeSlowHTTPAPIAgent(t), agents.OutputJSON, `{"prompt_delivery":"stdin","timeout_seconds":30}`)
+	session := createHTTPAPIReviewSessionRow(t, queries, "review_session_cancel", []string{"agent_config_slow"})
+
+	startRequest := httptest.NewRequest(http.MethodPost, "/api/review-sessions/"+session.ID+"/start", nil)
+	startRequest.Header.Set("X-Cocode-Token", "test-token")
+	startResponse := httptest.NewRecorder()
+	router.ServeHTTP(startResponse, startRequest)
+	if startResponse.Code != http.StatusOK {
+		t.Fatalf("start status = %d, body = %s", startResponse.Code, startResponse.Body.String())
+	}
+	waitForHTTPAPIAgentRunStatus(t, queries, session.ID, "running")
+
+	cancelRequest := httptest.NewRequest(http.MethodPost, "/api/review-sessions/"+session.ID+"/cancel", nil)
+	cancelRequest.Header.Set("X-Cocode-Token", "test-token")
+	cancelResponse := httptest.NewRecorder()
+	router.ServeHTTP(cancelResponse, cancelRequest)
+	if cancelResponse.Code != http.StatusOK {
+		t.Fatalf("cancel status = %d, body = %s", cancelResponse.Code, cancelResponse.Body.String())
+	}
+	canceled := waitForHTTPAPIReviewSessionStatus(t, queries, session.ID, "canceled")
+	if !canceled.CompletedAt.Valid {
+		t.Fatalf("canceled session missing completed_at: %+v", canceled)
+	}
+	runs, err := queries.ListAgentRunsBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListAgentRunsBySession() error = %v", err)
+	}
+	if len(runs) != 1 || runs[0].Status != "canceled" {
+		t.Fatalf("agent runs = %+v", runs)
+	}
+	events, err := queries.ListEventsByReviewSession(context.Background(), nullableString(session.ID))
+	if err != nil {
+		t.Fatalf("ListEventsByReviewSession() error = %v", err)
+	}
+	seen := map[string]bool{}
+	for _, event := range events {
+		seen[event.Type] = true
+	}
+	for _, typ := range []string{"ReviewSessionCancelRequested", "AgentRunCanceled", "ReviewSessionCanceled"} {
+		if !seen[typ] {
+			t.Fatalf("events missing %s: %+v", typ, events)
+		}
+	}
+}
+
 func TestBuildReviewContextPreviewEndpointPersistsBundle(t *testing.T) {
 	repoPath := t.TempDir()
 	writeHTTPAPIRepoFile(t, repoPath, "app/main.go", "package main\n\nconst apiKey = \"sk-abcdefghijklmnopqrstuvwxyz\"\n\nfunc RequireAdmin() {}\n")
@@ -1606,6 +1661,30 @@ func waitForHTTPAPIReviewSessionStatus(t *testing.T, queries *dbgen.Queries, id 
 	return dbgen.ReviewSession{}
 }
 
+func waitForHTTPAPIAgentRunStatus(t *testing.T, queries *dbgen.Queries, reviewSessionID string, status string) dbgen.AgentRun {
+	t.Helper()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		runs, err := queries.ListAgentRunsBySession(context.Background(), reviewSessionID)
+		if err != nil {
+			t.Fatalf("ListAgentRunsBySession(%s) error = %v", reviewSessionID, err)
+		}
+		for _, run := range runs {
+			if run.Status == status {
+				return run
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	runs, err := queries.ListAgentRunsBySession(context.Background(), reviewSessionID)
+	if err != nil {
+		t.Fatalf("ListAgentRunsBySession(%s) after timeout error = %v", reviewSessionID, err)
+	}
+	t.Fatalf("no agent run reached status %s after timeout: %+v", status, runs)
+	return dbgen.AgentRun{}
+}
+
 func fakeJSONAgentPath(t *testing.T) string {
 	t.Helper()
 
@@ -1615,6 +1694,17 @@ func fakeJSONAgentPath(t *testing.T) string {
 	}
 	if err := os.Chmod(path, 0o755); err != nil {
 		t.Fatalf("chmod fake agent: %v", err)
+	}
+	return path
+}
+
+func writeSlowHTTPAPIAgent(t *testing.T) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "slow-agent.sh")
+	content := "#!/bin/sh\nset -eu\n/bin/cat >/dev/null || true\n/bin/sleep 10\nprintf '{\"findings\":[]}'\n"
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("write slow agent: %v", err)
 	}
 	return path
 }

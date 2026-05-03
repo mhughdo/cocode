@@ -62,6 +62,7 @@ var (
 	ErrInvalidStatusTransition   = errors.New("invalid review session status transition")
 	ErrNoEnabledReviewAgents     = errors.New("review session has no enabled agents")
 	ErrInvalidAgentConfiguration = errors.New("agent configuration is invalid")
+	ErrReviewSessionCanceled     = errors.New("review session was canceled")
 )
 
 type Service struct {
@@ -149,6 +150,9 @@ func (s *Service) Run(ctx context.Context, reviewSessionID string) error {
 	if err == nil {
 		return nil
 	}
+	if errors.Is(err, ErrReviewSessionCanceled) {
+		return nil
+	}
 	failCtx := context.WithoutCancel(ctx)
 	_, _ = s.Transition(failCtx, reviewSessionID, StatusFailed)
 	_ = s.appendEvent(failCtx, appendEventParams{
@@ -160,6 +164,72 @@ func (s *Service) Run(ctx context.Context, reviewSessionID string) error {
 		},
 	})
 	return err
+}
+
+func (s *Service) Cancel(ctx context.Context, reviewSessionID string) (dbgen.ReviewSession, error) {
+	if err := s.validate(); err != nil {
+		return dbgen.ReviewSession{}, err
+	}
+	ctx = contextOrBackground(ctx)
+	reviewSessionID = strings.TrimSpace(reviewSessionID)
+	if reviewSessionID == "" {
+		return dbgen.ReviewSession{}, fmt.Errorf("%w: review session id is required", ErrInvalidStatusTransition)
+	}
+	current, err := s.Queries.GetReviewSession(ctx, reviewSessionID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return dbgen.ReviewSession{}, ErrReviewSessionNotFound
+		}
+		return dbgen.ReviewSession{}, fmt.Errorf("read review session: %w", err)
+	}
+	if current.Status == StatusCanceling || current.Status == StatusCanceled {
+		return current, nil
+	}
+	nextStatus := StatusCanceling
+	if current.Status == StatusQueued {
+		nextStatus = StatusCanceled
+	}
+	updated, err := s.Transition(ctx, reviewSessionID, nextStatus)
+	if err != nil {
+		return dbgen.ReviewSession{}, err
+	}
+	if err := s.appendEvent(ctx, appendEventParams{
+		ReviewSessionID: reviewSessionID,
+		Type:            "ReviewSessionCancelRequested",
+		Payload: map[string]any{
+			"previous_status": current.Status,
+			"status":          updated.Status,
+		},
+	}); err != nil {
+		return dbgen.ReviewSession{}, err
+	}
+	runs, err := s.Queries.ListAgentRunsBySession(ctx, reviewSessionID)
+	if err != nil {
+		return dbgen.ReviewSession{}, fmt.Errorf("list agent runs: %w", err)
+	}
+	canceledRuns := 0
+	for _, run := range runs {
+		if run.Status != agentrun.RunStatusQueued && run.Status != agentrun.RunStatusRunning {
+			continue
+		}
+		if err := s.AgentManager.Cancel(ctx, run.ID); err != nil && !errors.Is(err, agentrun.ErrRunNotActive) {
+			return dbgen.ReviewSession{}, fmt.Errorf("cancel agent run %s: %w", run.ID, err)
+		}
+		canceledRuns++
+	}
+	if updated.Status == StatusCanceled {
+		if err := s.appendEvent(ctx, appendEventParams{
+			ReviewSessionID: reviewSessionID,
+			Type:            "ReviewSessionCanceled",
+			Payload: map[string]any{
+				"canceled_agent_runs": canceledRuns,
+				"status":              updated.Status,
+			},
+		}); err != nil {
+			return dbgen.ReviewSession{}, err
+		}
+	}
+	return updated, nil
 }
 
 func (s *Service) Transition(ctx context.Context, reviewSessionID string, next string) (dbgen.ReviewSession, error) {
@@ -290,6 +360,9 @@ func (s *Service) LoadCheckpoint(ctx context.Context, reviewSessionID string) (C
 func (s *Service) run(ctx context.Context, reviewSessionID string) error {
 	session, err := s.Transition(ctx, reviewSessionID, StatusRunning)
 	if err != nil {
+		if canceled, checkErr := s.cancellationRequested(ctx, reviewSessionID); checkErr == nil && canceled {
+			return ErrReviewSessionCanceled
+		}
 		return err
 	}
 	if err := s.appendEvent(ctx, appendEventParams{
@@ -362,6 +435,11 @@ func (s *Service) run(ctx context.Context, reviewSessionID string) error {
 	}); err != nil {
 		return err
 	}
+	if canceled, err := s.cancellationRequested(ctx, session.ID); err != nil {
+		return err
+	} else if canceled {
+		return s.completeCanceled(ctx, session.ID)
+	}
 
 	failedRuns := 0
 	succeededRuns := 0
@@ -380,6 +458,11 @@ func (s *Service) run(ctx context.Context, reviewSessionID string) error {
 		return nil
 	}); err != nil {
 		return err
+	}
+	if canceled, err := s.cancellationRequested(ctx, session.ID); err != nil {
+		return err
+	} else if canceled {
+		return s.completeCanceled(ctx, session.ID)
 	}
 	if failedRuns > 0 {
 		if err := s.appendEvent(ctx, appendEventParams{
@@ -405,9 +488,19 @@ func (s *Service) run(ctx context.Context, reviewSessionID string) error {
 		PhaseBuildEvidence,
 		PhaseDraftComments,
 	} {
+		if canceled, err := s.cancellationRequested(ctx, session.ID); err != nil {
+			return err
+		} else if canceled {
+			return s.completeCanceled(ctx, session.ID)
+		}
 		if err := s.withPhase(ctx, session.ID, phase, func() error { return nil }); err != nil {
 			return err
 		}
+	}
+	if canceled, err := s.cancellationRequested(ctx, session.ID); err != nil {
+		return err
+	} else if canceled {
+		return s.completeCanceled(ctx, session.ID)
 	}
 
 	completed, err := s.Transition(ctx, session.ID, StatusCompleted)
@@ -421,6 +514,38 @@ func (s *Service) run(ctx context.Context, reviewSessionID string) error {
 			"status": completed.Status,
 		},
 	})
+}
+
+func (s *Service) cancellationRequested(ctx context.Context, reviewSessionID string) (bool, error) {
+	session, err := s.Queries.GetReviewSession(ctx, reviewSessionID)
+	if err != nil {
+		return false, fmt.Errorf("read review session cancellation state: %w", err)
+	}
+	return session.Status == StatusCanceling || session.Status == StatusCanceled, nil
+}
+
+func (s *Service) completeCanceled(ctx context.Context, reviewSessionID string) error {
+	session, err := s.Queries.GetReviewSession(ctx, reviewSessionID)
+	if err != nil {
+		return fmt.Errorf("read review session before cancel completion: %w", err)
+	}
+	if session.Status == StatusCanceled {
+		return ErrReviewSessionCanceled
+	}
+	canceled, err := s.Transition(ctx, reviewSessionID, StatusCanceled)
+	if err != nil {
+		return err
+	}
+	if err := s.appendEvent(ctx, appendEventParams{
+		ReviewSessionID: reviewSessionID,
+		Type:            "ReviewSessionCanceled",
+		Payload: map[string]any{
+			"status": canceled.Status,
+		},
+	}); err != nil {
+		return err
+	}
+	return ErrReviewSessionCanceled
 }
 
 func (s *Service) runAgents(ctx context.Context, items []runContext) ([]agentrun.RunResult, error) {

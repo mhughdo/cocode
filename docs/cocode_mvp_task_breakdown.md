@@ -282,13 +282,13 @@ Large parallel workstreams:
 | T178 | Implement dedupe exact/overlap | Merge candidates by fingerprint and line overlap. | Done | T177 | T179 | Duplicate candidates merge into one finding. |
 | T179 | Implement optional LLM dedupe hook | Add interface for future/optional LLM dedupe when deterministic merge is uncertain. | Not started | T178 | T180 | Hook is feature-flagged; default deterministic path works. |
 | T180 | Implement canonical finding creation | Create Finding rows and candidate links. | Done | T178, T058 | T181 | Canonical findings include merged count and provenance. |
-| T181 | Implement severity/category normalization | Normalize agent-specific labels into app enum values. | Not started | T171 | T182 | Unknown labels map to safe defaults. |
-| T182 | Implement finding ranking | Sort by severity, verification, confidence, agent agreement. | Not started | T180 | T256 | API returns stable sort order. |
-| T183 | Implement finding list API | Return findings with filters/search/status counts. | Not started | T180, T062 | T256 | UI can filter all/verified/needs triage/accepted/dismissed. |
+| T181 | Implement severity/category normalization | Normalize agent-specific labels into app enum values. | Done | T171 | T182 | Unknown labels map to safe defaults. |
+| T182 | Implement finding ranking | Sort by severity, verification, confidence, agent agreement. | Done | T180 | T256 | API returns stable sort order. |
+| T183 | Implement finding list API | Return findings with filters/search/status counts. | Done | T180, T062 | T256 | UI can filter all/verified/needs triage/accepted/dismissed. |
 | T184 | Implement finding detail API | Return finding, candidates/provenance, evidence, code snippets, draft comment. | Not started | T180, T204 | T260 | Finding Detail screen has all needed data. |
-| T185 | Implement decision API | Accept, dismiss, defer, copied, published decisions. | Not started | T058, T180 | T256,T290 | Decision updates finding status and appends human_decisions row. |
-| T186 | Implement dismissal reasons | Capture dismissal reason and optional rule-memory suggestion. | Not started | T185 | T335 | Dismissal reason persists and can be queried later. |
-| T187 | Implement draft comment storage | Store/edit per-finding draft GitHub comment. | Not started | T180 | T296 | User edits persist and are used in GitHub preview. |
+| T185 | Implement decision API | Accept, dismiss, defer, copied, published decisions. | Done | T058, T180 | T256,T290 | Decision updates finding status and appends human_decisions row. |
+| T186 | Implement dismissal reasons | Capture dismissal reason and optional rule-memory suggestion. | Done | T185 | T335 | Dismissal reason persists and can be queried later. |
+| T187 | Implement draft comment storage | Store/edit per-finding draft GitHub comment. | Done | T180 | T296 | User edits persist and are used in GitHub preview. |
 
 ---
 

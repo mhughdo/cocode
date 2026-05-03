@@ -343,7 +343,13 @@ func normalizeCandidate(candidate Candidate) Candidate {
 	candidate.SchemaVersion = firstNonEmpty(candidate.SchemaVersion, CandidateSchemaVersion)
 	candidate.Claim = strings.TrimSpace(candidate.Claim)
 	candidate.Category = strings.TrimSpace(candidate.Category)
+	if candidate.Category != "" {
+		candidate.Category = textCategory(candidate.Category)
+	}
 	candidate.Severity = strings.TrimSpace(candidate.Severity)
+	if candidate.Severity != "" {
+		candidate.Severity = textSeverity(candidate.Severity)
+	}
 	candidate.CounterEvidenceRequest = strings.TrimSpace(candidate.CounterEvidenceRequest)
 	candidate.SuggestedFix = strings.TrimSpace(candidate.SuggestedFix)
 	candidate.DraftComment = strings.TrimSpace(candidate.DraftComment)
@@ -352,7 +358,7 @@ func normalizeCandidate(candidate Candidate) Candidate {
 	for index := range candidate.Locations {
 		location := &candidate.Locations[index]
 		location.Path = strings.TrimSpace(location.Path)
-		location.Side = strings.TrimSpace(location.Side)
+		location.Side = strings.ToUpper(strings.TrimSpace(location.Side))
 		if location.Side == "" {
 			location.Side = "UNKNOWN"
 		}
@@ -370,7 +376,7 @@ func normalizeCandidate(candidate Candidate) Candidate {
 		evidence := &candidate.Evidence[index]
 		evidence.Title = strings.TrimSpace(evidence.Title)
 		evidence.Summary = strings.TrimSpace(evidence.Summary)
-		evidence.Kind = firstNonEmpty(strings.TrimSpace(evidence.Kind), "unknown")
+		evidence.Kind = strings.ToLower(firstNonEmpty(strings.TrimSpace(evidence.Kind), "unknown"))
 		evidence.Path = strings.TrimSpace(evidence.Path)
 	}
 	return candidate

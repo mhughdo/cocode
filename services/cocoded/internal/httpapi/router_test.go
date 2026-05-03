@@ -1102,6 +1102,142 @@ func TestStartReviewSessionEndpointRunsWorkflow(t *testing.T) {
 	}
 }
 
+func TestFindingListEndpointReturnsCountsAndFilters(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+
+	listRequest := httptest.NewRequest(http.MethodGet, "/api/review-sessions/review_session_findings/findings", nil)
+	listRequest.Header.Set("X-Cocode-Token", "test-token")
+	listResponse := httptest.NewRecorder()
+	router.ServeHTTP(listResponse, listRequest)
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", listResponse.Code, listResponse.Body.String())
+	}
+	list := decodeFindingListResponse(t, listResponse.Body.Bytes())
+	if len(list.Items) != 3 ||
+		list.Stats.Total != 3 ||
+		list.Stats.NeedsTriage != 1 ||
+		list.Stats.ByDecision["accepted"] != 1 ||
+		list.Items[0].ID != "finding_auth" ||
+		list.Items[0].Severity != "high" {
+		t.Fatalf("list = %+v", list)
+	}
+
+	acceptedRequest := httptest.NewRequest(http.MethodGet, "/api/review-sessions/review_session_findings/findings?status=accepted", nil)
+	acceptedRequest.Header.Set("X-Cocode-Token", "test-token")
+	acceptedResponse := httptest.NewRecorder()
+	router.ServeHTTP(acceptedResponse, acceptedRequest)
+	if acceptedResponse.Code != http.StatusOK {
+		t.Fatalf("accepted status = %d, body = %s", acceptedResponse.Code, acceptedResponse.Body.String())
+	}
+	accepted := decodeFindingListResponse(t, acceptedResponse.Body.Bytes())
+	if len(accepted.Items) != 1 || accepted.Items[0].ID != "finding_auth" {
+		t.Fatalf("accepted = %+v", accepted)
+	}
+
+	searchRequest := httptest.NewRequest(http.MethodGet, "/api/review-sessions/review_session_findings/findings?status=needs_triage&q=budget", nil)
+	searchRequest.Header.Set("X-Cocode-Token", "test-token")
+	searchResponse := httptest.NewRecorder()
+	router.ServeHTTP(searchResponse, searchRequest)
+	if searchResponse.Code != http.StatusOK {
+		t.Fatalf("search status = %d, body = %s", searchResponse.Code, searchResponse.Body.String())
+	}
+	search := decodeFindingListResponse(t, searchResponse.Body.Bytes())
+	if len(search.Items) != 1 || search.Items[0].ID != "finding_budget" {
+		t.Fatalf("search = %+v", search)
+	}
+}
+
+func TestFindingDetailEndpointReturnsProvenanceAndEvidence(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/findings/finding_auth", nil)
+	request.Header.Set("X-Cocode-Token", "test-token")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, body = %s", response.Code, response.Body.String())
+	}
+	detail := decodeFindingDetailResponse(t, response.Body.Bytes())
+	if detail.Finding.ID != "finding_auth" ||
+		detail.Finding.DraftComment == "" ||
+		len(detail.Candidates) != 2 ||
+		len(detail.EvidenceItems) != 1 ||
+		detail.EvidenceItems[0].Kind != "supporting" ||
+		len(detail.Decisions) != 1 ||
+		detail.Decisions[0].Decision != "accepted" {
+		t.Fatalf("detail = %+v", detail)
+	}
+}
+
+func TestFindingDecisionEndpointUpdatesStatusAndAppendsDecision(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+
+	request := newAuthenticatedJSONRequest(t, http.MethodPatch, "/api/findings/finding_budget/decision", map[string]any{
+		"decision": "accepted",
+		"reason":   "valid UI risk",
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("decision status = %d, body = %s", response.Code, response.Body.String())
+	}
+	detail := decodeFindingDetailResponse(t, response.Body.Bytes())
+	if detail.Finding.DecisionStatus != "accepted" ||
+		len(detail.Decisions) != 1 ||
+		detail.Decisions[0].Decision != "accepted" {
+		t.Fatalf("detail = %+v", detail)
+	}
+	stored, err := queries.GetFinding(context.Background(), "finding_budget")
+	if err != nil {
+		t.Fatalf("GetFinding() error = %v", err)
+	}
+	if stored.DecisionStatus != "accepted" {
+		t.Fatalf("stored finding = %+v", stored)
+	}
+}
+
+func TestFindingDecisionEndpointRequiresDismissalReason(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+
+	request := newAuthenticatedJSONRequest(t, http.MethodPatch, "/api/findings/finding_budget/decision", map[string]any{
+		"decision": "dismissed",
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("dismiss status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestFindingDraftCommentEndpointPersistsEdit(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+
+	request := newAuthenticatedJSONRequest(t, http.MethodPatch, "/api/findings/finding_budget/draft-comment", map[string]any{
+		"draft_comment": "Please clamp the preview to keep the review list scannable.",
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("draft status = %d, body = %s", response.Code, response.Body.String())
+	}
+	finding := decodeFindingResponse(t, response.Body.Bytes())
+	if finding.DraftComment != "Please clamp the preview to keep the review list scannable." {
+		t.Fatalf("finding = %+v", finding)
+	}
+	decisions, err := queries.ListHumanDecisionsByFinding(context.Background(), "finding_budget")
+	if err != nil {
+		t.Fatalf("ListHumanDecisionsByFinding() error = %v", err)
+	}
+	if len(decisions) != 1 || decisions[0].Decision != "edited" {
+		t.Fatalf("decisions = %+v", decisions)
+	}
+}
+
 func TestReviewSessionEventsEndpointStreamsLiveWorkflowEvents(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
 	repoPath := t.TempDir()
@@ -1708,6 +1844,134 @@ func createHTTPAPIReviewSessionRow(t *testing.T, queries *dbgen.Queries, id stri
 	return session
 }
 
+func createHTTPAPIFindingFixture(t *testing.T, queries *dbgen.Queries) {
+	t.Helper()
+
+	createHTTPAPISnapshot(t, queries)
+	createHTTPAPIAgentConfig(t, queries, "agent_config_findings", "primary_reviewer", 1)
+	createHTTPAPIReviewSessionRow(t, queries, "review_session_findings", []string{"agent_config_findings"})
+	if _, err := queries.CreateAgentRun(context.Background(), dbgen.CreateAgentRunParams{
+		ID:              "agent_run_findings",
+		ReviewSessionID: "review_session_findings",
+		AgentConfigID:   "agent_config_findings",
+		Status:          "succeeded",
+		Role:            "primary_reviewer",
+		StartedAt:       nullableString("2026-05-03T00:07:00Z"),
+		CompletedAt:     nullableString("2026-05-03T00:08:00Z"),
+		DurationMs:      sql.NullInt64{Int64: 1000, Valid: true},
+		ExitCode:        sql.NullInt64{Int64: 0, Valid: true},
+		MetadataJson:    "{}",
+	}); err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	createHTTPAPIFindingCandidate(t, queries, "candidate_auth_1", "Repository settings updates miss admin guard", "security", "high", 0.91, "apps/api/src/routes/repositories.ts", "auth-guard-missing")
+	createHTTPAPIFindingCandidate(t, queries, "candidate_auth_2", "The update route does not enforce admin permissions", "security", "high", 0.88, "apps/api/src/routes/repositories.ts", "auth-guard-missing")
+	createHTTPAPIFindingCandidate(t, queries, "candidate_budget", "Renderer preview can load the full diff payload", "reliability", "medium", 0.72, "apps/desktop/src/renderer/src/app/App.tsx", "renderer-budget")
+	createHTTPAPIFindingCandidate(t, queries, "candidate_theme", "Theme selection might not persist", "maintainability", "low", 0.38, "apps/desktop/src/renderer/src/app/App.tsx", "theme-persistence")
+
+	createHTTPAPIFinding(t, queries, "finding_auth", "Repository settings updates miss the workspace admin guard.", "security", "high", 0.92, "verified", "accepted", "apps/api/src/routes/repositories.ts", "auth-guard-missing", 2, "This mutation appears reachable to workspace members.")
+	createHTTPAPIFinding(t, queries, "finding_budget", "Renderer preview can load the full diff payload without a display budget.", "reliability", "medium", 0.74, "unverified", "undecided", "apps/desktop/src/renderer/src/app/App.tsx", "renderer-budget", 1, "Large diffs may make the board hard to scan.")
+	createHTTPAPIFinding(t, queries, "finding_theme", "Theme selection might not persist after app restart.", "maintainability", "low", 0.38, "likely_false_positive", "dismissed", "apps/desktop/src/renderer/src/app/App.tsx", "theme-persistence", 1, "")
+
+	for _, link := range []struct {
+		findingID   string
+		candidateID string
+		relation    string
+	}{
+		{"finding_auth", "candidate_auth_1", "primary"},
+		{"finding_auth", "candidate_auth_2", "exact_duplicate"},
+		{"finding_budget", "candidate_budget", "primary"},
+		{"finding_theme", "candidate_theme", "primary"},
+	} {
+		if err := queries.LinkFindingCandidate(context.Background(), dbgen.LinkFindingCandidateParams{
+			FindingID:          link.findingID,
+			FindingCandidateID: link.candidateID,
+			Relation:           link.relation,
+		}); err != nil {
+			t.Fatalf("LinkFindingCandidate(%s, %s) error = %v", link.findingID, link.candidateID, err)
+		}
+	}
+	if _, err := queries.CreateEvidenceItem(context.Background(), dbgen.CreateEvidenceItemParams{
+		ID:           "evidence_auth_guard",
+		FindingID:    "finding_auth",
+		Kind:         "supporting",
+		Title:        "Mutation route reaches updateSettings",
+		Summary:      "The route reaches repositoryService.updateSettings after member authentication only.",
+		Path:         nullableString("apps/api/src/routes/repositories.ts"),
+		StartLine:    sql.NullInt64{Int64: 87, Valid: true},
+		EndLine:      sql.NullInt64{Int64: 112, Valid: true},
+		Confidence:   0.9,
+		MetadataJson: "{}",
+		CreatedAt:    "2026-05-03T00:14:00Z",
+	}); err != nil {
+		t.Fatalf("CreateEvidenceItem() error = %v", err)
+	}
+	if _, err := queries.CreateHumanDecision(context.Background(), dbgen.CreateHumanDecisionParams{
+		ID:              "decision_auth_accepted",
+		FindingID:       "finding_auth",
+		ReviewSessionID: "review_session_findings",
+		Decision:        "accepted",
+		Reason:          nullableString("valid security issue"),
+		MetadataJson:    "{}",
+		CreatedAt:       "2026-05-03T00:15:00Z",
+	}); err != nil {
+		t.Fatalf("CreateHumanDecision() error = %v", err)
+	}
+}
+
+func createHTTPAPIFindingCandidate(t *testing.T, queries *dbgen.Queries, id string, claim string, category string, severity string, confidence float64, path string, fingerprint string) {
+	t.Helper()
+
+	if _, err := queries.CreateFindingCandidate(context.Background(), dbgen.CreateFindingCandidateParams{
+		ID:               id,
+		ReviewSessionID:  "review_session_findings",
+		AgentRunID:       "agent_run_findings",
+		Category:         category,
+		Severity:         severity,
+		Confidence:       confidence,
+		Claim:            claim,
+		PrimaryPath:      nullableString(path),
+		PrimaryStartLine: sql.NullInt64{Int64: 87, Valid: true},
+		PrimaryEndLine:   sql.NullInt64{Int64: 112, Valid: true},
+		LocationsJson:    `[{"path":"` + path + `","start_line":87,"end_line":112,"side":"RIGHT","changed_file_id":"file_2","valid":true}]`,
+		EvidenceJson:     `[{"title":"supporting evidence","summary":"candidate evidence","kind":"changed_code"}]`,
+		SuggestedFix:     nullableString("Apply the focused fix."),
+		DraftComment:     nullableString("Please address this finding."),
+		Fingerprint:      nullableString(fingerprint),
+		CreatedAt:        "2026-05-03T00:09:00Z",
+	}); err != nil {
+		t.Fatalf("CreateFindingCandidate(%s) error = %v", id, err)
+	}
+}
+
+func createHTTPAPIFinding(t *testing.T, queries *dbgen.Queries, id string, claim string, category string, severity string, confidence float64, verification string, decision string, path string, fingerprint string, merged int64, draftComment string) {
+	t.Helper()
+
+	if _, err := queries.CreateFinding(context.Background(), dbgen.CreateFindingParams{
+		ID:                 id,
+		ReviewSessionID:    "review_session_findings",
+		CanonicalClaim:     claim,
+		Category:           category,
+		Severity:           severity,
+		Confidence:         confidence,
+		VerificationStatus: verification,
+		DecisionStatus:     decision,
+		PrimaryPath:        nullableString(path),
+		PrimaryStartLine:   sql.NullInt64{Int64: 87, Valid: true},
+		PrimaryEndLine:     sql.NullInt64{Int64: 112, Valid: true},
+		EvidenceSummary:    nullableString("Evidence summary for " + id),
+		SuggestedFix:       nullableString("Suggested fix for " + id),
+		DraftComment:       nullableString(draftComment),
+		Fingerprint:        fingerprint,
+		MergedFromCount:    merged,
+		IntroducedInSha:    nullableString("head-sha"),
+		FirstSeenAt:        "2026-05-03T00:10:00Z",
+		UpdatedAt:          "2026-05-03T00:11:00Z",
+	}); err != nil {
+		t.Fatalf("CreateFinding(%s) error = %v", id, err)
+	}
+}
+
 func nullableString(value string) sql.NullString {
 	return sql.NullString{String: value, Valid: true}
 }
@@ -1904,6 +2168,54 @@ func decodeReviewSummaryResponse(t *testing.T, content []byte) reviewSummaryTest
 	var envelope struct {
 		Data  reviewSummaryTestResponse `json:"data"`
 		Error any                       `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeFindingListResponse(t *testing.T, content []byte) FindingListResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  FindingListResponse `json:"data"`
+		Error any                 `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeFindingDetailResponse(t *testing.T, content []byte) FindingDetailResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  FindingDetailResponse `json:"data"`
+		Error any                   `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeFindingResponse(t *testing.T, content []byte) FindingResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  FindingResponse `json:"data"`
+		Error any             `json:"error"`
 	}
 	if err := json.Unmarshal(content, &envelope); err != nil {
 		t.Fatalf("decode response: %v", err)

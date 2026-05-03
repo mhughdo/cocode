@@ -726,6 +726,47 @@ func (q *Queries) UpdateFindingDecisionStatus(ctx context.Context, arg UpdateFin
 	return i, err
 }
 
+const updateFindingDraftComment = `-- name: UpdateFindingDraftComment :one
+UPDATE findings
+SET draft_comment = ?, updated_at = ?
+WHERE id = ?
+RETURNING id, review_session_id, canonical_claim, category, severity, confidence, verification_status, decision_status, primary_path, primary_start_line, primary_end_line, evidence_summary, counter_evidence_summary, suggested_fix, draft_comment, fingerprint, merged_from_count, introduced_in_sha, first_seen_at, updated_at
+`
+
+type UpdateFindingDraftCommentParams struct {
+	DraftComment sql.NullString `json:"draft_comment"`
+	UpdatedAt    string         `json:"updated_at"`
+	ID           string         `json:"id"`
+}
+
+func (q *Queries) UpdateFindingDraftComment(ctx context.Context, arg UpdateFindingDraftCommentParams) (Finding, error) {
+	row := q.db.QueryRowContext(ctx, updateFindingDraftComment, arg.DraftComment, arg.UpdatedAt, arg.ID)
+	var i Finding
+	err := row.Scan(
+		&i.ID,
+		&i.ReviewSessionID,
+		&i.CanonicalClaim,
+		&i.Category,
+		&i.Severity,
+		&i.Confidence,
+		&i.VerificationStatus,
+		&i.DecisionStatus,
+		&i.PrimaryPath,
+		&i.PrimaryStartLine,
+		&i.PrimaryEndLine,
+		&i.EvidenceSummary,
+		&i.CounterEvidenceSummary,
+		&i.SuggestedFix,
+		&i.DraftComment,
+		&i.Fingerprint,
+		&i.MergedFromCount,
+		&i.IntroducedInSha,
+		&i.FirstSeenAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateFindingVerificationStatus = `-- name: UpdateFindingVerificationStatus :one
 UPDATE findings
 SET verification_status = ?, updated_at = ?

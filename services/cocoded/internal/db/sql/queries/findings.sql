@@ -144,6 +144,12 @@ SET decision_status = ?, updated_at = ?
 WHERE id = ?
 RETURNING id, review_session_id, canonical_claim, category, severity, confidence, verification_status, decision_status, primary_path, primary_start_line, primary_end_line, evidence_summary, counter_evidence_summary, suggested_fix, draft_comment, fingerprint, merged_from_count, introduced_in_sha, first_seen_at, updated_at;
 
+-- name: UpdateFindingDraftComment :one
+UPDATE findings
+SET draft_comment = ?, updated_at = ?
+WHERE id = ?
+RETURNING id, review_session_id, canonical_claim, category, severity, confidence, verification_status, decision_status, primary_path, primary_start_line, primary_end_line, evidence_summary, counter_evidence_summary, suggested_fix, draft_comment, fingerprint, merged_from_count, introduced_in_sha, first_seen_at, updated_at;
+
 -- name: DeleteFinding :exec
 DELETE FROM findings
 WHERE id = ?;

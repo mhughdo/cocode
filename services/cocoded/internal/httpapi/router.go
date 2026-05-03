@@ -142,6 +142,7 @@ type ArtifactDebugResponse struct {
 }
 
 type routerServices struct {
+	database            *sql.DB
 	queries             *dbgen.Queries
 	snapshots           *snapshot.Service
 	snapshotInitErr     error
@@ -196,6 +197,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 		}
 	}
 	services := routerServices{
+		database:          database,
 		queries:           queries,
 		snapshots:         snapshotService,
 		snapshotInitErr:   snapshotErr,
@@ -256,6 +258,13 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.GET("/review-sessions/:id/checkpoint", reviewSessionCheckpointHandler(services))
 	api.GET("/review-sessions/:id/summary", reviewSessionSummaryHandler(services))
 	api.GET("/review-sessions/:id/events", reviewSessionEventsHandler(services))
+	api.GET("/review-sessions/:id/findings", listFindingsHandler(queries))
+	api.GET("/review-sessions/:id/findings/:finding_id", findingDetailHandler(queries))
+	api.POST("/review-sessions/:id/findings/:finding_id/decision", updateFindingDecisionHandler(services))
+	api.PATCH("/review-sessions/:id/findings/:finding_id/draft-comment", updateDraftCommentHandler(services))
+	api.GET("/findings/:finding_id", findingDetailHandler(queries))
+	api.PATCH("/findings/:finding_id/decision", updateFindingDecisionHandler(services))
+	api.PATCH("/findings/:finding_id/draft-comment", updateDraftCommentHandler(services))
 	api.GET("/agents/presets", listAgentPresetsHandler())
 	api.GET("/agents/configs", listAgentConfigsHandler(queries))
 	api.POST("/agents/configs", createAgentConfigHandler(queries))

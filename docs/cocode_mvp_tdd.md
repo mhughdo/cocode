@@ -822,6 +822,10 @@ GET    /api/review-sessions/:id/findings
 
 GET    /api/findings/:id
 PATCH  /api/findings/:id/decision
+PATCH  /api/findings/:id/draft-comment
+GET    /api/review-sessions/:id/findings/:finding_id
+POST   /api/review-sessions/:id/findings/:finding_id/decision
+PATCH  /api/review-sessions/:id/findings/:finding_id/draft-comment
 POST   /api/findings/:id/question
 GET    /api/findings/:id/thread
 GET    /api/findings/:id/evidence-map

@@ -86,13 +86,41 @@ func TestExtractCandidatesSkipsInvalidFinding(t *testing.T) {
 	if len(result.Candidates) != 1 || result.Candidates[0].Claim != "valid finding survives" {
 		t.Fatalf("Candidates = %+v", result.Candidates)
 	}
-	if len(result.Diagnostics) != 4 {
+	if len(result.Diagnostics) != 3 {
 		t.Fatalf("Diagnostics = %+v", result.Diagnostics)
 	}
 	assertDiagnosticCode(t, result.Diagnostics, "missing_claim")
-	assertDiagnosticCode(t, result.Diagnostics, "invalid_severity")
 	assertDiagnosticCode(t, result.Diagnostics, "invalid_confidence")
 	assertDiagnosticCode(t, result.Diagnostics, "invalid_location_range")
+}
+
+func TestExtractCandidatesNormalizesUnknownLabels(t *testing.T) {
+	t.Parallel()
+
+	parsed := Parse([]byte(`{
+		"summary": "label mapping",
+		"findings": [
+			{
+				"claim": "repository update reads stale role cache",
+				"category": "bug",
+				"severity": "critical",
+				"confidence": 0.8,
+				"locations": [{"path": "a.go", "start_line": 10, "end_line": 11, "side": "right"}],
+				"evidence": [{"title": "stale role", "summary": "the cache is stale", "kind": "RELATED_CODE"}]
+			}
+		]
+	}`), agents.OutputJSON)
+	result := ExtractCandidates(parsed)
+	if len(result.Candidates) != 1 || len(result.Diagnostics) != 0 {
+		t.Fatalf("Candidates = %+v Diagnostics = %+v", result.Candidates, result.Diagnostics)
+	}
+	candidate := result.Candidates[0]
+	if candidate.Category != "correctness" ||
+		candidate.Severity != "blocker" ||
+		candidate.Locations[0].Side != "RIGHT" ||
+		candidate.Evidence[0].Kind != "related_code" {
+		t.Fatalf("candidate = %+v", candidate)
+	}
 }
 
 func TestExtractCandidatesNormalizesTextOutput(t *testing.T) {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowUpIcon,
   BellIcon,
@@ -10,6 +10,7 @@ import {
   Code2Icon,
   CopyIcon,
   FileSearchIcon,
+  FolderOpenIcon,
   GitBranchIcon,
   GitPullRequestIcon,
   InboxIcon,
@@ -58,28 +59,24 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  type ApiClient,
   createCocodeClient,
   errorApiState,
+  idleApiState,
   loadApiResource,
   loadingApiState,
+  successApiState,
   type ApiSessionResponse,
   type Loadable,
+  type OpenRepositoryResponse,
+  type Repository,
+  type ReviewSession,
+  type Workspace,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-const threads = [
-  { title: "Review and triage issues", age: "1w", active: true },
-  { title: "Redesign app modern UI", age: "1w", active: false },
-  { title: "Create flow diagram", age: "2w", active: false },
-  { title: "Add icons", age: "1mo", active: false },
-];
-
-const projects = [
-  "pharmakon-polymarket-trading",
-  "zap-earn-service",
-  "kd-market-service",
-  "cocode",
-];
+const MAX_SIDEBAR_SESSIONS = 12;
+const MAX_SEARCH_RESULTS = 5;
 
 const changedFiles = [
   { path: "api/routes/billing.go", additions: 132, deletions: 18 },
@@ -113,11 +110,77 @@ const findings = [
 ];
 
 export function App() {
+  const [client, setClient] = useState<ApiClient | null>(null);
   const [backendStatus, setBackendStatus] = useState("loading");
   const [backendUrl, setBackendUrl] = useState("");
   const [apiSession, setApiSession] =
     useState<Loadable<ApiSessionResponse>>(loadingApiState);
+  const [workspaces, setWorkspaces] =
+    useState<Loadable<Workspace[]>>(idleApiState());
+  const [repositories, setRepositories] =
+    useState<Loadable<Repository[]>>(idleApiState());
+  const [reviewSessions, setReviewSessions] =
+    useState<Loadable<ReviewSession[]>>(idleApiState());
+  const [repositoryOpenState, setRepositoryOpenState] =
+    useState<Loadable<OpenRepositoryResponse>>(idleApiState());
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState("");
+  const [activeRepositoryId, setActiveRepositoryId] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+
+  const loadWorkspaceDetails = useCallback(
+    async (api: ApiClient, workspace: Workspace) => {
+      setRepositories(loadingApiState());
+      setReviewSessions(loadingApiState());
+      const [repositoryState, sessionState] = await Promise.all([
+        loadApiResource(() => api.listRepositories(workspace.id)),
+        loadApiResource(() => api.listReviewSessions(workspace.id)),
+      ]);
+
+      setRepositories(repositoryState);
+      setReviewSessions(sessionState);
+      if (repositoryState.status === "success") {
+        const nextRepository =
+          repositoryState.data.find(
+            (repository) => repository.id === workspace.default_repo_id,
+          ) ?? repositoryState.data[0];
+        setActiveRepositoryId(nextRepository?.id ?? "");
+      }
+    },
+    [],
+  );
+
+  const refreshNavigation = useCallback(
+    async (api: ApiClient, preferredWorkspaceId = "") => {
+      setWorkspaces(loadingApiState());
+      const workspaceState = await loadApiResource(() => api.listWorkspaces());
+      setWorkspaces(workspaceState);
+
+      if (workspaceState.status !== "success") {
+        setRepositories(successApiState([]));
+        setReviewSessions(successApiState([]));
+        setActiveWorkspaceId("");
+        setActiveRepositoryId("");
+        return;
+      }
+
+      const nextWorkspace =
+        workspaceState.data.find(
+          (workspace) => workspace.id === preferredWorkspaceId,
+        ) ?? workspaceState.data[0];
+
+      if (!nextWorkspace) {
+        setRepositories(successApiState([]));
+        setReviewSessions(successApiState([]));
+        setActiveWorkspaceId("");
+        setActiveRepositoryId("");
+        return;
+      }
+
+      setActiveWorkspaceId(nextWorkspace.id);
+      await loadWorkspaceDetails(api, nextWorkspace);
+    },
+    [loadWorkspaceDetails],
+  );
 
   useEffect(() => {
     let canceled = false;
@@ -146,15 +209,18 @@ export function App() {
         setBackendStatus(info.status);
         setBackendUrl(info.baseUrl);
 
-        const client = createCocodeClient(info);
-        void loadApiResource(() => client.session()).then((state) => {
+        const nextClient = createCocodeClient(info);
+        setClient(nextClient);
+        void loadApiResource(() => nextClient.session()).then((state) => {
           if (canceled) {
             return;
           }
           setApiSession(state);
           if (state.status === "error") {
             setBackendStatus("unavailable");
+            return;
           }
+          void refreshNavigation(nextClient);
         });
       })
       .catch(() => {
@@ -169,30 +235,115 @@ export function App() {
     return () => {
       canceled = true;
     };
-  }, []);
+  }, [refreshNavigation]);
+
+  const workspaceList = useMemo(
+    () => (workspaces.status === "success" ? workspaces.data : []),
+    [workspaces],
+  );
+  const repositoryList = useMemo(
+    () => (repositories.status === "success" ? repositories.data : []),
+    [repositories],
+  );
+  const sessionList = useMemo(
+    () => (reviewSessions.status === "success" ? reviewSessions.data : []),
+    [reviewSessions],
+  );
+  const activeWorkspace =
+    workspaceList.find((workspace) => workspace.id === activeWorkspaceId) ??
+    workspaceList[0];
+  const activeRepository =
+    repositoryList.find((repository) => repository.id === activeRepositoryId) ??
+    repositoryList[0];
+  const activeSession = sessionList[0];
+
+  const handleSelectWorkspace = useCallback(
+    (workspaceId: string) => {
+      const selectedWorkspace = workspaceList.find(
+        (workspace) => workspace.id === workspaceId,
+      );
+      if (!client || !selectedWorkspace) {
+        return;
+      }
+      setActiveWorkspaceId(workspaceId);
+      void loadWorkspaceDetails(client, selectedWorkspace);
+    },
+    [client, loadWorkspaceDetails, workspaceList],
+  );
+
+  const handleOpenRepository = useCallback(async () => {
+    if (!client || !window.cocode) {
+      setRepositoryOpenState(
+        errorApiState(new Error("Desktop repository picker is unavailable")),
+      );
+      return;
+    }
+
+    const selectedPath = await window.cocode.selectRepository();
+    if (!selectedPath) {
+      return;
+    }
+
+    setRepositoryOpenState(loadingApiState());
+    const state = await loadApiResource(() =>
+      client.openRepository(selectedPath),
+    );
+    setRepositoryOpenState(state);
+    if (state.status !== "success") {
+      return;
+    }
+
+    setActiveWorkspaceId(state.data.workspace.id);
+    setActiveRepositoryId(state.data.repository.id);
+    setRepositories(successApiState(state.data.repositories));
+    await refreshNavigation(client, state.data.workspace.id);
+  }, [client, refreshNavigation]);
 
   const backendDetail =
     apiSession.status === "error"
       ? apiSession.error.message
       : backendUrl || "Waiting for backend info";
-  const searchGroups = useMemo<SearchCommandGroup[]>(
-    () => [
+  const searchGroups = useMemo<SearchCommandGroup[]>(() => {
+    const reviewCommands =
+      sessionList.length > 0
+        ? sessionList.slice(0, MAX_SEARCH_RESULTS).map((session) => ({
+            title: session.title,
+            description: `${session.status} • ${formatRelativeAge(session.updated_at)}`,
+            icon: GitPullRequestIcon,
+          }))
+        : [
+            {
+              title: "Create new review thread",
+              description:
+                "Start from PR URL, local changes, or branch compare",
+              shortcut: "N",
+              icon: PlusIcon,
+            },
+          ];
+
+    return [
       {
         heading: "Reviews",
-        commands: [
-          {
-            title: "Open active billing review",
-            description: "PR #482 billing auth guard",
-            shortcut: "Enter",
-            icon: GitPullRequestIcon,
-          },
-          {
-            title: "Create new review thread",
-            description: "Start from PR URL, local changes, or branch compare",
-            shortcut: "N",
-            icon: PlusIcon,
-          },
-        ],
+        commands: reviewCommands,
+      },
+      {
+        heading: "Workspaces",
+        commands:
+          workspaceList.length > 0
+            ? workspaceList.slice(0, MAX_SEARCH_RESULTS).map((workspace) => ({
+                title: workspace.name,
+                description: workspace.root_path,
+                icon: GitBranchIcon,
+                onSelect: () => handleSelectWorkspace(workspace.id),
+              }))
+            : [
+                {
+                  title: "Open local repository",
+                  description: "Select a git repository on this computer",
+                  icon: FolderOpenIcon,
+                  onSelect: handleOpenRepository,
+                },
+              ],
       },
       {
         heading: "Actions",
@@ -209,9 +360,8 @@ export function App() {
           },
         ],
       },
-    ],
-    [],
-  );
+    ];
+  }, [handleOpenRepository, handleSelectWorkspace, sessionList, workspaceList]);
 
   return (
     <>
@@ -219,10 +369,25 @@ export function App() {
         sidebar={
           <Sidebar
             backendStatus={backendStatus}
+            activeWorkspaceId={activeWorkspaceId}
+            workspaces={workspaces}
+            reviewSessions={reviewSessions}
+            repositoryOpenState={repositoryOpenState}
+            onOpenRepository={handleOpenRepository}
+            onOpenSearch={() => setSearchOpen(true)}
+            onSelectWorkspace={handleSelectWorkspace}
+          />
+        }
+        header={
+          <TopNav
+            activeRepository={activeRepository}
+            activeSession={activeSession}
+            activeWorkspace={activeWorkspace}
+            isOpeningRepository={repositoryOpenState.status === "loading"}
+            onOpenRepository={handleOpenRepository}
             onOpenSearch={() => setSearchOpen(true)}
           />
         }
-        header={<TopNav onOpenSearch={() => setSearchOpen(true)} />}
         detailPane={<ReviewPane />}
       >
         <ReviewThread apiSession={apiSession} backendDetail={backendDetail} />
@@ -239,12 +404,30 @@ export function App() {
 }
 
 function Sidebar({
+  activeWorkspaceId,
   backendStatus,
+  repositoryOpenState,
+  reviewSessions,
+  workspaces,
+  onOpenRepository,
   onOpenSearch,
+  onSelectWorkspace,
 }: {
+  activeWorkspaceId: string;
   backendStatus: string;
+  repositoryOpenState: Loadable<OpenRepositoryResponse>;
+  reviewSessions: Loadable<ReviewSession[]>;
+  workspaces: Loadable<Workspace[]>;
+  onOpenRepository: () => void;
   onOpenSearch: () => void;
+  onSelectWorkspace: (workspaceId: string) => void;
 }) {
+  const workspaceList = workspaces.status === "success" ? workspaces.data : [];
+  const sessionList =
+    reviewSessions.status === "success"
+      ? reviewSessions.data.slice(0, MAX_SIDEBAR_SESSIONS)
+      : [];
+
   return (
     <>
       <div className="flex h-12 items-center gap-2 px-4">
@@ -268,6 +451,15 @@ function Sidebar({
       <nav className="flex flex-col gap-1 px-2">
         <SidebarNavButton icon={PlusIcon} label="New thread" />
         <SidebarNavButton
+          icon={FolderOpenIcon}
+          label={
+            repositoryOpenState.status === "loading"
+              ? "Opening repo..."
+              : "Open repo"
+          }
+          onClick={onOpenRepository}
+        />
+        <SidebarNavButton
           icon={SearchIcon}
           label="Search"
           onClick={onOpenSearch}
@@ -277,31 +469,72 @@ function Sidebar({
       </nav>
 
       <SidebarSection
-        title="Pinned"
+        title="Threads"
         action={<SquareIcon className="opacity-70" />}
       >
-        {threads.map((thread) => (
+        {reviewSessions.status === "loading" && (
+          <div className="text-sidebar-muted px-2 py-1 text-xs">
+            Loading threads...
+          </div>
+        )}
+        {reviewSessions.status === "error" && (
+          <div className="text-destructive px-2 py-1 text-xs">
+            {reviewSessions.error.message}
+          </div>
+        )}
+        {reviewSessions.status === "success" && sessionList.length === 0 && (
+          <div className="text-sidebar-muted px-2 py-1 text-xs">
+            No review threads yet
+          </div>
+        )}
+        {sessionList.map((session, index) => (
           <SidebarNavButton
-            key={thread.title}
-            label={thread.title}
-            meta={thread.age}
-            active={thread.active}
+            key={session.id}
+            label={session.title}
+            meta={formatRelativeAge(session.updated_at)}
+            active={index === 0}
           />
         ))}
       </SidebarSection>
 
       <SidebarSection
-        title="Projects"
+        title="Workspaces"
         action={<SquareIcon className="opacity-70" />}
       >
-        {projects.map((project) => (
+        {workspaces.status === "loading" && (
+          <div className="text-sidebar-muted px-2 py-1 text-xs">
+            Loading workspaces...
+          </div>
+        )}
+        {workspaces.status === "error" && (
+          <div className="text-destructive px-2 py-1 text-xs">
+            {workspaces.error.message}
+          </div>
+        )}
+        {workspaces.status === "success" && workspaceList.length === 0 && (
           <SidebarNavButton
-            key={project}
+            icon={FolderOpenIcon}
+            label="Open local repo"
+            onClick={onOpenRepository}
+          />
+        )}
+        {workspaceList.map((workspace) => (
+          <SidebarNavButton
+            key={workspace.id}
+            active={workspace.id === activeWorkspaceId}
             icon={GitBranchIcon}
-            label={project}
+            label={workspace.name}
+            meta={workspace.default_repo_id ? "active" : undefined}
+            onClick={() => onSelectWorkspace(workspace.id)}
           />
         ))}
       </SidebarSection>
+
+      {repositoryOpenState.status === "error" && (
+        <div className="text-destructive px-4 pt-3 text-xs">
+          {repositoryOpenState.error.message}
+        </div>
+      )}
 
       <div className="mt-auto flex flex-col gap-1 p-2">
         <Separator className="-mx-2 mb-1" />
@@ -314,17 +547,51 @@ function Sidebar({
   );
 }
 
-function TopNav({ onOpenSearch }: { onOpenSearch: () => void }) {
+function TopNav({
+  activeRepository,
+  activeSession,
+  activeWorkspace,
+  isOpeningRepository,
+  onOpenRepository,
+  onOpenSearch,
+}: {
+  activeRepository?: Repository;
+  activeSession?: ReviewSession;
+  activeWorkspace?: Workspace;
+  isOpeningRepository: boolean;
+  onOpenRepository: () => void;
+  onOpenSearch: () => void;
+}) {
+  const title =
+    activeSession?.title ??
+    activeRepository?.name ??
+    activeWorkspace?.name ??
+    "Open a repository";
+  const description =
+    activeRepository?.remote_url ??
+    activeRepository?.local_path ??
+    activeWorkspace?.root_path ??
+    "Select a local git repository to begin";
+
   return (
     <PaneHeader
       icon={GitPullRequestIcon}
-      title="PR #482 billing auth guard"
-      description="pharmakon-polymarket"
+      title={title}
+      description={description}
       actions={
         <>
           <Button size="sm" variant="outline" onClick={onOpenSearch}>
             <SearchIcon data-icon="inline-start" />
             Search
+          </Button>
+          <Button
+            disabled={isOpeningRepository}
+            size="sm"
+            variant="outline"
+            onClick={onOpenRepository}
+          >
+            <FolderOpenIcon data-icon="inline-start" />
+            {activeRepository ? "Open repo" : "Select repo"}
           </Button>
           <Button size="sm" variant="outline">
             <PanelRightIcon data-icon="inline-start" />
@@ -744,4 +1011,32 @@ function CodeLine({
       <span className="truncate px-3 whitespace-pre">{text || " "}</span>
     </div>
   );
+}
+
+function formatRelativeAge(value: string): string {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) {
+    return "now";
+  }
+
+  const elapsedMs = Date.now() - timestamp;
+  if (elapsedMs < 60_000) {
+    return "now";
+  }
+
+  const minute = 60_000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  const week = 7 * day;
+
+  if (elapsedMs < hour) {
+    return `${Math.floor(elapsedMs / minute)}m`;
+  }
+  if (elapsedMs < day) {
+    return `${Math.floor(elapsedMs / hour)}h`;
+  }
+  if (elapsedMs < week) {
+    return `${Math.floor(elapsedMs / day)}d`;
+  }
+  return `${Math.floor(elapsedMs / week)}w`;
 }

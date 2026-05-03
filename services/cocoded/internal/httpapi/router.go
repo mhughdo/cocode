@@ -162,6 +162,8 @@ type routerServices struct {
 	reviewWorkflowErr   error
 	eventBus            *eventbus.Bus
 	gitCollector        gitrepo.Collector
+	gitRepositories     *gitrepo.Service
+	gitRepositoriesErr  error
 	githubClientFactory func(token string) githubpr.Client
 }
 
@@ -209,6 +211,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 			AgentManager:   agentManager,
 		}
 	}
+	gitRepositories, gitRepositoriesErr := gitrepo.New(database)
 	services := routerServices{
 		database:          database,
 		queries:           queries,
@@ -229,10 +232,12 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 			Artifacts:      artifactStore,
 			AgentManager:   agentManager,
 		},
-		reviewWorkflow:    reviewWorkflow,
-		reviewWorkflowErr: workflowErr,
-		eventBus:          bus,
-		gitCollector:      gitrepo.NewCollector(gitrepo.DefaultRunner()),
+		reviewWorkflow:     reviewWorkflow,
+		reviewWorkflowErr:  workflowErr,
+		eventBus:           bus,
+		gitCollector:       gitrepo.NewCollector(gitrepo.DefaultRunner()),
+		gitRepositories:    gitRepositories,
+		gitRepositoriesErr: gitRepositoriesErr,
 		githubClientFactory: func(token string) githubpr.Client {
 			return githubpr.Client{
 				BaseURL: config.GitHubAPIBaseURL,
@@ -271,6 +276,9 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 		})
 	})
 	api.POST("/pr-snapshots/from-github-url", createGitHubSnapshotHandler(services))
+	api.GET("/workspaces", listWorkspacesHandler(services))
+	api.POST("/workspaces/open-repository", openRepositoryHandler(services))
+	api.GET("/workspaces/:id/repositories", listWorkspaceRepositoriesHandler(services))
 	api.POST("/pr-snapshots/from-local-compare", createLocalCompareSnapshotHandler(services))
 	api.POST("/pr-snapshots/from-local-changes", createLocalChangesSnapshotHandler(services))
 	api.GET("/pr-snapshots/:id", snapshotHandler(services))

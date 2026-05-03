@@ -72,6 +72,34 @@ describe("ApiClient", () => {
     expect(JSON.parse(body)).toEqual({ snapshot_id: "snapshot_1" });
   });
 
+  it("opens repositories through the workspace endpoint", async () => {
+    let seenPath = "";
+    const fetcher = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        seenPath = JSON.parse(String(init?.body ?? "{}")).path as string;
+        return jsonResponse({
+          data: {
+            workspace: workspaceFixture,
+            repository: repositoryFixture,
+            repositories: [repositoryFixture],
+          },
+          error: null,
+        });
+      },
+    );
+    const client = createCocodeClient({
+      baseUrl: "http://127.0.0.1:17658",
+      authToken: "local-token",
+      fetch: fetcher,
+    });
+
+    await expect(client.openRepository("/repo/cocode")).resolves.toMatchObject({
+      workspace: { id: "workspace_1" },
+      repository: { id: "repo_1" },
+    });
+    expect(seenPath).toBe("/repo/cocode");
+  });
+
   it("throws ApiError for backend envelopes with errors", async () => {
     const client = createCocodeClient({
       baseUrl: "http://127.0.0.1:17658",
@@ -155,3 +183,26 @@ function jsonResponse(body: unknown, status = 200): Response {
     headers: { "Content-Type": "application/json" },
   });
 }
+
+const workspaceFixture = {
+  id: "workspace_1",
+  name: "cocode",
+  root_path: "/repo/cocode",
+  default_repo_id: "repo_1",
+  settings_json: "{}",
+  settings: {},
+  created_at: "2026-05-04T00:00:00Z",
+  updated_at: "2026-05-04T00:00:00Z",
+};
+
+const repositoryFixture = {
+  id: "repo_1",
+  workspace_id: "workspace_1",
+  name: "cocode",
+  owner: null,
+  remote_url: null,
+  local_path: "/repo/cocode",
+  default_branch: "main",
+  created_at: "2026-05-04T00:00:00Z",
+  updated_at: "2026-05-04T00:00:00Z",
+};

@@ -47,6 +47,35 @@ export interface ApiVersionResponse {
   data_dir: string;
 }
 
+export interface Workspace {
+  id: string;
+  name: string;
+  root_path: string;
+  default_repo_id: string | null;
+  settings_json?: string;
+  settings: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Repository {
+  id: string;
+  workspace_id: string;
+  name: string;
+  owner: string | null;
+  remote_url: string | null;
+  local_path: string;
+  default_branch: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OpenRepositoryResponse {
+  workspace: Workspace;
+  repository: Repository;
+  repositories: Repository[];
+}
+
 export interface AgentCapabilities {
   can_read?: boolean;
   can_search?: boolean;
@@ -237,6 +266,31 @@ export class ApiClient {
 
   version(options: Omit<ApiRequestOptions, "method" | "body"> = {}) {
     return this.get<ApiVersionResponse>("/api/version", options);
+  }
+
+  listWorkspaces(options: Omit<ApiRequestOptions, "method" | "body"> = {}) {
+    return this.get<Workspace[]>("/api/workspaces", options);
+  }
+
+  openRepository(
+    path: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.post<OpenRepositoryResponse>(
+      "/api/workspaces/open-repository",
+      { path },
+      options,
+    );
+  }
+
+  listRepositories(
+    workspaceId: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.get<Repository[]>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/repositories`,
+      options,
+    );
   }
 
   listAgentPresets(options: Omit<ApiRequestOptions, "method" | "body"> = {}) {

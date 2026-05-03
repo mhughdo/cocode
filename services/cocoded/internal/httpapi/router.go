@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 
@@ -242,6 +244,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	router := gin.New()
 	router.Use(gin.Recovery())
 	router.Use(requestIDMiddleware())
+	router.Use(originMiddleware())
 	router.Use(loggingMiddleware(logger))
 
 	router.GET("/api/health", func(c *gin.Context) {
@@ -960,6 +963,66 @@ func authMiddleware(token string) gin.HandlerFunc {
 		respondError(c, apperror.Unauthorized("missing or invalid local auth token"))
 		c.Abort()
 	}
+}
+
+func originMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		origin := strings.TrimSpace(c.GetHeader("Origin"))
+		if origin == "" {
+			c.Next()
+			return
+		}
+		if !allowedRequestOrigin(origin) {
+			respondError(c, apperror.Forbidden("origin is not allowed for local API access"))
+			c.Abort()
+			return
+		}
+
+		c.Header("Access-Control-Allow-Origin", origin)
+		c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Cocode-Token, X-Request-ID")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+		c.Header("Vary", "Origin")
+		if c.Request.Method == http.MethodOptions && strings.HasPrefix(c.Request.URL.Path, "/api/") {
+			c.Status(http.StatusNoContent)
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+func allowedRequestOrigin(raw string) bool {
+	origin := strings.TrimSpace(raw)
+	if origin == "" {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Scheme == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	if parsed.Path != "" && parsed.Path != "/" {
+		return false
+	}
+
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+		return isLoopbackHost(parsed.Hostname())
+	case "file":
+		return parsed.Host == ""
+	case "app":
+		return strings.EqualFold(parsed.Hostname(), "cocode")
+	default:
+		return false
+	}
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSpace(host)
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func bearerToken(header string) string {

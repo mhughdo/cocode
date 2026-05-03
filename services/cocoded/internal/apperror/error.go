@@ -8,6 +8,7 @@ const (
 	CodeInternal       Code = "INTERNAL"
 	CodeInvalidRequest Code = "INVALID_REQUEST"
 	CodeUnauthorized   Code = "UNAUTHORIZED"
+	CodeForbidden      Code = "FORBIDDEN"
 	CodeNotFound       Code = "NOT_FOUND"
 )
 
@@ -35,6 +36,10 @@ func InvalidRequest(message string) *Error {
 
 func Unauthorized(message string) *Error {
 	return New(CodeUnauthorized, message, http.StatusUnauthorized)
+}
+
+func Forbidden(message string) *Error {
+	return New(CodeForbidden, message, http.StatusForbidden)
 }
 
 func NotFound(message string) *Error {

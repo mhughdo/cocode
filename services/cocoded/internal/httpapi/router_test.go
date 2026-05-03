@@ -95,6 +95,68 @@ func TestAuthenticatedRouteAcceptsToken(t *testing.T) {
 	}
 }
 
+func TestAuthenticatedRouteRejectsDisallowedOrigin(t *testing.T) {
+	router := testRouter(t)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/session", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	request.Header.Set("Origin", "https://example.com")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d", http.StatusForbidden, response.Code)
+	}
+}
+
+func TestAuthenticatedRouteAcceptsLoopbackOrigin(t *testing.T) {
+	router := testRouter(t)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/session", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	request.Header.Set("Origin", "http://localhost:5173")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, response.Code)
+	}
+	if got := response.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:5173" {
+		t.Fatalf("Access-Control-Allow-Origin = %q", got)
+	}
+}
+
+func TestAuthenticatedRouteAcceptsPackagedElectronFileOrigin(t *testing.T) {
+	router := testRouter(t)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/session", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	request.Header.Set("Origin", "file://")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, response.Code)
+	}
+}
+
+func TestPreflightAcceptsLoopbackOriginWithoutToken(t *testing.T) {
+	router := testRouter(t)
+
+	request := httptest.NewRequest(http.MethodOptions, "/api/session", nil)
+	request.Header.Set("Origin", "http://127.0.0.1:5173")
+	request.Header.Set("Access-Control-Request-Headers", "X-Cocode-Token")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("expected status %d, got %d", http.StatusNoContent, response.Code)
+	}
+	if got := response.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(got, "X-Cocode-Token") {
+		t.Fatalf("Access-Control-Allow-Headers = %q", got)
+	}
+}
+
 func TestAgentConfigEndpointCRUDAndHealth(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
 	command := writeFakeAgentConfigCommand(t, `#!/bin/sh

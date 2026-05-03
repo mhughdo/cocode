@@ -390,7 +390,7 @@ Large parallel workstreams:
 | T326 | Implement provider visibility metadata | Track which files/context items were sent to which agent. | Done | T131, T325 | T252 | Context artifacts, preview responses, debug responses, and agent runs record recipient provider/egress and sent item counts. |
 | T327 | Implement secret redaction UI | Show redaction status/report in configure/review detail. | Not started | T130, T247 | T333 | User can inspect redaction summary. |
 | T328 | Implement credentials settings | Add GitHub token and optional CLI credential refs/settings. | Not started | T037, T073 | T248 | Secrets are stored outside DB plaintext. |
-| T329 | Implement backend Origin checks | Reject suspicious browser-origin requests to local backend. | Not started | T042 | T330 | Tests cover allowed/disallowed origins. |
+| T329 | Implement backend Origin checks | Reject suspicious browser-origin requests to local backend. | Done | T042 | T330 | Origin middleware accepts loopback/file/app origins, rejects non-local browser origins, and handles local CORS preflight without auth. |
 | T330 | Security smoke tests | Test local auth, Origin, path sandbox, env allowlist, secret redaction. | Not started | T320-T329 | T360 | Security test suite runs in CI. |
 | T331 | Add prompt-injection guardrails | Wrap repo/PR content as untrusted data in prompts. | Not started | T120, T170 | T332 | Prompt templates clearly separate instructions from code/PR text. |
 | T332 | Add agent output trust rules | Treat agent output as untrusted until parsed/verified. | Not started | T170 | T204 | Malicious output cannot trigger publish/write side effects. |

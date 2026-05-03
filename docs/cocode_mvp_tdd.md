@@ -2040,6 +2040,8 @@ Permission policy now distinguishes read, search, test, shell, write, and publis
 
 Local-only context policy is normalized through the same path sandbox primitives. Before context builders read changed file content, external recipients filter local-only changed files from diff, full-file, related-code, and related-test inputs; a final item pass removes any path-bearing local-only item that could be introduced by another context source. Rendered context only exposes the number of local-only paths configured, while local artifact metadata and API previews record recipient provider/egress, sent item counts by kind, and omitted local-only items for UI provenance.
 
+The backend rejects browser-origin requests from non-local origins before token auth. Loopback dev origins receive narrow CORS headers and unauthenticated preflight handling; packaged Electron file origins and the future `app://cocode` origin are allowed so the desktop shell can call the local API without widening access to arbitrary web pages.
+
 ---
 
 ## 20. Error Handling

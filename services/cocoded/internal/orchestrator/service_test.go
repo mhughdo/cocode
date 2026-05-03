@@ -196,6 +196,72 @@ func TestWorkflowRunsSelectedAgentsInParallel(t *testing.T) {
 	}
 }
 
+func TestWorkflowContinuesWhenOneAgentFails(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	env.Driver.failConfigs = map[string]bool{"agent_config_2": true}
+	if _, err := env.Queries.CreateAgentConfig(context.Background(), dbgen.CreateAgentConfigParams{
+		ID:               "agent_config_2",
+		Name:             "Failing Reviewer",
+		Role:             "secondary_reviewer",
+		AdapterKind:      string(agents.AdapterCLINonInteractive),
+		Command:          nullableTestString("fake-agent"),
+		ArgsJson:         "[]",
+		CwdMode:          "repo_root",
+		EnvAllowlistJson: "[]",
+		OutputMode:       string(agents.OutputJSON),
+		CapabilitiesJson: `{"supports_json":true,"can_read":true,"output_modes":["json"]}`,
+		SettingsJson:     `{"prompt_delivery":"stdin","timeout_seconds":30}`,
+		Enabled:          1,
+		CreatedAt:        "2026-05-03T00:04:00Z",
+		UpdatedAt:        "2026-05-03T00:04:00Z",
+	}); err != nil {
+		t.Fatalf("CreateAgentConfig(second) error = %v", err)
+	}
+	session := createWorkflowSession(t, env, "review_session_partial", StatusDraft)
+	if _, err := env.Queries.CreateReviewSessionAgent(context.Background(), dbgen.CreateReviewSessionAgentParams{
+		ID:                   "review_session_agent_partial_2",
+		ReviewSessionID:      session.ID,
+		AgentConfigID:        "agent_config_2",
+		Role:                 "secondary_reviewer",
+		RunOrder:             2,
+		Enabled:              1,
+		SettingsOverrideJson: "{}",
+	}); err != nil {
+		t.Fatalf("CreateReviewSessionAgent(second) error = %v", err)
+	}
+	if _, err := env.Service.Transition(context.Background(), session.ID, StatusQueued); err != nil {
+		t.Fatalf("Transition(draft -> queued) error = %v", err)
+	}
+	if err := env.Service.Run(context.Background(), session.ID); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	updated, err := env.Queries.GetReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("GetReviewSession() error = %v", err)
+	}
+	if updated.Status != StatusCompleted {
+		t.Fatalf("session status = %s, want completed", updated.Status)
+	}
+	runs, err := env.Queries.ListAgentRunsBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListAgentRunsBySession() error = %v", err)
+	}
+	statuses := map[string]bool{}
+	for _, run := range runs {
+		statuses[run.Status] = true
+	}
+	if len(runs) != 2 || !statuses[agentrun.RunStatusSucceeded] || !statuses[agentrun.RunStatusFailed] {
+		t.Fatalf("agent runs = %+v", runs)
+	}
+	events, err := env.Events.ListByReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListByReviewSession() error = %v", err)
+	}
+	assertEventTypes(t, events, []string{"AgentRunFailed", "ReviewSessionPartialFailure", "ReviewSessionCompleted"})
+}
+
 func TestCheckpointLoadsPersistedPartialPhase(t *testing.T) {
 	t.Parallel()
 
@@ -423,11 +489,12 @@ func assertEventTypes(t *testing.T, events []dbgen.Event, want []string) {
 }
 
 type workflowDriver struct {
-	mu      sync.Mutex
-	prompts []string
-	delay   time.Duration
-	current int
-	max     int
+	mu          sync.Mutex
+	prompts     []string
+	delay       time.Duration
+	current     int
+	max         int
+	failConfigs map[string]bool
 }
 
 func (d *workflowDriver) Open(context.Context, agents.ConnectionConfig) (agents.Connection, error) {
@@ -444,6 +511,15 @@ func (c workflowConnection) SendTask(_ context.Context, task agents.AgentTask) (
 		time.Sleep(c.driver.delay)
 	}
 	c.driver.leave()
+	if c.driver.shouldFail(task.AgentConfigID) {
+		exitCode := 7
+		events := make(chan agents.AgentEvent, 3)
+		events <- agents.AgentEvent{Type: agents.EventStarted, RunID: task.RunID, Message: "fake agent started"}
+		events <- agents.AgentEvent{Type: agents.EventOutput, RunID: task.RunID, Stream: "stderr", Text: "agent failed\n"}
+		events <- agents.AgentEvent{Type: agents.EventFailed, RunID: task.RunID, ExitCode: &exitCode, ErrorCode: "failed", Error: "agent failed"}
+		close(events)
+		return events, nil
+	}
 	exitCode := 0
 	events := make(chan agents.AgentEvent, 3)
 	events <- agents.AgentEvent{Type: agents.EventStarted, RunID: task.RunID, Message: "fake agent started"}
@@ -486,6 +562,12 @@ func (d *workflowDriver) maxConcurrent() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.max
+}
+
+func (d *workflowDriver) shouldFail(agentConfigID string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.failConfigs[agentConfigID]
 }
 
 func nullableTestString(value string) sql.NullString {

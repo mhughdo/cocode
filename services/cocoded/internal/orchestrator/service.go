@@ -364,13 +364,16 @@ func (s *Service) run(ctx context.Context, reviewSessionID string) error {
 	}
 
 	failedRuns := 0
+	succeededRuns := 0
 	if err := s.withPhase(ctx, session.ID, PhaseRunAgents, func() error {
 		results, err := s.runAgents(ctx, runContexts)
 		if err != nil {
 			return err
 		}
 		for _, result := range results {
-			if result.Run.Status != agentrun.RunStatusSucceeded {
+			if result.Run.Status == agentrun.RunStatusSucceeded {
+				succeededRuns++
+			} else {
 				failedRuns++
 			}
 		}
@@ -379,7 +382,20 @@ func (s *Service) run(ctx context.Context, reviewSessionID string) error {
 		return err
 	}
 	if failedRuns > 0 {
-		return fmt.Errorf("%d review agent run(s) failed", failedRuns)
+		if err := s.appendEvent(ctx, appendEventParams{
+			ReviewSessionID: session.ID,
+			Type:            "ReviewSessionPartialFailure",
+			Level:           "warn",
+			Payload: map[string]any{
+				"failed_agent_runs":    failedRuns,
+				"succeeded_agent_runs": succeededRuns,
+			},
+		}); err != nil {
+			return err
+		}
+	}
+	if succeededRuns == 0 {
+		return fmt.Errorf("all review agent runs failed")
 	}
 
 	for _, phase := range []string{

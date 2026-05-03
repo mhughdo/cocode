@@ -15,13 +15,16 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/hughdo/cocode/services/cocoded/internal/agentrun"
 	"github.com/hughdo/cocode/services/cocoded/internal/app"
 	"github.com/hughdo/cocode/services/cocoded/internal/apperror"
 	"github.com/hughdo/cocode/services/cocoded/internal/artifact"
 	"github.com/hughdo/cocode/services/cocoded/internal/contextbundle"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
+	"github.com/hughdo/cocode/services/cocoded/internal/eventlog"
 	"github.com/hughdo/cocode/services/cocoded/internal/githubpr"
 	"github.com/hughdo/cocode/services/cocoded/internal/gitrepo"
+	"github.com/hughdo/cocode/services/cocoded/internal/orchestrator"
 	"github.com/hughdo/cocode/services/cocoded/internal/snapshot"
 )
 
@@ -143,6 +146,8 @@ type routerServices struct {
 	snapshotInitErr     error
 	contextBuilder      *contextbundle.Service
 	contextBuilderErr   error
+	reviewWorkflow      *orchestrator.Service
+	reviewWorkflowErr   error
 	gitCollector        gitrepo.Collector
 	githubClientFactory func(token string) githubpr.Client
 }
@@ -152,12 +157,35 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 
 	queries := dbgen.New(database)
 	snapshotService, snapshotErr := snapshot.New(database, artifactRoot(config))
-	contextArtifactStore, contextArtifactErr := artifact.New(artifactRoot(config), queries)
+	artifactStore, artifactErr := artifact.New(artifactRoot(config), queries)
 	var contextBuilder *contextbundle.Service
-	if contextArtifactErr == nil {
+	if artifactErr == nil {
 		contextBuilder = &contextbundle.Service{
 			Queries:   queries,
-			Artifacts: contextArtifactStore,
+			Artifacts: artifactStore,
+		}
+	}
+	eventStore, eventErr := eventlog.New(database)
+	var reviewWorkflow *orchestrator.Service
+	workflowErr := artifactErr
+	if workflowErr == nil {
+		workflowErr = eventErr
+	}
+	if workflowErr == nil {
+		runner := agentrun.Runner{
+			Queries:   queries,
+			Artifacts: artifactStore,
+		}
+		reviewWorkflow = &orchestrator.Service{
+			Queries:        queries,
+			ContextBuilder: contextBuilder,
+			Artifacts:      artifactStore,
+			Events:         eventStore,
+			AgentManager: &agentrun.Manager{
+				Runner:                  runner,
+				MaxConcurrent:           2,
+				MaxConcurrentPerSession: 2,
+			},
 		}
 	}
 	services := routerServices{
@@ -165,7 +193,9 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 		snapshots:         snapshotService,
 		snapshotInitErr:   snapshotErr,
 		contextBuilder:    contextBuilder,
-		contextBuilderErr: contextArtifactErr,
+		contextBuilderErr: artifactErr,
+		reviewWorkflow:    reviewWorkflow,
+		reviewWorkflowErr: workflowErr,
 		gitCollector:      gitrepo.NewCollector(gitrepo.DefaultRunner()),
 		githubClientFactory: func(token string) githubpr.Client {
 			return githubpr.Client{
@@ -211,6 +241,8 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.POST("/review-sessions", createReviewSessionHandler(queries))
 	api.GET("/review-sessions", listReviewSessionsHandler(queries))
 	api.GET("/review-sessions/:id", getReviewSessionHandler(queries))
+	api.POST("/review-sessions/:id/start", startReviewSessionHandler(services))
+	api.GET("/review-sessions/:id/checkpoint", reviewSessionCheckpointHandler(services))
 	api.GET("/agents/presets", listAgentPresetsHandler())
 	api.GET("/agents/configs", listAgentConfigsHandler(queries))
 	api.POST("/agents/configs", createAgentConfigHandler(queries))

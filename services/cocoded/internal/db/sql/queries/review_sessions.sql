@@ -69,6 +69,16 @@ SET
 WHERE id = ?
 RETURNING id, workspace_id, repository_id, snapshot_id, title, status, review_depth, focus_prompt, preset, runtime_limit_seconds, context_policy_json, started_at, completed_at, created_at, updated_at;
 
+-- name: UpdateReviewSessionStatusIfCurrent :one
+UPDATE review_sessions
+SET
+  status = ?,
+  started_at = ?,
+  completed_at = ?,
+  updated_at = ?
+WHERE id = ? AND status = ?
+RETURNING id, workspace_id, repository_id, snapshot_id, title, status, review_depth, focus_prompt, preset, runtime_limit_seconds, context_policy_json, started_at, completed_at, created_at, updated_at;
+
 -- name: DeleteReviewSession :exec
 DELETE FROM review_sessions
 WHERE id = ?;

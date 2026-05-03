@@ -123,6 +123,7 @@ type Querier interface {
 	UpdateReviewSession(ctx context.Context, arg UpdateReviewSessionParams) (ReviewSession, error)
 	UpdateReviewSessionAgentEnabled(ctx context.Context, arg UpdateReviewSessionAgentEnabledParams) (ReviewSessionAgent, error)
 	UpdateReviewSessionStatus(ctx context.Context, arg UpdateReviewSessionStatusParams) (ReviewSession, error)
+	UpdateReviewSessionStatusIfCurrent(ctx context.Context, arg UpdateReviewSessionStatusIfCurrentParams) (ReviewSession, error)
 	UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams) (Workspace, error)
 	UpsertCredentialRef(ctx context.Context, arg UpsertCredentialRefParams) (CredentialRef, error)
 }

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hughdo/cocode/services/cocoded/internal/agents"
 	"github.com/hughdo/cocode/services/cocoded/internal/app"
@@ -1002,6 +1003,89 @@ func TestReviewSessionCreateRejectsInvalidInputs(t *testing.T) {
 	}
 }
 
+func TestStartReviewSessionEndpointRunsWorkflow(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	repoPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoPath, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, "src", "new.go"), []byte("package src\n\nfunc RequireAdmin() bool { return true }\n"), 0o644); err != nil {
+		t.Fatalf("write repo file: %v", err)
+	}
+	createHTTPAPISnapshotAt(t, queries, repoPath)
+	fakeAgent := fakeJSONAgentPath(t)
+	createHTTPAPIAgentConfigWithCommand(t, queries, "agent_config_fake", "primary_reviewer", 1, fakeAgent, agents.OutputJSON, `{"prompt_delivery":"stdin","timeout_seconds":30}`)
+
+	createRequest := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/review-sessions", map[string]any{
+		"workspace_id":          "workspace_1",
+		"snapshot_id":           "snapshot_1",
+		"title":                 "Review fake workflow",
+		"agent_config_ids":      []string{"agent_config_fake"},
+		"runtime_limit_seconds": 60,
+		"context_policy": map[string]any{
+			"include_prompt_material":     true,
+			"include_changed_code":        true,
+			"include_related_call_sites":  false,
+			"include_related_tests":       false,
+			"include_project_conventions": false,
+			"include_prior_comments":      false,
+			"include_prior_decisions":     false,
+			"max_tokens":                  4096,
+			"max_items":                   20,
+		},
+	})
+	createResponse := httptest.NewRecorder()
+	router.ServeHTTP(createResponse, createRequest)
+	if createResponse.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createResponse.Code, createResponse.Body.String())
+	}
+	created := decodeReviewSessionResponse(t, createResponse.Body.Bytes())
+
+	startRequest := httptest.NewRequest(http.MethodPost, "/api/review-sessions/"+created.ID+"/start", nil)
+	startRequest.Header.Set("X-Cocode-Token", "test-token")
+	startResponse := httptest.NewRecorder()
+	router.ServeHTTP(startResponse, startRequest)
+	if startResponse.Code != http.StatusOK {
+		t.Fatalf("start status = %d, body = %s", startResponse.Code, startResponse.Body.String())
+	}
+	started := decodeReviewSessionResponse(t, startResponse.Body.Bytes())
+	if started.Status != "queued" || started.StartedAt != "" || started.CompletedAt != "" {
+		t.Fatalf("started response = %+v", started)
+	}
+
+	completed := waitForHTTPAPIReviewSessionStatus(t, queries, created.ID, "completed")
+	if completed.StartedAt.String == "" || completed.CompletedAt.String == "" {
+		t.Fatalf("completed session timestamps = %+v", completed)
+	}
+	runs, err := queries.ListAgentRunsBySession(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("ListAgentRunsBySession() error = %v", err)
+	}
+	if len(runs) != 1 || runs[0].Status != "succeeded" || !runs[0].ParsedOutputArtifactID.Valid {
+		t.Fatalf("agent runs = %+v", runs)
+	}
+
+	checkpointRequest := httptest.NewRequest(http.MethodGet, "/api/review-sessions/"+created.ID+"/checkpoint", nil)
+	checkpointRequest.Header.Set("X-Cocode-Token", "test-token")
+	checkpointResponse := httptest.NewRecorder()
+	router.ServeHTTP(checkpointResponse, checkpointRequest)
+	if checkpointResponse.Code != http.StatusOK {
+		t.Fatalf("checkpoint status = %d, body = %s", checkpointResponse.Code, checkpointResponse.Body.String())
+	}
+	checkpoint := decodeReviewCheckpointResponse(t, checkpointResponse.Body.Bytes())
+	if checkpoint.Status != "completed" || checkpoint.Phase != "draft_comments" || checkpoint.PhaseStatus != "completed" {
+		t.Fatalf("checkpoint = %+v", checkpoint)
+	}
+
+	duplicateStart := httptest.NewRequest(http.MethodPost, "/api/review-sessions/"+created.ID+"/start", nil)
+	duplicateStart.Header.Set("X-Cocode-Token", "test-token")
+	duplicateResponse := httptest.NewRecorder()
+	router.ServeHTTP(duplicateResponse, duplicateStart)
+	if duplicateResponse.Code != http.StatusBadRequest {
+		t.Fatalf("duplicate start status = %d, body = %s", duplicateResponse.Code, duplicateResponse.Body.String())
+	}
+}
+
 func TestBuildReviewContextPreviewEndpointPersistsBundle(t *testing.T) {
 	repoPath := t.TempDir()
 	writeHTTPAPIRepoFile(t, repoPath, "app/main.go", "package main\n\nconst apiKey = \"sk-abcdefghijklmnopqrstuvwxyz\"\n\nfunc RequireAdmin() {}\n")
@@ -1234,7 +1318,13 @@ func testRouterWithConfigAndQueries(t *testing.T, config app.Config) (http.Handl
 func createHTTPAPISnapshot(t *testing.T, queries *dbgen.Queries) {
 	t.Helper()
 
-	createHTTPAPIWorkspaceAndRepository(t, queries, "/tmp/cocode")
+	createHTTPAPISnapshotAt(t, queries, "/tmp/cocode")
+}
+
+func createHTTPAPISnapshotAt(t *testing.T, queries *dbgen.Queries, repoPath string) {
+	t.Helper()
+
+	createHTTPAPIWorkspaceAndRepository(t, queries, repoPath)
 	if _, err := queries.CreatePullRequestSnapshot(context.Background(), dbgen.CreatePullRequestSnapshotParams{
 		ID:           "snapshot_1",
 		RepositoryID: "repo_1",
@@ -1305,18 +1395,27 @@ func createHTTPAPIWorkspaceAndRepository(t *testing.T, queries *dbgen.Queries, r
 func createHTTPAPIAgentConfig(t *testing.T, queries *dbgen.Queries, id string, role string, enabled int64) {
 	t.Helper()
 
+	createHTTPAPIAgentConfigWithCommand(t, queries, id, role, enabled, "codex", agents.OutputJSON, "{}")
+}
+
+func createHTTPAPIAgentConfigWithCommand(t *testing.T, queries *dbgen.Queries, id string, role string, enabled int64, command string, outputMode agents.OutputMode, settingsJSON string) {
+	t.Helper()
+
+	if settingsJSON == "" {
+		settingsJSON = "{}"
+	}
 	if _, err := queries.CreateAgentConfig(context.Background(), dbgen.CreateAgentConfigParams{
 		ID:               id,
 		Name:             id,
 		Role:             role,
 		AdapterKind:      "cli_noninteractive",
-		Command:          nullableString("codex"),
+		Command:          nullableString(command),
 		ArgsJson:         "[]",
 		CwdMode:          "repo_root",
 		EnvAllowlistJson: "[]",
-		OutputMode:       "json",
+		OutputMode:       string(outputMode),
 		CapabilitiesJson: `{"supports_json":true,"can_read":true,"output_modes":["json"]}`,
-		SettingsJson:     "{}",
+		SettingsJson:     settingsJSON,
 		Enabled:          enabled,
 		CreatedAt:        "2026-05-03T00:06:00Z",
 		UpdatedAt:        "2026-05-03T00:06:00Z",
@@ -1327,6 +1426,44 @@ func createHTTPAPIAgentConfig(t *testing.T, queries *dbgen.Queries, id string, r
 
 func nullableString(value string) sql.NullString {
 	return sql.NullString{String: value, Valid: true}
+}
+
+func waitForHTTPAPIReviewSessionStatus(t *testing.T, queries *dbgen.Queries, id string, status string) dbgen.ReviewSession {
+	t.Helper()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		session, err := queries.GetReviewSession(context.Background(), id)
+		if err != nil {
+			t.Fatalf("GetReviewSession(%s) error = %v", id, err)
+		}
+		if session.Status == status {
+			return session
+		}
+		if session.Status == "failed" || session.Status == "canceled" {
+			t.Fatalf("review session ended as %s, want %s: %+v", session.Status, status, session)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	session, err := queries.GetReviewSession(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetReviewSession(%s) after timeout error = %v", id, err)
+	}
+	t.Fatalf("review session status = %s after timeout, want %s", session.Status, status)
+	return dbgen.ReviewSession{}
+}
+
+func fakeJSONAgentPath(t *testing.T) string {
+	t.Helper()
+
+	path, err := filepath.Abs(filepath.Join("..", "..", "..", "..", "testdata", "fake-agents", "json-agent.sh"))
+	if err != nil {
+		t.Fatalf("resolve fake agent path: %v", err)
+	}
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatalf("chmod fake agent: %v", err)
+	}
+	return path
 }
 
 func newAuthenticatedJSONRequest(t *testing.T, method string, path string, body any) *http.Request {
@@ -1396,6 +1533,28 @@ func decodeReviewSessionListResponse(t *testing.T, content []byte) []ReviewSessi
 	var envelope struct {
 		Data  []ReviewSessionResponse `json:"data"`
 		Error any                     `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+type reviewCheckpointTestResponse struct {
+	Status      string `json:"status"`
+	Phase       string `json:"phase"`
+	PhaseStatus string `json:"phase_status"`
+}
+
+func decodeReviewCheckpointResponse(t *testing.T, content []byte) reviewCheckpointTestResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  reviewCheckpointTestResponse `json:"data"`
+		Error any                          `json:"error"`
 	}
 	if err := json.Unmarshal(content, &envelope); err != nil {
 		t.Fatalf("decode response: %v", err)

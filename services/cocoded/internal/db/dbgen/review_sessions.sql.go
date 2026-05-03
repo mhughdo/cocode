@@ -294,3 +294,53 @@ func (q *Queries) UpdateReviewSessionStatus(ctx context.Context, arg UpdateRevie
 	)
 	return i, err
 }
+
+const updateReviewSessionStatusIfCurrent = `-- name: UpdateReviewSessionStatusIfCurrent :one
+UPDATE review_sessions
+SET
+  status = ?,
+  started_at = ?,
+  completed_at = ?,
+  updated_at = ?
+WHERE id = ? AND status = ?
+RETURNING id, workspace_id, repository_id, snapshot_id, title, status, review_depth, focus_prompt, preset, runtime_limit_seconds, context_policy_json, started_at, completed_at, created_at, updated_at
+`
+
+type UpdateReviewSessionStatusIfCurrentParams struct {
+	Status      string         `json:"status"`
+	StartedAt   sql.NullString `json:"started_at"`
+	CompletedAt sql.NullString `json:"completed_at"`
+	UpdatedAt   string         `json:"updated_at"`
+	ID          string         `json:"id"`
+	Status_2    string         `json:"status_2"`
+}
+
+func (q *Queries) UpdateReviewSessionStatusIfCurrent(ctx context.Context, arg UpdateReviewSessionStatusIfCurrentParams) (ReviewSession, error) {
+	row := q.db.QueryRowContext(ctx, updateReviewSessionStatusIfCurrent,
+		arg.Status,
+		arg.StartedAt,
+		arg.CompletedAt,
+		arg.UpdatedAt,
+		arg.ID,
+		arg.Status_2,
+	)
+	var i ReviewSession
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.RepositoryID,
+		&i.SnapshotID,
+		&i.Title,
+		&i.Status,
+		&i.ReviewDepth,
+		&i.FocusPrompt,
+		&i.Preset,
+		&i.RuntimeLimitSeconds,
+		&i.ContextPolicyJson,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}

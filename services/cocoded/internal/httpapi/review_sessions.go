@@ -13,6 +13,7 @@ import (
 	"github.com/hughdo/cocode/services/cocoded/internal/apperror"
 	"github.com/hughdo/cocode/services/cocoded/internal/contextbundle"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
+	"github.com/hughdo/cocode/services/cocoded/internal/orchestrator"
 )
 
 const defaultReviewRuntimeLimitSeconds int64 = 1800
@@ -180,6 +181,41 @@ func getReviewSessionHandler(queries *dbgen.Queries) gin.HandlerFunc {
 			return
 		}
 		respondOK(c, response)
+	}
+}
+
+func startReviewSessionHandler(services routerServices) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if services.reviewWorkflowErr != nil || services.reviewWorkflow == nil {
+			respondError(c, apperror.Internal("review workflow is not configured"))
+			return
+		}
+		result, err := services.reviewWorkflow.Start(c.Request.Context(), c.Param("id"))
+		if err != nil {
+			respondReviewWorkflowError(c, err)
+			return
+		}
+		response, appErr := reviewSessionResponse(c.Request.Context(), services.queries, result.Session)
+		if appErr != nil {
+			respondError(c, appErr)
+			return
+		}
+		respondOK(c, response)
+	}
+}
+
+func reviewSessionCheckpointHandler(services routerServices) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if services.reviewWorkflowErr != nil || services.reviewWorkflow == nil {
+			respondError(c, apperror.Internal("review workflow is not configured"))
+			return
+		}
+		checkpoint, err := services.reviewWorkflow.LoadCheckpoint(c.Request.Context(), c.Param("id"))
+		if err != nil {
+			respondReviewWorkflowError(c, err)
+			return
+		}
+		respondOK(c, checkpoint)
 	}
 }
 
@@ -352,4 +388,21 @@ func getReviewSession(ctx context.Context, queries *dbgen.Queries, id string) (d
 		return dbgen.ReviewSession{}, apperror.Internal("failed to read review session")
 	}
 	return row, nil
+}
+
+func respondReviewWorkflowError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, orchestrator.ErrReviewSessionNotFound):
+		respondError(c, apperror.NotFound("review session was not found"))
+	case errors.Is(err, orchestrator.ErrInvalidStatusTransition):
+		respondError(c, apperror.InvalidRequest(err.Error()))
+	case errors.Is(err, orchestrator.ErrNoEnabledReviewAgents):
+		respondError(c, apperror.InvalidRequest("review session has no enabled agents"))
+	case errors.Is(err, orchestrator.ErrInvalidAgentConfiguration):
+		respondError(c, apperror.InvalidRequest(err.Error()))
+	case errors.Is(err, orchestrator.ErrServiceNotConfigured):
+		respondError(c, apperror.Internal("review workflow is not configured"))
+	default:
+		respondError(c, apperror.Internal("review workflow failed"))
+	}
 }

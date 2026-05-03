@@ -85,6 +85,7 @@ import {
   idleApiState,
   loadApiResource,
   loadingApiState,
+  preserveSuccessfulLoadable,
   successApiState,
   type ApiSessionResponse,
   type Loadable,
@@ -101,7 +102,6 @@ import {
   type Finding,
   type FindingDetailResponse,
   type FindingListResponse,
-  type FindingListStats,
   type FindingQuickActionResponse,
   type FindingThreadView,
   type CreateCopyPacketResponse,
@@ -147,6 +147,10 @@ type FindingSeverityFilter =
   | "medium"
   | "low"
   | "info";
+type ReviewRefreshState =
+  | { status: "idle" }
+  | { status: "refreshing" }
+  | { status: "error"; message: string };
 
 const changedFiles = [
   { path: "api/routes/billing.go", additions: 132, deletions: 18 },
@@ -552,6 +556,7 @@ export function App() {
             onOpenSearch={() => setSearchOpen(true)}
           />
         }
+        statusBanner={<AppConnectionNotice apiSession={apiSession} />}
         detailPane={
           mainView === "new-thread" || mainView === "configure" ? (
             <ReviewPane />
@@ -588,7 +593,6 @@ export function App() {
           <ReviewThread
             activeRepository={activeRepository}
             agentConfigs={agentConfigs}
-            apiSession={apiSession}
             backendDetail={backendDetail}
             client={client}
             session={displayedSession}
@@ -610,6 +614,31 @@ export function App() {
       )}
     </>
   );
+}
+
+function AppConnectionNotice({
+  apiSession,
+}: {
+  apiSession: Loadable<ApiSessionResponse>;
+}) {
+  if (apiSession.status === "loading") {
+    return (
+      <div className="border-b px-4 py-2">
+        <LoadingRows rows={1} />
+      </div>
+    );
+  }
+  if (apiSession.status === "error") {
+    return (
+      <div className="border-b p-3">
+        <ErrorState
+          title="Backend connection failed"
+          description={apiSession.error.message}
+        />
+      </div>
+    );
+  }
+  return null;
 }
 
 function NewThreadScreen({
@@ -1003,6 +1032,9 @@ function ConfigureReviewScreen({
               description={snapshot.error.message}
             />
           )}
+          {snapshot.status === "loading" && (
+            <LoadingRows rows={2} className="rounded-lg border p-4" />
+          )}
 
           <div className="grid grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)] gap-4">
             <section className="bg-surface-raised rounded-lg border">
@@ -1218,9 +1250,27 @@ function ConfigureReviewScreen({
                     <Badge variant="outline">{localOnlyPaths.length}</Badge>
                   </div>
                   <div className="max-h-44 overflow-y-auto p-2">
-                    {visibleChangedFiles.length === 0 && (
+                    {changedFiles.status === "loading" && (
                       <div className="text-muted-foreground px-1 py-2 text-xs">
-                        Changed files will appear here after snapshot loading.
+                        Loading changed files for local-only selection.
+                      </div>
+                    )}
+                    {changedFiles.status === "error" && (
+                      <div className="text-destructive px-1 py-2 text-xs">
+                        Changed files unavailable; local-only selection is
+                        disabled.
+                      </div>
+                    )}
+                    {changedFiles.status === "success" &&
+                      visibleChangedFiles.length === 0 && (
+                        <div className="text-muted-foreground px-1 py-2 text-xs">
+                          No changed files are available for local-only
+                          selection.
+                        </div>
+                      )}
+                    {changedFiles.status === "idle" && (
+                      <div className="text-muted-foreground px-1 py-2 text-xs">
+                        Changed files appear here after snapshot loading.
                       </div>
                     )}
                     {visibleChangedFiles.map((file) => (
@@ -1522,6 +1572,14 @@ function AgentSettingsScreen({
                       className="border-0 p-2"
                       title="Presets unavailable"
                       description={presets.error.message}
+                    />
+                  )}
+                  {presets.status === "success" && presetList.length === 0 && (
+                    <EmptyState
+                      className="border-0 p-3"
+                      title="No presets available"
+                      description="Preset metadata did not return any CLI templates."
+                      icon={TerminalIcon}
                     />
                   )}
                   {presetList.map((preset) => (
@@ -2461,14 +2519,12 @@ function CommitDropdown() {
 function ReviewThread({
   activeRepository,
   agentConfigs,
-  apiSession,
   backendDetail,
   client,
   session,
 }: {
   activeRepository?: Repository;
   agentConfigs: Loadable<AgentConfig[]>;
-  apiSession: Loadable<ApiSessionResponse>;
   backendDetail: string;
   client: ApiClient | null;
   session?: ReviewSession;
@@ -2520,26 +2576,29 @@ function ReviewThread({
             activeTab === "evidence-map" ? "max-w-7xl" : "max-w-5xl",
           )}
         >
-          {apiSession.status === "loading" && (
-            <LoadingRows rows={2} className="rounded-lg border p-4" />
-          )}
-          {apiSession.status === "error" && (
-            <ErrorState
-              title="Backend connection failed"
-              description={apiSession.error.message}
-            />
-          )}
-
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
-              <h1 className="truncate text-xl font-semibold">
-                {session?.title ?? "Review thread"}
-              </h1>
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <h1 className="truncate text-xl font-semibold">
+                  {session?.title ?? "Review thread"}
+                </h1>
+                {live.refreshState.status === "refreshing" && (
+                  <Badge variant="outline">Refreshing</Badge>
+                )}
+                {live.refreshState.status === "error" && (
+                  <Badge variant="outline">Refresh issue</Badge>
+                )}
+              </div>
               <p className="text-muted-foreground mt-1 text-sm">
                 {session
                   ? `${session.review_depth} review • ${session.status}`
                   : "Create or select a review session to stream live progress."}
               </p>
+              {live.refreshState.status === "error" && (
+                <p className="text-destructive mt-1 max-w-2xl truncate text-xs">
+                  {live.refreshState.message}
+                </p>
+              )}
             </div>
             {session && (
               <ReviewControlButtons
@@ -2606,7 +2665,10 @@ function ReviewThread({
             </TabsContent>
 
             <TabsContent value="details" className="mt-4">
-              <ReviewEventTimeline events={live.events} />
+              <ReviewEventTimeline
+                events={live.events}
+                streamState={live.streamState}
+              />
             </TabsContent>
 
             <TabsContent value="findings" className="mt-4">
@@ -2685,6 +2747,11 @@ function useReviewSessionLiveData(
   const [findings, setFindings] =
     useState<Loadable<FindingListResponse>>(idleApiState());
   const [events, setEvents] = useState<ReviewEvent[]>([]);
+  const [refreshState, setRefreshState] = useState<ReviewRefreshState>({
+    status: "idle",
+  });
+  const [streamState, setStreamState] =
+    useState<Loadable<true>>(idleApiState());
 
   useEffect(() => {
     let canceled = false;
@@ -2692,6 +2759,8 @@ function useReviewSessionLiveData(
       if (!canceled) {
         setSession(initialSession);
         setEvents([]);
+        setRefreshState({ status: "idle" });
+        setStreamState(idleApiState());
       }
     });
     return () => {
@@ -2707,9 +2776,17 @@ function useReviewSessionLiveData(
     const sessionId = initialSession.id;
     let canceled = false;
 
-    async function load() {
-      setSummary(loadingApiState());
-      setFindings(loadingApiState());
+    async function load(initialLoad = false) {
+      if (initialLoad) {
+        setSummary((current) =>
+          current.status === "success" ? current : loadingApiState(),
+        );
+        setFindings((current) =>
+          current.status === "success" ? current : loadingApiState(),
+        );
+      } else {
+        setRefreshState({ status: "refreshing" });
+      }
       const [summaryState, findingsState] = await Promise.all([
         loadApiResource(() => api.reviewSessionSummary(sessionId)),
         loadApiResource(() => api.listFindings(sessionId)),
@@ -2717,13 +2794,25 @@ function useReviewSessionLiveData(
       if (canceled) {
         return;
       }
-      setSummary(summaryState);
-      setFindings(findingsState);
+      setSummary((current) =>
+        preserveSuccessfulLoadable(current, summaryState),
+      );
+      setFindings((current) =>
+        preserveSuccessfulLoadable(current, findingsState),
+      );
+      const refreshErrors = [summaryState, findingsState]
+        .filter((state) => state.status === "error")
+        .map((state) => (state.status === "error" ? state.error.message : ""));
+      setRefreshState(
+        refreshErrors.length > 0
+          ? { status: "error", message: refreshErrors.join(" ") }
+          : { status: "idle" },
+      );
     }
 
     queueMicrotask(() => {
       if (!canceled) {
-        void load();
+        void load(true);
       }
     });
     const interval = window.setInterval(() => void load(), 2500);
@@ -2740,10 +2829,16 @@ function useReviewSessionLiveData(
     const api = client;
     const sessionId = initialSession.id;
     const controller = new AbortController();
+    queueMicrotask(() => {
+      if (!controller.signal.aborted) {
+        setStreamState(loadingApiState());
+      }
+    });
     void api
       .streamReviewEvents(sessionId, {
         signal: controller.signal,
         onEvent: (event) => {
+          setStreamState(successApiState(true));
           setEvents((current) => appendBoundedEvent(current, event));
           if (
             event.type.startsWith("ReviewSession") ||
@@ -2752,10 +2847,17 @@ function useReviewSessionLiveData(
           ) {
             void loadApiResource(() =>
               api.reviewSessionSummary(sessionId),
-            ).then(setSummary);
+            ).then((state) =>
+              setSummary((current) =>
+                preserveSuccessfulLoadable(current, state),
+              ),
+            );
             if (event.type.includes("Finding")) {
               void loadApiResource(() => api.listFindings(sessionId)).then(
-                setFindings,
+                (state) =>
+                  setFindings((current) =>
+                    preserveSuccessfulLoadable(current, state),
+                  ),
               );
             }
           }
@@ -2763,6 +2865,7 @@ function useReviewSessionLiveData(
       })
       .catch((error: unknown) => {
         if (!controller.signal.aborted) {
+          setStreamState(errorApiState(error));
           setEvents((current) =>
             appendBoundedEvent(current, {
               id: "local_stream_error",
@@ -2779,7 +2882,15 @@ function useReviewSessionLiveData(
     return () => controller.abort();
   }, [client, initialSession]);
 
-  return { events, findings, session, setSession, summary };
+  return {
+    events,
+    findings,
+    refreshState,
+    session,
+    setSession,
+    streamState,
+    summary,
+  };
 }
 
 function ReviewControlButtons({
@@ -2984,7 +3095,22 @@ function EarlyFindingsPanel({
   );
 }
 
-function ReviewEventTimeline({ events }: { events: ReviewEvent[] }) {
+function ReviewEventTimeline({
+  events,
+  streamState,
+}: {
+  events: ReviewEvent[];
+  streamState: Loadable<true>;
+}) {
+  const streamLabel =
+    streamState.status === "loading"
+      ? "connecting"
+      : streamState.status === "error"
+        ? "stream issue"
+        : streamState.status === "success"
+          ? "live"
+          : "idle";
+
   return (
     <section className="bg-surface-raised rounded-lg border">
       <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
@@ -2994,9 +3120,20 @@ function ReviewEventTimeline({ events }: { events: ReviewEvent[] }) {
             Live SSE events with sequence IDs for replay/debugging.
           </div>
         </div>
-        <Badge variant="secondary">{events.length}</Badge>
+        <div className="flex items-center gap-2">
+          <Badge variant="outline">{streamLabel}</Badge>
+          <Badge variant="secondary">{events.length}</Badge>
+        </div>
       </div>
-      {events.length === 0 ? (
+      {events.length === 0 && streamState.status === "loading" ? (
+        <LoadingRows rows={3} className="p-4" />
+      ) : events.length === 0 && streamState.status === "error" ? (
+        <ErrorState
+          className="m-3"
+          title="Event stream disconnected"
+          description={streamState.error.message}
+        />
+      ) : events.length === 0 ? (
         <EmptyState
           className="border-0 p-6"
           title="No events yet"
@@ -3004,38 +3141,47 @@ function ReviewEventTimeline({ events }: { events: ReviewEvent[] }) {
           icon={ClockIcon}
         />
       ) : (
-        <div className="max-h-[520px] overflow-y-auto">
-          {events.map((event) => (
-            <div
-              key={`${event.sequence}-${event.id}`}
-              className="grid grid-cols-[72px_minmax(0,1fr)] gap-3 border-b px-4 py-3 text-sm last:border-b-0"
-            >
-              <div className="text-muted-foreground text-xs">
-                #{event.sequence}
+        <>
+          {streamState.status === "error" && (
+            <ErrorState
+              className="m-3"
+              title="Event stream disconnected"
+              description={streamState.error.message}
+            />
+          )}
+          <div className="max-h-[520px] overflow-y-auto">
+            {events.map((event) => (
+              <div
+                key={`${event.sequence}-${event.id}`}
+                className="grid grid-cols-[72px_minmax(0,1fr)] gap-3 border-b px-4 py-3 text-sm last:border-b-0"
+              >
+                <div className="text-muted-foreground text-xs">
+                  #{event.sequence}
+                </div>
+                <div className="min-w-0">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Badge
+                      variant={
+                        event.level === "error" ? "destructive" : "outline"
+                      }
+                    >
+                      {event.level || "info"}
+                    </Badge>
+                    <span className="truncate font-medium">{event.type}</span>
+                  </div>
+                  <div className="text-muted-foreground mt-1 truncate text-xs">
+                    {formatRelativeAge(event.created_at)}
+                    {event.agent_run_id ? ` • ${event.agent_run_id}` : ""}
+                    {event.artifact_id ? ` • ${event.artifact_id}` : ""}
+                  </div>
+                  <div className="text-muted-foreground mt-2 line-clamp-2 font-mono text-xs">
+                    {JSON.stringify(event.payload)}
+                  </div>
+                </div>
               </div>
-              <div className="min-w-0">
-                <div className="flex min-w-0 items-center gap-2">
-                  <Badge
-                    variant={
-                      event.level === "error" ? "destructive" : "outline"
-                    }
-                  >
-                    {event.level || "info"}
-                  </Badge>
-                  <span className="truncate font-medium">{event.type}</span>
-                </div>
-                <div className="text-muted-foreground mt-1 truncate text-xs">
-                  {formatRelativeAge(event.created_at)}
-                  {event.agent_run_id ? ` • ${event.agent_run_id}` : ""}
-                  {event.artifact_id ? ` • ${event.artifact_id}` : ""}
-                </div>
-                <div className="text-muted-foreground mt-2 line-clamp-2 font-mono text-xs">
-                  {JSON.stringify(event.payload)}
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        </>
       )}
     </section>
   );
@@ -3199,12 +3345,16 @@ function ReviewFindingsBoard({
   const listedFindings =
     listState.status === "success" ? listState.data.items : [];
   const renderedFindings = listedFindings.slice(0, MAX_FINDINGS_RENDERED);
-  const selectedFinding =
-    selectedDetail.status === "success"
-      ? selectedDetail.data.finding
-      : listedFindings.find((finding) => finding.id === selectedFindingId);
+  const selectedFindingFromList = listedFindings.find(
+    (finding) => finding.id === selectedFindingId,
+  );
   const selectedFindingDetail =
     selectedDetail.status === "success" ? selectedDetail.data : undefined;
+  const selectedFinding =
+    selectedFindingDetail?.finding ??
+    (selectedDetail.status === "idle" || selectedDetail.status === "loading"
+      ? selectedFindingFromList
+      : undefined);
   const selectedOutsideFilter = Boolean(
     selectedFinding &&
     listedFindings.length > 0 &&
@@ -3533,15 +3683,25 @@ function ReviewFindingsBoard({
               description={selectedDetail.error.message}
             />
           )}
-          {!selectedFinding && selectedDetail.status !== "loading" && (
+          {!selectedFinding &&
+            selectedDetail.status !== "loading" &&
+            selectedDetail.status !== "error" && (
+              <EmptyState
+                className="border-0"
+                title="No finding selected"
+                description="Select a finding to inspect evidence and actions."
+                icon={FileSearchIcon}
+              />
+            )}
+          {selectedFinding && selectedDetail.status === "idle" && (
             <EmptyState
               className="border-0"
-              title="No finding selected"
-              description="Select a finding to inspect evidence and actions."
+              title="Finding detail pending"
+              description="Detailed evidence and actions load after selection."
               icon={FileSearchIcon}
             />
           )}
-          {selectedFinding && selectedDetail.status !== "loading" && (
+          {selectedFinding && selectedDetail.status === "success" && (
             <div className="flex min-w-0 flex-col gap-4">
               <div>
                 <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -3743,9 +3903,7 @@ function PublishReviewScreen({
         return;
       }
       if (!client || !session) {
-        setAcceptedFindings(
-          successApiState({ items: [], stats: emptyFindingStats() }),
-        );
+        setAcceptedFindings(idleApiState());
         setSelectedIds(new Set());
         return;
       }
@@ -3782,6 +3940,7 @@ function PublishReviewScreen({
       return;
     }
     setActionMessage("");
+    setPreviewState(loadingApiState());
     const state = await loadApiResource(() =>
       client.createGitHubPreview(session.id, {
         finding_ids: selectedIdList,
@@ -3796,6 +3955,7 @@ function PublishReviewScreen({
       return;
     }
     setActionMessage("");
+    setCopyPacketState(loadingApiState());
     const state = await loadApiResource(() =>
       client.createReviewCopyPacket(session.id, {
         finding_ids: selectedIdList,
@@ -3836,6 +3996,25 @@ function PublishReviewScreen({
       }
       return next;
     });
+  }
+
+  if (!client) {
+    return (
+      <ErrorState
+        title="Backend client unavailable"
+        description="Publish preview and copy packets need an active backend connection."
+      />
+    );
+  }
+
+  if (!session) {
+    return (
+      <EmptyState
+        title="No review selected"
+        description="Select a review session before preparing publish output."
+        icon={GitPullRequestIcon}
+      />
+    );
   }
 
   return (
@@ -4378,6 +4557,7 @@ function FindingFollowUpScreen({
             <label className="flex flex-col gap-2 text-sm font-medium">
               Agent
               <NativeSelect
+                disabled={agentConfigs.status === "loading"}
                 value={selectedAgentId}
                 onChange={(event) => setSelectedAgentId(event.target.value)}
               >
@@ -4389,6 +4569,25 @@ function FindingFollowUpScreen({
                 ))}
               </NativeSelect>
             </label>
+            {agentConfigs.status === "loading" && (
+              <LoadingRows rows={2} className="mt-3" />
+            )}
+            {agentConfigs.status === "error" && (
+              <ErrorState
+                className="mt-3"
+                title="Follow-up agents unavailable"
+                description={agentConfigs.error.message}
+              />
+            )}
+            {agentConfigs.status === "success" &&
+              followUpAgents.length === 0 && (
+                <EmptyState
+                  className="border-0 p-2"
+                  title="No follow-up agents"
+                  description="Enable a verifier or non-interactive CLI agent to target follow-up questions."
+                  icon={BotIcon}
+                />
+              )}
             <div className="mt-4 grid grid-cols-2 gap-2">
               <Button
                 disabled={actionState.status === "loading"}
@@ -4452,6 +4651,12 @@ function FindingFollowUpScreen({
             </div>
             <div className="flex flex-col gap-2">
               {detailState.status === "loading" && <LoadingRows rows={3} />}
+              {detailState.status === "error" && (
+                <ErrorState
+                  title="Evidence bundle unavailable"
+                  description={detailState.error.message}
+                />
+              )}
               {evidenceItems.map((item) => (
                 <div key={item.id} className="rounded-md border p-3">
                   <div className="flex items-center justify-between gap-2">
@@ -4472,9 +4677,12 @@ function FindingFollowUpScreen({
               ))}
               {detailState.status === "success" &&
                 evidenceItems.length === 0 && (
-                  <p className="text-muted-foreground text-sm">
-                    No evidence items are attached yet.
-                  </p>
+                  <EmptyState
+                    className="border-0 p-2"
+                    title="No evidence items"
+                    description="This finding does not have evidence bundle entries yet."
+                    icon={FileSearchIcon}
+                  />
                 )}
             </div>
           </div>
@@ -4754,6 +4962,14 @@ function EvidenceMapScreen({
               )}
             </div>
 
+            {map.missing_reasons && map.missing_reasons.length > 0 && (
+              <ErrorState
+                className="m-4"
+                title="Evidence Map is partial"
+                description={map.missing_reasons.join(" ")}
+              />
+            )}
+
             <EvidenceMapGraphCanvas
               map={map}
               selection={selection}
@@ -4844,9 +5060,12 @@ function EvidenceMapHierarchyPane({
             );
           })}
           {hierarchy.length === 0 && (
-            <div className="text-muted-foreground px-3 py-8 text-sm">
-              No hierarchy data is available for this graph.
-            </div>
+            <EmptyState
+              className="border-0 px-3 py-8"
+              title="No hierarchy"
+              description="No code locations are available for this graph."
+              icon={FileSearchIcon}
+            />
           )}
         </div>
       </ScrollArea>
@@ -4864,6 +5083,19 @@ function EvidenceMapGraphCanvas({
   selection: EvidenceMapSelection | null;
 }) {
   const layout = useMemo(() => buildEvidenceMapLayout(map), [map]);
+
+  if (map.nodes.length === 0) {
+    return (
+      <div className="bg-surface/20 flex min-h-[420px] min-w-0 flex-1 items-center justify-center">
+        <EmptyState
+          className="border-0"
+          title="No graph nodes"
+          description="The graph builder did not return renderable nodes for this finding."
+          icon={MapIcon}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="bg-surface/20 min-h-[420px] min-w-0 flex-1 overflow-auto">
@@ -5033,10 +5265,15 @@ function EvidenceMapCallPathPanel({
           ))}
         </div>
       ) : (
-        <p className="text-muted-foreground text-sm">
-          {map.call_path_unavailable_reason ||
-            "No readable call path is available."}
-        </p>
+        <EmptyState
+          className="border-0 p-2"
+          title="No call path"
+          description={
+            map.call_path_unavailable_reason ||
+            "No readable call path is available."
+          }
+          icon={MapIcon}
+        />
       )}
     </div>
   );
@@ -5306,9 +5543,12 @@ function EvidenceMapLegend({ map }: { map: EvidenceMapResponse }) {
           </div>
         ))}
         {map.legend.length === 0 && (
-          <p className="text-muted-foreground text-sm">
-            No legend entries are available.
-          </p>
+          <EmptyState
+            className="border-0 p-2"
+            title="No legend"
+            description="No legend entries are available for this graph."
+            icon={MapIcon}
+          />
         )}
       </div>
     </div>
@@ -6077,17 +6317,6 @@ function formatFindingLocation(finding: Finding) {
     return `${finding.primary_path}:L${finding.primary_start_line}`;
   }
   return finding.primary_path;
-}
-
-function emptyFindingStats(): FindingListStats {
-  return {
-    total: 0,
-    filtered: 0,
-    by_decision: {},
-    by_severity: {},
-    by_verification: {},
-    needs_triage: 0,
-  };
 }
 
 function findingClipboardText(finding: Finding) {

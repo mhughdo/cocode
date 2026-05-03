@@ -42,6 +42,7 @@ export interface AppShellProps {
   header: ReactNode;
   children: ReactNode;
   detailPane?: ReactNode;
+  statusBanner?: ReactNode;
 }
 
 export function AppShell({
@@ -49,6 +50,7 @@ export function AppShell({
   header,
   children,
   detailPane,
+  statusBanner,
 }: AppShellProps) {
   return (
     <TooltipProvider>
@@ -58,6 +60,7 @@ export function AppShell({
         </aside>
         <section className="bg-background flex min-w-0 flex-1 flex-col">
           {header}
+          {statusBanner}
           <div
             className={cn(
               "grid min-h-0 flex-1",

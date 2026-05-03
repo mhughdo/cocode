@@ -1210,6 +1210,16 @@ export function errorApiState<T>(error: unknown): Loadable<T> {
   return { status: "error", error: toApiError(error) };
 }
 
+export function preserveSuccessfulLoadable<T>(
+  current: Loadable<T>,
+  next: Loadable<T>,
+): Loadable<T> {
+  if (current.status === "success" && next.status === "error") {
+    return current;
+  }
+  return next;
+}
+
 export async function loadApiResource<T>(
   loader: () => Promise<T>,
 ): Promise<Loadable<T>> {

@@ -3,9 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   createCocodeClient,
+  errorApiState,
   idleApiState,
   loadApiResource,
   loadingApiState,
+  preserveSuccessfulLoadable,
   successApiState,
 } from "./api";
 
@@ -597,6 +599,37 @@ describe("ApiClient", () => {
       code: "INVALID_ENVELOPE",
     });
   });
+
+  it("surfaces GitHub preview API errors", async () => {
+    const client = createCocodeClient({
+      baseUrl: "http://127.0.0.1:17658",
+      authToken: "local-token",
+      fetch: async () =>
+        jsonResponse(
+          {
+            data: null,
+            error: {
+              code: "DUPLICATE_PUBLICATION",
+              message: "Finding has already been published.",
+            },
+            request_id: "req_publish_1",
+          },
+          409,
+        ),
+    });
+
+    await expect(
+      client.createGitHubPreview("session_1", {
+        finding_ids: ["finding_1"],
+        review_event: "COMMENT",
+      }),
+    ).rejects.toMatchObject({
+      code: "DUPLICATE_PUBLICATION",
+      message: "Finding has already been published.",
+      requestId: "req_publish_1",
+      status: 409,
+    });
+  });
 });
 
 describe("API load states", () => {
@@ -623,6 +656,25 @@ describe("API load states", () => {
     if (failed.status === "error") {
       expect(failed.error.code).toBe("NETWORK_ERROR");
     }
+  });
+
+  it("keeps successful data visible when a background refresh fails", () => {
+    const current = successApiState({ total: 3 });
+    const failedRefresh = errorApiState(
+      new ApiError({
+        message: "temporary outage",
+        status: 503,
+        code: "SERVICE_UNAVAILABLE",
+      }),
+    );
+
+    expect(preserveSuccessfulLoadable(current, failedRefresh)).toBe(current);
+    expect(
+      preserveSuccessfulLoadable(idleApiState(), failedRefresh),
+    ).toMatchObject({
+      status: "error",
+      error: { code: "SERVICE_UNAVAILABLE" },
+    });
   });
 });
 

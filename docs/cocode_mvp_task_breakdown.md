@@ -350,7 +350,7 @@ Large parallel workstreams:
 | T264 | Implement Evidence Map interactions | Node click, edge detail, ask verifier, open in editor. | Done | T218, T213, T263 | T280 | Node/edge/call-path selection updates the panel, rebuild reloads graph state, ask verifier posts graph refs, and open-in-editor uses deep-link data through the Electron bridge. |
 | T265 | Implement Follow-up screen | Evidence bundle chips, chat messages, finding summary, selected agents, quick actions. | Done | T280, T251 | T266 | Follow-up opens from selected findings, loads/persists the finding thread, shows summary/evidence bundle/agent selector, supports scoped questions, and runs counter/accept/copy/dismiss quick actions. |
 | T266 | Implement Publish screen | Accepted findings selector, GitHub preview, copy fix packet preview, checklist. | Done | T290, T296 | T267 | Publish tab loads accepted findings, builds GitHub preview/checklist, renders copy-packet previews, and copies selected packets through the Electron clipboard bridge; direct GitHub submit remains disabled until an HTTP publish route is exposed. |
-| T267 | Implement loading/error/empty states | Add robust state components across all screens. | Not started | T240-T266 | T360 | Common failure states are understandable and tested. |
+| T267 | Implement loading/error/empty states | Add robust state components across all screens. | Done | T240-T266 | T360 | Shared empty/error/loading components are tested; review polling preserves last successful data during refresh failures; publish, findings, follow-up, Evidence Map, configure, settings, and event timeline render explicit loading/error/empty states. |
 
 ---
 

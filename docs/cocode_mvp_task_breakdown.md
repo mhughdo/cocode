@@ -183,7 +183,7 @@ Large parallel workstreams:
 | T076 | Fetch unified diff | Fetch PR diff artifact for diff mapping and reproducibility. | Done | T074, T060 | T079 | Diff stored as artifact; SHA metadata attached. |
 | T077 | Implement local branch compare | Use git to compute diff between base/head branches. | Not started | T071, T055 | T079 | Snapshot created from branch compare; tests with fixture repo. |
 | T078 | Implement local changes snapshot | Use git diff for working tree/uncommitted changes. | Not started | T071, T055 | T079 | Snapshot created; binary/generated files handled. |
-| T079 | Implement diff parser | Parse unified diff into files, hunks, line mappings, changed line ranges. | Not started | T076 or T077 | T170, T294 | Tests cover add/delete/rename/multiple hunks. |
+| T079 | Implement diff parser | Parse unified diff into files, hunks, line mappings, changed line ranges. | Done | T076 or T077 | T170, T294 | Tests cover add/delete/rename/multiple hunks. |
 | T080 | Detect generated/binary/excluded files | Identify generated/lock/vendor/binary files and support exclusion. | Not started | T079 | T246 | UI receives flags; exclusions are persisted. |
 | T081 | Implement changed-file API | Return changed file list with line ranges and exclusion flags. | Not started | T055, T079 | T246 | API powers Configure Review changed-files card. |
 | T082 | Implement snapshot creation API | Create snapshots from GitHub URL/local compare/local changes. | Not started | T074-T081 | T245 | End-to-end API creates snapshot and returns ID. |

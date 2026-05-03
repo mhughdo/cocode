@@ -67,6 +67,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import {
   type AgentConfig,
   type AgentConfigHealth,
@@ -82,6 +83,7 @@ import {
   successApiState,
   type ApiSessionResponse,
   type Loadable,
+  type EvidenceItem,
   type Finding,
   type FindingDetailResponse,
   type FindingListResponse,
@@ -101,6 +103,7 @@ const MAX_SEARCH_RESULTS = 5;
 const MAX_CHANGED_FILES_RENDERED = 120;
 const MAX_REVIEW_EVENTS_RENDERED = 120;
 const MAX_FINDINGS_RENDERED = 150;
+const MAX_CODE_LINES_RENDERED = 80;
 
 type MainView = "new-thread" | "configure" | "review" | "agent-settings";
 type SnapshotSource = "github" | "local-changes" | "branch-compare";
@@ -2960,6 +2963,7 @@ function ReviewFindingsBoard({
   const [selectedDetail, setSelectedDetail] =
     useState<Loadable<FindingDetailResponse>>(idleApiState());
   const [dismissReason, setDismissReason] = useState("");
+  const [draftComment, setDraftComment] = useState("");
   const [boardReloadKey, setBoardReloadKey] = useState(0);
   const boardSessionId = session?.id;
   const [actionState, setActionState] = useState<{
@@ -3071,6 +3075,22 @@ function ReviewFindingsBoard({
     };
   }, [client, selectedFindingId]);
 
+  useEffect(() => {
+    if (selectedDetail.status !== "success") {
+      return;
+    }
+    const nextDraft = selectedDetail.data.finding.draft_comment || "";
+    let canceled = false;
+    queueMicrotask(() => {
+      if (!canceled) {
+        setDraftComment(nextDraft);
+      }
+    });
+    return () => {
+      canceled = true;
+    };
+  }, [selectedDetail]);
+
   const listState = boardFindings;
   const listedFindings =
     listState.status === "success" ? listState.data.items : [];
@@ -3079,6 +3099,8 @@ function ReviewFindingsBoard({
     selectedDetail.status === "success"
       ? selectedDetail.data.finding
       : listedFindings.find((finding) => finding.id === selectedFindingId);
+  const selectedFindingDetail =
+    selectedDetail.status === "success" ? selectedDetail.data : undefined;
   const selectedOutsideFilter = Boolean(
     selectedFinding &&
     listedFindings.length > 0 &&
@@ -3170,6 +3192,80 @@ function ReviewFindingsBoard({
         findingId: finding.id,
         action: "copied",
         message: "Copied",
+      });
+      return;
+    }
+    setActionState({
+      status: "error",
+      message: state.status === "error" ? state.error.message : "Copy failed",
+    });
+  }
+
+  async function saveDraftComment() {
+    if (!client || !selectedFinding) {
+      setActionState({
+        status: "error",
+        message: "Select a finding before saving a draft.",
+      });
+      return;
+    }
+    setActionState({
+      status: "loading",
+      findingId: selectedFinding.id,
+      action: "draft",
+    });
+    const state = await loadApiResource(async () => {
+      const updated = await client.updateFindingDraftComment(
+        selectedFinding.id,
+        draftComment,
+      );
+      return client.getFindingDetail(updated.id);
+    });
+    if (state.status === "success") {
+      setSelectedDetail(state);
+      setBoardReloadKey((current) => current + 1);
+      setActionState({
+        status: "success",
+        findingId: selectedFinding.id,
+        action: "draft",
+        message: "Draft saved",
+      });
+      return;
+    }
+    setActionState({
+      status: "error",
+      message: state.status === "error" ? state.error.message : "Save failed",
+    });
+  }
+
+  async function copyFindingPath() {
+    if (!selectedFinding) {
+      setActionState({
+        status: "error",
+        message: "Select a finding before copying its path.",
+      });
+      return;
+    }
+    setActionState({
+      status: "loading",
+      findingId: selectedFinding.id,
+      action: "copy-path",
+    });
+    const state = await loadApiResource(async () => {
+      if (!window.cocode?.writeClipboard) {
+        throw new Error("Clipboard bridge is unavailable");
+      }
+      await window.cocode.writeClipboard(
+        formatFindingLocation(selectedFinding),
+      );
+      return true;
+    });
+    if (state.status === "success") {
+      setActionState({
+        status: "success",
+        findingId: selectedFinding.id,
+        action: "copy-path",
+        message: "Path copied",
       });
       return;
     }
@@ -3373,48 +3469,86 @@ function ReviewFindingsBoard({
                 </div>
               </div>
 
-              {selectedFinding.evidence_summary && (
-                <div className="rounded-md border p-3">
-                  <div className="text-xs font-medium">Evidence</div>
-                  <p className="text-muted-foreground mt-2 text-sm leading-6">
-                    {selectedFinding.evidence_summary}
-                  </p>
-                </div>
-              )}
+              <AgentConsensusPanel
+                detail={selectedFindingDetail}
+                finding={selectedFinding}
+              />
 
-              {selectedFinding.counter_evidence_summary && (
-                <div className="rounded-md border p-3">
-                  <div className="text-xs font-medium">Counter-evidence</div>
-                  <p className="text-muted-foreground mt-2 text-sm leading-6">
-                    {selectedFinding.counter_evidence_summary}
-                  </p>
-                </div>
-              )}
+              <Tabs defaultValue="overview" className="gap-3">
+                <TabsList variant="line">
+                  <TabsTrigger value="overview">Overview</TabsTrigger>
+                  <TabsTrigger value="code">Code</TabsTrigger>
+                  <TabsTrigger value="evidence">Evidence</TabsTrigger>
+                  <TabsTrigger value="draft">Draft</TabsTrigger>
+                </TabsList>
 
-              {selectedFinding.suggested_fix && (
-                <div className="rounded-md border p-3">
-                  <div className="text-xs font-medium">Suggested fix</div>
-                  <p className="text-muted-foreground mt-2 text-sm leading-6">
-                    {selectedFinding.suggested_fix}
-                  </p>
-                </div>
-              )}
+                <TabsContent value="overview" className="flex flex-col gap-3">
+                  {selectedFinding.evidence_summary && (
+                    <div className="rounded-md border p-3">
+                      <div className="text-xs font-medium">Evidence</div>
+                      <p className="text-muted-foreground mt-2 text-sm leading-6">
+                        {selectedFinding.evidence_summary}
+                      </p>
+                    </div>
+                  )}
 
-              <div className="rounded-md border p-3">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <div className="text-xs font-medium">Draft comment</div>
-                  <Badge variant="outline">
-                    {selectedDetail.status === "success"
-                      ? `${selectedDetail.data.candidates.length} candidates`
-                      : `${selectedFinding.merged_from_count} merged`}
-                  </Badge>
-                </div>
-                <p className="text-muted-foreground line-clamp-5 text-sm leading-6">
-                  {selectedFinding.draft_comment ||
-                    selectedFinding.suggested_fix ||
-                    selectedFinding.canonical_claim}
-                </p>
-              </div>
+                  {selectedFinding.counter_evidence_summary && (
+                    <div className="rounded-md border p-3">
+                      <div className="text-xs font-medium">
+                        Counter-evidence
+                      </div>
+                      <p className="text-muted-foreground mt-2 text-sm leading-6">
+                        {selectedFinding.counter_evidence_summary}
+                      </p>
+                    </div>
+                  )}
+
+                  {selectedFinding.suggested_fix && (
+                    <div className="rounded-md border p-3">
+                      <div className="text-xs font-medium">Suggested fix</div>
+                      <p className="text-muted-foreground mt-2 text-sm leading-6">
+                        {selectedFinding.suggested_fix}
+                      </p>
+                    </div>
+                  )}
+                </TabsContent>
+
+                <TabsContent value="code">
+                  <CodeSnippetViewer
+                    evidence={selectedFindingDetail?.evidence_items ?? []}
+                    finding={selectedFinding}
+                    onCopyPath={() => void copyFindingPath()}
+                  />
+                </TabsContent>
+
+                <TabsContent value="evidence">
+                  <EvidenceCardList detail={selectedFindingDetail} />
+                </TabsContent>
+
+                <TabsContent value="draft" className="flex flex-col gap-2">
+                  <Textarea
+                    aria-label="Draft GitHub comment"
+                    className="min-h-36"
+                    value={draftComment}
+                    onChange={(event) => setDraftComment(event.target.value)}
+                  />
+                  <div className="flex items-center justify-between gap-2">
+                    <Badge variant="outline">
+                      {selectedFindingDetail
+                        ? `${selectedFindingDetail.candidates.length} candidates`
+                        : `${selectedFinding.merged_from_count} merged`}
+                    </Badge>
+                    <Button
+                      disabled={actionState.status === "loading"}
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void saveDraftComment()}
+                    >
+                      Save draft
+                    </Button>
+                  </div>
+                </TabsContent>
+              </Tabs>
 
               <Input
                 aria-label="Dismissal reason"
@@ -3565,6 +3699,174 @@ function FindingCard({
           </Button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function AgentConsensusPanel({
+  detail,
+  finding,
+}: {
+  detail?: FindingDetailResponse;
+  finding: Finding;
+}) {
+  const candidates = detail?.candidates ?? [];
+  const aligned = candidates.filter(
+    (candidate) =>
+      candidate.severity === finding.severity &&
+      candidate.category === finding.category,
+  ).length;
+  const total = candidates.length || finding.merged_from_count || 1;
+  const agreement = total > 0 ? Math.round((aligned / total) * 100) : 0;
+
+  return (
+    <div className="rounded-md border p-3">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="text-xs font-medium">Agent consensus</div>
+        <Badge variant="outline">{total} signals</Badge>
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        <RunMetric label="Agreement" value={`${agreement}%`} />
+        <RunMetric
+          label="Severity"
+          value={formatDecisionLabel(finding.severity)}
+        />
+        <RunMetric
+          label="Confidence"
+          value={`${Math.round(finding.confidence * 100)}%`}
+        />
+      </div>
+      {candidates.length > 0 && (
+        <div className="mt-3 flex flex-col gap-2">
+          {candidates.slice(0, 3).map((candidate) => (
+            <div
+              key={candidate.id}
+              className="bg-surface flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-xs"
+            >
+              <CircleIcon
+                className={cn(
+                  "size-3",
+                  candidate.severity === finding.severity
+                    ? "text-success"
+                    : "text-warning",
+                )}
+              />
+              <span className="truncate font-medium">
+                {candidate.agent_run_id}
+              </span>
+              <Badge variant="secondary">{candidate.severity}</Badge>
+              <span className="text-muted-foreground">
+                {Math.round(candidate.confidence * 100)}%
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CodeSnippetViewer({
+  evidence,
+  finding,
+  onCopyPath,
+}: {
+  evidence: EvidenceItem[];
+  finding: Finding;
+  onCopyPath: () => void;
+}) {
+  const snippets = evidence
+    .filter((item) => item.code_snippet && item.code_snippet.trim() !== "")
+    .slice(0, 3);
+
+  if (snippets.length === 0) {
+    return (
+      <div className="rounded-md border p-3">
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <div className="text-xs font-medium">Primary location</div>
+          <Button size="sm" variant="outline" onClick={onCopyPath}>
+            <CopyIcon data-icon="inline-start" />
+            Copy path
+          </Button>
+        </div>
+        <p className="text-muted-foreground truncate font-mono text-xs">
+          {formatFindingLocation(finding)}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-xs font-medium">Changed code</div>
+        <Button size="sm" variant="outline" onClick={onCopyPath}>
+          <CopyIcon data-icon="inline-start" />
+          Copy path
+        </Button>
+      </div>
+      {snippets.map((item) => (
+        <div key={item.id} className="overflow-hidden rounded-md border">
+          <div className="bg-surface flex items-center justify-between gap-2 border-b px-3 py-2">
+            <span className="truncate font-mono text-xs">
+              {item.path || formatFindingLocation(finding)}
+            </span>
+            <Badge variant="outline">{item.kind}</Badge>
+          </div>
+          <div className="max-h-80 overflow-auto font-mono text-xs">
+            {snippetLines(item).map((line) => (
+              <div
+                key={`${item.id}-${line.number}`}
+                className="grid grid-cols-[48px_minmax(0,1fr)] border-b border-transparent leading-6"
+              >
+                <span className="text-muted-foreground pr-3 text-right select-none">
+                  {line.number}
+                </span>
+                <span className="truncate px-3 whitespace-pre">
+                  {line.text || " "}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function EvidenceCardList({ detail }: { detail?: FindingDetailResponse }) {
+  if (!detail) {
+    return <LoadingRows rows={4} />;
+  }
+  const items = prioritizedEvidenceItems(detail.evidence_items);
+  if (items.length === 0) {
+    return (
+      <EmptyState
+        className="border-0"
+        title="No evidence yet"
+        description="Evidence rows will appear after verification."
+        icon={FileSearchIcon}
+      />
+    );
+  }
+  return (
+    <div className="flex flex-col gap-2">
+      {items.map((item) => (
+        <div key={item.id} className="rounded-md border p-3">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="truncate text-sm font-medium">{item.title}</div>
+              <div className="text-muted-foreground mt-1 truncate font-mono text-xs">
+                {item.path ? formatEvidenceLocation(item) : item.kind}
+              </div>
+            </div>
+            <Badge variant={evidenceBadgeVariant(item.kind)}>{item.kind}</Badge>
+          </div>
+          <p className="text-muted-foreground line-clamp-3 text-sm leading-6">
+            {item.summary}
+          </p>
+        </div>
+      ))}
     </div>
   );
 }
@@ -4072,6 +4374,55 @@ function findingClipboardText(finding: Finding) {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function snippetLines(item: EvidenceItem) {
+  const startLine = item.line_window?.start_line ?? item.start_line ?? 1;
+  return (item.code_snippet ?? "")
+    .split("\n")
+    .slice(0, MAX_CODE_LINES_RENDERED)
+    .map((text, index) => ({ number: startLine + index, text }));
+}
+
+function prioritizedEvidenceItems(items: EvidenceItem[]) {
+  const rank: Record<string, number> = {
+    supporting: 6,
+    counter: 5,
+    missing: 4,
+    test: 3,
+    search: 2,
+    agent: 1,
+  };
+  return [...items].sort((left, right) => {
+    const rankDelta = (rank[right.kind] ?? 0) - (rank[left.kind] ?? 0);
+    if (rankDelta !== 0) {
+      return rankDelta;
+    }
+    return right.confidence - left.confidence;
+  });
+}
+
+function formatEvidenceLocation(item: EvidenceItem) {
+  if (!item.path) {
+    return item.kind;
+  }
+  if (item.start_line && item.end_line) {
+    return `${item.path}:L${item.start_line}-L${item.end_line}`;
+  }
+  if (item.start_line) {
+    return `${item.path}:L${item.start_line}`;
+  }
+  return item.path;
+}
+
+function evidenceBadgeVariant(kind: string) {
+  if (kind === "counter" || kind === "missing") {
+    return "destructive";
+  }
+  if (kind === "supporting" || kind === "test") {
+    return "secondary";
+  }
+  return "outline";
 }
 
 function useDebouncedValue<T>(value: T, delayMs: number): T {

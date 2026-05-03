@@ -152,6 +152,8 @@ The Review thread renderer uses the summary, findings, and authenticated SSE end
 
 The Findings Board uses backend finding list filters for status, severity, and search, with debounced query updates and a renderer-side render cap for large result sets. Selection is independent of the current filtered list so a user can keep inspecting one finding while narrowing or resetting the board. Board actions use the existing finding decision endpoint for accept/dismiss/copied state; the copy action writes local clipboard text only and does not imply GitHub publication.
 
+Finding Detail is currently presented as the selected-detail pane inside the Findings Board. It loads `GET /api/findings/:id`, renders candidate-derived consensus, bounded code snippets from evidence metadata, prioritized evidence cards, and a draft comment editor backed by `PATCH /api/findings/:id/draft-comment`.
+
 Electron keeps the renderer sandbox enabled, so the preload bundle is emitted as CommonJS (`out/preload/index.cjs`) and explicitly externalizes `electron`. This preserves `contextIsolation`, `sandbox`, and `nodeIntegration: false` while still exposing the narrow `window.cocode` bridge.
 
 The desktop shell uses shadcn `radix-nova` primitives as the lowest-level UI layer. App-specific chrome lives under `apps/desktop/src/renderer/src/components/app/` and stays limited to layout/navigation/state composition: sidebar sections, pane headers, command-search dialog wiring, and loading/empty/error state blocks. Feature-specific components such as diff rows, evidence cards, and finding cards should stay near their screen implementation until their data contracts stabilize.

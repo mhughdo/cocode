@@ -271,7 +271,7 @@ Large parallel workstreams:
 
 | ID | Task | Description | Status | Dependencies | Parallelization | Done criteria |
 |---|---|---|---|---|---|---|
-| T170 | Define finding schemas | Create JSON schemas for agent output and finding candidate. | Not started | T013 | T171 | Schemas validate sample outputs; versioned. |
+| T170 | Define finding schemas | Create JSON schemas for agent output and finding candidate. | Done | T013 | T171 | Schemas validate sample outputs; versioned. |
 | T171 | Implement structured output parser | Parse valid JSON agent output into candidates. | Not started | T096, T170 | T172 | Valid fake JSON agent produces candidate rows. |
 | T172 | Implement JSONL/NDJSON parser | Parse streaming/event outputs into final candidate set. | Not started | T096, T170 | T173 | Tests cover line-by-line agent output. |
 | T173 | Implement text output normalizer | Convert text agent output into candidates using deterministic heuristics and optional repair prompt. | Not started | T096, T170 | T174 | Text fixture produces reasonable candidates or clear low-confidence output. |

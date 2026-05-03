@@ -1180,6 +1180,7 @@ All prompts are versioned artifacts. Prompt templates live in `packages/prompts`
 ### 11.1 Shared review output schema
 
 Every review agent should be instructed to return JSON when possible:
+The versioned contracts live in `packages/schemas/review-agent-output.schema.json` and `packages/schemas/finding-candidate.schema.json`; backend tests validate fake agent output and normalized candidate samples against those files.
 
 ```json
 {

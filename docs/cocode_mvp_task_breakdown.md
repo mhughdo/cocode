@@ -189,7 +189,7 @@ Large parallel workstreams:
 | T082 | Implement snapshot creation API | Create snapshots from GitHub URL/local compare/local changes. | Done | T074-T081 | T245 | End-to-end API creates snapshot and returns ID. |
 | T083 | Implement PR previous comments fetch | Fetch existing review comments/timeline comments for duplicate avoidance. | Done | T074 | T120, T299 | Comments stored as artifact/context items; optional if auth unavailable. |
 | T084 | Implement CODEOWNERS/project rules discovery | Detect CODEOWNERS and common config files. | Done | T070 | T120 | Rules files discovered and added to context candidates. |
-| T085 | Add PR ingestion UI smoke test | Simulate PR URL and verify snapshot creation flow. | Not started | T082, T245 | T360 | E2E test covers happy path and invalid URL. |
+| T085 | Add PR ingestion UI smoke test | Simulate PR URL and verify snapshot creation flow. | Done | T082, T245 | T360 | Playwright covers the GitHub PR source with a local fake GitHub API, validates an invalid issue URL error, saves a token through the Electron bridge, and verifies Configure Review shows PR metadata and changed-file stats. |
 
 ---
 

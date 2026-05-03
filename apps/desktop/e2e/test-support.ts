@@ -2,6 +2,12 @@ import { _electron as electron, expect, type Page } from "@playwright/test";
 import type { ElectronApplication, TestInfo } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
+import type { AddressInfo } from "node:net";
 import { dirname, join, resolve } from "node:path";
 
 type BackendInfo = {
@@ -13,6 +19,10 @@ type BackendInfo = {
 
 type CocodeBridge = {
   getBackendInfo: () => Promise<BackendInfo>;
+  saveGitHubToken: (request: {
+    token: string;
+    displayName?: string;
+  }) => Promise<unknown>;
 };
 
 type ApiEnvelope<T> = {
@@ -34,6 +44,11 @@ export type CocodeApp = {
 export type SeededCocodeData = {
   dataDir: string;
   workspaceRoot: string;
+};
+
+export type FakeGitHubServer = {
+  url: string;
+  close: () => Promise<void>;
 };
 
 export async function launchCocode(
@@ -106,6 +121,40 @@ export async function getBackendInfo(page: Page): Promise<BackendInfo> {
     }
     return bridge.getBackendInfo();
   });
+}
+
+export async function saveGitHubToken(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    const bridge = (window as Window & { cocode?: CocodeBridge }).cocode;
+    if (!bridge) {
+      throw new Error("cocode preload bridge is unavailable");
+    }
+    await bridge.saveGitHubToken({
+      token: "ghp_e2e_test",
+      displayName: "E2E GitHub",
+    });
+  });
+}
+
+export async function startFakeGitHubServer(): Promise<FakeGitHubServer> {
+  const server = createServer(handleFakeGitHubRequest);
+  await new Promise<void>((resolveListen) => {
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+  const address = server.address() as AddressInfo;
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    close: () =>
+      new Promise<void>((resolveClose, rejectClose) => {
+        server.close((error) => {
+          if (error) {
+            rejectClose(error);
+            return;
+          }
+          resolveClose();
+        });
+      }),
+  };
 }
 
 export function createBranchReviewRepo(repoPath: string): string {
@@ -259,6 +308,95 @@ async function apiRequest<T>(
     throw new Error("Backend response did not include data");
   }
   return envelope.data;
+}
+
+function handleFakeGitHubRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+): void {
+  if (!request.headers.authorization?.startsWith("Bearer ")) {
+    writeFakeGitHubJSON(response, 401, { message: "bad credentials" });
+    return;
+  }
+
+  const requestURL = new URL(request.url ?? "/", "http://127.0.0.1");
+  if (request.method === "GET" && requestURL.pathname === "/user") {
+    response.setHeader("X-OAuth-Scopes", "repo, read:user");
+    writeFakeGitHubJSON(response, 200, { login: "octocat" });
+    return;
+  }
+
+  const expectedPullPath = "/repos/octo-org/hello-world/pulls/42";
+  if (request.method === "GET" && requestURL.pathname === expectedPullPath) {
+    if (request.headers.accept?.includes("application/vnd.github.diff")) {
+      response.writeHead(200, {
+        "Content-Type": "text/plain; charset=utf-8",
+      });
+      response.end(
+        [
+          "diff --git a/apps/api/src/routes/repositories.ts b/apps/api/src/routes/repositories.ts",
+          "--- a/apps/api/src/routes/repositories.ts",
+          "+++ b/apps/api/src/routes/repositories.ts",
+          "@@ -87,3 +87,4 @@ function updateRepositorySettings() {",
+          "-  return updateSettings()",
+          "+  requireWorkspaceAdmin()",
+          "+  return updateSettings()",
+          " }",
+          "",
+        ].join("\n"),
+      );
+      return;
+    }
+    writeFakeGitHubJSON(response, 200, {
+      title: "Tighten repository auth",
+      html_url: "https://github.com/octo-org/hello-world/pull/42",
+      user: { login: "mona" },
+      base: { ref: "main", sha: "base-sha" },
+      head: { ref: "feature/auth", sha: "head-sha" },
+    });
+    return;
+  }
+
+  if (
+    request.method === "GET" &&
+    requestURL.pathname === `${expectedPullPath}/files`
+  ) {
+    writeFakeGitHubJSON(response, 200, [
+      {
+        sha: "file-sha",
+        filename: "apps/api/src/routes/repositories.ts",
+        status: "modified",
+        additions: 2,
+        deletions: 1,
+        changes: 3,
+        patch: "@@ -87,3 +87,4 @@\n-old\n+new\n+guard\n",
+      },
+    ]);
+    return;
+  }
+
+  if (
+    request.method === "GET" &&
+    (requestURL.pathname === "/repos/octo-org/hello-world/issues/42/comments" ||
+      requestURL.pathname === `${expectedPullPath}/comments` ||
+      requestURL.pathname === `${expectedPullPath}/reviews`)
+  ) {
+    writeFakeGitHubJSON(response, 200, []);
+    return;
+  }
+
+  writeFakeGitHubJSON(response, 404, { message: "not found" });
+}
+
+function writeFakeGitHubJSON(
+  response: ServerResponse,
+  status: number,
+  body: unknown,
+): void {
+  response.writeHead(status, {
+    "Content-Type": "application/json",
+  });
+  response.end(JSON.stringify(body));
 }
 
 function runGit(cwd: string, ...args: string[]): void {

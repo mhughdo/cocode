@@ -8,6 +8,57 @@ import (
 	"database/sql"
 )
 
+type AgentConfig struct {
+	ID               string         `json:"id"`
+	Name             string         `json:"name"`
+	Role             string         `json:"role"`
+	AdapterKind      string         `json:"adapter_kind"`
+	Command          sql.NullString `json:"command"`
+	ArgsJson         string         `json:"args_json"`
+	CwdMode          string         `json:"cwd_mode"`
+	EnvAllowlistJson string         `json:"env_allowlist_json"`
+	OutputMode       string         `json:"output_mode"`
+	ModelLabel       sql.NullString `json:"model_label"`
+	ReasoningLabel   sql.NullString `json:"reasoning_label"`
+	CapabilitiesJson string         `json:"capabilities_json"`
+	SettingsJson     string         `json:"settings_json"`
+	Enabled          int64          `json:"enabled"`
+	CreatedAt        string         `json:"created_at"`
+	UpdatedAt        string         `json:"updated_at"`
+}
+
+type AgentRun struct {
+	ID                     string         `json:"id"`
+	ReviewSessionID        string         `json:"review_session_id"`
+	AgentConfigID          string         `json:"agent_config_id"`
+	ContextBundleID        sql.NullString `json:"context_bundle_id"`
+	Status                 string         `json:"status"`
+	Role                   string         `json:"role"`
+	StartedAt              sql.NullString `json:"started_at"`
+	CompletedAt            sql.NullString `json:"completed_at"`
+	DurationMs             sql.NullInt64  `json:"duration_ms"`
+	ExitCode               sql.NullInt64  `json:"exit_code"`
+	StdoutArtifactID       sql.NullString `json:"stdout_artifact_id"`
+	StderrArtifactID       sql.NullString `json:"stderr_artifact_id"`
+	ParsedOutputArtifactID sql.NullString `json:"parsed_output_artifact_id"`
+	ErrorCode              sql.NullString `json:"error_code"`
+	ErrorMessage           sql.NullString `json:"error_message"`
+	MetadataJson           string         `json:"metadata_json"`
+}
+
+type Artifact struct {
+	ID              string         `json:"id"`
+	WorkspaceID     string         `json:"workspace_id"`
+	ReviewSessionID sql.NullString `json:"review_session_id"`
+	Kind            string         `json:"kind"`
+	RelativePath    string         `json:"relative_path"`
+	ContentType     string         `json:"content_type"`
+	SizeBytes       int64          `json:"size_bytes"`
+	Sha256          sql.NullString `json:"sha256"`
+	MetadataJson    string         `json:"metadata_json"`
+	CreatedAt       string         `json:"created_at"`
+}
+
 type ChangedFile struct {
 	ID              string         `json:"id"`
 	SnapshotID      string         `json:"snapshot_id"`
@@ -21,6 +72,18 @@ type ChangedFile struct {
 	IsExcluded      int64          `json:"is_excluded"`
 	LineRangesJson  string         `json:"line_ranges_json"`
 	PatchArtifactID sql.NullString `json:"patch_artifact_id"`
+	CreatedAt       string         `json:"created_at"`
+}
+
+type ContextBundle struct {
+	ID              string         `json:"id"`
+	ReviewSessionID string         `json:"review_session_id"`
+	AgentConfigID   sql.NullString `json:"agent_config_id"`
+	Scope           string         `json:"scope"`
+	TokenEstimate   int64          `json:"token_estimate"`
+	ItemCount       int64          `json:"item_count"`
+	ArtifactID      sql.NullString `json:"artifact_id"`
+	PolicyJson      string         `json:"policy_json"`
 	CreatedAt       string         `json:"created_at"`
 }
 
@@ -53,6 +116,34 @@ type Repository struct {
 	DefaultBranch sql.NullString `json:"default_branch"`
 	CreatedAt     string         `json:"created_at"`
 	UpdatedAt     string         `json:"updated_at"`
+}
+
+type ReviewSession struct {
+	ID                  string         `json:"id"`
+	WorkspaceID         string         `json:"workspace_id"`
+	RepositoryID        string         `json:"repository_id"`
+	SnapshotID          string         `json:"snapshot_id"`
+	Title               string         `json:"title"`
+	Status              string         `json:"status"`
+	ReviewDepth         string         `json:"review_depth"`
+	FocusPrompt         sql.NullString `json:"focus_prompt"`
+	Preset              sql.NullString `json:"preset"`
+	RuntimeLimitSeconds int64          `json:"runtime_limit_seconds"`
+	ContextPolicyJson   string         `json:"context_policy_json"`
+	StartedAt           sql.NullString `json:"started_at"`
+	CompletedAt         sql.NullString `json:"completed_at"`
+	CreatedAt           string         `json:"created_at"`
+	UpdatedAt           string         `json:"updated_at"`
+}
+
+type ReviewSessionAgent struct {
+	ID                   string `json:"id"`
+	ReviewSessionID      string `json:"review_session_id"`
+	AgentConfigID        string `json:"agent_config_id"`
+	Role                 string `json:"role"`
+	RunOrder             int64  `json:"run_order"`
+	Enabled              int64  `json:"enabled"`
+	SettingsOverrideJson string `json:"settings_override_json"`
 }
 
 type Workspace struct {

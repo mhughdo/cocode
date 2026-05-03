@@ -158,8 +158,8 @@ Large parallel workstreams:
 | T053 | Configure sqlc | Add sqlc config and initial query files. | Done | T052 | T054 | Generated Go code compiles; queries are type-safe. |
 | T054 | Implement Workspace queries | CRUD/list workspace queries. | Done | T053 | T070 | Unit tests cover create/get/list/update. |
 | T055 | Implement Snapshot queries | CRUD PR snapshot and changed-file queries. | Done | T053 | T075 | Tests cover snapshot creation and changed file lookup. |
-| T056 | Implement ReviewSession queries | CRUD review sessions and status updates. | Not started | T053 | T140 | Tests cover state transitions. |
-| T057 | Implement Agent queries | CRUD agent configs/session agents/runs. | Not started | T053 | T090 | Tests cover agent config and run lifecycle. |
+| T056 | Implement ReviewSession queries | CRUD review sessions and status updates. | Done | T053 | T140 | Tests cover state transitions. |
+| T057 | Implement Agent queries | CRUD agent configs/session agents/runs. | Done | T053 | T090 | Tests cover agent config and run lifecycle. |
 | T058 | Implement Finding queries | CRUD candidates/findings/links/decisions. | Not started | T053 | T170 | Tests cover candidate->finding relationships. |
 | T059 | Implement Evidence Graph queries | CRUD evidence items, graphs, nodes, edges, call paths. | Not started | T053 | T200 | Tests cover graph creation and retrieval. |
 | T060 | Implement Artifact store | Store artifact files under app/workspace directory with metadata rows. | Not started | T050, T052 | T090, T120 | Artifact save/read/delete works; hash/size stored; path traversal blocked. |

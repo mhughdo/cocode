@@ -9,26 +9,44 @@ import (
 )
 
 type Querier interface {
+	CreateAgentConfig(ctx context.Context, arg CreateAgentConfigParams) (AgentConfig, error)
+	CreateAgentRun(ctx context.Context, arg CreateAgentRunParams) (AgentRun, error)
 	CreateChangedFile(ctx context.Context, arg CreateChangedFileParams) (ChangedFile, error)
 	CreatePullRequestSnapshot(ctx context.Context, arg CreatePullRequestSnapshotParams) (PullRequestSnapshot, error)
 	CreateRepository(ctx context.Context, arg CreateRepositoryParams) (Repository, error)
+	CreateReviewSession(ctx context.Context, arg CreateReviewSessionParams) (ReviewSession, error)
+	CreateReviewSessionAgent(ctx context.Context, arg CreateReviewSessionAgentParams) (ReviewSessionAgent, error)
 	CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) (Workspace, error)
+	DeleteAgentConfig(ctx context.Context, id string) error
 	DeletePullRequestSnapshot(ctx context.Context, id string) error
 	DeleteRepository(ctx context.Context, id string) error
+	DeleteReviewSession(ctx context.Context, id string) error
 	DeleteWorkspace(ctx context.Context, id string) error
+	GetAgentConfig(ctx context.Context, id string) (AgentConfig, error)
+	GetAgentRun(ctx context.Context, id string) (AgentRun, error)
 	GetChangedFile(ctx context.Context, id string) (ChangedFile, error)
 	GetChangedFileByPath(ctx context.Context, arg GetChangedFileByPathParams) (ChangedFile, error)
 	GetPullRequestSnapshot(ctx context.Context, id string) (PullRequestSnapshot, error)
 	GetRepository(ctx context.Context, id string) (Repository, error)
 	GetRepositoryByLocalPath(ctx context.Context, arg GetRepositoryByLocalPathParams) (Repository, error)
+	GetReviewSession(ctx context.Context, id string) (ReviewSession, error)
 	GetWorkspace(ctx context.Context, id string) (Workspace, error)
 	GetWorkspaceByRootPath(ctx context.Context, rootPath string) (Workspace, error)
+	ListAgentConfigs(ctx context.Context) ([]AgentConfig, error)
+	ListAgentRunsBySession(ctx context.Context, reviewSessionID string) ([]AgentRun, error)
 	ListChangedFilesBySnapshot(ctx context.Context, snapshotID string) ([]ChangedFile, error)
 	ListPullRequestSnapshotsByRepository(ctx context.Context, repositoryID string) ([]PullRequestSnapshot, error)
 	ListRepositoriesByWorkspace(ctx context.Context, workspaceID string) ([]Repository, error)
+	ListReviewSessionAgents(ctx context.Context, reviewSessionID string) ([]ReviewSessionAgent, error)
+	ListReviewSessionsByWorkspace(ctx context.Context, workspaceID string) ([]ReviewSession, error)
 	ListWorkspaces(ctx context.Context) ([]Workspace, error)
+	UpdateAgentConfig(ctx context.Context, arg UpdateAgentConfigParams) (AgentConfig, error)
+	UpdateAgentRunStatus(ctx context.Context, arg UpdateAgentRunStatusParams) (AgentRun, error)
 	UpdateChangedFileExclusion(ctx context.Context, arg UpdateChangedFileExclusionParams) (ChangedFile, error)
 	UpdateRepository(ctx context.Context, arg UpdateRepositoryParams) (Repository, error)
+	UpdateReviewSession(ctx context.Context, arg UpdateReviewSessionParams) (ReviewSession, error)
+	UpdateReviewSessionAgentEnabled(ctx context.Context, arg UpdateReviewSessionAgentEnabledParams) (ReviewSessionAgent, error)
+	UpdateReviewSessionStatus(ctx context.Context, arg UpdateReviewSessionStatusParams) (ReviewSession, error)
 	UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams) (Workspace, error)
 }
 

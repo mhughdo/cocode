@@ -2,6 +2,7 @@ package findingengine
 
 import (
 	"database/sql"
+	"errors"
 	"strconv"
 	"testing"
 
@@ -51,6 +52,58 @@ func TestDeduplicateDoesNotMergeDissimilarOverlap(t *testing.T) {
 	clusters := Deduplicate(candidates)
 	if len(clusters) != 2 {
 		t.Fatalf("clusters = %+v", clusters)
+	}
+}
+
+func TestValidateDedupeResultRejectsInvalidHookOutput(t *testing.T) {
+	t.Parallel()
+
+	candidates := []dbgen.FindingCandidate{
+		candidate("c1", "correctness", "medium", 0.7, "Role cache can be stale during repository update", "src/new.go", 20, 25, "changed_file_1", "fp_one"),
+		candidate("c2", "correctness", "medium", 0.6, "Payment amount truncates decimal precision", "src/new.go", 22, 24, "changed_file_1", "fp_two"),
+	}
+	tests := []struct {
+		name     string
+		clusters []Cluster
+	}{
+		{
+			name:     "dropped candidate",
+			clusters: []Cluster{{Candidates: candidates[:1]}},
+		},
+		{
+			name:     "duplicate candidate",
+			clusters: []Cluster{{Candidates: []dbgen.FindingCandidate{candidates[0], candidates[0]}}, {Candidates: candidates[1:]}},
+		},
+		{
+			name:     "unknown candidate",
+			clusters: []Cluster{{Candidates: append(candidates, candidate("c3", "correctness", "low", 0.4, "Unknown", "src/new.go", 30, 31, "changed_file_1", "fp_three"))}},
+		},
+		{
+			name:     "empty cluster",
+			clusters: []Cluster{{Candidates: candidates[:1]}, {}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := ValidateDedupeResult(candidates, tt.clusters)
+			if !errors.Is(err, ErrInvalidDedupeResult) {
+				t.Fatalf("ValidateDedupeResult() error = %v, want ErrInvalidDedupeResult", err)
+			}
+		})
+	}
+}
+
+func TestValidateDedupeResultAcceptsCompletePartition(t *testing.T) {
+	t.Parallel()
+
+	candidates := []dbgen.FindingCandidate{
+		candidate("c1", "security", "high", 0.8, "Settings mutation lacks admin guard", "src/new.go", 20, 22, "changed_file_1", "fp_same"),
+		candidate("c2", "security", "low", 0.7, "Settings mutation lacks admin guard", "src/new.go", 20, 22, "changed_file_1", "fp_same"),
+	}
+	if err := ValidateDedupeResult(candidates, []Cluster{{Candidates: candidates}}); err != nil {
+		t.Fatalf("ValidateDedupeResult() error = %v", err)
 	}
 }
 

@@ -68,22 +68,28 @@ var (
 )
 
 type Service struct {
-	Queries        *dbgen.Queries
-	ContextBuilder *contextbundle.Service
-	Artifacts      *artifact.Store
-	Events         EventLog
-	AgentManager   *agentrun.Manager
-	Evidence       *evidence.Service
-	PromptTemplate string
-	Background     context.Context
-	Now            func() time.Time
-	NewEventID     func() string
-	NewArtifactID  func() string
+	Queries          *dbgen.Queries
+	ContextBuilder   *contextbundle.Service
+	Artifacts        *artifact.Store
+	Events           EventLog
+	AgentManager     *agentrun.Manager
+	Evidence         *evidence.Service
+	DedupeHook       DedupeHook
+	EnableDedupeHook bool
+	PromptTemplate   string
+	Background       context.Context
+	Now              func() time.Time
+	NewEventID       func() string
+	NewArtifactID    func() string
 }
 
 type EventLog interface {
 	Append(ctx context.Context, params eventlog.AppendParams) (dbgen.Event, error)
 	ListByReviewSession(ctx context.Context, reviewSessionID string) ([]dbgen.Event, error)
+}
+
+type DedupeHook interface {
+	RefineDedupe(ctx context.Context, input findingengine.DedupeInput) (findingengine.DedupeResult, error)
 }
 
 type StartResult struct {
@@ -1021,7 +1027,11 @@ func (s *Service) deduplicateFindings(ctx context.Context, session dbgen.ReviewS
 	if err != nil {
 		return fmt.Errorf("list finding candidates for dedupe: %w", err)
 	}
-	clusters := findingengine.Deduplicate(candidates)
+	deterministicClusters := findingengine.Deduplicate(candidates)
+	clusters, err := s.refineDedupeClusters(ctx, session, candidates, deterministicClusters)
+	if err != nil {
+		return err
+	}
 	snapshot, err := s.Queries.GetPullRequestSnapshot(ctx, session.SnapshotID)
 	if err != nil {
 		return fmt.Errorf("read snapshot for findings: %w", err)
@@ -1089,6 +1099,36 @@ func (s *Service) deduplicateFindings(ctx context.Context, session dbgen.ReviewS
 			"finding_count":   len(clusters),
 		},
 	})
+}
+
+func (s *Service) refineDedupeClusters(ctx context.Context, session dbgen.ReviewSession, candidates []dbgen.FindingCandidate, deterministicClusters []findingengine.Cluster) ([]findingengine.Cluster, error) {
+	if s.DedupeHook == nil || !s.EnableDedupeHook {
+		return deterministicClusters, nil
+	}
+	result, err := s.DedupeHook.RefineDedupe(ctx, findingengine.DedupeInput{
+		ReviewSessionID:       session.ID,
+		Candidates:            candidates,
+		DeterministicClusters: deterministicClusters,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("refine dedupe clusters: %w", err)
+	}
+	if err := findingengine.ValidateDedupeResult(candidates, result.Clusters); err != nil {
+		return nil, fmt.Errorf("refine dedupe clusters: %w", err)
+	}
+	if err := s.appendEvent(ctx, appendEventParams{
+		ReviewSessionID: session.ID,
+		Type:            "FindingDedupeRefined",
+		Payload: map[string]any{
+			"phase":                       PhaseDeduplicate,
+			"candidate_count":             len(candidates),
+			"deterministic_cluster_count": len(deterministicClusters),
+			"refined_cluster_count":       len(result.Clusters),
+		},
+	}); err != nil {
+		return nil, err
+	}
+	return result.Clusters, nil
 }
 
 func candidateLinkRelation(representative dbgen.FindingCandidate, candidate dbgen.FindingCandidate) string {

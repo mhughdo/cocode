@@ -20,6 +20,7 @@ import (
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
 	"github.com/hughdo/cocode/services/cocoded/internal/eventlog"
 	"github.com/hughdo/cocode/services/cocoded/internal/evidence"
+	"github.com/hughdo/cocode/services/cocoded/internal/findingengine"
 )
 
 func TestReviewSessionStatusTransitionMatrix(t *testing.T) {
@@ -322,6 +323,105 @@ func TestWorkflowDeduplicatesCandidatesIntoCanonicalFinding(t *testing.T) {
 		t.Fatalf("ListByReviewSession() error = %v", err)
 	}
 	assertEventTypes(t, events, []string{"FindingMerged", "FindingDeduplicated"})
+}
+
+func TestWorkflowUsesOptionalDedupeHook(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	env.Driver.stdout = `{
+		"summary": "dedupe refinement",
+		"findings": [
+			{
+				"claim": "Settings mutation lacks admin guard",
+				"category": "security",
+				"severity": "high",
+				"confidence": 0.91,
+				"locations": [{"path":"src/new.go","start_line":2,"end_line":3,"side":"RIGHT"}],
+				"evidence": [{"title":"route is unguarded","summary":"the mutation is reachable without admin authorization"}]
+			},
+			{
+				"claim": "Settings update skips audit actor attribution",
+				"category": "reliability",
+				"severity": "medium",
+				"confidence": 0.77,
+				"locations": [{"path":"src/new.go","start_line":3,"end_line":3,"side":"RIGHT"}],
+				"evidence": [{"title":"audit is incomplete","summary":"the update does not persist the actor"}]
+			}
+		]
+	}`
+	calls := 0
+	env.Service.EnableDedupeHook = true
+	env.Service.DedupeHook = fakeDedupeHook{refine: func(_ context.Context, input findingengine.DedupeInput) (findingengine.DedupeResult, error) {
+		calls++
+		if input.ReviewSessionID != "review_session_dedupe_hook" || len(input.Candidates) != 2 || len(input.DeterministicClusters) != 2 {
+			t.Fatalf("dedupe input = %+v", input)
+		}
+		return findingengine.DedupeResult{Clusters: []findingengine.Cluster{{
+			Candidates: append([]dbgen.FindingCandidate{}, input.Candidates...),
+		}}}, nil
+	}}
+
+	session := createWorkflowSession(t, env, "review_session_dedupe_hook", StatusDraft)
+	if _, err := env.Service.Transition(context.Background(), session.ID, StatusQueued); err != nil {
+		t.Fatalf("Transition(draft -> queued) error = %v", err)
+	}
+	if err := env.Service.Run(context.Background(), session.ID); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("dedupe hook calls = %d, want 1", calls)
+	}
+	findings, err := env.Queries.ListFindingsBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListFindingsBySession() error = %v", err)
+	}
+	if len(findings) != 1 || findings[0].MergedFromCount != 2 {
+		t.Fatalf("findings = %+v", findings)
+	}
+	events, err := env.Events.ListByReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListByReviewSession() error = %v", err)
+	}
+	assertEventTypes(t, events, []string{"FindingDedupeRefined", "FindingMerged", "FindingDeduplicated"})
+}
+
+func TestWorkflowRejectsInvalidDedupeHookOutput(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	env.Driver.stdout = `{
+		"summary": "invalid dedupe refinement",
+		"findings": [
+			{
+				"claim": "Settings mutation lacks admin guard",
+				"category": "security",
+				"severity": "high",
+				"confidence": 0.91,
+				"locations": [{"path":"src/new.go","start_line":2,"end_line":3,"side":"RIGHT"}]
+			},
+			{
+				"claim": "Settings update skips audit actor attribution",
+				"category": "reliability",
+				"severity": "medium",
+				"confidence": 0.77,
+				"locations": [{"path":"src/new.go","start_line":3,"end_line":3,"side":"RIGHT"}]
+			}
+		]
+	}`
+	env.Service.EnableDedupeHook = true
+	env.Service.DedupeHook = fakeDedupeHook{refine: func(_ context.Context, input findingengine.DedupeInput) (findingengine.DedupeResult, error) {
+		return findingengine.DedupeResult{Clusters: input.DeterministicClusters[:1]}, nil
+	}}
+
+	session := createWorkflowSession(t, env, "review_session_dedupe_hook_invalid", StatusDraft)
+	if _, err := env.Service.Transition(context.Background(), session.ID, StatusQueued); err != nil {
+		t.Fatalf("Transition(draft -> queued) error = %v", err)
+	}
+	err := env.Service.Run(context.Background(), session.ID)
+	if !errors.Is(err, findingengine.ErrInvalidDedupeResult) {
+		t.Fatalf("Run() error = %v, want ErrInvalidDedupeResult", err)
+	}
 }
 
 func TestWorkflowPersistsDelimitedFindingCandidateEvents(t *testing.T) {
@@ -948,6 +1048,14 @@ type workflowEvidenceSearcher struct{}
 
 func (workflowEvidenceSearcher) Search(context.Context, evidence.SearchOptions) ([]evidence.SearchMatch, error) {
 	return nil, nil
+}
+
+type fakeDedupeHook struct {
+	refine func(context.Context, findingengine.DedupeInput) (findingengine.DedupeResult, error)
+}
+
+func (h fakeDedupeHook) RefineDedupe(ctx context.Context, input findingengine.DedupeInput) (findingengine.DedupeResult, error) {
+	return h.refine(ctx, input)
 }
 
 func (c workflowConnection) SendTask(_ context.Context, task agents.AgentTask) (<-chan agents.AgentEvent, error) {

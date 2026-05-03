@@ -3,6 +3,8 @@ package findingengine
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -10,8 +12,20 @@ import (
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
 )
 
+var ErrInvalidDedupeResult = errors.New("dedupe result is invalid")
+
 type Cluster struct {
 	Candidates []dbgen.FindingCandidate
+}
+
+type DedupeInput struct {
+	ReviewSessionID       string
+	Candidates            []dbgen.FindingCandidate
+	DeterministicClusters []Cluster
+}
+
+type DedupeResult struct {
+	Clusters []Cluster
 }
 
 func Deduplicate(candidates []dbgen.FindingCandidate) []Cluster {
@@ -63,6 +77,50 @@ func Deduplicate(candidates []dbgen.FindingCandidate) []Cluster {
 		clusters = append(clusters, Cluster{Candidates: items})
 	}
 	return clusters
+}
+
+func ValidateDedupeResult(candidates []dbgen.FindingCandidate, clusters []Cluster) error {
+	if len(candidates) == 0 {
+		if len(clusters) == 0 {
+			return nil
+		}
+		return fmt.Errorf("%w: clusters returned for empty candidate set", ErrInvalidDedupeResult)
+	}
+	expected := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		if strings.TrimSpace(candidate.ID) == "" {
+			return fmt.Errorf("%w: candidate id is empty", ErrInvalidDedupeResult)
+		}
+		expected[candidate.ID] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(candidates))
+	representativeFingerprints := make(map[string]struct{}, len(clusters))
+	for _, cluster := range clusters {
+		if len(cluster.Candidates) == 0 {
+			return fmt.Errorf("%w: empty cluster", ErrInvalidDedupeResult)
+		}
+		representative := Representative(cluster)
+		if !representative.Fingerprint.Valid || strings.TrimSpace(representative.Fingerprint.String) == "" {
+			return fmt.Errorf("%w: representative fingerprint is empty", ErrInvalidDedupeResult)
+		}
+		if _, ok := representativeFingerprints[representative.Fingerprint.String]; ok {
+			return fmt.Errorf("%w: representative fingerprint %s appears more than once", ErrInvalidDedupeResult, representative.Fingerprint.String)
+		}
+		representativeFingerprints[representative.Fingerprint.String] = struct{}{}
+		for _, candidate := range cluster.Candidates {
+			if _, ok := expected[candidate.ID]; !ok {
+				return fmt.Errorf("%w: unexpected candidate %s", ErrInvalidDedupeResult, candidate.ID)
+			}
+			if _, ok := seen[candidate.ID]; ok {
+				return fmt.Errorf("%w: candidate %s appears more than once", ErrInvalidDedupeResult, candidate.ID)
+			}
+			seen[candidate.ID] = struct{}{}
+		}
+	}
+	if len(seen) != len(expected) {
+		return fmt.Errorf("%w: %d of %d candidates represented", ErrInvalidDedupeResult, len(seen), len(expected))
+	}
+	return nil
 }
 
 func Representative(cluster Cluster) dbgen.FindingCandidate {

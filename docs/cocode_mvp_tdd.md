@@ -1572,6 +1572,8 @@ The MVP implementation persists structured JSON and JSONL/NDJSON candidates duri
 When output is not structured, candidate extraction first applies one deterministic repair pass for simple malformed JSON such as trailing commas. If repair fails, it falls back to a conservative text candidate with low confidence and raw-output evidence.
 Candidate persistence normalizes paths against the snapshot changed-file list, records changed-file IDs and validity messages in `locations_json`, and computes an app-owned fingerprint. The dedupe phase currently merges exact fingerprints and overlapping same-category candidates with similar claim terms, then materializes canonical `findings` rows and candidate links.
 
+An optional dedupe refinement hook can run after deterministic clustering and before canonical finding creation. It receives the full candidate set plus deterministic clusters, is disabled by default, and must return a complete partition where every candidate appears exactly once and each representative fingerprint is valid and unique. Invalid hook output fails before findings are persisted, so the deterministic path remains the safe baseline.
+
 ### 13.2 Fingerprint strategy
 
 Fingerprint input:

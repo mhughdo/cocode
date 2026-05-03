@@ -280,7 +280,7 @@ Large parallel workstreams:
 | T176 | Implement candidate persistence | Store FindingCandidate rows with raw artifact links. | Done | T058, T171 | T177 | Candidates persist with agent provenance. |
 | T177 | Implement finding fingerprinting | Compute stable fingerprints for duplicate detection. | Done | T176 | T178 | Similar samples produce same/near fingerprints. |
 | T178 | Implement dedupe exact/overlap | Merge candidates by fingerprint and line overlap. | Done | T177 | T179 | Duplicate candidates merge into one finding. |
-| T179 | Implement optional LLM dedupe hook | Add interface for future/optional LLM dedupe when deterministic merge is uncertain. | Not started | T178 | T180 | Hook is feature-flagged; default deterministic path works. |
+| T179 | Implement optional LLM dedupe hook | Add interface for future/optional LLM dedupe when deterministic merge is uncertain. | Done | T178 | T180 | Hook is feature-flagged, validates refined clusters, and default deterministic path works. |
 | T180 | Implement canonical finding creation | Create Finding rows and candidate links. | Done | T178, T058 | T181 | Canonical findings include merged count and provenance. |
 | T181 | Implement severity/category normalization | Normalize agent-specific labels into app enum values. | Done | T171 | T182 | Unknown labels map to safe defaults. |
 | T182 | Implement finding ranking | Sort by severity, verification, confidence, agent agreement. | Done | T180 | T256 | API returns stable sort order. |

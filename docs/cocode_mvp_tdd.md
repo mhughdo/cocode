@@ -872,10 +872,13 @@ GET /api/review-sessions/:id/events
 Example event:
 
 ```text
-id: evt_01J...
+id: 42
 event: review.event
 data: {"id":"evt_01J...","type":"AgentRunStarted","sequence":42,"payload":{"agent_run_id":"ar_01J..."}}
 ```
+
+The SSE `id` is the per-session event sequence. Reconnect with `Last-Event-ID`
+or `after_sequence` to replay only later events.
 
 Event types:
 

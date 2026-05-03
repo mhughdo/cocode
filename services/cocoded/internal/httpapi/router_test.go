@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"database/sql"
@@ -1086,6 +1087,112 @@ func TestStartReviewSessionEndpointRunsWorkflow(t *testing.T) {
 	}
 }
 
+func TestReviewSessionEventsEndpointStreamsLiveWorkflowEvents(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	repoPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoPath, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, "src", "new.go"), []byte("package src\n\nfunc RequireAdmin() bool { return true }\n"), 0o644); err != nil {
+		t.Fatalf("write repo file: %v", err)
+	}
+	createHTTPAPISnapshotAt(t, queries, repoPath)
+	createHTTPAPIAgentConfigWithCommand(t, queries, "agent_config_fake", "primary_reviewer", 1, fakeJSONAgentPath(t), agents.OutputJSON, `{"prompt_delivery":"stdin","timeout_seconds":30}`)
+	session := createHTTPAPIReviewSessionRow(t, queries, "review_session_sse", []string{"agent_config_fake"})
+
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	sseCtx, cancelSSE := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelSSE()
+	sseRequest, err := http.NewRequestWithContext(sseCtx, http.MethodGet, server.URL+"/api/review-sessions/"+session.ID+"/events", nil)
+	if err != nil {
+		t.Fatalf("NewRequest(events) error = %v", err)
+	}
+	sseRequest.Header.Set("X-Cocode-Token", "test-token")
+	responseCh := make(chan struct {
+		response *http.Response
+		err      error
+	}, 1)
+	go func() {
+		response, err := server.Client().Do(sseRequest)
+		responseCh <- struct {
+			response *http.Response
+			err      error
+		}{response: response, err: err}
+	}()
+
+	startRequest, err := http.NewRequest(http.MethodPost, server.URL+"/api/review-sessions/"+session.ID+"/start", nil)
+	if err != nil {
+		t.Fatalf("NewRequest(start) error = %v", err)
+	}
+	startRequest.Header.Set("X-Cocode-Token", "test-token")
+	startResponse, err := server.Client().Do(startRequest)
+	if err != nil {
+		t.Fatalf("POST start error = %v", err)
+	}
+	_ = startResponse.Body.Close()
+	if startResponse.StatusCode != http.StatusOK {
+		t.Fatalf("start status = %d", startResponse.StatusCode)
+	}
+
+	result := <-responseCh
+	if result.err != nil {
+		t.Fatalf("GET events error = %v", result.err)
+	}
+	defer result.response.Body.Close()
+	if result.response.StatusCode != http.StatusOK {
+		t.Fatalf("events status = %d", result.response.StatusCode)
+	}
+	scanner := bufio.NewScanner(result.response.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "id: ") && strings.TrimPrefix(line, "id: ") == "0" {
+			t.Fatalf("SSE id should be a positive sequence, got %q", line)
+		}
+		if strings.HasPrefix(line, "event: ") && line != "event: review.event" {
+			t.Fatalf("unexpected SSE event line %q", line)
+		}
+		if strings.HasPrefix(line, "data: ") && strings.Contains(line, `"type":"ReviewSessionCompleted"`) {
+			cancelSSE()
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil && sseCtx.Err() == nil {
+		t.Fatalf("scan SSE stream: %v", err)
+	}
+	waitForHTTPAPIReviewSessionStatus(t, queries, session.ID, "completed")
+
+	replayCtx, cancelReplay := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancelReplay()
+	replayRequest, err := http.NewRequestWithContext(replayCtx, http.MethodGet, server.URL+"/api/review-sessions/"+session.ID+"/events", nil)
+	if err != nil {
+		t.Fatalf("NewRequest(replay) error = %v", err)
+	}
+	replayRequest.Header.Set("X-Cocode-Token", "test-token")
+	replayRequest.Header.Set("Last-Event-ID", "1")
+	replayResponse, err := server.Client().Do(replayRequest)
+	if err != nil {
+		t.Fatalf("GET replay events error = %v", err)
+	}
+	defer replayResponse.Body.Close()
+	replayScanner := bufio.NewScanner(replayResponse.Body)
+	for replayScanner.Scan() {
+		line := replayScanner.Text()
+		if strings.HasPrefix(line, "id: ") {
+			if line == "id: 1" {
+				t.Fatalf("replayed event did not honor Last-Event-ID: %q", line)
+			}
+			cancelReplay()
+			return
+		}
+	}
+	if err := replayScanner.Err(); err != nil && replayCtx.Err() == nil {
+		t.Fatalf("scan replay SSE stream: %v", err)
+	}
+	t.Fatal("replay stream did not emit an event after Last-Event-ID")
+}
+
 func TestBuildReviewContextPreviewEndpointPersistsBundle(t *testing.T) {
 	repoPath := t.TempDir()
 	writeHTTPAPIRepoFile(t, repoPath, "app/main.go", "package main\n\nconst apiKey = \"sk-abcdefghijklmnopqrstuvwxyz\"\n\nfunc RequireAdmin() {}\n")
@@ -1422,6 +1529,52 @@ func createHTTPAPIAgentConfigWithCommand(t *testing.T, queries *dbgen.Queries, i
 	}); err != nil {
 		t.Fatalf("CreateAgentConfig(%s) error = %v", id, err)
 	}
+}
+
+func createHTTPAPIReviewSessionRow(t *testing.T, queries *dbgen.Queries, id string, agentConfigIDs []string) dbgen.ReviewSession {
+	t.Helper()
+
+	session, err := queries.CreateReviewSession(context.Background(), dbgen.CreateReviewSessionParams{
+		ID:                  id,
+		WorkspaceID:         "workspace_1",
+		RepositoryID:        "repo_1",
+		SnapshotID:          "snapshot_1",
+		Title:               "Review SSE fixture",
+		Status:              "draft",
+		ReviewDepth:         "standard",
+		RuntimeLimitSeconds: 60,
+		ContextPolicyJson: `{
+			"include_prompt_material": true,
+			"include_changed_code": true,
+			"include_related_call_sites": false,
+			"include_related_tests": false,
+			"include_project_conventions": false,
+			"include_prior_comments": false,
+			"include_prior_decisions": false,
+			"redact_secrets": true,
+			"max_tokens": 4096,
+			"max_items": 20
+		}`,
+		CreatedAt: "2026-05-03T00:07:00Z",
+		UpdatedAt: "2026-05-03T00:07:00Z",
+	})
+	if err != nil {
+		t.Fatalf("CreateReviewSession() error = %v", err)
+	}
+	for index, agentConfigID := range agentConfigIDs {
+		if _, err := queries.CreateReviewSessionAgent(context.Background(), dbgen.CreateReviewSessionAgentParams{
+			ID:                   "review_session_agent_" + id + "_" + agentConfigID,
+			ReviewSessionID:      id,
+			AgentConfigID:        agentConfigID,
+			Role:                 "primary_reviewer",
+			RunOrder:             int64(index + 1),
+			Enabled:              1,
+			SettingsOverrideJson: "{}",
+		}); err != nil {
+			t.Fatalf("CreateReviewSessionAgent(%s) error = %v", agentConfigID, err)
+		}
+	}
+	return session
 }
 
 func nullableString(value string) sql.NullString {

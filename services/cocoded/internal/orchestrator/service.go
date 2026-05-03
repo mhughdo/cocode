@@ -68,13 +68,18 @@ type Service struct {
 	Queries        *dbgen.Queries
 	ContextBuilder *contextbundle.Service
 	Artifacts      *artifact.Store
-	Events         *eventlog.Store
+	Events         EventLog
 	AgentManager   *agentrun.Manager
 	PromptTemplate string
 	Background     context.Context
 	Now            func() time.Time
 	NewEventID     func() string
 	NewArtifactID  func() string
+}
+
+type EventLog interface {
+	Append(ctx context.Context, params eventlog.AppendParams) (dbgen.Event, error)
+	ListByReviewSession(ctx context.Context, reviewSessionID string) ([]dbgen.Event, error)
 }
 
 type StartResult struct {

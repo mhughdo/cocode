@@ -21,6 +21,7 @@ import (
 	"github.com/hughdo/cocode/services/cocoded/internal/artifact"
 	"github.com/hughdo/cocode/services/cocoded/internal/contextbundle"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
+	"github.com/hughdo/cocode/services/cocoded/internal/eventbus"
 	"github.com/hughdo/cocode/services/cocoded/internal/eventlog"
 	"github.com/hughdo/cocode/services/cocoded/internal/githubpr"
 	"github.com/hughdo/cocode/services/cocoded/internal/gitrepo"
@@ -148,6 +149,7 @@ type routerServices struct {
 	contextBuilderErr   error
 	reviewWorkflow      *orchestrator.Service
 	reviewWorkflowErr   error
+	eventBus            *eventbus.Bus
 	gitCollector        gitrepo.Collector
 	githubClientFactory func(token string) githubpr.Client
 }
@@ -166,10 +168,15 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 		}
 	}
 	eventStore, eventErr := eventlog.New(database)
+	var bus *eventbus.Bus
+	busErr := eventErr
+	if busErr == nil {
+		bus, busErr = eventbus.New(eventStore)
+	}
 	var reviewWorkflow *orchestrator.Service
 	workflowErr := artifactErr
 	if workflowErr == nil {
-		workflowErr = eventErr
+		workflowErr = busErr
 	}
 	if workflowErr == nil {
 		runner := agentrun.Runner{
@@ -180,7 +187,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 			Queries:        queries,
 			ContextBuilder: contextBuilder,
 			Artifacts:      artifactStore,
-			Events:         eventStore,
+			Events:         bus,
 			AgentManager: &agentrun.Manager{
 				Runner:                  runner,
 				MaxConcurrent:           2,
@@ -196,6 +203,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 		contextBuilderErr: artifactErr,
 		reviewWorkflow:    reviewWorkflow,
 		reviewWorkflowErr: workflowErr,
+		eventBus:          bus,
 		gitCollector:      gitrepo.NewCollector(gitrepo.DefaultRunner()),
 		githubClientFactory: func(token string) githubpr.Client {
 			return githubpr.Client{
@@ -243,6 +251,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.GET("/review-sessions/:id", getReviewSessionHandler(queries))
 	api.POST("/review-sessions/:id/start", startReviewSessionHandler(services))
 	api.GET("/review-sessions/:id/checkpoint", reviewSessionCheckpointHandler(services))
+	api.GET("/review-sessions/:id/events", reviewSessionEventsHandler(services))
 	api.GET("/agents/presets", listAgentPresetsHandler())
 	api.GET("/agents/configs", listAgentConfigsHandler(queries))
 	api.POST("/agents/configs", createAgentConfigHandler(queries))

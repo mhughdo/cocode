@@ -255,8 +255,8 @@ Large parallel workstreams:
 | T142 | Implement workflow runner | Execute phases: context, agents, normalize, dedupe, verify, graph, draft. | Done | T141, T101 | T143 | Runner executes fake-agent review end-to-end. |
 | T143 | Implement checkpointing | Persist phase progress and allow inspecting partially completed sessions. | Done | T142, T061 | T144 | Crash/restart can load last persisted state. |
 | T144 | Implement session status transitions | Enforce valid transitions and timestamps. | Done | T056, T142 | T151 | Invalid transitions rejected; tests cover matrix. |
-| T145 | Implement event bus | Append DB events and broadcast to SSE subscribers. | Not started | T061, T046 | T146 | UI receives live events; DB retains event log. |
-| T146 | Implement SSE endpoint | Stream session events with sequence IDs. | Not started | T145 | T254 | Browser receives real-time events and reconnects. |
+| T145 | Implement event bus | Append DB events and broadcast to SSE subscribers. | Done | T061, T046 | T146 | UI receives live events; DB retains event log. |
+| T146 | Implement SSE endpoint | Stream session events with sequence IDs. | Done | T145 | T254 | Browser receives real-time events and reconnects. |
 | T147 | Implement parallel agent scheduling | Run selected review agents in parallel with bounded concurrency. | Not started | T101, T142 | T148 | Multiple fake agents run; ordering/events deterministic enough for tests. |
 | T148 | Implement Local Verifier scheduling | Run deterministic verifier as part of workflow. | Not started | T142, T200 | T149 | Verifier produces evidence/status for seeded findings. |
 | T149 | Implement partial failure handling | Continue workflow when one agent fails if policy allows. | Not started | T142, T098 | T150 | Failed agent emits error; other findings survive. |

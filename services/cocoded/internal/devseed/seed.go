@@ -394,9 +394,9 @@ func insertAgentConfigs(ctx context.Context, tx *sql.Tx, ts func(time.Duration) 
 		capabilities string
 		settings     string
 	}{
-		{agentCodexID, "Codex Reviewer", "reviewer", "cli_noninteractive", "codex", `["exec","--json"]`, "gpt-5.5", "high", `{"supports_json":true,"can_read":true,"can_write":false}`, `{"seeded":true}`},
-		{agentVerifierID, "Local Verifier", "verifier", "local_verifier", "cocode-verifier", `[]`, "local", "deterministic", `{"supports_json":true,"can_read":true,"can_write":false}`, `{"seeded":true}`},
-		{agentStaticID, "Static Scout", "static_analysis", "local_verifier", "cocode-static", `[]`, "local", "fast", `{"supports_json":true,"can_read":true,"can_write":false}`, `{"seeded":true}`},
+		{agentCodexID, "Codex Reviewer", "reviewer", "cli_noninteractive", "codex", `["exec","--json"]`, "gpt-5.5", "high", `{"supports_json":true,"supports_streaming":false,"supports_sessions":false,"can_read":true,"can_write":false,"can_cancel":true,"output_modes":["json","text"]}`, `{"seeded":true}`},
+		{agentVerifierID, "Local Verifier", "verifier", "local_verifier", "cocode-verifier", `[]`, "local", "deterministic", `{"supports_json":true,"supports_streaming":false,"supports_sessions":false,"can_read":true,"can_write":false,"can_cancel":true,"output_modes":["json","text"]}`, `{"seeded":true}`},
+		{agentStaticID, "Static Scout", "static_analysis", "local_verifier", "cocode-static", `[]`, "local", "fast", `{"supports_json":true,"supports_streaming":false,"supports_sessions":false,"can_read":true,"can_write":false,"can_cancel":true,"output_modes":["json","text"]}`, `{"seeded":true}`},
 	}
 	for _, agent := range agents {
 		if _, err := tx.ExecContext(ctx, `

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hughdo/cocode/services/cocoded/internal/agents"
 	"github.com/hughdo/cocode/services/cocoded/internal/db"
 	"github.com/hughdo/cocode/services/cocoded/internal/search"
 )
@@ -52,6 +53,8 @@ func TestSeedCreatesRepeatableUIData(t *testing.T) {
 	assertCount(t, database, 6, `SELECT COUNT(*) FROM evidence_items WHERE finding_id LIKE 'seed_finding_%'`)
 	assertCount(t, database, 3, `SELECT COUNT(*) FROM evidence_graphs WHERE review_session_id = ?`, completedSessionID)
 	assertCount(t, database, 5, `SELECT COUNT(*) FROM agent_runs WHERE review_session_id IN (?, ?)`, completedSessionID, runningSessionID)
+	assertSeededAgentCapabilities(t, database, agentCodexID, agents.AdapterCLINonInteractive)
+	assertSeededAgentCapabilities(t, database, agentVerifierID, agents.AdapterLocalVerifier)
 
 	var relativePath string
 	if err := database.QueryRowContext(ctx, `SELECT relative_path FROM artifacts WHERE id = ?`, "seed_artifact_diff").Scan(&relativePath); err != nil {
@@ -115,5 +118,25 @@ func assertCount(t *testing.T, database *sql.DB, want int, query string, args ..
 	}
 	if got != want {
 		t.Fatalf("count query %q = %d, want %d", query, got, want)
+	}
+}
+
+func assertSeededAgentCapabilities(t *testing.T, database *sql.DB, agentID string, kind agents.AdapterKind) {
+	t.Helper()
+
+	var raw string
+	if err := database.QueryRowContext(context.Background(), `SELECT capabilities_json FROM agent_configs WHERE id = ?`, agentID).Scan(&raw); err != nil {
+		t.Fatalf("query seeded capabilities for %s: %v", agentID, err)
+	}
+	capabilities, err := agents.DecodeCapabilitiesJSON(raw, kind)
+	if err != nil {
+		t.Fatalf("DecodeCapabilitiesJSON(%s) error = %v", agentID, err)
+	}
+	if !capabilities.SupportsJSON ||
+		!capabilities.CanRead ||
+		capabilities.CanWrite ||
+		!capabilities.CanCancel ||
+		!capabilities.SupportsOutputMode(agents.OutputJSON) {
+		t.Fatalf("seeded capabilities for %s = %+v", agentID, capabilities)
 	}
 }

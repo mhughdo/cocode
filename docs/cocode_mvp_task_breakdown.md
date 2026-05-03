@@ -198,7 +198,7 @@ Large parallel workstreams:
 | ID | Task | Description | Status | Dependencies | Parallelization | Done criteria |
 |---|---|---|---|---|---|---|
 | T090 | Define AgentAdapter interfaces | Implement Go interfaces for AgentAdapter, ConnectionDriver, AgentTask, AgentEvent. | Done | T057, T013 | T091 | Interfaces compile; no workflow code depends directly on CLI implementation. |
-| T091 | Define adapter capability model | Add capabilities such as supports_json, supports_streaming, supports_sessions, can_write, can_read. | Not started | T090 | T092 | Capabilities are stored and returned by API. |
+| T091 | Define adapter capability model | Add capabilities such as supports_json, supports_streaming, supports_sessions, can_write, can_read. | Done | T090 | T092 | Capabilities are stored and returned by API. |
 | T092 | Implement agent config API | CRUD agent configs and health test endpoint. | Not started | T057, T090 | T248 | API tests cover create/update/test/delete. |
 | T093 | Implement CommandOnceDriver | Spawn one process per task using exec with context cancellation. | Not started | T090 | T094 | Can run fake CLI; cancel/timeout works; no shell by default. |
 | T094 | Implement prompt delivery modes | Support prompt via stdin, arg, or temp file. | Not started | T093, T060 | T095 | Tests cover all delivery modes and temp cleanup. |

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/hughdo/cocode/services/cocoded/internal/agents"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
 )
 
@@ -109,7 +110,7 @@ func TestAgentQueriesLifecycle(t *testing.T) {
 		OutputMode:       "json",
 		ModelLabel:       nullableString("gpt-5.5"),
 		ReasoningLabel:   nullableString("high"),
-		CapabilitiesJson: `{"tools":["shell"]}`,
+		CapabilitiesJson: `{"supports_json":true,"can_read":true,"can_write":false,"can_cancel":true,"output_modes":["json","text"]}`,
 		SettingsJson:     "{}",
 		Enabled:          1,
 		CreatedAt:        "2026-05-03T00:05:00Z",
@@ -120,6 +121,13 @@ func TestAgentQueriesLifecycle(t *testing.T) {
 	}
 	if agent.AdapterKind != "cli_noninteractive" || agent.Enabled != 1 {
 		t.Fatalf("CreateAgentConfig() = %+v", agent)
+	}
+	capabilities, err := agents.DecodeCapabilitiesJSON(agent.CapabilitiesJson, agents.AdapterKind(agent.AdapterKind))
+	if err != nil {
+		t.Fatalf("DecodeCapabilitiesJSON(created) error = %v", err)
+	}
+	if !capabilities.SupportsJSON || !capabilities.CanRead || capabilities.CanWrite || !capabilities.SupportsOutputMode(agents.OutputJSON) {
+		t.Fatalf("created capabilities = %+v", capabilities)
 	}
 
 	if _, err := queries.CreateAgentConfig(context.Background(), dbgen.CreateAgentConfigParams{
@@ -162,7 +170,7 @@ func TestAgentQueriesLifecycle(t *testing.T) {
 		OutputMode:       "json",
 		ModelLabel:       nullableString("gpt-5.5"),
 		ReasoningLabel:   nullableString("xhigh"),
-		CapabilitiesJson: `{"tools":["shell","git"]}`,
+		CapabilitiesJson: `{"supports_json":true,"supports_streaming":true,"can_read":true,"can_write":false,"can_cancel":true,"output_modes":["jsonl","json"]}`,
 		SettingsJson:     `{"timeout_seconds":600}`,
 		Enabled:          1,
 		UpdatedAt:        "2026-05-03T00:07:00Z",
@@ -172,6 +180,13 @@ func TestAgentQueriesLifecycle(t *testing.T) {
 	}
 	if updatedAgent.Name != "Codex reviewer deep" || updatedAgent.ReasoningLabel.String != "xhigh" {
 		t.Fatalf("UpdateAgentConfig() = %+v", updatedAgent)
+	}
+	updatedCapabilities, err := agents.DecodeCapabilitiesJSON(updatedAgent.CapabilitiesJson, agents.AdapterKind(updatedAgent.AdapterKind))
+	if err != nil {
+		t.Fatalf("DecodeCapabilitiesJSON(updated) error = %v", err)
+	}
+	if !updatedCapabilities.SupportsStreaming || !updatedCapabilities.SupportsOutputMode(agents.OutputJSONL) {
+		t.Fatalf("updated capabilities = %+v", updatedCapabilities)
 	}
 
 	if err := queries.DeleteAgentConfig(context.Background(), "agent_config_2"); err != nil {

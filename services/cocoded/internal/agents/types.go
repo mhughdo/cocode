@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -40,6 +41,15 @@ const (
 	HealthAvailable   HealthStatus = "available"
 	HealthUnavailable HealthStatus = "unavailable"
 	HealthDegraded    HealthStatus = "degraded"
+)
+
+type OutputMode string
+
+const (
+	OutputText   OutputMode = "text"
+	OutputJSON   OutputMode = "json"
+	OutputJSONL  OutputMode = "jsonl"
+	OutputNDJSON OutputMode = "ndjson"
 )
 
 type AgentAdapter interface {
@@ -133,8 +143,19 @@ type AgentCapabilities struct {
 	CanRead           bool           `json:"can_read"`
 	CanWrite          bool           `json:"can_write"`
 	CanCancel         bool           `json:"can_cancel"`
-	OutputModes       []string       `json:"output_modes,omitempty"`
+	OutputModes       []OutputMode   `json:"output_modes,omitempty"`
 	Metadata          map[string]any `json:"metadata,omitempty"`
+}
+
+type capabilityJSON struct {
+	SupportsJSON      *bool          `json:"supports_json"`
+	SupportsStreaming *bool          `json:"supports_streaming"`
+	SupportsSessions  *bool          `json:"supports_sessions"`
+	CanRead           *bool          `json:"can_read"`
+	CanWrite          *bool          `json:"can_write"`
+	CanCancel         *bool          `json:"can_cancel"`
+	OutputModes       []OutputMode   `json:"output_modes"`
+	Metadata          map[string]any `json:"metadata"`
 }
 
 func (k AdapterKind) Valid() bool {
@@ -153,6 +174,150 @@ func (e EventType) Terminal() bool {
 	default:
 		return false
 	}
+}
+
+func (m OutputMode) Valid() bool {
+	switch m {
+	case OutputText, OutputJSON, OutputJSONL, OutputNDJSON:
+		return true
+	default:
+		return false
+	}
+}
+
+func DefaultCapabilities(kind AdapterKind) AgentCapabilities {
+	switch kind {
+	case AdapterCLINonInteractive:
+		return AgentCapabilities{
+			SupportsJSON: true,
+			CanRead:      true,
+			CanCancel:    true,
+			OutputModes:  []OutputMode{OutputText, OutputJSON, OutputJSONL, OutputNDJSON},
+		}
+	case AdapterLocalVerifier:
+		return AgentCapabilities{
+			SupportsJSON: true,
+			CanRead:      true,
+			CanCancel:    true,
+			OutputModes:  []OutputMode{OutputText, OutputJSON},
+		}
+	case AdapterJSONRPCStdio, AdapterACPStdio:
+		return AgentCapabilities{
+			SupportsJSON:      true,
+			SupportsStreaming: true,
+			SupportsSessions:  true,
+			CanRead:           true,
+			CanCancel:         true,
+			OutputModes:       []OutputMode{OutputJSON, OutputJSONL, OutputNDJSON},
+		}
+	case AdapterMCP, AdapterA2A, AdapterProviderAPI:
+		return AgentCapabilities{
+			SupportsJSON:      true,
+			SupportsStreaming: true,
+			SupportsSessions:  true,
+			CanRead:           true,
+			CanCancel:         true,
+			OutputModes:       []OutputMode{OutputJSON},
+		}
+	default:
+		return AgentCapabilities{
+			OutputModes: []OutputMode{OutputText},
+		}
+	}
+}
+
+func DecodeCapabilitiesJSON(raw string, kind AdapterKind) (AgentCapabilities, error) {
+	capabilities := DefaultCapabilities(kind)
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "{}" {
+		return capabilities, nil
+	}
+
+	var decoded capabilityJSON
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		return AgentCapabilities{}, fmt.Errorf("decode agent capabilities: %w", err)
+	}
+	if decoded.SupportsJSON != nil {
+		capabilities.SupportsJSON = *decoded.SupportsJSON
+	}
+	if decoded.SupportsStreaming != nil {
+		capabilities.SupportsStreaming = *decoded.SupportsStreaming
+	}
+	if decoded.SupportsSessions != nil {
+		capabilities.SupportsSessions = *decoded.SupportsSessions
+	}
+	if decoded.CanRead != nil {
+		capabilities.CanRead = *decoded.CanRead
+	}
+	if decoded.CanWrite != nil {
+		capabilities.CanWrite = *decoded.CanWrite
+	}
+	if decoded.CanCancel != nil {
+		capabilities.CanCancel = *decoded.CanCancel
+	}
+	if decoded.OutputModes != nil {
+		capabilities.OutputModes = decoded.OutputModes
+	}
+	if decoded.SupportsJSON != nil && !*decoded.SupportsJSON {
+		if decoded.OutputModes != nil && hasStructuredOutput(decoded.OutputModes) {
+			return AgentCapabilities{}, errors.New("agent capabilities cannot disable supports_json while declaring structured output modes")
+		}
+		capabilities.OutputModes = textOnlyOutputModes(capabilities.OutputModes)
+	}
+	if decoded.Metadata != nil {
+		capabilities.Metadata = decoded.Metadata
+	}
+	if err := capabilities.Validate(); err != nil {
+		return AgentCapabilities{}, err
+	}
+	return capabilities.Normalize(), nil
+}
+
+func (c AgentCapabilities) EncodeJSON() (string, error) {
+	normalized := c.Normalize()
+	if err := normalized.Validate(); err != nil {
+		return "", err
+	}
+	data, err := json.Marshal(normalized)
+	if err != nil {
+		return "", fmt.Errorf("encode agent capabilities: %w", err)
+	}
+	return string(data), nil
+}
+
+func (c AgentCapabilities) Normalize() AgentCapabilities {
+	c.OutputModes = normalizeOutputModes(c.OutputModes)
+	if len(c.OutputModes) == 0 {
+		c.OutputModes = []OutputMode{OutputText}
+	}
+	if hasStructuredOutput(c.OutputModes) {
+		c.SupportsJSON = true
+	}
+	if c.Metadata == nil {
+		c.Metadata = map[string]any{}
+	}
+	return c
+}
+
+func (c AgentCapabilities) Validate() error {
+	for _, mode := range c.OutputModes {
+		if !mode.Valid() {
+			return fmt.Errorf("agent capability output mode %q is invalid", mode)
+		}
+	}
+	return nil
+}
+
+func (c AgentCapabilities) SupportsOutputMode(mode OutputMode) bool {
+	if !mode.Valid() {
+		return false
+	}
+	for _, candidate := range c.Normalize().OutputModes {
+		if candidate == mode {
+			return true
+		}
+	}
+	return false
 }
 
 func (t AgentTask) Validate() error {
@@ -181,6 +346,44 @@ func (t AgentTask) Validate() error {
 		return errors.New("agent task byte limits cannot be negative")
 	}
 	return nil
+}
+
+func normalizeOutputModes(modes []OutputMode) []OutputMode {
+	if len(modes) == 0 {
+		return nil
+	}
+	seen := map[OutputMode]struct{}{}
+	normalized := make([]OutputMode, 0, len(modes))
+	for _, mode := range modes {
+		if _, exists := seen[mode]; exists {
+			continue
+		}
+		seen[mode] = struct{}{}
+		normalized = append(normalized, mode)
+	}
+	return normalized
+}
+
+func hasStructuredOutput(modes []OutputMode) bool {
+	for _, mode := range modes {
+		if mode == OutputJSON || mode == OutputJSONL || mode == OutputNDJSON {
+			return true
+		}
+	}
+	return false
+}
+
+func textOnlyOutputModes(modes []OutputMode) []OutputMode {
+	kept := make([]OutputMode, 0, len(modes))
+	for _, mode := range modes {
+		if mode == OutputText {
+			kept = append(kept, mode)
+		}
+	}
+	if len(kept) == 0 {
+		return []OutputMode{OutputText}
+	}
+	return kept
 }
 
 func (c ConnectionConfig) Validate() error {

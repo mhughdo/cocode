@@ -169,6 +169,115 @@ func TestAgentTaskValidate(t *testing.T) {
 	}
 }
 
+func TestDecodeCapabilitiesJSONAppliesDefaultsAndOverrides(t *testing.T) {
+	t.Parallel()
+
+	defaults, err := DecodeCapabilitiesJSON("{}", AdapterCLINonInteractive)
+	if err != nil {
+		t.Fatalf("DecodeCapabilitiesJSON(defaults) error = %v", err)
+	}
+	if !defaults.SupportsJSON ||
+		defaults.SupportsStreaming ||
+		defaults.SupportsSessions ||
+		!defaults.CanRead ||
+		defaults.CanWrite ||
+		!defaults.CanCancel ||
+		len(defaults.OutputModes) != 4 {
+		t.Fatalf("default CLI capabilities = %+v", defaults)
+	}
+
+	capabilities, err := DecodeCapabilitiesJSON(`{
+		"supports_json": false,
+		"supports_streaming": true,
+		"supports_sessions": true,
+		"can_read": false,
+		"can_write": true,
+		"can_cancel": false,
+		"output_modes": ["text"],
+		"metadata": {"provider": "custom"}
+	}`, AdapterCLINonInteractive)
+	if err != nil {
+		t.Fatalf("DecodeCapabilitiesJSON(overrides) error = %v", err)
+	}
+	if capabilities.SupportsJSON ||
+		!capabilities.SupportsStreaming ||
+		!capabilities.SupportsSessions ||
+		capabilities.CanRead ||
+		!capabilities.CanWrite ||
+		capabilities.CanCancel ||
+		len(capabilities.OutputModes) != 1 ||
+		capabilities.OutputModes[0] != OutputText ||
+		capabilities.Metadata["provider"] != "custom" {
+		t.Fatalf("overridden capabilities = %+v", capabilities)
+	}
+
+	textOnly, err := DecodeCapabilitiesJSON(`{"supports_json":false}`, AdapterCLINonInteractive)
+	if err != nil {
+		t.Fatalf("DecodeCapabilitiesJSON(text only) error = %v", err)
+	}
+	if textOnly.SupportsJSON || len(textOnly.OutputModes) != 1 || textOnly.OutputModes[0] != OutputText {
+		t.Fatalf("text-only capabilities = %+v", textOnly)
+	}
+}
+
+func TestCapabilitiesNormalizeAndEncode(t *testing.T) {
+	t.Parallel()
+
+	capabilities := AgentCapabilities{
+		OutputModes: []OutputMode{OutputJSON, OutputText, OutputJSON},
+	}
+	normalized := capabilities.Normalize()
+	if !normalized.SupportsJSON {
+		t.Fatalf("SupportsJSON = false for structured output: %+v", normalized)
+	}
+	if len(normalized.OutputModes) != 2 || normalized.OutputModes[0] != OutputJSON || normalized.OutputModes[1] != OutputText {
+		t.Fatalf("OutputModes = %+v, want unique modes in input order", normalized.OutputModes)
+	}
+	if normalized.Metadata == nil {
+		t.Fatal("Metadata = nil, want empty map")
+	}
+	if !normalized.SupportsOutputMode(OutputJSON) || normalized.SupportsOutputMode(OutputNDJSON) || normalized.SupportsOutputMode(OutputMode("yaml")) {
+		t.Fatalf("SupportsOutputMode checks failed for %+v", normalized.OutputModes)
+	}
+
+	encoded, err := capabilities.EncodeJSON()
+	if err != nil {
+		t.Fatalf("EncodeJSON() error = %v", err)
+	}
+	decoded, err := DecodeCapabilitiesJSON(encoded, AdapterKind(""))
+	if err != nil {
+		t.Fatalf("DecodeCapabilitiesJSON(encoded) error = %v", err)
+	}
+	if !decoded.SupportsJSON || len(decoded.OutputModes) != 2 {
+		t.Fatalf("decoded encoded capabilities = %+v", decoded)
+	}
+}
+
+func TestDecodeCapabilitiesJSONRejectsInvalidData(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "invalid json", raw: `{`},
+		{name: "invalid output mode", raw: `{"output_modes":["yaml"]}`},
+		{name: "conflicting json mode", raw: `{"supports_json":false,"output_modes":["json"]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := DecodeCapabilitiesJSON(tt.raw, AdapterCLINonInteractive); err == nil {
+				t.Fatalf("DecodeCapabilitiesJSON(%q) error = nil, want error", tt.raw)
+			}
+		})
+	}
+
+	if _, err := (AgentCapabilities{OutputModes: []OutputMode{OutputMode("yaml")}}).EncodeJSON(); err == nil {
+		t.Fatal("EncodeJSON(invalid output mode) error = nil, want error")
+	}
+}
+
 func TestAdapterKindValidAndEventTerminal(t *testing.T) {
 	t.Parallel()
 
@@ -233,7 +342,7 @@ func (a fakeAdapter) Capabilities(context.Context) (AgentCapabilities, error) {
 		SupportsJSON: true,
 		CanRead:      true,
 		CanWrite:     false,
-		OutputModes:  []string{"json", "text"},
+		OutputModes:  []OutputMode{OutputJSON, OutputText},
 	}, nil
 }
 

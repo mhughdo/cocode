@@ -1511,6 +1511,8 @@ Acceptance criteria:
 {{/findings}}
 ```
 
+The backend renderer is pure and deterministic. `internal/exports.RenderCopyPacket` supports Markdown, XML-ish, JSON, compact, and GitHub-summary packets, preserves the caller-selected finding order, caps evidence/snippet output for large PRs, and returns a rough `ceil(bytes/4)` token estimate for the API layer.
+
 ---
 
 ## 12. Context Builder

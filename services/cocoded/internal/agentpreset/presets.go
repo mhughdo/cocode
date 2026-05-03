@@ -25,7 +25,7 @@ type Preset struct {
 }
 
 func List() []Preset {
-	return []Preset{CodexCLI(), ClaudeCodeCLI(), GeminiCLI()}
+	return []Preset{CodexCLI(), ClaudeCodeCLI(), GeminiCLI(), CustomCLI()}
 }
 
 func CodexCLI() Preset {
@@ -104,5 +104,31 @@ func GeminiCLI() Preset {
 		},
 		Settings: settings,
 		Enabled:  true,
+	}
+}
+
+func CustomCLI() Preset {
+	settings := json.RawMessage(`{"prompt_delivery":"stdin","timeout_seconds":1800,"skip_version":true,"smoke_prompt_enabled":false}`)
+	return Preset{
+		ID:             "custom-cli",
+		Name:           "Custom CLI",
+		Description:    "Template for a user-provided non-interactive CLI command, arguments, output mode, and health settings.",
+		Role:           "custom_reviewer",
+		AdapterKind:    agents.AdapterCLINonInteractive,
+		Command:        "",
+		Args:           []string{},
+		CWDMode:        "repo_root",
+		EnvAllowlist:   []string{},
+		OutputMode:     agents.OutputText,
+		ModelLabel:     "custom",
+		ReasoningLabel: "",
+		Capabilities: agents.AgentCapabilities{
+			SupportsJSON: true,
+			CanRead:      true,
+			CanCancel:    true,
+			OutputModes:  []agents.OutputMode{agents.OutputText, agents.OutputJSON, agents.OutputJSONL, agents.OutputNDJSON},
+		},
+		Settings: settings,
+		Enabled:  false,
 	}
 }

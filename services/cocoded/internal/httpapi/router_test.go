@@ -291,6 +291,75 @@ func TestAgentPresetsEndpointIncludesBuiltInCLIs(t *testing.T) {
 		!json.Valid(gemini.Settings) {
 		t.Fatalf("gemini preset = %+v", gemini)
 	}
+	custom := findAgentPreset(t, presets, "custom-cli")
+	if custom.Command != "" ||
+		custom.Enabled ||
+		custom.OutputMode != agents.OutputText ||
+		!custom.Capabilities.SupportsOutputMode(agents.OutputNDJSON) ||
+		!json.Valid(custom.Settings) {
+		t.Fatalf("custom preset = %+v", custom)
+	}
+}
+
+func TestCustomCLIConfigCanBeSavedAndHealthChecked(t *testing.T) {
+	router, _ := testRouterWithQueries(t)
+	command := writeFakeAgentConfigCommand(t, `#!/bin/sh
+if [ "$1" = "--ping" ]; then
+  printf 'custom ok\n'
+  exit 0
+fi
+printf 'unexpected args: %s\n' "$*" >&2
+exit 2
+`)
+
+	createRequest := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/agents/configs", map[string]any{
+		"name":          "Custom reviewer",
+		"role":          "custom_reviewer",
+		"adapter_kind":  "cli_noninteractive",
+		"command":       command,
+		"args":          []string{"--run", agents.PromptArgPlaceholder},
+		"cwd_mode":      "repo_root",
+		"output_mode":   "text",
+		"model_label":   "custom",
+		"env_allowlist": []string{"CUSTOM_AGENT_TOKEN"},
+		"capabilities": map[string]any{
+			"supports_json": false,
+			"can_read":      true,
+			"can_cancel":    true,
+			"output_modes":  []string{"text"},
+		},
+		"settings": map[string]any{
+			"prompt_delivery": "arg",
+			"version_args":    []string{"--ping"},
+		},
+	})
+	createResponse := httptest.NewRecorder()
+	router.ServeHTTP(createResponse, createRequest)
+	if createResponse.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createResponse.Code, createResponse.Body.String())
+	}
+	created := decodeAgentConfigResponse(t, createResponse.Body.Bytes())
+	if created.Command != command ||
+		len(created.Args) != 2 ||
+		created.Args[1] != agents.PromptArgPlaceholder ||
+		created.EnvAllowlist[0] != "CUSTOM_AGENT_TOKEN" ||
+		created.OutputMode != agents.OutputText ||
+		created.Capabilities.SupportsJSON {
+		t.Fatalf("created custom config = %+v", created)
+	}
+
+	healthRequest := httptest.NewRequest(http.MethodPost, "/api/agents/configs/"+created.ID+"/test", nil)
+	healthRequest.Header.Set("X-Cocode-Token", "test-token")
+	healthResponse := httptest.NewRecorder()
+	router.ServeHTTP(healthResponse, healthRequest)
+	if healthResponse.Code != http.StatusOK {
+		t.Fatalf("health status = %d, body = %s", healthResponse.Code, healthResponse.Body.String())
+	}
+	health := decodeAgentConfigHealthResponse(t, healthResponse.Body.Bytes())
+	if health.Status != agents.HealthAvailable ||
+		health.Metadata["version"] != "custom ok" {
+		t.Fatalf("health = %+v", health)
+	}
 }
 
 func TestAgentConfigEndpointRejectsInvalidInputs(t *testing.T) {

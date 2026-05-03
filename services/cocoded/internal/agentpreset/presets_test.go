@@ -100,6 +100,30 @@ func TestGeminiCLIPreset(t *testing.T) {
 	}
 }
 
+func TestCustomCLIPreset(t *testing.T) {
+	t.Parallel()
+
+	preset := CustomCLI()
+	if preset.ID != "custom-cli" ||
+		preset.Command != "" ||
+		preset.Role != "custom_reviewer" ||
+		preset.AdapterKind != agents.AdapterCLINonInteractive ||
+		preset.OutputMode != agents.OutputText ||
+		preset.ModelLabel != "custom" ||
+		preset.Enabled ||
+		!preset.Capabilities.CanCancel ||
+		!preset.Capabilities.SupportsOutputMode(agents.OutputNDJSON) {
+		t.Fatalf("preset = %+v", preset)
+	}
+	settings := decodePresetSettings(t, preset)
+	if settings.PromptDelivery != agents.PromptViaStdin ||
+		settings.TimeoutSeconds != 1800 ||
+		!settings.SkipVersion ||
+		settings.SmokePromptEnabled {
+		t.Fatalf("settings = %+v", settings)
+	}
+}
+
 func TestListIncludesKnownPresets(t *testing.T) {
 	t.Parallel()
 
@@ -108,7 +132,7 @@ func TestListIncludesKnownPresets(t *testing.T) {
 	for _, preset := range presets {
 		ids[preset.ID] = struct{}{}
 	}
-	for _, id := range []string{"codex-cli", "claude-code-cli", "gemini-cli"} {
+	for _, id := range []string{"codex-cli", "claude-code-cli", "gemini-cli", "custom-cli"} {
 		if _, ok := ids[id]; !ok {
 			t.Fatalf("preset %q missing from %+v", id, presets)
 		}
@@ -119,6 +143,7 @@ type presetSettings struct {
 	PromptDelivery     agents.PromptDelivery `json:"prompt_delivery"`
 	TimeoutSeconds     int64                 `json:"timeout_seconds"`
 	VersionArgs        []string              `json:"version_args"`
+	SkipVersion        bool                  `json:"skip_version"`
 	SmokePromptEnabled bool                  `json:"smoke_prompt_enabled"`
 }
 

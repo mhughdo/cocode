@@ -72,7 +72,8 @@ index 2222222..3333333 100644
 		first.Title != "app/main.go hunk 1: func main()" ||
 		!strings.Contains(first.Content, "@@ -1,3 +1,4 @@ func main()") ||
 		!strings.Contains(first.Content, "-old2") ||
-		!strings.Contains(first.Content, "+new3") {
+		!strings.Contains(first.Content, "+new3") ||
+		first.TokenEstimate == 0 {
 		t.Fatalf("first item = %+v", first)
 	}
 	var metadata map[string]any

@@ -390,10 +390,7 @@ func countContentLines(content string) int64 {
 }
 
 func estimateTokens(content string) int64 {
-	if content == "" {
-		return 0
-	}
-	return int64((len(content) + 3) / 4)
+	return EstimateContentTokens(content)
 }
 
 func stableFileContextItemID(bundleID string, path string, kind ItemKind, startLine int64, endLine int64) string {

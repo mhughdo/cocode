@@ -69,6 +69,7 @@ func BuildDiffContextItems(bundleID string, files []DiffContextFile) ([]Item, er
 				EndLine:         endLine,
 				Title:           title,
 				Content:         content,
+				TokenEstimate:   EstimateContentTokens(content),
 				Metadata:        metadata,
 			}
 			if err := item.Validate(); err != nil {

@@ -1,7 +1,13 @@
+import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { app, BrowserWindow, shell } from "electron";
+import { app, BrowserWindow, session, shell } from "electron";
 import { electronApp, is, optimizer } from "@electron-toolkit/utils";
+
+import { BackendController } from "./backend";
+import { registerIpc } from "./ipc";
+
+const backend = new BackendController();
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -16,6 +22,7 @@ function createWindow(): void {
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
+      webSecurity: true,
     },
   });
 
@@ -27,6 +34,12 @@ function createWindow(): void {
     void shell.openExternal(details.url);
     return { action: "deny" };
   });
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (url !== mainWindow.webContents.getURL()) {
+      event.preventDefault();
+      void shell.openExternal(url);
+    }
+  });
 
   if (is.dev && process.env.ELECTRON_RENDERER_URL) {
     void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
@@ -35,13 +48,22 @@ function createWindow(): void {
   }
 }
 
-void app.whenReady().then(() => {
+void app.whenReady().then(async () => {
   electronApp.setAppUserModelId("dev.cocode.desktop");
+  logMainEvent("app ready");
+  session.defaultSession.setPermissionRequestHandler(
+    (_contents, _permission, callback) => {
+      callback(false);
+    },
+  );
 
   app.on("browser-window-created", (_, window) => {
     optimizer.watchWindowShortcuts(window);
   });
 
+  await backend.start();
+  logMainEvent("backend ready", { backend: backend.getInfo() });
+  registerIpc(backend);
   createWindow();
 
   app.on("activate", () => {
@@ -56,3 +78,25 @@ app.on("window-all-closed", () => {
     app.quit();
   }
 });
+
+app.on("before-quit", () => {
+  logMainEvent("app quitting");
+  backend.stop();
+});
+
+function logMainEvent(
+  message: string,
+  fields: Record<string, unknown> | null = null,
+): void {
+  const logDir = app.getPath("logs");
+  mkdirSync(logDir, { recursive: true });
+  appendFileSync(
+    join(logDir, "main.log"),
+    `${JSON.stringify({
+      time: new Date().toISOString(),
+      level: "info",
+      message,
+      ...fields,
+    })}\n`,
+  );
+}

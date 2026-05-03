@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,10 +14,20 @@ import (
 )
 
 func main() {
-	addr := getenv("COCODED_ADDR", "127.0.0.1:17658")
-	router := httpapi.NewRouter(app.Version)
+	config, err := app.LoadConfig()
+	if err != nil {
+		panic(err)
+	}
+
+	logger, cleanup, err := app.NewLogger(config.LogPath)
+	if err != nil {
+		panic(err)
+	}
+	defer cleanup()
+
+	router := httpapi.NewRouter(config, logger)
 	server := &http.Server{
-		Addr:              addr,
+		Addr:              config.Addr,
 		Handler:           router,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -27,9 +36,10 @@ func main() {
 	defer stop()
 
 	go func() {
-		log.Printf("cocoded listening on http://%s", addr)
+		logger.Info("cocoded listening", "addr", config.Addr)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("cocoded server failed: %v", err)
+			logger.Error("cocoded server failed", "error", err)
+			os.Exit(1)
 		}
 	}()
 
@@ -37,13 +47,8 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("cocoded shutdown failed: %v", err)
+		logger.Error("cocoded shutdown failed", "error", err)
+		os.Exit(1)
 	}
-}
-
-func getenv(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return fallback
+	logger.Info("cocoded stopped")
 }

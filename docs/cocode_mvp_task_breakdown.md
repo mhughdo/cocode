@@ -119,16 +119,16 @@ Large parallel workstreams:
 
 | ID | Task | Description | Status | Dependencies | Parallelization | Done criteria |
 |---|---|---|---|---|---|---|
-| T030 | Implement Electron main app lifecycle | Create window lifecycle, app ready, quit, crash logging. | Not started | T014 | T031, T240 | App launches reliably; main process logs startup/shutdown. |
-| T031 | Launch Go backend from Electron | Bundle/launch `cocoded` from main process in dev and prod modes. | Not started | T030, T040 | T032 | Backend starts on app launch; port/token returned to renderer; shutdown kills process. |
-| T032 | Generate local backend auth token | Generate per-launch high-entropy token and pass to renderer safely. | Not started | T031 | T033, T104 | All renderer API calls include token; backend rejects missing/invalid token. |
-| T033 | Implement preload API | Expose narrow `window.cocode` API for backend info, clipboard, repo picker, editor open. | Not started | T030 | T034, T242 | Renderer cannot access raw Node/Electron APIs; IPC inputs are validated. |
-| T034 | Implement clipboard bridge | Add secure clipboard write path for copy packets/comments. | Not started | T033 | T290 | Copy works from renderer through main; oversized copy attempts are guarded/logged. |
-| T035 | Implement repository picker | Add file dialog to select local repo directory. | Not started | T033 | T070, T245 | User can select folder; result is passed to renderer; cancellation is handled. |
+| T030 | Implement Electron main app lifecycle | Create window lifecycle, app ready, quit, crash logging. | Done | T014 | T031, T240 | App launches reliably; main process logs startup/shutdown. |
+| T031 | Launch Go backend from Electron | Bundle/launch `cocoded` from main process in dev and prod modes. | Done | T030, T040 | T032 | Backend starts on app launch; port/token returned to renderer; shutdown kills process. |
+| T032 | Generate local backend auth token | Generate per-launch high-entropy token and pass to renderer safely. | Done | T031 | T033, T104 | All renderer API calls include token; backend rejects missing/invalid token. |
+| T033 | Implement preload API | Expose narrow `window.cocode` API for backend info, clipboard, repo picker, editor open. | Done | T030 | T034, T242 | Renderer cannot access raw Node/Electron APIs; IPC inputs are validated. |
+| T034 | Implement clipboard bridge | Add secure clipboard write path for copy packets/comments. | Done | T033 | T290 | Copy works from renderer through main; oversized copy attempts are guarded/logged. |
+| T035 | Implement repository picker | Add file dialog to select local repo directory. | Done | T033 | T070, T245 | User can select folder; result is passed to renderer; cancellation is handled. |
 | T036 | Implement open external editor bridge | Open file/line in configured editor or OS fallback. | Not started | T033 | T213, T263 | Works for supported editor command; unsupported editor shows clear error. |
 | T037 | Add safe secret storage abstraction | Implement Electron-side secret storage wrapper. | Not started | T030 | T330 | Can store/retrieve/delete test secret; does not expose secret to renderer. |
-| T038 | Add crash/error log location | Define app log path and expose “open logs” action later. | Not started | T030 | T360 | Main/backend logs are written to predictable local paths. |
-| T039 | Harden Electron security defaults | Disable nodeIntegration, enable contextIsolation and sandbox, set CSP. | Not started | T030 | T240, T330 | Security checklist passes; no raw ipcRenderer exposure. |
+| T038 | Add crash/error log location | Define app log path and expose “open logs” action later. | Done | T030 | T360 | Main/backend logs are written to predictable local paths. |
+| T039 | Harden Electron security defaults | Disable nodeIntegration, enable contextIsolation and sandbox, set CSP. | Done | T030 | T240, T330 | Security checklist passes; no raw ipcRenderer exposure. |
 
 ---
 
@@ -136,15 +136,15 @@ Large parallel workstreams:
 
 | ID | Task | Description | Status | Dependencies | Parallelization | Done criteria |
 |---|---|---|---|---|---|---|
-| T040 | Create Go backend entrypoint | Implement `cocoded` startup with config, logger, signal handling. | Not started | T012 | T041, T050 | Binary starts locally; logs health info; graceful shutdown works. |
-| T041 | Configure Gin router | Add base Gin router with middleware stack. | Not started | T040 | T042 | `/api/health` returns success; request IDs and recovery middleware work. |
-| T042 | Implement local auth middleware | Require per-launch auth token for all API routes except health/version if chosen. | Not started | T032, T041 | T330 | Requests without token are rejected; tests cover success/failure. |
-| T043 | Add response envelope | Standardize `{data,error,request_id}` responses. | Not started | T041 | T044 | All handlers use envelope; errors are typed. |
-| T044 | Add typed error package | Define error codes and mapping to HTTP status. | Not started | T043 | All backend tasks | Tests cover representative error mappings. |
-| T045 | Add backend config loader | Load app paths, DB path, artifact path, debug flags. | Not started | T040 | T050 | Config works in dev/prod; invalid config fails clearly. |
-| T046 | Add SSE helper | Implement reusable SSE stream handler with event IDs. | Not started | T041 | T145 | SSE streams events; reconnect can resume from Last-Event-ID if implemented. |
-| T047 | Add structured logger | Add JSON/dev logging with request ID and session ID fields. | Not started | T040 | All backend tasks | Logs include request/session/agent fields where available. |
-| T048 | Add backend version endpoint | Return build version, platform, DB path presence, and feature flags. | Not started | T041 | T031 | Renderer can display backend version; tests cover endpoint. |
+| T040 | Create Go backend entrypoint | Implement `cocoded` startup with config, logger, signal handling. | Done | T012 | T041, T050 | Binary starts locally; logs health info; graceful shutdown works. |
+| T041 | Configure Gin router | Add base Gin router with middleware stack. | Done | T040 | T042 | `/api/health` returns success; request IDs and recovery middleware work. |
+| T042 | Implement local auth middleware | Require per-launch auth token for all API routes except health/version if chosen. | Done | T032, T041 | T330 | Requests without token are rejected; tests cover success/failure. |
+| T043 | Add response envelope | Standardize `{data,error,request_id}` responses. | Done | T041 | T044 | All handlers use envelope; errors are typed. |
+| T044 | Add typed error package | Define error codes and mapping to HTTP status. | Done | T043 | All backend tasks | Tests cover representative error mappings. |
+| T045 | Add backend config loader | Load app paths, DB path, artifact path, debug flags. | Done | T040 | T050 | Config works in dev/prod; invalid config fails clearly. |
+| T046 | Add SSE helper | Implement reusable SSE stream handler with event IDs. | Done | T041 | T145 | SSE streams events; reconnect can resume from Last-Event-ID if implemented. |
+| T047 | Add structured logger | Add JSON/dev logging with request ID and session ID fields. | Done | T040 | All backend tasks | Logs include request/session/agent fields where available. |
+| T048 | Add backend version endpoint | Return build version, platform, DB path presence, and feature flags. | Done | T041 | T031 | Renderer can display backend version; tests cover endpoint. |
 
 ---
 

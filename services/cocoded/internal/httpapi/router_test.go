@@ -2,13 +2,17 @@ package httpapi
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
+
+	"github.com/hughdo/cocode/services/cocoded/internal/app"
 )
 
 func TestHealthEndpoint(t *testing.T) {
-	router := NewRouter("test-version")
+	router := testRouter()
 
 	request := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 	response := httptest.NewRecorder()
@@ -37,4 +41,51 @@ func TestHealthEndpoint(t *testing.T) {
 	if data["version"] != "test-version" {
 		t.Fatalf("expected version test-version, got %v", data["version"])
 	}
+}
+
+func TestVersionEndpoint(t *testing.T) {
+	router := testRouter()
+
+	request := httptest.NewRequest(http.MethodGet, "/api/version", nil)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, response.Code)
+	}
+}
+
+func TestAuthenticatedRouteRejectsMissingToken(t *testing.T) {
+	router := testRouter()
+
+	request := httptest.NewRequest(http.MethodGet, "/api/session", nil)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, response.Code)
+	}
+}
+
+func TestAuthenticatedRouteAcceptsToken(t *testing.T) {
+	router := testRouter()
+
+	request := httptest.NewRequest(http.MethodGet, "/api/session", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, response.Code)
+	}
+}
+
+func testRouter() http.Handler {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{}))
+	return NewRouter(app.Config{
+		Addr:      "127.0.0.1:0",
+		AuthToken: "test-token",
+		DataDir:   "/tmp/cocode-test",
+		Version:   "test-version",
+	}, logger)
 }

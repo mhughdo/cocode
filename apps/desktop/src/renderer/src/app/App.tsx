@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import {
   BadgeCheckIcon,
   BotIcon,
@@ -39,6 +40,30 @@ const stats = [
 ];
 
 export function App() {
+  const [backendStatus, setBackendStatus] = useState("loading");
+  const [backendUrl, setBackendUrl] = useState("");
+
+  useEffect(() => {
+    let canceled = false;
+    void window.cocode
+      ?.getBackendInfo()
+      .then((info) => {
+        if (!canceled) {
+          setBackendStatus(info.status);
+          setBackendUrl(info.baseUrl);
+        }
+      })
+      .catch(() => {
+        if (!canceled) {
+          setBackendStatus("unavailable");
+        }
+      });
+
+    return () => {
+      canceled = true;
+    };
+  }, []);
+
   return (
     <main className="bg-background text-foreground flex min-h-screen">
       <aside className="bg-muted/30 flex w-72 shrink-0 flex-col border-r p-5">
@@ -48,7 +73,9 @@ export function App() {
           </div>
           <div>
             <p className="text-lg font-semibold">cocode</p>
-            <p className="text-muted-foreground text-sm">Review cockpit</p>
+            <p className="text-muted-foreground text-sm">
+              Review cockpit · {backendStatus}
+            </p>
           </div>
         </div>
 
@@ -93,6 +120,19 @@ export function App() {
               Go backend, workspace packages, and shadcn-based renderer.
             </p>
           </div>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Local backend</CardTitle>
+              <CardDescription>
+                Electron launched cocoded and exposed the connection through the
+                preload bridge.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="text-muted-foreground text-sm">
+              {backendUrl || "Waiting for backend info"}
+            </CardContent>
+          </Card>
 
           <div className="grid grid-cols-6 gap-3 text-sm">
             {steps.map((step, index) => (

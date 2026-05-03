@@ -17,6 +17,7 @@ import (
 
 	"github.com/hughdo/cocode/services/cocoded/internal/agents"
 	"github.com/hughdo/cocode/services/cocoded/internal/app"
+	"github.com/hughdo/cocode/services/cocoded/internal/artifact"
 	"github.com/hughdo/cocode/services/cocoded/internal/db"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
 )
@@ -870,6 +871,127 @@ func TestCreateLocalChangesSnapshotEndpointIncludesUntrackedBinary(t *testing.T)
 	}
 }
 
+func TestBuildReviewContextPreviewEndpointPersistsBundle(t *testing.T) {
+	repoPath := t.TempDir()
+	writeHTTPAPIRepoFile(t, repoPath, "app/main.go", "package main\n\nconst apiKey = \"sk-abcdefghijklmnopqrstuvwxyz\"\n\nfunc RequireAdmin() {}\n")
+	writeHTTPAPIRepoFile(t, repoPath, "app/main_test.go", "package main\n\nfunc TestRequireAdmin(t *testing.T) {\n\tRequireAdmin()\n}\n")
+
+	artifactDir := filepath.Join(t.TempDir(), "artifacts")
+	router, queries := testRouterWithConfigAndQueries(t, app.Config{ArtifactDir: artifactDir})
+	createHTTPAPIWorkspaceAndRepository(t, queries, repoPath)
+	if _, err := queries.CreatePullRequestSnapshot(context.Background(), dbgen.CreatePullRequestSnapshotParams{
+		ID:           "snapshot_1",
+		RepositoryID: "repo_1",
+		SourceType:   "local_changes",
+		MetadataJson: "{}",
+		CreatedAt:    "2026-05-03T00:02:00Z",
+	}); err != nil {
+		t.Fatalf("CreatePullRequestSnapshot() error = %v", err)
+	}
+	if _, err := queries.CreateReviewSession(context.Background(), dbgen.CreateReviewSessionParams{
+		ID:                  "review_session_1",
+		WorkspaceID:         "workspace_1",
+		RepositoryID:        "repo_1",
+		SnapshotID:          "snapshot_1",
+		Title:               "Review auth",
+		Status:              "draft",
+		ReviewDepth:         "standard",
+		FocusPrompt:         nullableString("Focus auth guard behavior."),
+		RuntimeLimitSeconds: 1800,
+		ContextPolicyJson:   `{"include_related_call_sites":false,"include_project_conventions":false}`,
+		CreatedAt:           "2026-05-03T00:03:00Z",
+		UpdatedAt:           "2026-05-03T00:03:00Z",
+	}); err != nil {
+		t.Fatalf("CreateReviewSession() error = %v", err)
+	}
+	store, err := artifact.New(artifactDir, queries)
+	if err != nil {
+		t.Fatalf("artifact.New() error = %v", err)
+	}
+	patch, err := store.Save(context.Background(), artifact.SaveParams{
+		ID:           "artifact_patch_main",
+		WorkspaceID:  "workspace_1",
+		Kind:         "patch",
+		RelativePath: "snapshots/snapshot_1/patches/main.patch",
+		ContentType:  "text/x-diff",
+		MetadataJSON: `{"path":"app/main.go"}`,
+		CreatedAt:    "2026-05-03T00:04:00Z",
+	}, []byte("@@ -1,3 +1,5 @@\n package main\n+const apiKey = \"sk-abcdefghijklmnopqrstuvwxyz\"\n+func RequireAdmin() {}\n"))
+	if err != nil {
+		t.Fatalf("Save(patch) error = %v", err)
+	}
+	if _, err := queries.CreateChangedFile(context.Background(), dbgen.CreateChangedFileParams{
+		ID:              "file_main",
+		SnapshotID:      "snapshot_1",
+		Path:            "app/main.go",
+		Status:          "modified",
+		Additions:       2,
+		LineRangesJson:  `[[3,5]]`,
+		PatchArtifactID: sql.NullString{String: patch.ID, Valid: true},
+		CreatedAt:       "2026-05-03T00:05:00Z",
+	}); err != nil {
+		t.Fatalf("CreateChangedFile() error = %v", err)
+	}
+
+	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/review-sessions/review_session_1/context-bundles/preview", map[string]any{
+		"persist": true,
+		"context_policy": map[string]any{
+			"include_prior_comments":  false,
+			"include_prior_decisions": false,
+			"max_tokens":              50000,
+			"max_items":               50,
+		},
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, response.Code, response.Body.String())
+	}
+	preview := decodeBuildReviewContextResponse(t, response.Body.Bytes())
+	if !preview.Persisted ||
+		preview.ArtifactID == "" ||
+		preview.Bundle.ArtifactID != preview.ArtifactID ||
+		preview.Bundle.ItemCount != int64(len(preview.Bundle.Items)) ||
+		preview.Bundle.TokenEstimate <= 0 ||
+		preview.RedactionReport.RedactionCount == 0 {
+		t.Fatalf("preview = %+v", preview)
+	}
+	kinds := map[string]bool{}
+	for _, item := range preview.Bundle.Items {
+		kinds[string(item.Kind)] = true
+	}
+	for _, want := range []string{"prompt_material", "changed_hunk", "full_file", "related_test"} {
+		if !kinds[want] {
+			t.Fatalf("preview item kinds = %+v, missing %s", kinds, want)
+		}
+	}
+	rendered, _, err := store.Read(context.Background(), preview.ArtifactID)
+	if err != nil {
+		t.Fatalf("Read(context artifact) error = %v", err)
+	}
+	if strings.Contains(string(rendered), "sk-abcdefghijklmnopqrstuvwxyz") || !strings.Contains(string(rendered), "[REDACTED]") {
+		t.Fatalf("rendered context = %s", string(rendered))
+	}
+	rows, err := queries.ListContextItemsByBundle(context.Background(), preview.Bundle.ID)
+	if err != nil {
+		t.Fatalf("ListContextItemsByBundle() error = %v", err)
+	}
+	if len(rows) != len(preview.Bundle.Items) {
+		t.Fatalf("context item rows len = %d, want %d", len(rows), len(preview.Bundle.Items))
+	}
+}
+
+func TestBuildReviewContextPreviewEndpointMapsMissingSession(t *testing.T) {
+	router := testRouter(t)
+
+	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/review-sessions/missing/context-bundles/preview", map[string]any{})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("missing session status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
 func TestCreateSnapshotEndpointRejectsInvalidJSON(t *testing.T) {
 	router, _ := testRouterWithQueries(t)
 
@@ -1017,6 +1139,22 @@ func decodeSnapshotResponse(t *testing.T, content []byte) SnapshotResponse {
 	var envelope struct {
 		Data  SnapshotResponse `json:"data"`
 		Error any              `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeBuildReviewContextResponse(t *testing.T, content []byte) BuildReviewContextResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  BuildReviewContextResponse `json:"data"`
+		Error any                        `json:"error"`
 	}
 	if err := json.Unmarshal(content, &envelope); err != nil {
 		t.Fatalf("decode response: %v", err)

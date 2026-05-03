@@ -809,6 +809,7 @@ GET    /api/pr-snapshots/:id/changed-files
 POST   /api/review-sessions
 GET    /api/review-sessions
 GET    /api/review-sessions/:id
+POST   /api/review-sessions/:id/context-bundles/preview
 POST   /api/review-sessions/:id/start
 POST   /api/review-sessions/:id/pause
 POST   /api/review-sessions/:id/resume

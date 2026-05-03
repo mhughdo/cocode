@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"path/filepath"
@@ -16,6 +17,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/hughdo/cocode/services/cocoded/internal/app"
 	"github.com/hughdo/cocode/services/cocoded/internal/apperror"
+	"github.com/hughdo/cocode/services/cocoded/internal/artifact"
+	"github.com/hughdo/cocode/services/cocoded/internal/contextbundle"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
 	"github.com/hughdo/cocode/services/cocoded/internal/githubpr"
 	"github.com/hughdo/cocode/services/cocoded/internal/gitrepo"
@@ -94,10 +97,28 @@ type CreateLocalChangesSnapshotRequest struct {
 	RepositoryID string `json:"repository_id"`
 }
 
+type BuildReviewContextRequest struct {
+	AgentConfigID string          `json:"agent_config_id"`
+	Persist       bool            `json:"persist"`
+	ContextPolicy json.RawMessage `json:"context_policy"`
+}
+
+type BuildReviewContextResponse struct {
+	Bundle                    contextbundle.Bundle          `json:"bundle"`
+	Dropped                   []contextbundle.DroppedItem   `json:"dropped"`
+	Warnings                  []string                      `json:"warnings,omitempty"`
+	RedactionReport           contextbundle.RedactionReport `json:"redaction_report"`
+	Persisted                 bool                          `json:"persisted"`
+	ArtifactID                string                        `json:"artifact_id,omitempty"`
+	RedactionReportArtifactID string                        `json:"redaction_report_artifact_id,omitempty"`
+}
+
 type routerServices struct {
 	queries             *dbgen.Queries
 	snapshots           *snapshot.Service
 	snapshotInitErr     error
+	contextBuilder      *contextbundle.Service
+	contextBuilderErr   error
 	gitCollector        gitrepo.Collector
 	githubClientFactory func(token string) githubpr.Client
 }
@@ -107,11 +128,21 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 
 	queries := dbgen.New(database)
 	snapshotService, snapshotErr := snapshot.New(database, artifactRoot(config))
+	contextArtifactStore, contextArtifactErr := artifact.New(artifactRoot(config), queries)
+	var contextBuilder *contextbundle.Service
+	if contextArtifactErr == nil {
+		contextBuilder = &contextbundle.Service{
+			Queries:   queries,
+			Artifacts: contextArtifactStore,
+		}
+	}
 	services := routerServices{
-		queries:         queries,
-		snapshots:       snapshotService,
-		snapshotInitErr: snapshotErr,
-		gitCollector:    gitrepo.NewCollector(gitrepo.DefaultRunner()),
+		queries:           queries,
+		snapshots:         snapshotService,
+		snapshotInitErr:   snapshotErr,
+		contextBuilder:    contextBuilder,
+		contextBuilderErr: contextArtifactErr,
+		gitCollector:      gitrepo.NewCollector(gitrepo.DefaultRunner()),
 		githubClientFactory: func(token string) githubpr.Client {
 			return githubpr.Client{
 				BaseURL: config.GitHubAPIBaseURL,
@@ -159,6 +190,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.PATCH("/agents/configs/:id", updateAgentConfigHandler(queries))
 	api.POST("/agents/configs/:id/test", testAgentConfigHandler(queries))
 	api.DELETE("/agents/configs/:id", deleteAgentConfigHandler(queries))
+	api.POST("/review-sessions/:id/context-bundles/preview", buildReviewContextHandler(services))
 
 	return router
 }
@@ -351,6 +383,35 @@ func changedFilesHandler(queries *dbgen.Queries) gin.HandlerFunc {
 	}
 }
 
+func buildReviewContextHandler(services routerServices) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		sessionID := strings.TrimSpace(c.Param("id"))
+		if sessionID == "" {
+			respondError(c, apperror.InvalidRequest("review session id is required"))
+			return
+		}
+		var request BuildReviewContextRequest
+		if !bindOptionalJSON(c, &request) {
+			return
+		}
+		if err := services.ensureContextBuilder(); err != nil {
+			respondError(c, err)
+			return
+		}
+		result, err := services.contextBuilder.BuildReviewContext(c.Request.Context(), contextbundle.BuildReviewContextParams{
+			ReviewSessionID: sessionID,
+			AgentConfigID:   request.AgentConfigID,
+			PolicyOverride:  request.ContextPolicy,
+			Persist:         request.Persist,
+		})
+		if err != nil {
+			respondReviewContextError(c, err)
+			return
+		}
+		respondOK(c, buildReviewContextResponse(result))
+	}
+}
+
 func (s routerServices) ensureSnapshots() *apperror.Error {
 	if s.snapshots == nil {
 		message := "snapshot service is not configured"
@@ -362,8 +423,33 @@ func (s routerServices) ensureSnapshots() *apperror.Error {
 	return nil
 }
 
+func (s routerServices) ensureContextBuilder() *apperror.Error {
+	if s.contextBuilder == nil {
+		message := "context builder is not configured"
+		if s.contextBuilderErr != nil {
+			message = fmt.Sprintf("%s: %v", message, s.contextBuilderErr)
+		}
+		return apperror.Internal(message)
+	}
+	return nil
+}
+
 func bindJSON(c *gin.Context, target any) bool {
 	if err := c.ShouldBindJSON(target); err != nil {
+		respondError(c, apperror.InvalidRequest("request body is invalid JSON"))
+		return false
+	}
+	return true
+}
+
+func bindOptionalJSON(c *gin.Context, target any) bool {
+	if c.Request.Body == nil || c.Request.ContentLength == 0 {
+		return true
+	}
+	if err := c.ShouldBindJSON(target); err != nil {
+		if errors.Is(err, io.EOF) {
+			return true
+		}
 		respondError(c, apperror.InvalidRequest("request body is invalid JSON"))
 		return false
 	}
@@ -434,6 +520,21 @@ func respondSnapshotResult(c *gin.Context, result snapshot.SnapshotResult) {
 	respondOK(c, response)
 }
 
+func buildReviewContextResponse(result contextbundle.BuildReviewContextResult) BuildReviewContextResponse {
+	response := BuildReviewContextResponse{
+		Bundle:          result.Bundle,
+		Dropped:         result.Dropped,
+		Warnings:        result.Warnings,
+		RedactionReport: result.RedactionReport,
+		Persisted:       result.Persisted,
+		ArtifactID:      result.Artifact.ID,
+	}
+	if result.RedactionReportArtifact.ID != "" {
+		response.RedactionReportArtifactID = result.RedactionReportArtifact.ID
+	}
+	return response
+}
+
 func snapshotResponse(row dbgen.PullRequestSnapshot, changedFileCount int) SnapshotResponse {
 	metadata := json.RawMessage(row.MetadataJson)
 	if len(metadata) == 0 || !json.Valid(metadata) {
@@ -481,6 +582,21 @@ func changedFileResponse(file dbgen.ChangedFile) (ChangedFileResponse, error) {
 		LineRanges:      lineRanges,
 		PatchArtifactID: nullableResponseString(file.PatchArtifactID),
 	}, nil
+}
+
+func respondReviewContextError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, contextbundle.ErrReviewSessionNotFound):
+		respondError(c, apperror.NotFound("review session was not found"))
+	case errors.Is(err, contextbundle.ErrAgentConfigNotFound):
+		respondError(c, apperror.NotFound("agent config was not found"))
+	case errors.Is(err, contextbundle.ErrInvalidReviewContextPolicy):
+		respondError(c, apperror.InvalidRequest(err.Error()))
+	case errors.Is(err, contextbundle.ErrInvalidReviewContextSource):
+		respondError(c, apperror.InvalidRequest(err.Error()))
+	default:
+		respondAppError(c, err)
+	}
 }
 
 func nullableResponseString(value sql.NullString) string {

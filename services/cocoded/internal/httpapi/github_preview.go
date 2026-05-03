@@ -134,6 +134,9 @@ func previewFindings(ctx context.Context, queries *dbgen.Queries, reviewSessionI
 			selectedRows = append(selectedRows, row)
 		}
 	}
+	if duplicate := firstPublishedDuplicate(rows, selectedRows); duplicate != "" {
+		return nil, apperrorInvalid("finding was already published: " + duplicate)
+	}
 	if len(selectedRows) == 0 {
 		return nil, apperrorInvalid("at least one finding is required")
 	}
@@ -155,6 +158,33 @@ func previewFindings(ctx context.Context, queries *dbgen.Queries, reviewSessionI
 		})
 	}
 	return findings, nil
+}
+
+func firstPublishedDuplicate(all []dbgen.Finding, selected []dbgen.Finding) string {
+	for _, row := range selected {
+		if row.DecisionStatus == "published" {
+			return row.ID
+		}
+		for _, prior := range all {
+			if prior.ID == row.ID || prior.DecisionStatus != "published" {
+				continue
+			}
+			if sameFindingPublicationTarget(prior, row) {
+				return row.ID
+			}
+		}
+	}
+	return ""
+}
+
+func sameFindingPublicationTarget(left dbgen.Finding, right dbgen.Finding) bool {
+	if left.Fingerprint != "" && left.Fingerprint == right.Fingerprint {
+		return true
+	}
+	return nullableValue(left.PrimaryPath) != "" &&
+		nullableValue(left.PrimaryPath) == nullableValue(right.PrimaryPath) &&
+		nullableInt64Value(left.PrimaryStartLine) == nullableInt64Value(right.PrimaryStartLine) &&
+		nullableInt64Value(left.PrimaryEndLine) == nullableInt64Value(right.PrimaryEndLine)
 }
 
 func previewDiffFiles(ctx context.Context, services routerServices, snapshot dbgen.PullRequestSnapshot) ([]diffparse.File, []githubpr.AnchorWarning) {

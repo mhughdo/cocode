@@ -1897,6 +1897,8 @@ The GitHub publish client submits review bodies and anchored comment drafts to `
 
 Successful publication records create a `github_publications` row with the GitHub review/comment IDs, then mark each finding referenced by the publish draft comments as `published` with a `published` human decision. Failed publication records keep finding decisions unchanged and persist the error state for recovery.
 
+GitHub preview creation rejects findings that are already `published`, and also rejects selected findings that share a fingerprint or primary file/line range with another published finding in the same review session. This prevents duplicate inline comments on reruns before a publish request is built.
+
 If mapping fails:
 
 1. Mark comment as unanchored.

@@ -1834,6 +1834,27 @@ func TestGitHubPreviewEndpointCreatesDraftWithWarnings(t *testing.T) {
 	}
 }
 
+func TestGitHubPreviewEndpointRejectsAlreadyPublishedFinding(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+	if _, err := queries.UpdateFindingDecisionStatus(context.Background(), dbgen.UpdateFindingDecisionStatusParams{
+		ID:             "finding_auth",
+		DecisionStatus: "published",
+		UpdatedAt:      "2026-05-03T00:20:00Z",
+	}); err != nil {
+		t.Fatalf("UpdateFindingDecisionStatus() error = %v", err)
+	}
+
+	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/review-sessions/review_session_findings/github/preview", map[string]any{
+		"finding_ids": []string{"finding_auth"},
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("github preview status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
 func TestFindingDraftCommentEndpointPersistsEdit(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
 	createHTTPAPIFindingFixture(t, queries)

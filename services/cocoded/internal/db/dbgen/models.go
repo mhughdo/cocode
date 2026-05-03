@@ -8,6 +8,53 @@ import (
 	"database/sql"
 )
 
+type ChangedFile struct {
+	ID              string         `json:"id"`
+	SnapshotID      string         `json:"snapshot_id"`
+	Path            string         `json:"path"`
+	OldPath         sql.NullString `json:"old_path"`
+	Status          string         `json:"status"`
+	Additions       int64          `json:"additions"`
+	Deletions       int64          `json:"deletions"`
+	IsBinary        int64          `json:"is_binary"`
+	IsGenerated     int64          `json:"is_generated"`
+	IsExcluded      int64          `json:"is_excluded"`
+	LineRangesJson  string         `json:"line_ranges_json"`
+	PatchArtifactID sql.NullString `json:"patch_artifact_id"`
+	CreatedAt       string         `json:"created_at"`
+}
+
+type PullRequestSnapshot struct {
+	ID             string         `json:"id"`
+	RepositoryID   string         `json:"repository_id"`
+	SourceType     string         `json:"source_type"`
+	Provider       sql.NullString `json:"provider"`
+	Owner          sql.NullString `json:"owner"`
+	Repo           sql.NullString `json:"repo"`
+	PrNumber       sql.NullInt64  `json:"pr_number"`
+	PrTitle        sql.NullString `json:"pr_title"`
+	PrUrl          sql.NullString `json:"pr_url"`
+	BaseRef        sql.NullString `json:"base_ref"`
+	HeadRef        sql.NullString `json:"head_ref"`
+	BaseSha        sql.NullString `json:"base_sha"`
+	HeadSha        sql.NullString `json:"head_sha"`
+	DiffArtifactID sql.NullString `json:"diff_artifact_id"`
+	MetadataJson   string         `json:"metadata_json"`
+	CreatedAt      string         `json:"created_at"`
+}
+
+type Repository struct {
+	ID            string         `json:"id"`
+	WorkspaceID   string         `json:"workspace_id"`
+	Name          string         `json:"name"`
+	Owner         sql.NullString `json:"owner"`
+	RemoteUrl     sql.NullString `json:"remote_url"`
+	LocalPath     string         `json:"local_path"`
+	DefaultBranch sql.NullString `json:"default_branch"`
+	CreatedAt     string         `json:"created_at"`
+	UpdatedAt     string         `json:"updated_at"`
+}
+
 type Workspace struct {
 	ID            string         `json:"id"`
 	Name          string         `json:"name"`

@@ -9,11 +9,26 @@ import (
 )
 
 type Querier interface {
+	CreateChangedFile(ctx context.Context, arg CreateChangedFileParams) (ChangedFile, error)
+	CreatePullRequestSnapshot(ctx context.Context, arg CreatePullRequestSnapshotParams) (PullRequestSnapshot, error)
+	CreateRepository(ctx context.Context, arg CreateRepositoryParams) (Repository, error)
 	CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams) (Workspace, error)
+	DeletePullRequestSnapshot(ctx context.Context, id string) error
+	DeleteRepository(ctx context.Context, id string) error
 	DeleteWorkspace(ctx context.Context, id string) error
+	GetChangedFile(ctx context.Context, id string) (ChangedFile, error)
+	GetChangedFileByPath(ctx context.Context, arg GetChangedFileByPathParams) (ChangedFile, error)
+	GetPullRequestSnapshot(ctx context.Context, id string) (PullRequestSnapshot, error)
+	GetRepository(ctx context.Context, id string) (Repository, error)
+	GetRepositoryByLocalPath(ctx context.Context, arg GetRepositoryByLocalPathParams) (Repository, error)
 	GetWorkspace(ctx context.Context, id string) (Workspace, error)
 	GetWorkspaceByRootPath(ctx context.Context, rootPath string) (Workspace, error)
+	ListChangedFilesBySnapshot(ctx context.Context, snapshotID string) ([]ChangedFile, error)
+	ListPullRequestSnapshotsByRepository(ctx context.Context, repositoryID string) ([]PullRequestSnapshot, error)
+	ListRepositoriesByWorkspace(ctx context.Context, workspaceID string) ([]Repository, error)
 	ListWorkspaces(ctx context.Context) ([]Workspace, error)
+	UpdateChangedFileExclusion(ctx context.Context, arg UpdateChangedFileExclusionParams) (ChangedFile, error)
+	UpdateRepository(ctx context.Context, arg UpdateRepositoryParams) (Repository, error)
 	UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams) (Workspace, error)
 }
 

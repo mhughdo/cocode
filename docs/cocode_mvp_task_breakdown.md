@@ -157,7 +157,7 @@ Large parallel workstreams:
 | T052 | Implement schema v1 | Add core tables from TDD: workspaces, snapshots, sessions, agents, findings, evidence, graph, packets, publications. | Done | T051 | T053 | Schema applies cleanly; foreign keys enforced; indexes created. |
 | T053 | Configure sqlc | Add sqlc config and initial query files. | Done | T052 | T054 | Generated Go code compiles; queries are type-safe. |
 | T054 | Implement Workspace queries | CRUD/list workspace queries. | Done | T053 | T070 | Unit tests cover create/get/list/update. |
-| T055 | Implement Snapshot queries | CRUD PR snapshot and changed-file queries. | Not started | T053 | T075 | Tests cover snapshot creation and changed file lookup. |
+| T055 | Implement Snapshot queries | CRUD PR snapshot and changed-file queries. | Done | T053 | T075 | Tests cover snapshot creation and changed file lookup. |
 | T056 | Implement ReviewSession queries | CRUD review sessions and status updates. | Not started | T053 | T140 | Tests cover state transitions. |
 | T057 | Implement Agent queries | CRUD agent configs/session agents/runs. | Not started | T053 | T090 | Tests cover agent config and run lifecycle. |
 | T058 | Implement Finding queries | CRUD candidates/findings/links/decisions. | Not started | T053 | T170 | Tests cover candidate->finding relationships. |

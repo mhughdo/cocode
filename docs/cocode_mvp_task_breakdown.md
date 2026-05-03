@@ -179,8 +179,8 @@ Large parallel workstreams:
 | T072 | Parse GitHub PR URL | Extract owner, repo, and PR number from supported URL shapes. | Done | T044 | T073 | Tests cover valid/invalid GitHub URLs. |
 | T073 | Implement GitHub auth config | Store/retrieve GitHub token reference and validate access. | Done | T037, T044 | T074 | Token is not stored in DB plaintext; missing token error is clear. |
 | T074 | Fetch GitHub PR metadata | Fetch title, author, base/head refs, SHAs, and PR URL. | Done | T072, T073 | T075 | Integration test with fake GitHub server. |
-| T075 | Fetch changed files from GitHub | Fetch changed file list, additions/deletions/status/patches. | Not started | T074, T055 | T076 | Snapshot stores changed files and patches. |
-| T076 | Fetch unified diff | Fetch PR diff artifact for diff mapping and reproducibility. | Not started | T074, T060 | T079 | Diff stored as artifact; SHA metadata attached. |
+| T075 | Fetch changed files from GitHub | Fetch changed file list, additions/deletions/status/patches. | Done | T074, T055 | T076 | Snapshot stores changed files and patches. |
+| T076 | Fetch unified diff | Fetch PR diff artifact for diff mapping and reproducibility. | Done | T074, T060 | T079 | Diff stored as artifact; SHA metadata attached. |
 | T077 | Implement local branch compare | Use git to compute diff between base/head branches. | Not started | T071, T055 | T079 | Snapshot created from branch compare; tests with fixture repo. |
 | T078 | Implement local changes snapshot | Use git diff for working tree/uncommitted changes. | Not started | T071, T055 | T079 | Snapshot created; binary/generated files handled. |
 | T079 | Implement diff parser | Parse unified diff into files, hunks, line mappings, changed line ranges. | Not started | T076 or T077 | T170, T294 | Tests cover add/delete/rename/multiple hunks. |

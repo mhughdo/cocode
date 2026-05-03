@@ -19,6 +19,7 @@ const (
 	DefaultCredentialID              = "github_default"
 	StorageProviderElectronSafeStore = "electron_safe_storage"
 	defaultGitHubAPIBaseURL          = "https://api.github.com"
+	gitHubAPIVersion                 = "2026-03-10"
 )
 
 type Service struct {
@@ -153,7 +154,7 @@ func (v HTTPTokenValidator) Validate(ctx context.Context, token string) (Validat
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	req.Header.Set("X-GitHub-Api-Version", gitHubAPIVersion)
 
 	resp, err := client.Do(req)
 	if err != nil {

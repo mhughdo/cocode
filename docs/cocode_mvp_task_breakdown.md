@@ -91,9 +91,9 @@ Large parallel workstreams:
 | T001 | Update PRD | Produce updated PRD reflecting cocode, CLI-only MVP, Evidence Map, copy packets, and latest mockups. | Done | None | T002, T003 | PRD exists as Markdown; includes user stories, functional requirements, out of scope, testing, and source notes. |
 | T002 | Update TDD | Produce comprehensive TDD with architecture, schemas, APIs, prompts, adapter strategy, Evidence Map, security, and tests. | Done | T001 | T003 | TDD exists as Markdown; includes Go/Gin/Electron structure, SQL schema, prompts, and future adapter plan. |
 | T003 | Create task breakdown | Produce complete task breakdown with dependencies and done criteria. | Done | T001, T002 | None | This document exists as Markdown and every task has status, dependencies, and done criteria. |
-| T004 | Define MVP release checklist | Create a concise release checklist derived from PRD/TDD. | Not started | T001, T002, T003 | T010 | Checklist covers features, tests, security, packaging, and dogfood criteria. |
-| T005 | Define risk register | Track top technical/product/security risks and mitigations. | Not started | T001, T002 | T010 | Risk register includes owner, severity, mitigation, and review cadence. |
-| T006 | Define glossary | Define canonical terms: thread, review session, finding, evidence bundle, Evidence Map, adapter, connection driver, copy packet. | Not started | T001 | T010 | Glossary is linked from docs and used consistently in UI/API names. |
+| T004 | Define MVP release checklist | Create a concise release checklist derived from PRD/TDD. | Done | T001, T002, T003 | T010 | `docs/mvp_release_checklist.md` covers features, tests, security, packaging, and dogfood criteria. |
+| T005 | Define risk register | Track top technical/product/security risks and mitigations. | Done | T001, T002 | T010 | `docs/risk_register.md` includes owner, severity, mitigation, review cadence, and status. |
+| T006 | Define glossary | Define canonical terms: thread, review session, finding, evidence bundle, Evidence Map, adapter, connection driver, copy packet. | Done | T001 | T010 | `docs/glossary.md` defines canonical UI/API terms used by implementation tasks. |
 
 ---
 

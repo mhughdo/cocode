@@ -10,6 +10,7 @@ import (
 
 	"github.com/hughdo/cocode/services/cocoded/internal/db"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
+	"github.com/hughdo/cocode/services/cocoded/internal/testkit/goldenrepo"
 )
 
 func TestVerifySessionCreatesPrimaryAndCounterEvidence(t *testing.T) {
@@ -236,6 +237,182 @@ func TestVerifySessionReplacesPriorLocalVerifierEvidence(t *testing.T) {
 	}
 	if ids["old_local"] || !ids["agent_evidence"] || len(items) != 2 {
 		t.Fatalf("items after rerun = %+v", items)
+	}
+}
+
+func TestGoldenAuthRepoVerifierBuildsEvidenceMap(t *testing.T) {
+	t.Parallel()
+
+	env := setupEvidenceEnv(t)
+	env.Repository.LocalPath = goldenrepo.Path(t, goldenrepo.AuthBug)
+	if _, err := env.Queries.CreateChangedFile(context.Background(), dbgen.CreateChangedFileParams{
+		ID:             "changed_auth_route",
+		SnapshotID:     env.Session.SnapshotID,
+		Path:           "apps/api/src/routes/repositories.ts",
+		Status:         "modified",
+		Additions:      4,
+		Deletions:      1,
+		LineRangesJson: `[[10,18]]`,
+		CreatedAt:      "2026-05-03T00:03:10Z",
+	}); err != nil {
+		t.Fatalf("CreateChangedFile(auth route) error = %v", err)
+	}
+	env.Searcher.matches = map[string][]SearchMatch{
+		"RequireAdmin": {
+			{Path: "apps/api/src/middleware/auth.ts", Line: 8, Text: "export function requireWorkspaceAdmin(request, response, next) {"},
+		},
+	}
+	finding := createEvidenceFinding(t, env.Queries, dbgen.CreateFindingParams{
+		ID:                 "finding_golden_auth",
+		ReviewSessionID:    env.Session.ID,
+		CanonicalClaim:     "Repository settings update route lacks workspace admin guard",
+		Category:           "security",
+		Severity:           "high",
+		Confidence:         0.92,
+		VerificationStatus: StatusUnverified,
+		DecisionStatus:     "undecided",
+		PrimaryPath:        nullableTestString("apps/api/src/routes/repositories.ts"),
+		PrimaryStartLine:   nullableTestInt64(10),
+		PrimaryEndLine:     nullableTestInt64(18),
+		Fingerprint:        "fp_golden_auth",
+		MergedFromCount:    1,
+		FirstSeenAt:        "2026-05-03T00:04:00Z",
+		UpdatedAt:          "2026-05-03T00:04:00Z",
+	})
+
+	summary, err := env.Service.VerifySession(context.Background(), env.Session, env.Repository)
+	if err != nil {
+		t.Fatalf("VerifySession() error = %v", err)
+	}
+	if summary.SupportingEvidence != 1 || summary.CounterEvidence != 1 || summary.ByVerificationStatus[StatusPlausible] != 1 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	updated, err := env.Queries.GetFinding(context.Background(), finding.ID)
+	if err != nil {
+		t.Fatalf("GetFinding() error = %v", err)
+	}
+	view, err := env.Service.RebuildEvidenceMap(context.Background(), updated)
+	if err != nil {
+		t.Fatalf("RebuildEvidenceMap() error = %v", err)
+	}
+	if view.Graph.Status != GraphStatusReady ||
+		!hasMapNode(view.Nodes, NodeChangedCode, "apps/api/src/routes/repositories.ts") ||
+		!hasMapNode(view.Nodes, NodeCounterEvidence, "apps/api/src/middleware/auth.ts") ||
+		!hasMapEdge(view.Edges, EdgeMissingGuard, EdgeStatusMissing) {
+		t.Fatalf("view = %+v", view)
+	}
+}
+
+func TestGoldenWebhookRepoVerifierDetectsMissingValidation(t *testing.T) {
+	t.Parallel()
+
+	env := setupEvidenceEnv(t)
+	env.Repository.LocalPath = goldenrepo.Path(t, goldenrepo.WebhookValidation)
+	if _, err := env.Queries.CreateChangedFile(context.Background(), dbgen.CreateChangedFileParams{
+		ID:             "changed_webhook",
+		SnapshotID:     env.Session.SnapshotID,
+		Path:           "apps/api/src/webhooks/stripe.ts",
+		Status:         "modified",
+		Additions:      8,
+		LineRangesJson: `[[3,11]]`,
+		CreatedAt:      "2026-05-03T00:03:20Z",
+	}); err != nil {
+		t.Fatalf("CreateChangedFile(webhook) error = %v", err)
+	}
+	createEvidenceFinding(t, env.Queries, dbgen.CreateFindingParams{
+		ID:                 "finding_golden_webhook",
+		ReviewSessionID:    env.Session.ID,
+		CanonicalClaim:     "Webhook handler accepts payload without signature verification",
+		Category:           "security",
+		Severity:           "high",
+		Confidence:         0.9,
+		VerificationStatus: StatusUnverified,
+		DecisionStatus:     "undecided",
+		PrimaryPath:        nullableTestString("apps/api/src/webhooks/stripe.ts"),
+		PrimaryStartLine:   nullableTestInt64(3),
+		PrimaryEndLine:     nullableTestInt64(11),
+		Fingerprint:        "fp_golden_webhook",
+		MergedFromCount:    1,
+		FirstSeenAt:        "2026-05-03T00:04:00Z",
+		UpdatedAt:          "2026-05-03T00:04:00Z",
+	})
+
+	summary, err := env.Service.VerifySession(context.Background(), env.Session, env.Repository)
+	if err != nil {
+		t.Fatalf("VerifySession() error = %v", err)
+	}
+	if summary.SupportingEvidence != 1 || summary.CounterEvidence != 0 || summary.ByVerificationStatus[StatusVerified] != 1 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	items, err := env.Queries.ListEvidenceItemsByFinding(context.Background(), "finding_golden_webhook")
+	if err != nil {
+		t.Fatalf("ListEvidenceItemsByFinding() error = %v", err)
+	}
+	supporting := evidenceItemByKind(t, items, KindSupporting)
+	if !strings.Contains(supporting.MetadataJson, "JSON.parse") {
+		t.Fatalf("supporting evidence metadata = %s", supporting.MetadataJson)
+	}
+}
+
+func TestAssignVerificationStatusRules(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		finding    dbgen.Finding
+		supporting int
+		counter    int
+		missing    int
+		want       string
+	}{
+		{
+			name:       "supporting only is verified",
+			supporting: 1,
+			want:       StatusVerified,
+		},
+		{
+			name:       "supporting and counter evidence remains plausible",
+			supporting: 1,
+			counter:    1,
+			want:       StatusPlausible,
+		},
+		{
+			name:    "counter evidence only is likely false positive",
+			counter: 1,
+			want:    StatusLikelyFalsePositive,
+		},
+		{
+			name: "weak missing evidence without fix is not actionable",
+			finding: dbgen.Finding{
+				Confidence: 0.3,
+			},
+			missing: 1,
+			want:    StatusNotActionable,
+		},
+		{
+			name: "missing evidence otherwise needs human",
+			finding: dbgen.Finding{
+				Confidence:   0.3,
+				SuggestedFix: nullableTestString("add a guard"),
+			},
+			missing: 1,
+			want:    StatusNeedsHuman,
+		},
+		{
+			name: "empty evidence needs human",
+			want: StatusNeedsHuman,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := assignVerificationStatus(tt.finding, tt.supporting, tt.counter, tt.missing)
+			if got != tt.want {
+				t.Fatalf("assignVerificationStatus() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

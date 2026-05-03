@@ -1,7 +1,9 @@
 package diffparse
 
 import (
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -194,5 +196,46 @@ index 7777777..8888888 100644
 	}
 	if !file.Hunks[0].Lines[0].NoNewlineAtEOF || !file.Hunks[0].Lines[1].NoNewlineAtEOF {
 		t.Fatalf("NoNewlineAtEOF flags = %+v", file.Hunks[0].Lines)
+	}
+}
+
+func TestParseLargeDiffPreservesPerFileRanges(t *testing.T) {
+	t.Parallel()
+
+	const fileCount = 160
+	var diff strings.Builder
+	for i := 0; i < fileCount; i++ {
+		fmt.Fprintf(&diff, "diff --git a/pkg/file_%03d.go b/pkg/file_%03d.go\n", i, i)
+		fmt.Fprintf(&diff, "--- a/pkg/file_%03d.go\n", i)
+		fmt.Fprintf(&diff, "+++ b/pkg/file_%03d.go\n", i)
+		diff.WriteString("@@ -10,4 +10,6 @@ func handler()\n")
+		diff.WriteString(" keepA()\n")
+		diff.WriteString("+addedOne()\n")
+		diff.WriteString("+addedTwo()\n")
+		diff.WriteString(" keepB()\n")
+		diff.WriteString("-oldCheck()\n")
+		diff.WriteString("+newCheck()\n")
+		diff.WriteString(" keepC()\n")
+	}
+
+	files, err := Parse(diff.String())
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(files) != fileCount {
+		t.Fatalf("Parse() len = %d, want %d", len(files), fileCount)
+	}
+	for i, file := range files {
+		wantPath := fmt.Sprintf("pkg/file_%03d.go", i)
+		if file.Path != wantPath ||
+			file.Status != StatusModified ||
+			file.Additions != 3 ||
+			file.Deletions != 1 ||
+			len(file.Hunks) != 1 {
+			t.Fatalf("file[%d] = %+v", i, file)
+		}
+		if !reflect.DeepEqual(file.LineRanges, []LineRange{{Start: 11, End: 12}, {Start: 14, End: 14}}) {
+			t.Fatalf("file[%d] LineRanges = %+v", i, file.LineRanges)
+		}
 	}
 }

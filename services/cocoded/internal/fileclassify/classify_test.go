@@ -1,8 +1,12 @@
 package fileclassify
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/hughdo/cocode/services/cocoded/internal/testkit/goldenrepo"
 )
 
 func TestClassifyPathRules(t *testing.T) {
@@ -117,6 +121,53 @@ func TestClassifyPathRules(t *testing.T) {
 			got := Classify(tt.in)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("Classify() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGoldenGeneratedFilesNoiseFixtureClassifiesGeneratedAndSourceFiles(t *testing.T) {
+	t.Parallel()
+
+	root := goldenrepo.Path(t, goldenrepo.GeneratedFilesNoise)
+	tests := []struct {
+		path          string
+		wantGenerated bool
+		wantLockfile  bool
+		wantExcluded  bool
+	}{
+		{
+			path:          "services/api/internal/db/dbgen/snapshots.sql.go",
+			wantGenerated: true,
+			wantExcluded:  true,
+		},
+		{
+			path:          "web/src/generated/client.generated.ts",
+			wantGenerated: true,
+			wantExcluded:  true,
+		},
+		{
+			path:         "pnpm-lock.yaml",
+			wantLockfile: true,
+			wantExcluded: true,
+		},
+		{
+			path: "services/api/src/handler.go",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			t.Parallel()
+
+			content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(tt.path)))
+			if err != nil {
+				t.Fatalf("ReadFile() error = %v", err)
+			}
+			classification := Classify(Input{Path: tt.path, ContentPrefix: content})
+			if classification.Generated != tt.wantGenerated ||
+				classification.Lockfile != tt.wantLockfile ||
+				classification.ExcludedCandidate != tt.wantExcluded {
+				t.Fatalf("classification = %+v", classification)
 			}
 		})
 	}

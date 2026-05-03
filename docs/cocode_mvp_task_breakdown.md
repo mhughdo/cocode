@@ -405,12 +405,12 @@ Large parallel workstreams:
 
 | ID | Task | Description | Status | Dependencies | Parallelization | Done criteria |
 |---|---|---|---|---|---|---|
-| T360 | Create backend unit test suite | Unit tests for parsers, diff mapping, redaction, packet rendering, verification rules. | Not started | Feature packages | T361 | `go test ./...` covers core pure logic. |
-| T361 | Create backend integration test harness | Temp SQLite DB + fake repo + fake CLI agents. | Not started | T050, T060, T093 | T362 | Integration tests run locally/CI without real providers. |
-| T362 | Create fake GitHub server | Simulate PR metadata/files/reviews endpoints. | Not started | T073, T297 | T363 | GitHub ingestion and publish tests do not hit real GitHub. |
-| T363 | Create golden repo: auth bug | Fixture repo matching Evidence Map auth/middleware example. | Not started | T010 | T219 | Review/verification/evidence map tests use it. |
-| T364 | Create golden repo: webhook validation | Fixture for missing webhook signature validation. | Not started | T010 | T205 | Verifier detects expected finding. |
-| T365 | Create golden repo: generated-file noise | Fixture for file exclusion and context budget behavior. | Not started | T010 | T080, T129 | Generated files excluded by default. |
+| T360 | Create backend unit test suite | Unit tests for parsers, diff mapping, redaction, packet rendering, verification rules. | Done | Feature packages | T361 | `go test ./...` covers core pure logic, including diff parsing, diff anchor mapping, context redaction, copy packet rendering, finding normalization/dedupe, and verification evidence rules; large diff parsing has regression coverage. |
+| T361 | Create backend integration test harness | Temp SQLite DB + fake repo + fake CLI agents. | Done | T050, T060, T093 | T362 | `internal/testkit` provides reusable temp SQLite migrations, HTTP router setup, fake CLI agent fixtures, and temp git repository helpers so integration tests run locally/CI without real providers. |
+| T362 | Create fake GitHub server | Simulate PR metadata/files/reviews endpoints. | Done | T073, T297 | T363 | `internal/testkit/githubfake` serves token validation, PR metadata, paginated files, diff, issue/review comments, submitted-review history, and review write endpoints; client tests cover ingestion and publish-style calls without real GitHub. |
+| T363 | Create golden repo: auth bug | Fixture repo matching Evidence Map auth/middleware example. | Done | T010 | T219 | `testdata/repos/go-api-auth-bug` is used by verifier/Evidence Map tests to exercise the missing admin-guard scenario with supporting and counter-evidence nodes. |
+| T364 | Create golden repo: webhook validation | Fixture for missing webhook signature validation. | Done | T010 | T205 | `testdata/repos/webhook-validation-bug` is used by verifier tests and produces the expected verified missing-signature finding. |
+| T365 | Create golden repo: generated-file noise | Fixture for file exclusion and context budget behavior. | Done | T010 | T080, T129 | `testdata/repos/generated-files-noise` is used by file-classification tests to prove generated files and lockfiles are excluded while handwritten source remains reviewable. |
 | T366 | Create frontend component tests | Tests for finding card, evidence card, graph node, copy buttons. | Not started | T242, T257, T261 | T367 | Component tests cover loading/error/action states. |
 | T367 | Create E2E test harness | Launch Electron with fake backend or seeded DB. | Not started | T014, T040 | T368 | E2E can navigate major screens. |
 | T368 | E2E: New thread to configure | Test PR URL/local branch flow to Configure Review. | Not started | T245, T246, T367 | T369 | Test passes with seeded/fake data. |

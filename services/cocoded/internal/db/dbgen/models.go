@@ -106,6 +106,18 @@ type ContextBundle struct {
 	CreatedAt       string         `json:"created_at"`
 }
 
+type Event struct {
+	ID              string         `json:"id"`
+	ReviewSessionID sql.NullString `json:"review_session_id"`
+	AgentRunID      sql.NullString `json:"agent_run_id"`
+	Type            string         `json:"type"`
+	Level           string         `json:"level"`
+	Sequence        int64          `json:"sequence"`
+	PayloadJson     string         `json:"payload_json"`
+	ArtifactID      sql.NullString `json:"artifact_id"`
+	CreatedAt       string         `json:"created_at"`
+}
+
 type EvidenceEdge struct {
 	ID              string         `json:"id"`
 	EvidenceGraphID string         `json:"evidence_graph_id"`

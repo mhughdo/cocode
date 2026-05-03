@@ -119,6 +119,19 @@ CREATE TABLE artifacts (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE events (
+  id TEXT PRIMARY KEY,
+  review_session_id TEXT REFERENCES review_sessions(id) ON DELETE CASCADE,
+  agent_run_id TEXT,
+  type TEXT NOT NULL,
+  level TEXT NOT NULL DEFAULT 'info',
+  sequence INTEGER NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(review_session_id, sequence)
+);
+
 CREATE TABLE context_bundles (
   id TEXT PRIMARY KEY,
   review_session_id TEXT NOT NULL REFERENCES review_sessions(id) ON DELETE CASCADE,
@@ -152,6 +165,7 @@ CREATE TABLE agent_runs (
 
 CREATE INDEX idx_review_sessions_workspace ON review_sessions(workspace_id, created_at DESC);
 CREATE INDEX idx_agent_runs_session ON agent_runs(review_session_id, status);
+CREATE INDEX idx_events_session_sequence ON events(review_session_id, sequence);
 
 CREATE TABLE finding_candidates (
   id TEXT PRIMARY KEY,

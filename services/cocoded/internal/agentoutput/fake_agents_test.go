@@ -61,6 +61,21 @@ func TestFakeJSONAgentEmitsValidFindingJSON(t *testing.T) {
 	}
 }
 
+func TestFakeMalformedAgentEmitsInvalidStructuredOutput(t *testing.T) {
+	t.Parallel()
+
+	output := runFakeAgent(t, "malformed-agent.sh", "review this fixture")
+	parsed := ParseAuto(output)
+	if parsed.Structured {
+		t.Fatalf("parsed = %+v, want text fallback", parsed)
+	}
+	if !strings.Contains(parsed.Text, "intentionally malformed") ||
+		len(parsed.Diagnostics) == 0 ||
+		parsed.Diagnostics[0].Code != "invalid_json" {
+		t.Fatalf("parsed = %+v", parsed)
+	}
+}
+
 func runFakeAgent(t *testing.T, name string, stdin string) []byte {
 	t.Helper()
 

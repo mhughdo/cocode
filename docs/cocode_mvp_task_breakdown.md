@@ -366,7 +366,7 @@ Large parallel workstreams:
 | T291 | Implement copy packet API | Generate packet, store artifact, return content/token estimate. | Done | T290, T060 | T292 | API works for single/selected/accepted findings. |
 | T292 | Implement clipboard UI action | Use Electron bridge to copy packet/comment. | Not started | T034, T291 | T266 | Copy action works and shows success/failure toast. |
 | T293 | Mark findings copied | Record copied decisions and packet metadata. | Done | T291, T185 | T266 | Copied state appears on findings/publish screen. |
-| T294 | Implement GitHub diff mapper | Map finding file/line to GitHub diff position/line/side. | Not started | T079, T076 | T295 | Tests cover add/remove/context/multi-hunk cases. |
+| T294 | Implement GitHub diff mapper | Map finding file/line to GitHub diff position/line/side. | Done | T079, T076 | T295 | Tests cover add/remove/context/multi-hunk cases. |
 | T295 | Implement GitHub review preview service | Build review body and comments JSON from selected findings. | Not started | T187, T294 | T296 | Preview returns comment list and anchor warnings. |
 | T296 | Implement GitHub preview API | Endpoint returns publish preview artifact and checklist status. | Not started | T295 | T266 | Publish screen loads preview with seeded findings. |
 | T297 | Implement GitHub publish service | Submit COMMENT or REQUEST_CHANGES review/comments. | Not started | T073, T296 | T298 | Fake GitHub server test validates payload. |

@@ -103,6 +103,36 @@ func TestServiceAppendMessageValidatesInput(t *testing.T) {
 	}
 }
 
+func TestServiceFollowupAgentConfigRejectsWriteCapability(t *testing.T) {
+	t.Parallel()
+
+	queries := setupFollowupDB(t)
+	service := testFollowupService(queries)
+	if _, err := queries.CreateAgentConfig(context.Background(), dbgen.CreateAgentConfigParams{
+		ID:               "agent_config_writer",
+		Name:             "Write-capable follow-up agent",
+		Role:             "verifier",
+		AdapterKind:      "cli_noninteractive",
+		Command:          sql.NullString{String: "codex", Valid: true},
+		ArgsJson:         "[]",
+		CwdMode:          "repo_root",
+		EnvAllowlistJson: "[]",
+		OutputMode:       "json",
+		CapabilitiesJson: `{"supports_json":true,"can_read":true,"can_write":true,"output_modes":["json"]}`,
+		SettingsJson:     "{}",
+		Enabled:          1,
+		CreatedAt:        "2026-05-03T00:07:00Z",
+		UpdatedAt:        "2026-05-03T00:07:00Z",
+	}); err != nil {
+		t.Fatalf("CreateAgentConfig(writer) error = %v", err)
+	}
+
+	_, err := service.followupAgentConfig(context.Background(), "agent_config_writer")
+	if !errors.Is(err, ErrInvalidAgentConfig) {
+		t.Fatalf("followupAgentConfig() error = %v, want ErrInvalidAgentConfig", err)
+	}
+}
+
 func setupFollowupDB(t *testing.T) *dbgen.Queries {
 	t.Helper()
 

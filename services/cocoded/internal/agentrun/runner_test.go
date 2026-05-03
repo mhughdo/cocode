@@ -217,6 +217,50 @@ func TestRunnerMarksExpiredReviewLimitWithoutLaunchingCommand(t *testing.T) {
 	assertRunTimeoutMetadata(t, result.Run.MetadataJson, "review_deadline")
 }
 
+func TestRunnerDeniesReviewModeWriteCapability(t *testing.T) {
+	t.Parallel()
+
+	env := setupOutputRecorder(t)
+	task := runnerTask(env, "agent_run_permission_denied")
+	driver := &scriptedDriver{
+		events: []agents.AgentEvent{{
+			Type:  agents.EventCompleted,
+			RunID: task.RunID,
+		}},
+	}
+	runner := runnerWithClock(env)
+	runner.Driver = driver
+
+	result, err := runner.Execute(context.Background(), RunParams{
+		WorkspaceID: env.WorkspaceID,
+		Config:      runnerConfig("fake-agent"),
+		Capabilities: agents.AgentCapabilities{
+			CanRead:  true,
+			CanWrite: true,
+		},
+		Permissions: agents.ReviewModePermissionPolicy(),
+		Task:        task,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if driver.opened {
+		t.Fatal("driver opened despite denied write permission")
+	}
+	if result.Run.Status != RunStatusFailed ||
+		result.Run.ErrorCode.String != "permission_denied" ||
+		!strings.Contains(result.Run.ErrorMessage.String, "write action") {
+		t.Fatalf("run = %+v", result.Run)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(result.Run.MetadataJson), &metadata); err != nil {
+		t.Fatalf("Unmarshal(metadata) error = %v", err)
+	}
+	if metadata["permission_policy"] == nil {
+		t.Fatalf("permission policy metadata missing: %+v", metadata)
+	}
+}
+
 func TestTimeoutPolicyRejectsNegativeLimits(t *testing.T) {
 	t.Parallel()
 
@@ -337,9 +381,11 @@ func assertRunTimeoutMetadata(t *testing.T, raw string, source string) {
 type scriptedDriver struct {
 	task   agents.AgentTask
 	events []agents.AgentEvent
+	opened bool
 }
 
 func (d *scriptedDriver) Open(context.Context, agents.ConnectionConfig) (agents.Connection, error) {
+	d.opened = true
 	return scriptedConnection{driver: d}, nil
 }
 

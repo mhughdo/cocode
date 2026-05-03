@@ -1071,6 +1071,24 @@ func TestReviewSessionCreateRejectsInvalidInputs(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
 	createHTTPAPISnapshot(t, queries)
 	createHTTPAPIAgentConfig(t, queries, "agent_config_disabled", "reviewer", 0)
+	if _, err := queries.CreateAgentConfig(context.Background(), dbgen.CreateAgentConfigParams{
+		ID:               "agent_config_writer",
+		Name:             "Write-capable reviewer",
+		Role:             "reviewer",
+		AdapterKind:      "cli_noninteractive",
+		Command:          nullableString("codex"),
+		ArgsJson:         "[]",
+		CwdMode:          "repo_root",
+		EnvAllowlistJson: "[]",
+		OutputMode:       "json",
+		CapabilitiesJson: `{"supports_json":true,"can_read":true,"can_write":true,"output_modes":["json"]}`,
+		SettingsJson:     "{}",
+		Enabled:          1,
+		CreatedAt:        "2026-05-03T00:06:00Z",
+		UpdatedAt:        "2026-05-03T00:06:00Z",
+	}); err != nil {
+		t.Fatalf("CreateAgentConfig(writer) error = %v", err)
+	}
 
 	tests := []struct {
 		name string
@@ -1089,6 +1107,14 @@ func TestReviewSessionCreateRejectsInvalidInputs(t *testing.T) {
 			body: map[string]any{
 				"snapshot_id":      "snapshot_1",
 				"agent_config_ids": []string{"agent_config_disabled"},
+			},
+			code: http.StatusBadRequest,
+		},
+		{
+			name: "write capable agent",
+			body: map[string]any{
+				"snapshot_id":      "snapshot_1",
+				"agent_config_ids": []string{"agent_config_writer"},
 			},
 			code: http.StatusBadRequest,
 		},

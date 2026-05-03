@@ -37,6 +37,8 @@ type Runner struct {
 type RunParams struct {
 	WorkspaceID   string
 	Config        agents.ConnectionConfig
+	Capabilities  agents.AgentCapabilities
+	Permissions   agents.PermissionPolicy
 	Task          agents.AgentTask
 	TimeoutPolicy TimeoutPolicy
 	Metadata      map[string]any
@@ -90,7 +92,11 @@ func (r Runner) Execute(ctx context.Context, params RunParams) (RunResult, error
 	if err != nil {
 		return RunResult{}, err
 	}
-	metadataJSON, err := runMetadataJSON(mergeRunMetadata(params.Metadata, map[string]any{"timeout_policy": timeoutMetadata}), task)
+	permissions := params.Permissions.Evaluate(agents.RequiredPermissionsForRun(config, params.Capabilities))
+	metadataJSON, err := runMetadataJSON(mergeRunMetadata(params.Metadata, map[string]any{
+		"timeout_policy":    timeoutMetadata,
+		"permission_policy": permissions.Metadata(),
+	}), task)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -132,6 +138,9 @@ func (r Runner) Execute(ctx context.Context, params RunParams) (RunResult, error
 		finished, err := r.finishRun(persistCtx, run, startedAt, completedAt, *preflightOutcome)
 		result.Run = finished
 		return result, err
+	}
+	if denied, ok := permissions.FirstDenied(); ok {
+		return r.finishWithError(persistCtx, result, run, startedAt, "permission_denied", permissionDeniedError(denied))
 	}
 
 	connection, err := r.driver().Open(ctx, config)
@@ -336,6 +345,13 @@ func runMetadataJSON(metadata map[string]any, task agents.AgentTask) (string, er
 		return "", fmt.Errorf("encode agent run metadata: %w", err)
 	}
 	return string(data), nil
+}
+
+func permissionDeniedError(result agents.PermissionResult) error {
+	if result.Reason != "" {
+		return fmt.Errorf("permission denied for %s action (%s risk): %s", result.Action, result.Risk, result.Reason)
+	}
+	return fmt.Errorf("permission denied for %s action (%s risk)", result.Action, result.Risk)
 }
 
 func mergeRunMetadata(base map[string]any, extra map[string]any) map[string]any {

@@ -383,8 +383,8 @@ Large parallel workstreams:
 |---|---|---|---|---|---|---|
 | T320 | Implement path sandbox | Ensure all file reads/artifacts stay inside workspace/app dirs. | Done | T060, T071 | T321 | Shared sandbox helpers guard artifact and repo read/write choke points; traversal and symlink escape tests fail safely. |
 | T321 | Implement command safety policy | Block shell execution by default and restrict dangerous commands. | Done | T093 | T322 | CLI commands stay arg-array based; inline shell syntax and risky command names are blocked unless config explicitly opts into `allow_risky_command`. |
-| T322 | Implement permission model | Define read/search/test/shell/write/publish risk levels. | Not started | T321 | T323 | Permission policy can approve/deny actions consistently. |
-| T323 | Add review-mode write denial | Ensure review agents cannot modify files through cocode-managed tools. | Not started | T322 | T090 | Review mode does not grant file write permissions. |
+| T322 | Implement permission model | Define read/search/test/shell/write/publish risk levels. | Done | T321 | T323 | Permission actions map to risk levels and runner metadata records approved/denied decisions consistently. |
+| T323 | Add review-mode write denial | Ensure review agents cannot modify files through cocode-managed tools. | Done | T322 | T090 | Review-mode sessions, follow-up agents, and runtime runs reject write-capable configs before launching. |
 | T324 | Implement env allowlist | Only pass explicitly allowed env vars to CLI agents. | Done | T093 | T330 | Shared env-name validation and allowlist resolution are enforced for review, follow-up, and command health checks. |
 | T325 | Implement local-only file enforcement | Exclude local-only files from external/cloud-backed CLI context. | Not started | T130, T247 | T326 | Context bundles omit local-only content and record omission. |
 | T326 | Implement provider visibility metadata | Track which files/context items were sent to which agent. | Not started | T131, T325 | T252 | UI/provenance shows context visibility. |

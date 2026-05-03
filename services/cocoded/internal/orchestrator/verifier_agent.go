@@ -286,6 +286,10 @@ func (s *Service) runVerifierAgent(ctx context.Context, session dbgen.ReviewSess
 	if err != nil {
 		return agentrun.RunResult{}, err
 	}
+	capabilities, err := agentCapabilities(config)
+	if err != nil {
+		return agentrun.RunResult{}, err
+	}
 	task := agents.AgentTask{
 		ID:               s.newID("agent_task_"),
 		RunID:            s.newID("agent_run_"),
@@ -311,9 +315,11 @@ func (s *Service) runVerifierAgent(ctx context.Context, session dbgen.ReviewSess
 		}
 	}
 	result, err := s.AgentManager.Execute(ctx, agentrun.RunParams{
-		WorkspaceID: workspace.ID,
-		Config:      connectionConfig,
-		Task:        task,
+		WorkspaceID:  workspace.ID,
+		Config:       connectionConfig,
+		Capabilities: capabilities,
+		Permissions:  agents.ReviewModePermissionPolicy(),
+		Task:         task,
 		TimeoutPolicy: agentrun.TimeoutPolicy{
 			AgentTimeoutSeconds:  limits.TimeoutSeconds,
 			ReviewDeadline:       reviewDeadline,

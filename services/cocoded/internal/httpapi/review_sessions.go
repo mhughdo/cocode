@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/hughdo/cocode/services/cocoded/internal/agents"
 	"github.com/hughdo/cocode/services/cocoded/internal/apperror"
 	"github.com/hughdo/cocode/services/cocoded/internal/contextbundle"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
@@ -362,7 +363,7 @@ func selectedAgentConfigs(ctx context.Context, queries *dbgen.Queries, ids []str
 		return nil, apperror.InvalidRequest("at least one agent_config_id is required")
 	}
 	seen := map[string]struct{}{}
-	agents := make([]dbgen.AgentConfig, 0, len(ids))
+	configs := make([]dbgen.AgentConfig, 0, len(ids))
 	for _, id := range ids {
 		id = strings.TrimSpace(id)
 		if id == "" {
@@ -382,9 +383,16 @@ func selectedAgentConfigs(ctx context.Context, queries *dbgen.Queries, ids []str
 		if agent.Enabled == 0 {
 			return nil, apperror.InvalidRequest(fmt.Sprintf("agent config %s is disabled", id))
 		}
-		agents = append(agents, agent)
+		capabilities, err := agents.DecodeCapabilitiesJSON(agent.CapabilitiesJson, agents.AdapterKind(agent.AdapterKind))
+		if err != nil {
+			return nil, apperror.Internal("stored agent capabilities are invalid")
+		}
+		if err := agents.ValidateReviewModePermissions(agents.ConnectionConfig{Kind: agents.AdapterKind(agent.AdapterKind)}, capabilities); err != nil {
+			return nil, apperror.InvalidRequest(fmt.Sprintf("agent config %s cannot be used for review mode: %v", id, err))
+		}
+		configs = append(configs, agent)
 	}
-	return agents, nil
+	return configs, nil
 }
 
 func defaultReviewSessionTitle(snapshot dbgen.PullRequestSnapshot) string {

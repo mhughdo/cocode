@@ -784,6 +784,10 @@ func (s *Service) runAgent(ctx context.Context, item runContext) (agentrun.RunRe
 	if err != nil {
 		return agentrun.RunResult{}, err
 	}
+	capabilities, err := agentCapabilities(item.AgentConfig)
+	if err != nil {
+		return agentrun.RunResult{}, err
+	}
 	prompt := s.reviewPrompt(item)
 	task := agents.AgentTask{
 		ID:               s.newID("agent_task_"),
@@ -809,9 +813,11 @@ func (s *Service) runAgent(ctx context.Context, item runContext) (agentrun.RunRe
 		}
 	}
 	result, err := s.AgentManager.Execute(ctx, agentrun.RunParams{
-		WorkspaceID: item.Workspace.ID,
-		Config:      config,
-		Task:        task,
+		WorkspaceID:  item.Workspace.ID,
+		Config:       config,
+		Capabilities: capabilities,
+		Permissions:  agents.ReviewModePermissionPolicy(),
+		Task:         task,
 		TimeoutPolicy: agentrun.TimeoutPolicy{
 			AgentTimeoutSeconds:  limits.TimeoutSeconds,
 			ReviewDeadline:       reviewDeadline,
@@ -1256,11 +1262,22 @@ func (s *Service) connectionConfig(item runContext) (agents.ConnectionConfig, ag
 		}, nil
 }
 
+func agentCapabilities(config dbgen.AgentConfig) (agents.AgentCapabilities, error) {
+	capabilities, err := agents.DecodeCapabilitiesJSON(config.CapabilitiesJson, agents.AdapterKind(config.AdapterKind))
+	if err != nil {
+		return agents.AgentCapabilities{}, fmt.Errorf("%w: agent capabilities are invalid", ErrInvalidAgentConfiguration)
+	}
+	return capabilities, nil
+}
+
 func (s *Service) reviewPrompt(item runContext) string {
 	var builder strings.Builder
 	builder.WriteString(strings.TrimSpace(s.promptTemplate()))
 	builder.WriteString("\n\n# Output Contract\n\n")
 	builder.WriteString("Return a JSON object with a `findings` array. Use an empty array when there are no concrete defects.\n\n")
+	builder.WriteString("# Rules\n\n")
+	builder.WriteString("- Review mode is read-only: do not edit, create, delete, move, or publish files.\n")
+	builder.WriteString("- Report suggested fixes in the JSON output instead of applying them.\n\n")
 	builder.WriteString("# Session\n\n")
 	builder.WriteString("Review session ID: ")
 	builder.WriteString(item.Session.ID)

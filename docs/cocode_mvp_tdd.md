@@ -2036,6 +2036,8 @@ Path sandboxing is centralized in the backend security package and used at file/
 
 CLI command safety is enforced before save, health checks, and runtime driver open. Command strings must be a single executable name/path with flags kept in `args`; shell syntax and risky command names such as shell interpreters or destructive file commands are blocked by default. A custom CLI can opt in with `settings.allow_risky_command=true`, which keeps the risk explicit in the agent config. Environment exposure remains deny-by-default: env allowlists use backend validation, duplicate normalization, and one resolver shared by review runs, follow-up runs, and health smoke/version checks.
 
+Permission policy now distinguishes read, search, test, shell, write, and publish actions with low through critical risk levels. Review mode approves read/search/test/shell, denies write/publish, records the evaluated decision in agent-run metadata, and rejects write-capable agent configs during review-session creation, finding/evidence-map follow-up selection, and final runtime preflight before an agent process is launched.
+
 ---
 
 ## 20. Error Handling

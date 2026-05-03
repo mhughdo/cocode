@@ -137,6 +137,10 @@ func (s Service) answerWithCLI(ctx context.Context, view ThreadView, userMessage
 	if err != nil {
 		return AskQuestionResult{}, err
 	}
+	capabilities, err := agentCapabilities(config)
+	if err != nil {
+		return AskQuestionResult{}, err
+	}
 	taskRole := "follow_up"
 	if scope == contextbundle.ScopeEvidenceMap {
 		taskRole = "verifier"
@@ -168,9 +172,11 @@ func (s Service) answerWithCLI(ctx context.Context, view ThreadView, userMessage
 		}
 	}
 	result, err := s.AgentManager.Execute(ctx, agentrun.RunParams{
-		WorkspaceID: workspace.ID,
-		Config:      connectionConfig,
-		Task:        task,
+		WorkspaceID:  workspace.ID,
+		Config:       connectionConfig,
+		Capabilities: capabilities,
+		Permissions:  agents.ReviewModePermissionPolicy(),
+		Task:         task,
 		TimeoutPolicy: agentrun.TimeoutPolicy{
 			AgentTimeoutSeconds:  limits.TimeoutSeconds,
 			ReviewDeadline:       reviewDeadline,
@@ -392,6 +398,9 @@ func (s Service) followupAgentConfig(ctx context.Context, agentConfigID string) 
 		if !supportedFollowupAdapter(config.AdapterKind) {
 			return dbgen.AgentConfig{}, fmt.Errorf("%w: adapter %q is unsupported", ErrInvalidAgentConfig, config.AdapterKind)
 		}
+		if err := validateReviewModeAgentConfig(config); err != nil {
+			return dbgen.AgentConfig{}, err
+		}
 		return config, nil
 	}
 	configs, err := s.Queries.ListAgentConfigs(ctx)
@@ -400,6 +409,9 @@ func (s Service) followupAgentConfig(ctx context.Context, agentConfigID string) 
 	}
 	for _, config := range configs {
 		if config.Enabled == 0 || !supportedFollowupAdapter(config.AdapterKind) {
+			continue
+		}
+		if err := validateReviewModeAgentConfig(config); err != nil {
 			continue
 		}
 		role := strings.ToLower(strings.TrimSpace(config.Role))
@@ -476,6 +488,14 @@ func (s Service) connectionConfig(config dbgen.AgentConfig, repository dbgen.Rep
 		}, nil
 }
 
+func agentCapabilities(config dbgen.AgentConfig) (agents.AgentCapabilities, error) {
+	capabilities, err := agents.DecodeCapabilitiesJSON(config.CapabilitiesJson, agents.AdapterKind(config.AdapterKind))
+	if err != nil {
+		return agents.AgentCapabilities{}, fmt.Errorf("%w: agent capabilities are invalid", ErrInvalidAgentConfig)
+	}
+	return capabilities, nil
+}
+
 func decodeRuntimeSettings(raw string) (runtimeSettings, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -534,6 +554,17 @@ func workingDirectoryForAgent(cwdMode string, repository dbgen.Repository, works
 	default:
 		return "", fmt.Errorf("%w: cwd_mode %q is unsupported", ErrInvalidAgentConfig, cwdMode)
 	}
+}
+
+func validateReviewModeAgentConfig(config dbgen.AgentConfig) error {
+	capabilities, err := agentCapabilities(config)
+	if err != nil {
+		return err
+	}
+	if err := agents.ValidateReviewModePermissions(agents.ConnectionConfig{Kind: agents.AdapterKind(config.AdapterKind)}, capabilities); err != nil {
+		return fmt.Errorf("%w: agent config %s cannot be used for review mode: %v", ErrInvalidAgentConfig, config.ID, err)
+	}
+	return nil
 }
 
 func (s Service) contextArtifactRefs(ctx context.Context, bundle contextbundle.Bundle) []agents.ArtifactRef {

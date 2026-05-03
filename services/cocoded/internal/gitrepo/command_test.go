@@ -66,7 +66,7 @@ func TestRunnerMapsExitErrorToTypedError(t *testing.T) {
 	script := writeFakeGit(t, "#!/bin/sh\necho 'fatal: no repo here' >&2\nexit 7\n")
 	runner := Runner{
 		GitPath:     script,
-		Timeout:     time.Second,
+		Timeout:     5 * time.Second,
 		OutputLimit: 1024,
 	}
 

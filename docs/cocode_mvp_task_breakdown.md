@@ -175,7 +175,7 @@ Large parallel workstreams:
 | ID | Task | Description | Status | Dependencies | Parallelization | Done criteria |
 |---|---|---|---|---|---|---|
 | T070 | Implement git repo validation | Validate selected path is a git repository and get root path. | Done | T054, T035 | T071 | Invalid repo shows typed error; valid repo creates workspace/repository. |
-| T071 | Implement git command wrapper | Add safe wrapper for git commands with timeout/cwd/output limit. | Not started | T070 | T072 | Tests use fake repo; command errors map to typed errors. |
+| T071 | Implement git command wrapper | Add safe wrapper for git commands with timeout/cwd/output limit. | Done | T070 | T072 | Tests use fake repo; command errors map to typed errors. |
 | T072 | Parse GitHub PR URL | Extract owner, repo, and PR number from supported URL shapes. | Not started | T044 | T073 | Tests cover valid/invalid GitHub URLs. |
 | T073 | Implement GitHub auth config | Store/retrieve GitHub token reference and validate access. | Not started | T037, T044 | T074 | Token is not stored in DB plaintext; missing token error is clear. |
 | T074 | Fetch GitHub PR metadata | Fetch title, author, base/head refs, SHAs, and PR URL. | Not started | T072, T073 | T075 | Integration test with fake GitHub server. |

@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -21,6 +20,7 @@ const gitTimeout = 5 * time.Second
 type Service struct {
 	database *sql.DB
 	queries  *dbgen.Queries
+	runner   Runner
 	now      func() time.Time
 }
 
@@ -46,6 +46,7 @@ func New(database *sql.DB) (*Service, error) {
 	return &Service{
 		database: database,
 		queries:  dbgen.New(database),
+		runner:   DefaultRunner(),
 		now:      time.Now,
 	}, nil
 }
@@ -55,7 +56,7 @@ func (s *Service) Open(ctx context.Context, selectedPath string) (OpenResult, er
 		return OpenResult{}, apperror.Internal("git repository service is not configured")
 	}
 
-	info, err := Validate(ctx, selectedPath)
+	info, err := validate(ctx, s.runner, selectedPath)
 	if err != nil {
 		return OpenResult{}, err
 	}
@@ -100,6 +101,10 @@ func (s *Service) Open(ctx context.Context, selectedPath string) (OpenResult, er
 }
 
 func Validate(ctx context.Context, selectedPath string) (RepositoryInfo, error) {
+	return validate(ctx, DefaultRunner(), selectedPath)
+}
+
+func validate(ctx context.Context, runner Runner, selectedPath string) (RepositoryInfo, error) {
 	selectedPath = strings.TrimSpace(selectedPath)
 	if selectedPath == "" {
 		return RepositoryInfo{}, apperror.InvalidRequest("repository path is required")
@@ -120,11 +125,11 @@ func Validate(ctx context.Context, selectedPath string) (RepositoryInfo, error) 
 		return RepositoryInfo{}, apperror.InvalidRequest("repository path must be a directory")
 	}
 
-	root, err := runGit(ctx, absoluteSelected, "rev-parse", "--show-toplevel")
+	rootResult, err := runner.Run(ctx, absoluteSelected, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return RepositoryInfo{}, apperror.InvalidRequest("selected path is not inside a git repository")
 	}
-	root = strings.TrimSpace(root)
+	root := strings.TrimSpace(rootResult.Stdout)
 	if root == "" {
 		return RepositoryInfo{}, apperror.InvalidRequest("selected path is not inside a git repository")
 	}
@@ -133,10 +138,10 @@ func Validate(ctx context.Context, selectedPath string) (RepositoryInfo, error) 
 		return RepositoryInfo{}, apperror.InvalidRequest("git repository root is invalid")
 	}
 
-	remoteURL := optionalGit(ctx, root, "config", "--get", "remote.origin.url")
-	defaultBranch := optionalGit(ctx, root, "symbolic-ref", "--quiet", "--short", "HEAD")
+	remoteURL := optionalGit(ctx, runner, root, "config", "--get", "remote.origin.url")
+	defaultBranch := optionalGit(ctx, runner, root, "symbolic-ref", "--quiet", "--short", "HEAD")
 	if defaultBranch == "" {
-		defaultBranch = optionalGit(ctx, root, "rev-parse", "--abbrev-ref", "HEAD")
+		defaultBranch = optionalGit(ctx, runner, root, "rev-parse", "--abbrev-ref", "HEAD")
 	}
 	if defaultBranch == "HEAD" {
 		defaultBranch = ""
@@ -216,34 +221,12 @@ func getOrCreateRepository(ctx context.Context, queries *dbgen.Queries, workspac
 	return repository, nil
 }
 
-func runGit(ctx context.Context, cwd string, args ...string) (string, error) {
-	if _, err := exec.LookPath("git"); err != nil {
-		return "", err
-	}
-
-	runCtx, cancel := context.WithTimeout(ctx, gitTimeout)
-	defer cancel()
-
-	commandArgs := append([]string{"-C", cwd}, args...)
-	cmd := exec.CommandContext(runCtx, "git", commandArgs...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-
-	output, err := cmd.Output()
-	if runCtx.Err() != nil {
-		return "", runCtx.Err()
-	}
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(output)), nil
-}
-
-func optionalGit(ctx context.Context, cwd string, args ...string) string {
-	value, err := runGit(ctx, cwd, args...)
+func optionalGit(ctx context.Context, runner Runner, cwd string, args ...string) string {
+	result, err := runner.Run(ctx, cwd, args...)
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(value)
+	return strings.TrimSpace(result.Stdout)
 }
 
 func inferGitHubOwner(remoteURL string) string {

@@ -2032,6 +2032,8 @@ Never expose raw `ipcRenderer`.
 - Store artifacts under app-managed directory.
 ```
 
+Path sandboxing is centralized in the backend security package and used at file/artifact choke points. It normalizes relative paths, rejects absolute/traversal input, resolves symlinks, and verifies existing reads plus artifact writes remain inside the intended workspace or app-managed artifact root. Snapshot ingestion also rejects unsafe changed-file paths before rows or artifacts are persisted.
+
 ---
 
 ## 20. Error Handling

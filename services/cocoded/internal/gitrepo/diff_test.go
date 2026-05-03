@@ -114,6 +114,33 @@ func TestCollectorLocalChangesIncludesTrackedAndUntrackedFiles(t *testing.T) {
 	}
 }
 
+func TestCollectorLocalChangesRejectsUntrackedSymlinkEscape(t *testing.T) {
+	t.Parallel()
+
+	repoPath := initGitRepo(t)
+	configureTestGitIdentity(t, repoPath)
+	runTestGit(t, repoPath, "checkout", "-B", "main")
+	writeRepoFile(t, repoPath, "app/main.go", "package main\n\nfunc main() {}\n")
+	runTestGit(t, repoPath, "add", ".")
+	runTestGit(t, repoPath, "commit", "-m", "initial")
+
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("secret\n"), 0o600); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(repoPath, "notes"), 0o755); err != nil {
+		t.Fatalf("mkdir notes: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(repoPath, "notes", "secret.txt")); err != nil {
+		t.Fatalf("symlink untracked file: %v", err)
+	}
+
+	_, err := NewCollector(DefaultRunner()).LocalChanges(context.Background(), repoPath)
+	if err == nil || !strings.Contains(err.Error(), "escapes repository root") {
+		t.Fatalf("LocalChanges() error = %v, want symlink escape error", err)
+	}
+}
+
 func TestCollectorCompareBranchesRejectsUnsafeRef(t *testing.T) {
 	t.Parallel()
 

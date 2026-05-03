@@ -9,10 +9,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
+	"github.com/hughdo/cocode/services/cocoded/internal/security"
 )
 
 const defaultContentType = "text/plain"
@@ -48,7 +48,11 @@ func New(root string, queries *dbgen.Queries) (*Store, error) {
 	if err := os.MkdirAll(absRoot, 0o755); err != nil {
 		return nil, fmt.Errorf("create artifact root: %w", err)
 	}
-	return &Store{root: absRoot, queries: queries}, nil
+	resolvedRoot, err := security.ResolveRoot(absRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve artifact root symlinks: %w", err)
+	}
+	return &Store{root: resolvedRoot, queries: queries}, nil
 }
 
 func (s *Store) Save(ctx context.Context, params SaveParams, content []byte) (dbgen.Artifact, error) {
@@ -75,8 +79,17 @@ func (s *Store) Save(ctx context.Context, params SaveParams, content []byte) (db
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return dbgen.Artifact{}, fmt.Errorf("create artifact directory: %w", err)
 	}
+	target, err = s.writePathFor(params.WorkspaceID, params.RelativePath)
+	if err != nil {
+		return dbgen.Artifact{}, err
+	}
 	if err := os.WriteFile(target, content, 0o600); err != nil {
 		return dbgen.Artifact{}, fmt.Errorf("write artifact file: %w", err)
+	}
+	cleanRelative, err := artifactRelativePath(params.RelativePath)
+	if err != nil {
+		_ = os.Remove(target)
+		return dbgen.Artifact{}, err
 	}
 
 	digest := sha256.Sum256(content)
@@ -85,7 +98,7 @@ func (s *Store) Save(ctx context.Context, params SaveParams, content []byte) (db
 		WorkspaceID:     params.WorkspaceID,
 		ReviewSessionID: params.ReviewSessionID,
 		Kind:            params.Kind,
-		RelativePath:    filepath.ToSlash(filepath.Clean(params.RelativePath)),
+		RelativePath:    cleanRelative,
 		ContentType:     params.ContentType,
 		SizeBytes:       int64(len(content)),
 		Sha256:          sql.NullString{String: hex.EncodeToString(digest[:]), Valid: true},
@@ -105,7 +118,7 @@ func (s *Store) Read(ctx context.Context, id string) ([]byte, dbgen.Artifact, er
 	if err != nil {
 		return nil, dbgen.Artifact{}, fmt.Errorf("get artifact metadata: %w", err)
 	}
-	target, err := s.pathFor(artifact.WorkspaceID, artifact.RelativePath)
+	target, err := s.readPathFor(artifact.WorkspaceID, artifact.RelativePath)
 	if err != nil {
 		return nil, dbgen.Artifact{}, err
 	}
@@ -144,25 +157,46 @@ func (s *Store) pathFor(workspaceID string, relativePath string) (string, error)
 	if relativePath == "" {
 		return "", errors.New("artifact relative path is required")
 	}
-	if workspaceID != filepath.Base(workspaceID) || workspaceID == "." || workspaceID == ".." {
+	if !security.SafePathSegment(workspaceID) {
 		return "", fmt.Errorf("unsafe workspace id %q", workspaceID)
 	}
-	if filepath.IsAbs(relativePath) {
-		return "", fmt.Errorf("artifact path must be relative: %q", relativePath)
-	}
-
-	cleanRelative := filepath.Clean(relativePath)
-	if cleanRelative == "." || cleanRelative == ".." || strings.HasPrefix(cleanRelative, ".."+string(os.PathSeparator)) {
+	cleanRelative, err := artifactRelativePath(relativePath)
+	if err != nil {
 		return "", fmt.Errorf("unsafe artifact relative path %q", relativePath)
 	}
-
-	target := filepath.Join(s.root, workspaceID, cleanRelative)
-	rel, err := filepath.Rel(s.root, target)
+	target, _, err := security.JoinWithinRoot(s.root, filepath.ToSlash(filepath.Join(workspaceID, cleanRelative)))
 	if err != nil {
 		return "", fmt.Errorf("validate artifact path: %w", err)
 	}
-	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		return "", fmt.Errorf("artifact path escapes root: %q", relativePath)
+	return target, nil
+}
+
+func artifactRelativePath(relativePath string) (string, error) {
+	cleanRelative, err := security.CleanRelativePath(relativePath)
+	if err != nil || cleanRelative == "." {
+		return "", fmt.Errorf("unsafe artifact relative path %q", relativePath)
+	}
+	return cleanRelative, nil
+}
+
+func (s *Store) readPathFor(workspaceID string, relativePath string) (string, error) {
+	if !security.SafePathSegment(workspaceID) {
+		return "", fmt.Errorf("unsafe workspace id %q", workspaceID)
+	}
+	target, _, err := security.ResolveExistingWithinRoot(s.root, filepath.ToSlash(filepath.Join(workspaceID, relativePath)))
+	if err != nil {
+		return "", fmt.Errorf("validate artifact path: %w", err)
+	}
+	return target, nil
+}
+
+func (s *Store) writePathFor(workspaceID string, relativePath string) (string, error) {
+	if !security.SafePathSegment(workspaceID) {
+		return "", fmt.Errorf("unsafe workspace id %q", workspaceID)
+	}
+	target, _, err := security.ResolveWriteWithinRoot(s.root, filepath.ToSlash(filepath.Join(workspaceID, relativePath)))
+	if err != nil {
+		return "", fmt.Errorf("validate artifact path: %w", err)
 	}
 	return target, nil
 }

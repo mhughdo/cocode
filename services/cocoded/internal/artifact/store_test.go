@@ -122,6 +122,60 @@ func TestStoreRejectsPathTraversal(t *testing.T) {
 	}
 }
 
+func TestStoreRejectsSymlinkEscapes(t *testing.T) {
+	t.Parallel()
+
+	queries := artifactTestQueries(t)
+	root := filepath.Join(t.TempDir(), "artifacts")
+	store, err := New(root, queries)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	outside := t.TempDir()
+	workspaceRoot := filepath.Join(root, "workspace_1")
+	if err := os.MkdirAll(workspaceRoot, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workspaceRoot, "out")); err != nil {
+		t.Fatalf("symlink dir: %v", err)
+	}
+	if _, err := store.Save(context.Background(), SaveParams{
+		ID:           "artifact_symlink_parent",
+		WorkspaceID:  "workspace_1",
+		Kind:         "log",
+		RelativePath: "out/escape.txt",
+	}, []byte("nope")); err == nil {
+		t.Fatal("Save() error = nil, want symlink parent escape error")
+	}
+
+	content := []byte("safe")
+	artifact, err := store.Save(context.Background(), SaveParams{
+		ID:           "artifact_safe",
+		WorkspaceID:  "workspace_1",
+		Kind:         "log",
+		RelativePath: "safe.txt",
+	}, content)
+	if err != nil {
+		t.Fatalf("Save(safe) error = %v", err)
+	}
+	target, err := store.pathFor("workspace_1", artifact.RelativePath)
+	if err != nil {
+		t.Fatalf("pathFor() error = %v", err)
+	}
+	if err := os.Remove(target); err != nil {
+		t.Fatalf("remove safe target: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("secret"), 0o600); err != nil {
+		t.Fatalf("write outside secret: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret.txt"), target); err != nil {
+		t.Fatalf("symlink file: %v", err)
+	}
+	if _, _, err := store.Read(context.Background(), "artifact_safe"); err == nil {
+		t.Fatal("Read() error = nil, want symlink file escape error")
+	}
+}
+
 func artifactTestQueries(t *testing.T) *dbgen.Queries {
 	t.Helper()
 

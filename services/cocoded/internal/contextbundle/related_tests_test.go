@@ -2,6 +2,8 @@ package contextbundle
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -170,6 +172,39 @@ func TestBuildRelatedTestContextItemsLimitsAndUnsafePath(t *testing.T) {
 		RepoRoot: root,
 	}, []RelatedTestInput{{ChangedFileID: "changed_escape", Path: "../escape.ts"}}); err == nil || !strings.Contains(err.Error(), "unsafe") {
 		t.Fatalf("BuildRelatedTestContextItems(unsafe) error = %v", err)
+	}
+}
+
+func TestBuildRelatedTestContextItemsSkipsSymlinkedReferencedTest(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	outside := t.TempDir()
+	writeRepoFile(t, root, "src/auth.ts", "export function RequireAdmin() {}\n")
+	if err := os.WriteFile(filepath.Join(outside, "auth.test.ts"), []byte("RequireAdmin()\n"), 0o644); err != nil {
+		t.Fatalf("write outside test: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "tests"), 0o755); err != nil {
+		t.Fatalf("mkdir tests: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "auth.test.ts"), filepath.Join(root, "tests", "auth.test.ts")); err != nil {
+		t.Fatalf("symlink test: %v", err)
+	}
+
+	items, err := BuildRelatedTestContextItems(RelatedTestOptions{
+		BundleID: "bundle_1",
+		RepoRoot: root,
+		MaxItems: 10,
+	}, []RelatedTestInput{{
+		ChangedFileID: "changed_auth",
+		Path:          "src/auth.ts",
+		Symbols:       []string{"RequireAdmin"},
+	}})
+	if err != nil {
+		t.Fatalf("BuildRelatedTestContextItems() error = %v", err)
+	}
+	if len(items) != 1 || items[0].Path != "" || !strings.Contains(items[0].Content, "No related test file") {
+		t.Fatalf("items = %+v, want missing item without outside symlink content", items)
 	}
 }
 

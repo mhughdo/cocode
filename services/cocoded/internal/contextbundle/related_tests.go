@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/hughdo/cocode/services/cocoded/internal/security"
 )
 
 const (
@@ -217,11 +219,15 @@ func discoverReferencedTests(options RelatedTestOptions, root string, input Rela
 		if sourcePath != "" && relativePath == sourcePath {
 			return nil
 		}
-		stat, err := entry.Info()
+		resolvedPath, cleanPath, err := security.ResolveExistingWithinRoot(root, relativePath)
+		if err != nil || cleanPath != relativePath {
+			return nil
+		}
+		stat, err := os.Stat(resolvedPath)
 		if err != nil || stat.Size() > options.MaxTestFileBytes {
 			return nil
 		}
-		content, truncated, err := readFullFile(path, options.MaxTestFileBytes)
+		content, truncated, err := readFullFile(resolvedPath, options.MaxTestFileBytes)
 		if err != nil || !containsAnyTerm(content, terms) {
 			return nil
 		}

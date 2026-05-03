@@ -453,6 +453,42 @@ func TestCreateGitHubSnapshotRejectsDuplicatePathsBeforeWritingArtifacts(t *test
 	}
 }
 
+func TestCreateGitSnapshotRejectsUnsafeChangedPathsBeforeWritingArtifacts(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	database, queries := openSnapshotTestDB(t)
+	artifactRoot := filepath.Join(t.TempDir(), "artifacts")
+	createWorkspaceAndRepository(t, queries)
+	service, err := New(database, artifactRoot)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	for _, file := range []ChangedFileInput{
+		{Path: "../escape.go", Status: "modified"},
+		{Path: "safe.go", OldPath: "/tmp/old.go", Status: "renamed"},
+	} {
+		_, err = service.CreateGitSnapshot(ctx, GitSnapshotParams{
+			WorkspaceID:  "workspace_1",
+			RepositoryID: "repo_1",
+			SourceType:   "local_changes",
+			BaseRef:      "HEAD",
+			HeadRef:      "WORKTREE",
+			BaseSHA:      "head-sha",
+			HeadSHA:      "head-sha",
+			Files:        []ChangedFileInput{file},
+			Diff:         []byte("diff"),
+		})
+		if err == nil {
+			t.Fatalf("CreateGitSnapshot(%+v) error = nil, want unsafe path error", file)
+		}
+	}
+	if _, statErr := os.Stat(filepath.Join(artifactRoot, "workspace_1")); !os.IsNotExist(statErr) {
+		t.Fatalf("artifact workspace stat error = %v, want not exist", statErr)
+	}
+}
+
 func openSnapshotTestDB(t *testing.T) (*sql.DB, *dbgen.Queries) {
 	t.Helper()
 

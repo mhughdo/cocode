@@ -381,7 +381,7 @@ Large parallel workstreams:
 
 | ID | Task | Description | Status | Dependencies | Parallelization | Done criteria |
 |---|---|---|---|---|---|---|
-| T320 | Implement path sandbox | Ensure all file reads/artifacts stay inside workspace/app dirs. | Not started | T060, T071 | T321 | Path traversal tests fail safely. |
+| T320 | Implement path sandbox | Ensure all file reads/artifacts stay inside workspace/app dirs. | Done | T060, T071 | T321 | Shared sandbox helpers guard artifact and repo read/write choke points; traversal and symlink escape tests fail safely. |
 | T321 | Implement command safety policy | Block shell execution by default and restrict dangerous commands. | Not started | T093 | T322 | CLI commands are arg-array based; risky config requires explicit user setup. |
 | T322 | Implement permission model | Define read/search/test/shell/write/publish risk levels. | Not started | T321 | T323 | Permission policy can approve/deny actions consistently. |
 | T323 | Add review-mode write denial | Ensure review agents cannot modify files through cocode-managed tools. | Not started | T322 | T090 | Review mode does not grant file write permissions. |

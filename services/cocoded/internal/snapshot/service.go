@@ -18,6 +18,7 @@ import (
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
 	"github.com/hughdo/cocode/services/cocoded/internal/fileclassify"
 	"github.com/hughdo/cocode/services/cocoded/internal/githubpr"
+	"github.com/hughdo/cocode/services/cocoded/internal/security"
 )
 
 type Service struct {
@@ -437,16 +438,34 @@ func (s *Service) validateSnapshotInput(ctx context.Context, params snapshotInpu
 
 	paths := map[string]struct{}{}
 	for _, file := range params.Files {
-		path := strings.TrimSpace(file.Path)
-		if path == "" {
-			return errors.New("changed file path is required")
+		path, err := validateChangedPath(file.Path, true)
+		if err != nil {
+			return err
 		}
 		if _, exists := paths[path]; exists {
 			return fmt.Errorf("duplicate changed file path %q", path)
 		}
+		if _, err := validateChangedPath(file.OldPath, false); err != nil {
+			return err
+		}
 		paths[path] = struct{}{}
 	}
 	return nil
+}
+
+func validateChangedPath(value string, required bool) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		if required {
+			return "", errors.New("changed file path is required")
+		}
+		return "", nil
+	}
+	clean, err := security.CleanRelativePath(value)
+	if err != nil || clean == "." {
+		return "", fmt.Errorf("changed file path %q is unsafe", value)
+	}
+	return clean, nil
 }
 
 func normalizeStatus(status string) string {

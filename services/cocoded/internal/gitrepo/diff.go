@@ -13,6 +13,7 @@ import (
 
 	"github.com/hughdo/cocode/services/cocoded/internal/apperror"
 	"github.com/hughdo/cocode/services/cocoded/internal/diffparse"
+	"github.com/hughdo/cocode/services/cocoded/internal/security"
 )
 
 const (
@@ -291,7 +292,7 @@ func collectUntrackedFiles(root string, paths []string, existing []DiffFile) ([]
 		if _, ok := seen[path]; ok {
 			continue
 		}
-		if !isSafeRelativePath(path) {
+		if _, err := security.CleanRelativePath(path); err != nil {
 			return nil, nil, apperror.InvalidRequest("git status returned unsafe untracked path")
 		}
 
@@ -309,7 +310,11 @@ func collectUntrackedFiles(root string, paths []string, existing []DiffFile) ([]
 }
 
 func buildUntrackedFile(root string, path string) (DiffFile, string, error) {
-	absolutePath := filepath.Join(root, filepath.FromSlash(path))
+	absolutePath, cleanPath, err := security.ResolveExistingWithinRoot(root, path)
+	if err != nil {
+		return DiffFile{}, "", apperror.InvalidRequest("untracked file escapes repository root")
+	}
+	path = cleanPath
 	stat, err := os.Stat(absolutePath)
 	if err != nil {
 		return DiffFile{}, "", apperror.InvalidRequest("untracked file cannot be inspected")
@@ -452,9 +457,6 @@ func appendPatches(base string, patches []string) string {
 }
 
 func isSafeRelativePath(path string) bool {
-	if path == "" || filepath.IsAbs(path) {
-		return false
-	}
-	clean := filepath.Clean(filepath.FromSlash(path))
-	return clean != "." && clean != ".." && !strings.HasPrefix(clean, ".."+string(filepath.Separator))
+	clean, err := security.CleanRelativePath(path)
+	return err == nil && clean != "."
 }

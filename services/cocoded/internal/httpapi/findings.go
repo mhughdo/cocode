@@ -12,6 +12,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/hughdo/cocode/services/cocoded/internal/apperror"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
+	"github.com/hughdo/cocode/services/cocoded/internal/eventlog"
+	evidencepkg "github.com/hughdo/cocode/services/cocoded/internal/evidence"
 )
 
 type FindingListResponse struct {
@@ -65,6 +67,8 @@ type FindingEvidenceResponse struct {
 	Groups  EvidenceGroupsResponse `json:"groups"`
 	Counts  map[string]int         `json:"counts"`
 }
+
+type FindingEvidenceMapResponse = evidencepkg.MapView
 
 type EvidenceGroupsResponse struct {
 	Supporting     []EvidenceItemResponse `json:"supporting"`
@@ -194,6 +198,64 @@ func findingEvidenceHandler(queries *dbgen.Queries) gin.HandlerFunc {
 			Counts:  evidenceCounts(items),
 		})
 	}
+}
+
+func findingEvidenceMapHandler(services routerServices, rebuild bool) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		finding, appErr := getFindingScoped(c.Request.Context(), services.queries, c.Param("id"), c.Param("finding_id"))
+		if appErr != nil {
+			respondError(c, appErr)
+			return
+		}
+		builder := evidencepkg.Service{Queries: services.queries}
+		var (
+			view FindingEvidenceMapResponse
+			err  error
+		)
+		if rebuild {
+			view, err = builder.RebuildEvidenceMap(c.Request.Context(), finding)
+		} else {
+			view, _, err = builder.LoadOrRebuildEvidenceMap(c.Request.Context(), finding)
+		}
+		if err != nil {
+			respondError(c, apperror.Internal("failed to build evidence map"))
+			return
+		}
+		if rebuild {
+			if appErr := appendEvidenceMapRebuiltEvent(c.Request.Context(), services, view); appErr != nil {
+				respondError(c, appErr)
+				return
+			}
+		}
+		respondOK(c, view)
+	}
+}
+
+func appendEvidenceMapRebuiltEvent(ctx context.Context, services routerServices, view FindingEvidenceMapResponse) *apperror.Error {
+	if services.eventBus == nil {
+		return apperror.Internal("event bus is not configured")
+	}
+	payload, err := json.Marshal(map[string]any{
+		"finding_id":        view.Finding.ID,
+		"evidence_graph_id": view.Graph.ID,
+		"status":            view.Graph.Status,
+		"nodes":             len(view.Nodes),
+		"edges":             len(view.Edges),
+	})
+	if err != nil {
+		return apperror.Internal("failed to encode evidence map event")
+	}
+	if _, err := services.eventBus.Append(ctx, eventlog.AppendParams{
+		ID:              "event_" + newRequestID(),
+		ReviewSessionID: view.Finding.ReviewSessionID,
+		Type:            "EvidenceMapRebuilt",
+		Level:           "info",
+		PayloadJSON:     string(payload),
+		CreatedAt:       time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		return apperror.Internal("failed to append evidence map event")
+	}
+	return nil
 }
 
 func updateFindingDecisionHandler(services routerServices) gin.HandlerFunc {

@@ -305,17 +305,17 @@ Large parallel workstreams:
 | T206 | Implement verifier agent prompt runner | Optional CLI verifier task using finding-scoped context. | Not started | T133, T090, T204 | T207 | Verifier CLI can update evidence/status; failures do not block local evidence. |
 | T207 | Implement evidence API | Return evidence items grouped by support/counter/test/search. | Done | T200-T204 | T260 | Finding Detail evidence cards load correctly. |
 | T208 | Implement evidence summaries | Generate concise evidence_summary and counter_evidence_summary. | Done | T204 | T184 | Finding cards/details show summaries. |
-| T209 | Define Evidence Graph view model | Define API types for hierarchy, nodes, edges, call path, legend. | Not started | T059 | T210 | Types documented and used by frontend mock data. |
-| T210 | Implement graph node builder | Create graph nodes from finding, evidence items, code context. | Not started | T134, T209 | T211 | Graph includes primary node and evidence nodes. |
-| T211 | Implement graph edge builder | Create observed and missing edges: calls, mounts, protects, tests, supports, contradicts, missing_guard. | Not started | T210 | T212 | Edges reference valid nodes; missing_guard visual status represented. |
-| T212 | Implement call path builder | Build readable call path from graph/code relationships. | Not started | T210, T211 | T213 | Call path appears for auth golden repo; unavailable reason stored if missing. |
-| T213 | Implement node deep-link data | Add file/line references for nodes and external editor payloads. | Not started | T210, T036 | T263 | Clicking node can open code view or editor. |
-| T214 | Persist evidence graph | Store graph, nodes, edges, and call path. | Not started | T210-T212, T059 | T215 | Graph can be reloaded after app restart. |
-| T215 | Implement Evidence Map API | Return complete graph view model for finding. | Not started | T214 | T263 | API returns hierarchy, nodes, edges, call path, right-panel data. |
-| T216 | Implement graph rebuild API | Rebuild Evidence Map for a finding. | Not started | T215 | T263 | Rebuild updates graph and emits event. |
-| T217 | Handle incomplete graph fallback | Return partial graph with missing reasons instead of failure. | Not started | T215 | T263 | UI can render partial/unavailable states. |
+| T209 | Define Evidence Graph view model | Define API types for hierarchy, nodes, edges, call path, legend. | Done | T059 | T210 | Types documented and used by frontend mock data. |
+| T210 | Implement graph node builder | Create graph nodes from finding, evidence items, code context. | Done | T134, T209 | T211 | Graph includes primary node and evidence nodes. |
+| T211 | Implement graph edge builder | Create observed and missing edges: calls, mounts, protects, tests, supports, contradicts, missing_guard. | Done | T210 | T212 | Edges reference valid nodes; missing_guard visual status represented. |
+| T212 | Implement call path builder | Build readable call path from graph/code relationships. | Done | T210, T211 | T213 | Call path appears for auth golden repo; unavailable reason stored if missing. |
+| T213 | Implement node deep-link data | Add file/line references for nodes and external editor payloads. | Done | T210, T036 | T263 | Clicking node can open code view or editor. |
+| T214 | Persist evidence graph | Store graph, nodes, edges, and call path. | Done | T210-T212, T059 | T215 | Graph can be reloaded after app restart. |
+| T215 | Implement Evidence Map API | Return complete graph view model for finding. | Done | T214 | T263 | API returns hierarchy, nodes, edges, call path, right-panel data. |
+| T216 | Implement graph rebuild API | Rebuild Evidence Map for a finding. | Done | T215 | T263 | Rebuild updates graph and emits event. |
+| T217 | Handle incomplete graph fallback | Return partial graph with missing reasons instead of failure. | Done | T215 | T263 | UI can render partial/unavailable states. |
 | T218 | Implement Ask Verifier from Evidence Map | Create follow-up/verifier task scoped to graph context. | Not started | T206, T215, T280 | T264 | User can ask verifier about current graph path; response persists. |
-| T219 | Evidence Map tests | Unit/integration tests for graph creation and API response. | Not started | T210-T217 | T360 | Golden auth repo produces expected nodes/edges/call path. |
+| T219 | Evidence Map tests | Unit/integration tests for graph creation and API response. | Done | T210-T217 | T360 | Golden auth repo produces expected nodes/edges/call path. |
 
 ---
 

@@ -662,6 +662,10 @@ func (s *Service) run(ctx context.Context, reviewSessionID string) error {
 			runPhase = func() error {
 				return s.verifyFindings(ctx, session, repository)
 			}
+		case PhaseBuildEvidence:
+			runPhase = func() error {
+				return s.buildEvidenceMaps(ctx, session)
+			}
 		}
 		if err := s.withPhase(ctx, session.ID, phase, runPhase); err != nil {
 			return err
@@ -1117,6 +1121,30 @@ func (s *Service) verifyFindings(ctx context.Context, session dbgen.ReviewSessio
 			"supporting_evidence":    summary.SupportingEvidence,
 			"counter_evidence":       summary.CounterEvidence,
 			"missing_evidence":       summary.MissingEvidence,
+		},
+	})
+}
+
+func (s *Service) buildEvidenceMaps(ctx context.Context, session dbgen.ReviewSession) error {
+	builder := s.Evidence
+	if builder == nil {
+		builder = &evidence.Service{Queries: s.Queries}
+	}
+	summary, err := builder.BuildSessionEvidenceMaps(ctx, session)
+	if err != nil {
+		return err
+	}
+	return s.appendEvent(ctx, appendEventParams{
+		ReviewSessionID: session.ID,
+		Type:            "EvidenceMapBuildCompleted",
+		Payload: map[string]any{
+			"phase":         PhaseBuildEvidence,
+			"finding_count": summary.Findings,
+			"ready":         summary.Ready,
+			"partial":       summary.Partial,
+			"nodes":         summary.Nodes,
+			"edges":         summary.Edges,
+			"by_status":     summary.ByStatus,
 		},
 	})
 }

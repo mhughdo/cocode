@@ -22,6 +22,7 @@ import (
 	"github.com/hughdo/cocode/services/cocoded/internal/artifact"
 	"github.com/hughdo/cocode/services/cocoded/internal/db"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
+	evidencepkg "github.com/hughdo/cocode/services/cocoded/internal/evidence"
 )
 
 func TestHealthEndpoint(t *testing.T) {
@@ -1213,6 +1214,51 @@ func TestFindingEvidenceEndpointGroupsItems(t *testing.T) {
 	}
 }
 
+func TestFindingEvidenceMapEndpointBuildsAndRebuilds(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/findings/finding_auth/evidence-map", nil)
+	request.Header.Set("X-Cocode-Token", "test-token")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("evidence map status = %d, body = %s", response.Code, response.Body.String())
+	}
+	view := decodeFindingEvidenceMapResponse(t, response.Body.Bytes())
+	if view.Finding.ID != "finding_auth" ||
+		view.Graph.Status != evidencepkg.GraphStatusReady ||
+		len(view.Nodes) < 2 ||
+		len(view.Edges) == 0 ||
+		len(view.CallPath) < 2 ||
+		len(view.Hierarchy) == 0 ||
+		view.Panel.EvidenceCounts[evidencepkg.KindSupporting] != 1 {
+		t.Fatalf("view = %+v", view)
+	}
+	if !hasEvidenceMapEdge(view.Edges, evidencepkg.EdgeMissingGuard, evidencepkg.EdgeStatusMissing) {
+		t.Fatalf("edges = %+v", view.Edges)
+	}
+
+	rebuildRequest := httptest.NewRequest(http.MethodPost, "/api/findings/finding_auth/evidence-map/rebuild", nil)
+	rebuildRequest.Header.Set("X-Cocode-Token", "test-token")
+	rebuildResponse := httptest.NewRecorder()
+	router.ServeHTTP(rebuildResponse, rebuildRequest)
+	if rebuildResponse.Code != http.StatusOK {
+		t.Fatalf("evidence map rebuild status = %d, body = %s", rebuildResponse.Code, rebuildResponse.Body.String())
+	}
+	rebuilt := decodeFindingEvidenceMapResponse(t, rebuildResponse.Body.Bytes())
+	if rebuilt.Graph.ID != view.Graph.ID || rebuilt.Graph.UpdatedAt == "" {
+		t.Fatalf("rebuilt = %+v, original = %+v", rebuilt, view)
+	}
+	events, err := queries.ListEventsByReviewSession(context.Background(), nullableString("review_session_findings"))
+	if err != nil {
+		t.Fatalf("ListEventsByReviewSession() error = %v", err)
+	}
+	if len(events) != 1 || events[0].Type != "EvidenceMapRebuilt" {
+		t.Fatalf("events = %+v", events)
+	}
+}
+
 func TestFindingDecisionEndpointUpdatesStatusAndAppendsDecision(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
 	createHTTPAPIFindingFixture(t, queries)
@@ -2268,6 +2314,22 @@ func decodeFindingEvidenceResponse(t *testing.T, content []byte) FindingEvidence
 	return envelope.Data
 }
 
+func decodeFindingEvidenceMapResponse(t *testing.T, content []byte) FindingEvidenceMapResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  FindingEvidenceMapResponse `json:"data"`
+		Error any                        `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
 func decodeFindingResponse(t *testing.T, content []byte) FindingResponse {
 	t.Helper()
 
@@ -2282,6 +2344,15 @@ func decodeFindingResponse(t *testing.T, content []byte) FindingResponse {
 		t.Fatalf("response error = %+v", envelope.Error)
 	}
 	return envelope.Data
+}
+
+func hasEvidenceMapEdge(edges []evidencepkg.EdgeView, kind string, status string) bool {
+	for _, edge := range edges {
+		if edge.Kind == kind && edge.Status == status {
+			return true
+		}
+	}
+	return false
 }
 
 func decodeContextBundleDebugResponse(t *testing.T, content []byte) ContextBundleDebugResponse {

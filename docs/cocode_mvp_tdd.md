@@ -826,6 +826,8 @@ PATCH  /api/findings/:id/draft-comment
 GET    /api/findings/:id/evidence
 GET    /api/review-sessions/:id/findings/:finding_id
 GET    /api/review-sessions/:id/findings/:finding_id/evidence
+GET    /api/review-sessions/:id/findings/:finding_id/evidence-map
+POST   /api/review-sessions/:id/findings/:finding_id/evidence-map/rebuild
 POST   /api/review-sessions/:id/findings/:finding_id/decision
 PATCH  /api/review-sessions/:id/findings/:finding_id/draft-comment
 POST   /api/findings/:id/question
@@ -1689,22 +1691,30 @@ Input: Finding + EvidenceBundle + ContextItems
 9. Return graph view model to UI.
 ```
 
+The backend graph builder keeps the first response bounded for large PRs: evidence items are prioritized by kind/confidence, graph evidence nodes are capped, omitted counts are recorded in `layout_json`, and raw snippets stay on evidence-item detail APIs instead of being duplicated into every graph node.
+
 ### 15.5 Evidence Map API response
 
 ```json
 {
   "finding": {
     "id": "f_01J...",
-    "title": "Auth middleware skipped on billing route",
+    "canonical_claim": "Auth middleware skipped on billing route",
     "severity": "high",
     "verification_status": "verified"
+  },
+  "graph": {
+    "id": "evidence_graph_...",
+    "status": "ready",
+    "summary": "Evidence map for auth middleware skipped..."
   },
   "hierarchy": [
     {
       "path": "api/routes/billing.go",
       "start_line": 118,
       "end_line": 142,
-      "kind": "changed_code"
+      "kind": "changed_code",
+      "node_ids": ["n1"]
     }
   ],
   "nodes": [
@@ -1714,7 +1724,13 @@ Input: Finding + EvidenceBundle + ContextItems
       "label": "Billing route",
       "path": "api/routes/billing.go",
       "start_line": 118,
-      "end_line": 142
+      "end_line": 142,
+      "deep_link": {
+        "kind": "file",
+        "path": "api/routes/billing.go",
+        "start_line": 118,
+        "end_line": 142
+      }
     }
   ],
   "edges": [
@@ -1730,20 +1746,30 @@ Input: Finding + EvidenceBundle + ContextItems
   "call_path": [
     {
       "path": "router/setup.go",
-      "line": 34,
+      "start_line": 34,
       "label": "router setup"
     },
     {
       "path": "routes/billing.go",
-      "line": 132,
+      "start_line": 132,
       "label": "billing route"
     },
     {
       "path": "handlers/payouts.go",
-      "line": 210,
+      "start_line": 210,
       "label": "billing handler"
     }
-  ]
+  ],
+  "call_path_unavailable_reason": "",
+  "missing_reasons": [],
+  "panel": {
+    "claim": "Auth middleware skipped on billing route",
+    "evidence_counts": {
+      "supporting": 1,
+      "counter": 0,
+      "test": 1
+    }
+  }
 }
 ```
 

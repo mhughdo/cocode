@@ -215,6 +215,7 @@ Large parallel workstreams:
 | T105 | Add Claude Code CLI preset | Add configurable preset for Claude `-p`/JSON mode. | Done | T092, T093 | T104,T106 | Preset appears in UI; docs explain required local auth. |
 | T106 | Add Gemini CLI preset | Add configurable generic CLI preset for Gemini non-interactive mode; note future ACP. | Done | T092, T093 | T104,T105 | Preset appears; no ACP assumption in MVP. |
 | T107 | Add custom CLI preset | User can create arbitrary CLI adapter config. | Done | T092 | T248 | Custom command can be saved, health checked, and used in review. |
+| T107A | Add OpenCode CLI preset | Add configurable preset for OpenCode `run --format json` non-interactive usage. | Done | T092, T093 | T248 | Preset appears in UI; health check can validate local `opencode` if installed. |
 | T108 | Add JSON-RPC stdio skeleton | Create disabled/future connection driver skeleton for Codex App Server/ACP. | Done | T090 | T109 | Interfaces compile; no MVP feature depends on it; documented as future. |
 | T109 | Add Codex App Server adapter stub | Add feature-flagged stub mapping future Codex app-server events to AgentEvents. | Done | T108 | T110 | Stub is disabled; tests verify unsupported feature returns clear error. |
 | T110 | Add ACP adapter stub | Add feature-flagged stub for future ACP agent integration. | Done | T108 | T111 | Stub is disabled; code structure is clear. |

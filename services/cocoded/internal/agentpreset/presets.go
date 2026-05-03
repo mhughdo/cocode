@@ -25,7 +25,7 @@ type Preset struct {
 }
 
 func List() []Preset {
-	return []Preset{CodexCLI(), ClaudeCodeCLI(), GeminiCLI(), CustomCLI()}
+	return []Preset{CodexCLI(), ClaudeCodeCLI(), GeminiCLI(), OpenCodeCLI(), CustomCLI()}
 }
 
 func CodexCLI() Preset {
@@ -101,6 +101,33 @@ func GeminiCLI() Preset {
 			CanRead:      true,
 			CanCancel:    true,
 			OutputModes:  []agents.OutputMode{agents.OutputJSON, agents.OutputJSONL, agents.OutputText},
+		},
+		Settings: settings,
+		Enabled:  true,
+	}
+}
+
+func OpenCodeCLI() Preset {
+	settings := json.RawMessage(`{"prompt_delivery":"arg","timeout_seconds":1800,"version_args":["--version"],"smoke_prompt_enabled":false}`)
+	return Preset{
+		ID:             "opencode-cli",
+		Name:           "OpenCode CLI",
+		Description:    "Runs OpenCode in non-interactive run mode and captures raw JSON event output.",
+		Role:           "primary_reviewer",
+		AdapterKind:    agents.AdapterCLINonInteractive,
+		Command:        "opencode",
+		Args:           []string{"run", "--format", "json", agents.PromptArgPlaceholder},
+		CWDMode:        "repo_root",
+		EnvAllowlist:   []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"},
+		OutputMode:     agents.OutputJSONL,
+		ModelLabel:     "opencode",
+		ReasoningLabel: "",
+		Capabilities: agents.AgentCapabilities{
+			SupportsJSON:      true,
+			SupportsStreaming: true,
+			CanRead:           true,
+			CanCancel:         true,
+			OutputModes:       []agents.OutputMode{agents.OutputJSONL, agents.OutputNDJSON, agents.OutputJSON, agents.OutputText},
 		},
 		Settings: settings,
 		Enabled:  true,

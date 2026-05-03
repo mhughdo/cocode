@@ -291,6 +291,19 @@ func TestAgentPresetsEndpointIncludesBuiltInCLIs(t *testing.T) {
 		!json.Valid(gemini.Settings) {
 		t.Fatalf("gemini preset = %+v", gemini)
 	}
+	opencode := findAgentPreset(t, presets, "opencode-cli")
+	if opencode.Command != "opencode" ||
+		len(opencode.Args) != 4 ||
+		opencode.Args[0] != "run" ||
+		opencode.Args[1] != "--format" ||
+		opencode.Args[2] != "json" ||
+		opencode.Args[3] != agents.PromptArgPlaceholder ||
+		opencode.OutputMode != agents.OutputJSONL ||
+		opencode.ModelLabel != "opencode" ||
+		!opencode.Capabilities.SupportsOutputMode(agents.OutputJSONL) ||
+		!json.Valid(opencode.Settings) {
+		t.Fatalf("opencode preset = %+v", opencode)
+	}
 	custom := findAgentPreset(t, presets, "custom-cli")
 	if custom.Command != "" ||
 		custom.Enabled ||

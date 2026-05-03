@@ -152,3 +152,70 @@ CREATE TABLE agent_runs (
 
 CREATE INDEX idx_review_sessions_workspace ON review_sessions(workspace_id, created_at DESC);
 CREATE INDEX idx_agent_runs_session ON agent_runs(review_session_id, status);
+
+CREATE TABLE finding_candidates (
+  id TEXT PRIMARY KEY,
+  review_session_id TEXT NOT NULL REFERENCES review_sessions(id) ON DELETE CASCADE,
+  agent_run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+  raw_artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+  category TEXT NOT NULL,
+  severity TEXT NOT NULL,
+  confidence REAL NOT NULL DEFAULT 0.5,
+  claim TEXT NOT NULL,
+  primary_path TEXT,
+  primary_start_line INTEGER,
+  primary_end_line INTEGER,
+  locations_json TEXT NOT NULL DEFAULT '[]',
+  evidence_json TEXT NOT NULL DEFAULT '[]',
+  suggested_fix TEXT,
+  draft_comment TEXT,
+  fingerprint TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE findings (
+  id TEXT PRIMARY KEY,
+  review_session_id TEXT NOT NULL REFERENCES review_sessions(id) ON DELETE CASCADE,
+  canonical_claim TEXT NOT NULL,
+  category TEXT NOT NULL,
+  severity TEXT NOT NULL,
+  confidence REAL NOT NULL DEFAULT 0.5,
+  verification_status TEXT NOT NULL DEFAULT 'unverified',
+  decision_status TEXT NOT NULL DEFAULT 'undecided',
+  primary_path TEXT,
+  primary_start_line INTEGER,
+  primary_end_line INTEGER,
+  evidence_summary TEXT,
+  counter_evidence_summary TEXT,
+  suggested_fix TEXT,
+  draft_comment TEXT,
+  fingerprint TEXT NOT NULL,
+  merged_from_count INTEGER NOT NULL DEFAULT 1,
+  introduced_in_sha TEXT,
+  first_seen_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(review_session_id, fingerprint)
+);
+
+CREATE TABLE finding_candidate_links (
+  finding_id TEXT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+  finding_candidate_id TEXT NOT NULL REFERENCES finding_candidates(id) ON DELETE CASCADE,
+  relation TEXT NOT NULL DEFAULT 'merged',
+  PRIMARY KEY(finding_id, finding_candidate_id)
+);
+
+CREATE TABLE human_decisions (
+  id TEXT PRIMARY KEY,
+  finding_id TEXT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+  review_session_id TEXT NOT NULL REFERENCES review_sessions(id) ON DELETE CASCADE,
+  decision TEXT NOT NULL CHECK(decision IN ('accepted','dismissed','deferred','copied','published','edited')),
+  reason TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX idx_candidates_session ON finding_candidates(review_session_id);
+CREATE INDEX idx_candidates_fingerprint ON finding_candidates(review_session_id, fingerprint);
+CREATE INDEX idx_findings_session_status ON findings(review_session_id, decision_status, verification_status);
+CREATE INDEX idx_findings_path ON findings(review_session_id, primary_path);
+CREATE INDEX idx_decisions_finding ON human_decisions(finding_id, created_at DESC);

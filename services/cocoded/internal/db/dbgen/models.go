@@ -87,6 +87,65 @@ type ContextBundle struct {
 	CreatedAt       string         `json:"created_at"`
 }
 
+type Finding struct {
+	ID                     string         `json:"id"`
+	ReviewSessionID        string         `json:"review_session_id"`
+	CanonicalClaim         string         `json:"canonical_claim"`
+	Category               string         `json:"category"`
+	Severity               string         `json:"severity"`
+	Confidence             float64        `json:"confidence"`
+	VerificationStatus     string         `json:"verification_status"`
+	DecisionStatus         string         `json:"decision_status"`
+	PrimaryPath            sql.NullString `json:"primary_path"`
+	PrimaryStartLine       sql.NullInt64  `json:"primary_start_line"`
+	PrimaryEndLine         sql.NullInt64  `json:"primary_end_line"`
+	EvidenceSummary        sql.NullString `json:"evidence_summary"`
+	CounterEvidenceSummary sql.NullString `json:"counter_evidence_summary"`
+	SuggestedFix           sql.NullString `json:"suggested_fix"`
+	DraftComment           sql.NullString `json:"draft_comment"`
+	Fingerprint            string         `json:"fingerprint"`
+	MergedFromCount        int64          `json:"merged_from_count"`
+	IntroducedInSha        sql.NullString `json:"introduced_in_sha"`
+	FirstSeenAt            string         `json:"first_seen_at"`
+	UpdatedAt              string         `json:"updated_at"`
+}
+
+type FindingCandidate struct {
+	ID               string         `json:"id"`
+	ReviewSessionID  string         `json:"review_session_id"`
+	AgentRunID       string         `json:"agent_run_id"`
+	RawArtifactID    sql.NullString `json:"raw_artifact_id"`
+	Category         string         `json:"category"`
+	Severity         string         `json:"severity"`
+	Confidence       float64        `json:"confidence"`
+	Claim            string         `json:"claim"`
+	PrimaryPath      sql.NullString `json:"primary_path"`
+	PrimaryStartLine sql.NullInt64  `json:"primary_start_line"`
+	PrimaryEndLine   sql.NullInt64  `json:"primary_end_line"`
+	LocationsJson    string         `json:"locations_json"`
+	EvidenceJson     string         `json:"evidence_json"`
+	SuggestedFix     sql.NullString `json:"suggested_fix"`
+	DraftComment     sql.NullString `json:"draft_comment"`
+	Fingerprint      sql.NullString `json:"fingerprint"`
+	CreatedAt        string         `json:"created_at"`
+}
+
+type FindingCandidateLink struct {
+	FindingID          string `json:"finding_id"`
+	FindingCandidateID string `json:"finding_candidate_id"`
+	Relation           string `json:"relation"`
+}
+
+type HumanDecision struct {
+	ID              string         `json:"id"`
+	FindingID       string         `json:"finding_id"`
+	ReviewSessionID string         `json:"review_session_id"`
+	Decision        string         `json:"decision"`
+	Reason          sql.NullString `json:"reason"`
+	MetadataJson    string         `json:"metadata_json"`
+	CreatedAt       string         `json:"created_at"`
+}
+
 type PullRequestSnapshot struct {
 	ID             string         `json:"id"`
 	RepositoryID   string         `json:"repository_id"`

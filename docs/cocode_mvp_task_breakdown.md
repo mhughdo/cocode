@@ -160,7 +160,7 @@ Large parallel workstreams:
 | T055 | Implement Snapshot queries | CRUD PR snapshot and changed-file queries. | Done | T053 | T075 | Tests cover snapshot creation and changed file lookup. |
 | T056 | Implement ReviewSession queries | CRUD review sessions and status updates. | Done | T053 | T140 | Tests cover state transitions. |
 | T057 | Implement Agent queries | CRUD agent configs/session agents/runs. | Done | T053 | T090 | Tests cover agent config and run lifecycle. |
-| T058 | Implement Finding queries | CRUD candidates/findings/links/decisions. | Not started | T053 | T170 | Tests cover candidate->finding relationships. |
+| T058 | Implement Finding queries | CRUD candidates/findings/links/decisions. | Done | T053 | T170 | Tests cover candidate->finding relationships. |
 | T059 | Implement Evidence Graph queries | CRUD evidence items, graphs, nodes, edges, call paths. | Not started | T053 | T200 | Tests cover graph creation and retrieval. |
 | T060 | Implement Artifact store | Store artifact files under app/workspace directory with metadata rows. | Not started | T050, T052 | T090, T120 | Artifact save/read/delete works; hash/size stored; path traversal blocked. |
 | T061 | Implement event store | Append events with monotonic per-session sequence. | Not started | T056 | T145 | Events persist in order; duplicate sequence impossible; tests cover append/list. |

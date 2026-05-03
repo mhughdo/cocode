@@ -298,6 +298,55 @@ func (c Client) SubmitSummaryReview(ctx context.Context, ref Reference, commitID
 	})
 }
 
+func (c Client) CreatePendingReview(ctx context.Context, ref Reference, params SubmitReviewParams) (PublishedReview, error) {
+	if ref.Owner == "" || ref.Repo == "" || ref.Number <= 0 {
+		return PublishedReview{}, apperror.InvalidRequest("GitHub pull request reference is invalid")
+	}
+	payload, err := pendingReviewPayload(params)
+	if err != nil {
+		return PublishedReview{}, err
+	}
+	resp, err := c.postJSON(ctx, pullEndpoint(c.baseURL(), ref)+"/reviews", payload)
+	if err != nil {
+		return PublishedReview{}, err
+	}
+	defer resp.Body.Close()
+	if err := mapGitHubWriteStatus(resp.StatusCode, "GitHub pending pull request review"); err != nil {
+		return PublishedReview{}, err
+	}
+	var body PublishedReview
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return PublishedReview{}, apperror.Internal("failed to decode GitHub pending pull request review")
+	}
+	return body, nil
+}
+
+func (c Client) SubmitPendingReview(ctx context.Context, ref Reference, reviewID int64, body string, event string) (PublishedReview, error) {
+	if ref.Owner == "" || ref.Repo == "" || ref.Number <= 0 {
+		return PublishedReview{}, apperror.InvalidRequest("GitHub pull request reference is invalid")
+	}
+	if reviewID <= 0 {
+		return PublishedReview{}, apperror.InvalidRequest("GitHub pending review id is invalid")
+	}
+	payload, err := submitPendingReviewPayload(body, event)
+	if err != nil {
+		return PublishedReview{}, err
+	}
+	resp, err := c.postJSON(ctx, reviewEndpoint(c.baseURL(), ref, reviewID)+"/events", payload)
+	if err != nil {
+		return PublishedReview{}, err
+	}
+	defer resp.Body.Close()
+	if err := mapGitHubWriteStatus(resp.StatusCode, "GitHub pending pull request review submit"); err != nil {
+		return PublishedReview{}, err
+	}
+	var response PublishedReview
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return PublishedReview{}, apperror.Internal("failed to decode GitHub submitted pull request review")
+	}
+	return response, nil
+}
+
 func submitReviewPayload(params SubmitReviewParams) (map[string]any, error) {
 	event := strings.ToUpper(strings.TrimSpace(params.Event))
 	switch event {
@@ -312,8 +361,57 @@ func submitReviewPayload(params SubmitReviewParams) (map[string]any, error) {
 	if strings.TrimSpace(params.CommitID) != "" {
 		payload["commit_id"] = strings.TrimSpace(params.CommitID)
 	}
-	comments := make([]map[string]any, 0, len(params.Comments))
-	for _, comment := range params.Comments {
+	comments, err := reviewCommentPayloads(params.Comments)
+	if err != nil {
+		return nil, err
+	}
+	if len(comments) > 0 {
+		payload["comments"] = comments
+	}
+	return payload, nil
+}
+
+func pendingReviewPayload(params SubmitReviewParams) (map[string]any, error) {
+	if strings.TrimSpace(params.Event) != "" {
+		return nil, apperror.InvalidRequest("GitHub pending review must omit event")
+	}
+	payload := map[string]any{}
+	if body := strings.TrimSpace(params.Body); body != "" {
+		payload["body"] = body
+	}
+	if commitID := strings.TrimSpace(params.CommitID); commitID != "" {
+		payload["commit_id"] = commitID
+	}
+	comments, err := reviewCommentPayloads(params.Comments)
+	if err != nil {
+		return nil, err
+	}
+	if len(comments) > 0 {
+		payload["comments"] = comments
+	}
+	if len(payload) == 0 {
+		return nil, apperror.InvalidRequest("GitHub pending review requires body or comments")
+	}
+	return payload, nil
+}
+
+func submitPendingReviewPayload(body string, event string) (map[string]any, error) {
+	event = strings.ToUpper(strings.TrimSpace(event))
+	switch event {
+	case "COMMENT", "REQUEST_CHANGES", "APPROVE":
+	default:
+		return nil, apperror.InvalidRequest("GitHub review event is invalid")
+	}
+	payload := map[string]any{"event": event}
+	if body := strings.TrimSpace(body); body != "" {
+		payload["body"] = body
+	}
+	return payload, nil
+}
+
+func reviewCommentPayloads(drafts []ReviewCommentDraft) ([]map[string]any, error) {
+	comments := make([]map[string]any, 0, len(drafts))
+	for _, comment := range drafts {
 		if comment.Unanchored {
 			return nil, apperror.InvalidRequest("GitHub review contains unanchored comments")
 		}
@@ -327,10 +425,7 @@ func submitReviewPayload(params SubmitReviewParams) (map[string]any, error) {
 			"side": strings.ToUpper(strings.TrimSpace(comment.Side)),
 		})
 	}
-	if len(comments) > 0 {
-		payload["comments"] = comments
-	}
-	return payload, nil
+	return comments, nil
 }
 
 func (c Client) baseURL() string {
@@ -394,6 +489,10 @@ func (c Client) postJSON(ctx context.Context, endpoint string, payload any) (*ht
 
 func pullEndpoint(baseURL string, ref Reference) string {
 	return baseURL + "/repos/" + url.PathEscape(ref.Owner) + "/" + url.PathEscape(ref.Repo) + "/pulls/" + strconv.FormatInt(ref.Number, 10)
+}
+
+func reviewEndpoint(baseURL string, ref Reference, reviewID int64) string {
+	return pullEndpoint(baseURL, ref) + "/reviews/" + strconv.FormatInt(reviewID, 10)
 }
 
 func issueCommentsEndpoint(baseURL string, ref Reference) string {

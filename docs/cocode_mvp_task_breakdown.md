@@ -373,7 +373,7 @@ Large parallel workstreams:
 | T298 | Track publication state | Store GitHub review/comment IDs and update finding decisions. | Done | T297, T185 | T299 | Published findings show status and avoid republish. |
 | T299 | Implement duplicate publish prevention | Detect findings already published for same snapshot/location. | Done | T298 | T266 | Rerun warns/prevents duplicate comments. |
 | T300 | Implement summary-only review | Publish only review body without inline comments. | Done | T297 | T266 | Summary-only path works and is tested. |
-| T301 | Implement pending/draft review path | Save pending review if using GitHub pending review API. | Not started | T297 | T266 | Feature is either implemented or explicitly deferred with UI hidden. |
+| T301 | Implement pending/draft review path | Save pending review if using GitHub pending review API. | Done | T297 | T266 | GitHub client can create pending reviews without `event` and submit them later through the review events endpoint. |
 
 ---
 

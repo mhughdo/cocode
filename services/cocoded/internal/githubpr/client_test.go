@@ -464,6 +464,121 @@ func TestSubmitSummaryReviewSendsBodyWithoutComments(t *testing.T) {
 	}
 }
 
+func TestCreatePendingReviewOmitsEvent(t *testing.T) {
+	t.Parallel()
+
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/openai/codex/pulls/123/reviews" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s", r.Method)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{
+			"id": 7101,
+			"state": "PENDING",
+			"html_url": "https://github.com/openai/codex/pull/123#pullrequestreview-7101",
+			"commit_id": "head-sha"
+		}`))
+	}))
+	defer server.Close()
+
+	review, err := (Client{
+		BaseURL: server.URL,
+		Token:   "token",
+		Client:  server.Client(),
+	}).CreatePendingReview(context.Background(), Reference{Owner: "openai", Repo: "codex", Number: 123}, SubmitReviewParams{
+		CommitID: "head-sha",
+		Body:     "Draft review body.",
+		Comments: []ReviewCommentDraft{{
+			FindingID: "finding_auth",
+			Path:      "app/auth.go",
+			Body:      "Draft inline note.",
+			Line:      12,
+			Side:      SideRight,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreatePendingReview() error = %v", err)
+	}
+	if review.ID != 7101 || review.State != "PENDING" || review.SubmittedAt != "" {
+		t.Fatalf("review = %+v", review)
+	}
+	if _, ok := payload["event"]; ok {
+		t.Fatalf("pending review payload should omit event: %+v", payload)
+	}
+	if payload["body"] != "Draft review body." || payload["commit_id"] != "head-sha" {
+		t.Fatalf("payload = %+v", payload)
+	}
+	comments, ok := payload["comments"].([]any)
+	if !ok || len(comments) != 1 {
+		t.Fatalf("comments payload = %+v", payload["comments"])
+	}
+	comment := comments[0].(map[string]any)
+	if comment["path"] != "app/auth.go" || comment["line"].(float64) != 12 || comment["side"] != SideRight {
+		t.Fatalf("comment payload = %+v", comment)
+	}
+}
+
+func TestCreatePendingReviewRejectsEventAndEmptyDraft(t *testing.T) {
+	t.Parallel()
+
+	_, err := (Client{Token: "token"}).CreatePendingReview(context.Background(), Reference{Owner: "openai", Repo: "codex", Number: 123}, SubmitReviewParams{
+		Event: "COMMENT",
+		Body:  "This should be submitted instead.",
+	})
+	assertClientAppError(t, err, apperror.CodeInvalidRequest)
+
+	_, err = (Client{Token: "token"}).CreatePendingReview(context.Background(), Reference{Owner: "openai", Repo: "codex", Number: 123}, SubmitReviewParams{})
+	assertClientAppError(t, err, apperror.CodeInvalidRequest)
+}
+
+func TestSubmitPendingReviewPostsReviewEvent(t *testing.T) {
+	t.Parallel()
+
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/openai/codex/pulls/123/reviews/7101/events" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s", r.Method)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"id": 7101,
+			"state": "COMMENTED",
+			"html_url": "https://github.com/openai/codex/pull/123#pullrequestreview-7101",
+			"commit_id": "head-sha",
+			"submitted_at": "2026-05-03T12:30:00Z"
+		}`))
+	}))
+	defer server.Close()
+
+	review, err := (Client{
+		BaseURL: server.URL,
+		Token:   "token",
+		Client:  server.Client(),
+	}).SubmitPendingReview(context.Background(), Reference{Owner: "openai", Repo: "codex", Number: 123}, 7101, "Ready to publish.", "comment")
+	if err != nil {
+		t.Fatalf("SubmitPendingReview() error = %v", err)
+	}
+	if review.ID != 7101 || review.State != "COMMENTED" || review.SubmittedAt == "" {
+		t.Fatalf("review = %+v", review)
+	}
+	if payload["event"] != "COMMENT" || payload["body"] != "Ready to publish." {
+		t.Fatalf("payload = %+v", payload)
+	}
+}
+
 const serverURLPlaceholder = "https://api.github.test"
 
 func assertClientAppError(t *testing.T, err error, code apperror.Code) {

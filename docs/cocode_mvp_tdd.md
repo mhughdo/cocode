@@ -1899,6 +1899,8 @@ Successful publication records create a `github_publications` row with the GitHu
 
 Summary-only publishing uses the same GitHub review endpoint but omits the `comments` array entirely, sending only `body`, `event`, and optional `commit_id`.
 
+Pending review publishing creates the review through the same endpoint while omitting `event`, which leaves the GitHub review in `PENDING` state. cocode can later submit that pending review through `POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}/events` with `event` set to `COMMENT`, `REQUEST_CHANGES`, or `APPROVE` plus an optional body.
+
 GitHub preview creation rejects findings that are already `published`, and also rejects selected findings that share a fingerprint or primary file/line range with another published finding in the same review session. This prevents duplicate inline comments on reruns before a publish request is built.
 
 If mapping fails:

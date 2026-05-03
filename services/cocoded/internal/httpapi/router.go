@@ -153,6 +153,11 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.POST("/pr-snapshots/from-local-changes", createLocalChangesSnapshotHandler(services))
 	api.GET("/pr-snapshots/:id", snapshotHandler(services))
 	api.GET("/pr-snapshots/:id/changed-files", changedFilesHandler(queries))
+	api.GET("/agents/configs", listAgentConfigsHandler(queries))
+	api.POST("/agents/configs", createAgentConfigHandler(queries))
+	api.PATCH("/agents/configs/:id", updateAgentConfigHandler(queries))
+	api.POST("/agents/configs/:id/test", testAgentConfigHandler(queries))
+	api.DELETE("/agents/configs/:id", deleteAgentConfigHandler(queries))
 
 	return router
 }

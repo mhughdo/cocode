@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hughdo/cocode/services/cocoded/internal/agents"
 	"github.com/hughdo/cocode/services/cocoded/internal/app"
 	"github.com/hughdo/cocode/services/cocoded/internal/db"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
@@ -85,6 +87,250 @@ func TestAuthenticatedRouteAcceptsToken(t *testing.T) {
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, response.Code)
+	}
+}
+
+func TestAgentConfigEndpointCRUDAndHealth(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+
+	createRequest := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/agents/configs", map[string]any{
+		"name":            "Codex reviewer",
+		"role":            "reviewer",
+		"adapter_kind":    "cli_noninteractive",
+		"command":         "codex",
+		"args":            []string{"exec"},
+		"cwd_mode":        "repo_root",
+		"env_allowlist":   []string{"OPENAI_API_KEY", "OPENAI_API_KEY"},
+		"output_mode":     "json",
+		"model_label":     "gpt-5.5",
+		"reasoning_label": "high",
+		"capabilities": map[string]any{
+			"supports_json": true,
+			"can_read":      true,
+			"can_write":     false,
+			"can_cancel":    true,
+			"output_modes":  []string{"json", "text"},
+		},
+		"settings": map[string]any{
+			"prompt_delivery": "stdin",
+			"timeout_seconds": 600,
+		},
+		"enabled": true,
+	})
+	createResponse := httptest.NewRecorder()
+	router.ServeHTTP(createResponse, createRequest)
+	if createResponse.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createResponse.Code, createResponse.Body.String())
+	}
+	created := decodeAgentConfigResponse(t, createResponse.Body.Bytes())
+	if !strings.HasPrefix(created.ID, "agent_config_") ||
+		created.Name != "Codex reviewer" ||
+		created.Command != "codex" ||
+		len(created.Args) != 1 ||
+		created.Args[0] != "exec" ||
+		len(created.EnvAllowlist) != 1 ||
+		created.EnvAllowlist[0] != "OPENAI_API_KEY" ||
+		created.OutputMode != agents.OutputJSON ||
+		!created.Capabilities.SupportsOutputMode(agents.OutputJSON) ||
+		created.Capabilities.CanWrite ||
+		!created.Enabled {
+		t.Fatalf("created agent config = %+v", created)
+	}
+
+	stored, err := queries.GetAgentConfig(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetAgentConfig() error = %v", err)
+	}
+	if stored.CapabilitiesJson == "" || stored.SettingsJson == "" {
+		t.Fatalf("stored agent config = %+v", stored)
+	}
+
+	listRequest := httptest.NewRequest(http.MethodGet, "/api/agents/configs", nil)
+	listRequest.Header.Set("X-Cocode-Token", "test-token")
+	listResponse := httptest.NewRecorder()
+	router.ServeHTTP(listResponse, listRequest)
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", listResponse.Code, listResponse.Body.String())
+	}
+	list := decodeAgentConfigListResponse(t, listResponse.Body.Bytes())
+	if len(list) != 1 || list[0].ID != created.ID {
+		t.Fatalf("list = %+v", list)
+	}
+
+	healthRequest := httptest.NewRequest(http.MethodPost, "/api/agents/configs/"+created.ID+"/test", nil)
+	healthRequest.Header.Set("X-Cocode-Token", "test-token")
+	healthResponse := httptest.NewRecorder()
+	router.ServeHTTP(healthResponse, healthRequest)
+	if healthResponse.Code != http.StatusOK {
+		t.Fatalf("health status = %d, body = %s", healthResponse.Code, healthResponse.Body.String())
+	}
+	health := decodeAgentConfigHealthResponse(t, healthResponse.Body.Bytes())
+	if health.AgentConfigID != created.ID || health.Status != agents.HealthUnknown || !health.Capabilities.SupportsOutputMode(agents.OutputJSON) {
+		t.Fatalf("health = %+v", health)
+	}
+
+	patchRequest := newAuthenticatedJSONRequest(t, http.MethodPatch, "/api/agents/configs/"+created.ID, map[string]any{
+		"name":            "Codex reviewer deep",
+		"command":         "codex",
+		"args":            []string{"exec", "--json"},
+		"env_allowlist":   []string{"OPENAI_API_KEY"},
+		"output_mode":     "jsonl",
+		"reasoning_label": "xhigh",
+		"capabilities": map[string]any{
+			"supports_json":      true,
+			"supports_streaming": true,
+			"can_read":           true,
+			"can_write":          false,
+			"can_cancel":         true,
+			"output_modes":       []string{"jsonl", "json"},
+		},
+		"settings": map[string]any{
+			"timeout_seconds": 900,
+		},
+		"enabled": false,
+	})
+	patchResponse := httptest.NewRecorder()
+	router.ServeHTTP(patchResponse, patchRequest)
+	if patchResponse.Code != http.StatusOK {
+		t.Fatalf("patch status = %d, body = %s", patchResponse.Code, patchResponse.Body.String())
+	}
+	updated := decodeAgentConfigResponse(t, patchResponse.Body.Bytes())
+	if updated.Name != "Codex reviewer deep" ||
+		updated.ReasoningLabel != "xhigh" ||
+		updated.OutputMode != agents.OutputJSONL ||
+		!updated.Capabilities.SupportsStreaming ||
+		updated.Enabled {
+		t.Fatalf("updated agent config = %+v", updated)
+	}
+
+	disabledHealthRequest := httptest.NewRequest(http.MethodPost, "/api/agents/configs/"+created.ID+"/test", nil)
+	disabledHealthRequest.Header.Set("X-Cocode-Token", "test-token")
+	disabledHealthResponse := httptest.NewRecorder()
+	router.ServeHTTP(disabledHealthResponse, disabledHealthRequest)
+	if disabledHealthResponse.Code != http.StatusOK {
+		t.Fatalf("disabled health status = %d, body = %s", disabledHealthResponse.Code, disabledHealthResponse.Body.String())
+	}
+	disabledHealth := decodeAgentConfigHealthResponse(t, disabledHealthResponse.Body.Bytes())
+	if disabledHealth.Status != agents.HealthDegraded {
+		t.Fatalf("disabled health = %+v", disabledHealth)
+	}
+
+	deleteRequest := httptest.NewRequest(http.MethodDelete, "/api/agents/configs/"+created.ID, nil)
+	deleteRequest.Header.Set("X-Cocode-Token", "test-token")
+	deleteResponse := httptest.NewRecorder()
+	router.ServeHTTP(deleteResponse, deleteRequest)
+	if deleteResponse.Code != http.StatusOK {
+		t.Fatalf("delete status = %d, body = %s", deleteResponse.Code, deleteResponse.Body.String())
+	}
+	if _, err := queries.GetAgentConfig(context.Background(), created.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("GetAgentConfig(deleted) error = %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestAgentConfigEndpointRejectsInvalidInputs(t *testing.T) {
+	router, _ := testRouterWithQueries(t)
+
+	tests := []struct {
+		name string
+		body map[string]any
+	}{
+		{
+			name: "invalid adapter kind",
+			body: map[string]any{
+				"name":         "Shell reviewer",
+				"role":         "reviewer",
+				"adapter_kind": "shell",
+				"output_mode":  "text",
+			},
+		},
+		{
+			name: "missing cli command",
+			body: map[string]any{
+				"name":         "Codex reviewer",
+				"role":         "reviewer",
+				"adapter_kind": "cli_noninteractive",
+				"output_mode":  "text",
+			},
+		},
+		{
+			name: "invalid output mode",
+			body: map[string]any{
+				"name":         "Codex reviewer",
+				"role":         "reviewer",
+				"adapter_kind": "cli_noninteractive",
+				"command":      "codex",
+				"output_mode":  "yaml",
+			},
+		},
+		{
+			name: "capability mismatch",
+			body: map[string]any{
+				"name":         "Text reviewer",
+				"role":         "reviewer",
+				"adapter_kind": "cli_noninteractive",
+				"command":      "reviewer",
+				"output_mode":  "json",
+				"capabilities": map[string]any{
+					"supports_json": false,
+				},
+			},
+		},
+		{
+			name: "settings must be object",
+			body: map[string]any{
+				"name":         "Codex reviewer",
+				"role":         "reviewer",
+				"adapter_kind": "cli_noninteractive",
+				"command":      "codex",
+				"output_mode":  "text",
+				"settings":     []string{"bad"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/agents/configs", tt.body)
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusBadRequest, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestAgentConfigEndpointRejectsAdapterKindChangeAndMissingHealthConfig(t *testing.T) {
+	router, _ := testRouterWithQueries(t)
+
+	createRequest := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/agents/configs", map[string]any{
+		"name":         "Local verifier",
+		"role":         "verifier",
+		"adapter_kind": "local_verifier",
+		"output_mode":  "json",
+	})
+	createResponse := httptest.NewRecorder()
+	router.ServeHTTP(createResponse, createRequest)
+	if createResponse.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createResponse.Code, createResponse.Body.String())
+	}
+	created := decodeAgentConfigResponse(t, createResponse.Body.Bytes())
+
+	patchRequest := newAuthenticatedJSONRequest(t, http.MethodPatch, "/api/agents/configs/"+created.ID, map[string]any{
+		"adapter_kind": "cli_noninteractive",
+	})
+	patchResponse := httptest.NewRecorder()
+	router.ServeHTTP(patchResponse, patchRequest)
+	if patchResponse.Code != http.StatusBadRequest {
+		t.Fatalf("patch status = %d, want %d, body = %s", patchResponse.Code, http.StatusBadRequest, patchResponse.Body.String())
+	}
+
+	healthRequest := httptest.NewRequest(http.MethodPost, "/api/agents/configs/missing/test", nil)
+	healthRequest.Header.Set("X-Cocode-Token", "test-token")
+	healthResponse := httptest.NewRecorder()
+	router.ServeHTTP(healthResponse, healthRequest)
+	if healthResponse.Code != http.StatusNotFound {
+		t.Fatalf("missing health status = %d, body = %s", healthResponse.Code, healthResponse.Body.String())
 	}
 }
 
@@ -589,6 +835,54 @@ func decodeSnapshotResponse(t *testing.T, content []byte) SnapshotResponse {
 	var envelope struct {
 		Data  SnapshotResponse `json:"data"`
 		Error any              `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeAgentConfigResponse(t *testing.T, content []byte) AgentConfigResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  AgentConfigResponse `json:"data"`
+		Error any                 `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeAgentConfigListResponse(t *testing.T, content []byte) []AgentConfigResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  []AgentConfigResponse `json:"data"`
+		Error any                   `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeAgentConfigHealthResponse(t *testing.T, content []byte) AgentConfigHealthResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  AgentConfigHealthResponse `json:"data"`
+		Error any                       `json:"error"`
 	}
 	if err := json.Unmarshal(content, &envelope); err != nil {
 		t.Fatalf("decode response: %v", err)

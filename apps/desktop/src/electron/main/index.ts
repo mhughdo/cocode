@@ -6,8 +6,10 @@ import { electronApp, is, optimizer } from "@electron-toolkit/utils";
 
 import { BackendController } from "./backend";
 import { registerIpc } from "./ipc";
+import { SecretStore } from "./secret-store";
 
 const backend = new BackendController();
+const secretStore = new SecretStore();
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -63,6 +65,8 @@ void app.whenReady().then(async () => {
 
   await backend.start();
   logMainEvent("backend ready", { backend: backend.getInfo() });
+  const secretStoreReady = await secretStore.selfTest();
+  logMainEvent("secret store ready", { ok: secretStoreReady });
   registerIpc(backend);
   createWindow();
 

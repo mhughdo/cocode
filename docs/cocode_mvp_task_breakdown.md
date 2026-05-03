@@ -125,8 +125,8 @@ Large parallel workstreams:
 | T033 | Implement preload API | Expose narrow `window.cocode` API for backend info, clipboard, repo picker, editor open. | Done | T030 | T034, T242 | Renderer cannot access raw Node/Electron APIs; IPC inputs are validated. |
 | T034 | Implement clipboard bridge | Add secure clipboard write path for copy packets/comments. | Done | T033 | T290 | Copy works from renderer through main; oversized copy attempts are guarded/logged. |
 | T035 | Implement repository picker | Add file dialog to select local repo directory. | Done | T033 | T070, T245 | User can select folder; result is passed to renderer; cancellation is handled. |
-| T036 | Implement open external editor bridge | Open file/line in configured editor or OS fallback. | Not started | T033 | T213, T263 | Works for supported editor command; unsupported editor shows clear error. |
-| T037 | Add safe secret storage abstraction | Implement Electron-side secret storage wrapper. | Not started | T030 | T330 | Can store/retrieve/delete test secret; does not expose secret to renderer. |
+| T036 | Implement open external editor bridge | Open file/line in configured editor or OS fallback. | Done | T033 | T213, T263 | Works for supported editor command; unsupported editor shows clear error. |
+| T037 | Add safe secret storage abstraction | Implement Electron-side secret storage wrapper. | Done | T030 | T330 | Can store/retrieve/delete test secret; does not expose secret to renderer. |
 | T038 | Add crash/error log location | Define app log path and expose “open logs” action later. | Done | T030 | T360 | Main/backend logs are written to predictable local paths. |
 | T039 | Harden Electron security defaults | Disable nodeIntegration, enable contextIsolation and sandbox, set CSP. | Done | T030 | T240, T330 | Security checklist passes; no raw ipcRenderer exposure. |
 

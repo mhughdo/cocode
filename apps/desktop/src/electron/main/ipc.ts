@@ -1,14 +1,9 @@
 import { app, clipboard, dialog, ipcMain, shell } from "electron";
 
 import type { BackendController } from "./backend";
+import { openExternalEditor, type OpenFileRequest } from "./editor";
 
 const maxClipboardBytes = 1_000_000;
-
-export interface OpenFileRequest {
-  filePath: string;
-  line?: number;
-  column?: number;
-}
 
 export function registerIpc(backend: BackendController): void {
   ipcMain.handle("cocode:get-backend-info", () => {
@@ -43,10 +38,7 @@ export function registerIpc(backend: BackendController): void {
 
   ipcMain.handle("cocode:open-file", async (_event, request: unknown) => {
     const parsed = parseOpenFileRequest(request);
-    const error = await shell.openPath(parsed.filePath);
-    if (error) {
-      throw new Error(error);
-    }
+    await openExternalEditor(parsed);
     return { ok: true };
   });
 

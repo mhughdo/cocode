@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -136,9 +137,62 @@ func TestWorkflowRunsFakeAgentEndToEnd(t *testing.T) {
 		"AgentOutputParsed",
 		"ReviewSessionCompleted",
 	})
-	if !strings.Contains(env.Driver.prompt, "Context Bundle") ||
-		!strings.Contains(env.Driver.prompt, "src/new.go") {
-		t.Fatalf("agent prompt missing context:\n%s", env.Driver.prompt)
+	if prompt := env.Driver.lastPrompt(); !strings.Contains(prompt, "Context Bundle") ||
+		!strings.Contains(prompt, "src/new.go") {
+		t.Fatalf("agent prompt missing context:\n%s", prompt)
+	}
+}
+
+func TestWorkflowRunsSelectedAgentsInParallel(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	env.Driver.delay = 100 * time.Millisecond
+	if _, err := env.Queries.CreateAgentConfig(context.Background(), dbgen.CreateAgentConfigParams{
+		ID:               "agent_config_2",
+		Name:             "Fake Reviewer 2",
+		Role:             "secondary_reviewer",
+		AdapterKind:      string(agents.AdapterCLINonInteractive),
+		Command:          nullableTestString("fake-agent"),
+		ArgsJson:         "[]",
+		CwdMode:          "repo_root",
+		EnvAllowlistJson: "[]",
+		OutputMode:       string(agents.OutputJSON),
+		CapabilitiesJson: `{"supports_json":true,"can_read":true,"output_modes":["json"]}`,
+		SettingsJson:     `{"prompt_delivery":"stdin","timeout_seconds":30}`,
+		Enabled:          1,
+		CreatedAt:        "2026-05-03T00:04:00Z",
+		UpdatedAt:        "2026-05-03T00:04:00Z",
+	}); err != nil {
+		t.Fatalf("CreateAgentConfig(second) error = %v", err)
+	}
+	session := createWorkflowSession(t, env, "review_session_parallel", StatusDraft)
+	if _, err := env.Queries.CreateReviewSessionAgent(context.Background(), dbgen.CreateReviewSessionAgentParams{
+		ID:                   "review_session_agent_parallel_2",
+		ReviewSessionID:      session.ID,
+		AgentConfigID:        "agent_config_2",
+		Role:                 "secondary_reviewer",
+		RunOrder:             2,
+		Enabled:              1,
+		SettingsOverrideJson: "{}",
+	}); err != nil {
+		t.Fatalf("CreateReviewSessionAgent(second) error = %v", err)
+	}
+	if _, err := env.Service.Transition(context.Background(), session.ID, StatusQueued); err != nil {
+		t.Fatalf("Transition(draft -> queued) error = %v", err)
+	}
+	if err := env.Service.Run(context.Background(), session.ID); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if max := env.Driver.maxConcurrent(); max < 2 {
+		t.Fatalf("max concurrent agent sends = %d, want at least 2", max)
+	}
+	runs, err := env.Queries.ListAgentRunsBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListAgentRunsBySession() error = %v", err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("agent runs len = %d, want 2: %+v", len(runs), runs)
 	}
 }
 
@@ -369,7 +423,11 @@ func assertEventTypes(t *testing.T, events []dbgen.Event, want []string) {
 }
 
 type workflowDriver struct {
-	prompt string
+	mu      sync.Mutex
+	prompts []string
+	delay   time.Duration
+	current int
+	max     int
 }
 
 func (d *workflowDriver) Open(context.Context, agents.ConnectionConfig) (agents.Connection, error) {
@@ -381,7 +439,11 @@ type workflowConnection struct {
 }
 
 func (c workflowConnection) SendTask(_ context.Context, task agents.AgentTask) (<-chan agents.AgentEvent, error) {
-	c.driver.prompt = task.Prompt
+	c.driver.enter(task.Prompt)
+	if c.driver.delay > 0 {
+		time.Sleep(c.driver.delay)
+	}
+	c.driver.leave()
 	exitCode := 0
 	events := make(chan agents.AgentEvent, 3)
 	events <- agents.AgentEvent{Type: agents.EventStarted, RunID: task.RunID, Message: "fake agent started"}
@@ -393,6 +455,37 @@ func (c workflowConnection) SendTask(_ context.Context, task agents.AgentTask) (
 
 func (workflowConnection) Close(context.Context) error {
 	return nil
+}
+
+func (d *workflowDriver) enter(prompt string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.prompts = append(d.prompts, prompt)
+	d.current++
+	if d.current > d.max {
+		d.max = d.current
+	}
+}
+
+func (d *workflowDriver) leave() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.current--
+}
+
+func (d *workflowDriver) lastPrompt() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.prompts) == 0 {
+		return ""
+	}
+	return d.prompts[len(d.prompts)-1]
+}
+
+func (d *workflowDriver) maxConcurrent() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.max
 }
 
 func nullableTestString(value string) sql.NullString {

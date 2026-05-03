@@ -365,11 +365,11 @@ func (s *Service) run(ctx context.Context, reviewSessionID string) error {
 
 	failedRuns := 0
 	if err := s.withPhase(ctx, session.ID, PhaseRunAgents, func() error {
-		for _, item := range runContexts {
-			result, err := s.runAgent(ctx, item)
-			if err != nil {
-				return err
-			}
+		results, err := s.runAgents(ctx, runContexts)
+		if err != nil {
+			return err
+		}
+		for _, result := range results {
 			if result.Run.Status != agentrun.RunStatusSucceeded {
 				failedRuns++
 			}
@@ -405,6 +405,33 @@ func (s *Service) run(ctx context.Context, reviewSessionID string) error {
 			"status": completed.Status,
 		},
 	})
+}
+
+func (s *Service) runAgents(ctx context.Context, items []runContext) ([]agentrun.RunResult, error) {
+	type runAgentResult struct {
+		index  int
+		result agentrun.RunResult
+		err    error
+	}
+
+	results := make([]agentrun.RunResult, len(items))
+	resultCh := make(chan runAgentResult, len(items))
+	for index, item := range items {
+		go func(index int, item runContext) {
+			result, err := s.runAgent(ctx, item)
+			resultCh <- runAgentResult{index: index, result: result, err: err}
+		}(index, item)
+	}
+
+	var errs []error
+	for range items {
+		item := <-resultCh
+		results[item.index] = item.result
+		if item.err != nil {
+			errs = append(errs, item.err)
+		}
+	}
+	return results, errors.Join(errs...)
 }
 
 func (s *Service) runAgent(ctx context.Context, item runContext) (agentrun.RunResult, error) {

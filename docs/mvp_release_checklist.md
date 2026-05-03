@@ -47,6 +47,7 @@ Use this checklist before tagging an MVP release candidate. A release is ready o
 
 ## Dogfood Criteria
 
+- [ ] Complete `docs/dogfood_checklist.md` for each required real PR.
 - [ ] Run cocode on at least three real PRs: small, medium, and large diff.
 - [ ] Verify large-diff review remains responsive and bounded by context budgets.
 - [ ] Confirm duplicate publish prevention on a rerun.

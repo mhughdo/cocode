@@ -13,6 +13,7 @@
     "lint": "pnpm --filter @cocode/desktop lint && pnpm backend:vet",
     "test": "pnpm --filter @cocode/desktop test && pnpm backend:test",
     "backend:dev": "cd services/cocoded && go run ./cmd/cocoded",
+    "backend:eval": "cd services/cocoded && go run ./cmd/cocode-eval",
     "backend:export": "cd services/cocoded && go run ./cmd/cocode-db-export",
     "backend:seed": "cd services/cocoded && go run ./cmd/cocode-db-seed",
     "backend:generate": "cd services/cocoded && go tool sqlc generate",

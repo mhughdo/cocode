@@ -8,14 +8,17 @@ import (
 )
 
 type Config struct {
-	Addr      string
-	AuthToken string
-	LogPath   string
-	DataDir   string
-	Version   string
+	Addr        string
+	AuthToken   string
+	LogPath     string
+	DataDir     string
+	DBPath      string
+	ArtifactDir string
+	Version     string
 }
 
 func LoadConfig() (Config, error) {
+	dataDir := getenv("COCODED_DATA_DIR", defaultDataDir())
 	token := os.Getenv("COCODED_AUTH_TOKEN")
 	if token == "" {
 		generated, err := GenerateAuthToken()
@@ -26,11 +29,13 @@ func LoadConfig() (Config, error) {
 	}
 
 	return Config{
-		Addr:      getenv("COCODED_ADDR", "127.0.0.1:17658"),
-		AuthToken: token,
-		LogPath:   os.Getenv("COCODED_LOG_PATH"),
-		DataDir:   getenv("COCODED_DATA_DIR", defaultDataDir()),
-		Version:   Version,
+		Addr:        getenv("COCODED_ADDR", "127.0.0.1:17658"),
+		AuthToken:   token,
+		LogPath:     os.Getenv("COCODED_LOG_PATH"),
+		DataDir:     dataDir,
+		DBPath:      getenv("COCODED_DB_PATH", filepath.Join(dataDir, "cocoded.sqlite")),
+		ArtifactDir: getenv("COCODED_ARTIFACT_DIR", filepath.Join(dataDir, "artifacts")),
+		Version:     Version,
 	}, nil
 }
 

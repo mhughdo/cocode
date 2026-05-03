@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hughdo/cocode/services/cocoded/internal/app"
+	"github.com/hughdo/cocode/services/cocoded/internal/db"
 	"github.com/hughdo/cocode/services/cocoded/internal/httpapi"
 )
 
@@ -24,6 +25,19 @@ func main() {
 		panic(err)
 	}
 	defer cleanup()
+
+	database, err := db.Open(context.Background(), config.DBPath)
+	if err != nil {
+		logger.Error("cocoded database open failed", "path", config.DBPath, "error", err)
+		os.Exit(1)
+	}
+	defer database.Close()
+
+	if err := db.Apply(context.Background(), database, db.Migrations); err != nil {
+		logger.Error("cocoded database migration failed", "path", config.DBPath, "error", err)
+		os.Exit(1)
+	}
+	logger.Info("cocoded database ready", "path", config.DBPath)
 
 	router := httpapi.NewRouter(config, logger)
 	server := &http.Server{

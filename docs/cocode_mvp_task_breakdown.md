@@ -152,9 +152,9 @@ Large parallel workstreams:
 
 | ID | Task | Description | Status | Dependencies | Parallelization | Done criteria |
 |---|---|---|---|---|---|---|
-| T050 | Add SQLite connection manager | Open DB, set WAL/foreign keys/busy timeout, close cleanly. | Not started | T045 | T051 | DB opens in dev/prod path; pragmas applied; tests use temp DB. |
-| T051 | Add migration runner | Implement migrations with version tracking. | Not started | T050 | T052 | Fresh DB migrates; repeated migration is idempotent; migration failure is reported. |
-| T052 | Implement schema v1 | Add core tables from TDD: workspaces, snapshots, sessions, agents, findings, evidence, graph, packets, publications. | Not started | T051 | T053 | Schema applies cleanly; foreign keys enforced; indexes created. |
+| T050 | Add SQLite connection manager | Open DB, set WAL/foreign keys/busy timeout, close cleanly. | Done | T045 | T051 | DB opens in dev/prod path; pragmas applied; tests use temp DB. |
+| T051 | Add migration runner | Implement migrations with version tracking. | Done | T050 | T052 | Fresh DB migrates; repeated migration is idempotent; migration failure is reported. |
+| T052 | Implement schema v1 | Add core tables from TDD: workspaces, snapshots, sessions, agents, findings, evidence, graph, packets, publications. | Done | T051 | T053 | Schema applies cleanly; foreign keys enforced; indexes created. |
 | T053 | Configure sqlc | Add sqlc config and initial query files. | Not started | T052 | T054 | Generated Go code compiles; queries are type-safe. |
 | T054 | Implement Workspace queries | CRUD/list workspace queries. | Not started | T053 | T070 | Unit tests cover create/get/list/update. |
 | T055 | Implement Snapshot queries | CRUD PR snapshot and changed-file queries. | Not started | T053 | T075 | Tests cover snapshot creation and changed file lookup. |

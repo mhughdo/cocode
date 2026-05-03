@@ -88,7 +88,8 @@ export class BackendController {
       });
     }
 
-    const binaryPath = join(process.resourcesPath, "cocoded");
+    const binaryName = process.platform === "win32" ? "cocoded.exe" : "cocoded";
+    const binaryPath = join(process.resourcesPath, binaryName);
     if (!existsSync(binaryPath)) {
       throw new Error(`Bundled cocoded binary not found at ${binaryPath}`);
     }

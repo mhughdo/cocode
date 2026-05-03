@@ -12,7 +12,9 @@
     "lint": "eslint . --max-warnings=0",
     "test": "vitest run --passWithNoTests",
     "e2e": "pnpm build && playwright test -c playwright.config.ts",
-    "preview": "electron-vite preview"
+    "preview": "electron-vite preview",
+    "dist:dir": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir --mac --publish never",
+    "dist:mac": "electron-builder --mac --publish never"
   },
   "dependencies": {
     "@electron-toolkit/utils": "^4.0.0",
@@ -37,6 +39,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
     "electron": "^41.5.0",
+    "electron-builder": "^26.8.1",
     "electron-vite": "^5.0.0",
     "eslint": "^10.3.0",
     "eslint-plugin-react-hooks": "^7.1.1",

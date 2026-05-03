@@ -9,6 +9,7 @@ test-results/
 *.log
 
 # Electron build artifacts
+apps/desktop/build/bin/
 release/
 *.dmg
 *.zip

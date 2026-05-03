@@ -39,9 +39,11 @@ Use this checklist before tagging an MVP release candidate. A release is ready o
 
 ## Packaging And Operations
 
+- [ ] `docs/release_packaging.md` is current for the target release.
 - [ ] macOS packaged build launches desktop app and bundled backend.
 - [ ] App log location is documented and reachable.
-- [ ] First-run setup guide covers GitHub token, CLI presets, and troubleshooting.
+- [ ] `docs/first_run_setup.md` covers GitHub token, CLI presets, and first review.
+- [ ] `docs/troubleshooting.md` covers missing CLI, auth errors, invalid output, timeouts, and GitHub anchor failures.
 - [ ] Signing/notarization requirements are documented, even if manual.
 - [ ] Update strategy is documented as MVP manual update or future auto-update.
 

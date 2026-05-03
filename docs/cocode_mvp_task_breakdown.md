@@ -164,7 +164,7 @@ Large parallel workstreams:
 | T059 | Implement Evidence Graph queries | CRUD evidence items, graphs, nodes, edges, call paths. | Done | T053 | T200 | Tests cover graph creation and retrieval. |
 | T060 | Implement Artifact store | Store artifact files under app/workspace directory with metadata rows. | Done | T050, T052 | T090, T120 | Artifact save/read/delete works; hash/size stored; path traversal blocked. |
 | T061 | Implement event store | Append events with monotonic per-session sequence. | Done | T056 | T145 | Events persist in order; duplicate sequence impossible; tests cover append/list. |
-| T062 | Add FTS search tables | Add FTS for findings/evidence search and sync helpers. | Not started | T052 | T255 | Search returns seeded findings; updates after finding changes. |
+| T062 | Add FTS search tables | Add FTS for findings/evidence search and sync helpers. | Done | T052 | T255 | Search returns seeded findings; updates after finding changes. |
 | T063 | Add DB backup/export dev command | Add developer command to dump local DB and artifacts metadata. | Not started | T050 | T360 | Command runs safely and redacts secrets. |
 | T064 | Add seeded dev data | Create seed script for UI development with sample sessions/findings/evidence maps. | Not started | T052, T060 | T240 | Frontend can run against seeded data without agents. |
 

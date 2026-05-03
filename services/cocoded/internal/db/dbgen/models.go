@@ -170,6 +170,13 @@ type EvidenceNode struct {
 	MetadataJson    string         `json:"metadata_json"`
 }
 
+type EvidenceSearch struct {
+	EvidenceItemID string `json:"evidence_item_id"`
+	Title          string `json:"title"`
+	Summary        string `json:"summary"`
+	Path           string `json:"path"`
+}
+
 type Finding struct {
 	ID                     string         `json:"id"`
 	ReviewSessionID        string         `json:"review_session_id"`
@@ -217,6 +224,14 @@ type FindingCandidateLink struct {
 	FindingID          string `json:"finding_id"`
 	FindingCandidateID string `json:"finding_candidate_id"`
 	Relation           string `json:"relation"`
+}
+
+type FindingSearch struct {
+	FindingID       string `json:"finding_id"`
+	Claim           string `json:"claim"`
+	EvidenceSummary string `json:"evidence_summary"`
+	SuggestedFix    string `json:"suggested_fix"`
+	DraftComment    string `json:"draft_comment"`
 }
 
 type HumanDecision struct {

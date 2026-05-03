@@ -310,3 +310,18 @@ CREATE TABLE call_path_steps (
 CREATE INDEX idx_evidence_finding ON evidence_items(finding_id, kind);
 CREATE INDEX idx_evidence_nodes_graph ON evidence_nodes(evidence_graph_id, kind);
 CREATE INDEX idx_evidence_edges_graph ON evidence_edges(evidence_graph_id, kind);
+
+CREATE VIRTUAL TABLE finding_search USING fts5(
+  finding_id UNINDEXED,
+  claim,
+  evidence_summary,
+  suggested_fix,
+  draft_comment
+);
+
+CREATE VIRTUAL TABLE evidence_search USING fts5(
+  evidence_item_id UNINDEXED,
+  title,
+  summary,
+  path
+);

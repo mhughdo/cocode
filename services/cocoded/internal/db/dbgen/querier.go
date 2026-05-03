@@ -36,8 +36,10 @@ type Querier interface {
 	DeleteEvidenceGraph(ctx context.Context, id string) error
 	DeleteEvidenceItem(ctx context.Context, id string) error
 	DeleteEvidenceNode(ctx context.Context, id string) error
+	DeleteEvidenceSearch(ctx context.Context, evidenceItemID string) error
 	DeleteFinding(ctx context.Context, id string) error
 	DeleteFindingCandidate(ctx context.Context, id string) error
+	DeleteFindingSearch(ctx context.Context, findingID string) error
 	DeletePullRequestSnapshot(ctx context.Context, id string) error
 	DeleteRepository(ctx context.Context, id string) error
 	DeleteReviewSession(ctx context.Context, id string) error
@@ -60,6 +62,8 @@ type Querier interface {
 	GetReviewSession(ctx context.Context, id string) (ReviewSession, error)
 	GetWorkspace(ctx context.Context, id string) (Workspace, error)
 	GetWorkspaceByRootPath(ctx context.Context, rootPath string) (Workspace, error)
+	InsertEvidenceSearch(ctx context.Context, arg InsertEvidenceSearchParams) error
+	InsertFindingSearch(ctx context.Context, arg InsertFindingSearchParams) error
 	LinkFindingCandidate(ctx context.Context, arg LinkFindingCandidateParams) error
 	ListAgentConfigs(ctx context.Context) ([]AgentConfig, error)
 	ListAgentRunsBySession(ctx context.Context, reviewSessionID string) ([]AgentRun, error)
@@ -83,6 +87,8 @@ type Querier interface {
 	ListReviewSessionsByWorkspace(ctx context.Context, workspaceID string) ([]ReviewSession, error)
 	ListWorkspaces(ctx context.Context) ([]Workspace, error)
 	NextEventSequence(ctx context.Context, reviewSessionID sql.NullString) (int64, error)
+	SearchEvidence(ctx context.Context, arg SearchEvidenceParams) ([]string, error)
+	SearchFindings(ctx context.Context, arg SearchFindingsParams) ([]string, error)
 	UpdateAgentConfig(ctx context.Context, arg UpdateAgentConfigParams) (AgentConfig, error)
 	UpdateAgentRunStatus(ctx context.Context, arg UpdateAgentRunStatusParams) (AgentRun, error)
 	UpdateCallPath(ctx context.Context, arg UpdateCallPathParams) (CallPath, error)

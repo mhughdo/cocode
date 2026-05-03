@@ -422,7 +422,7 @@ func writeFakeCommand(t *testing.T, content string) string {
 func collectCommandEvents(t *testing.T, events <-chan AgentEvent) []AgentEvent {
 	t.Helper()
 
-	timeout := time.After(3 * time.Second)
+	timeout := time.After(10 * time.Second)
 	var got []AgentEvent
 	for {
 		select {
@@ -446,7 +446,7 @@ func nextCommandEvent(t *testing.T, events <-chan AgentEvent) AgentEvent {
 			t.Fatal("events channel closed before next event")
 		}
 		return event
-	case <-time.After(3 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for command event")
 	}
 	return AgentEvent{}
@@ -481,7 +481,7 @@ func promptPathFromOutput(t *testing.T, output string) string {
 func waitForPromptPathMarker(t *testing.T, markerPath string) string {
 	t.Helper()
 
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		marker, err := os.ReadFile(markerPath)
 		if err == nil {

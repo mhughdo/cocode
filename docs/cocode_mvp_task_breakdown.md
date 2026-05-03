@@ -202,7 +202,7 @@ Large parallel workstreams:
 | T092 | Implement agent config API | CRUD agent configs and health test endpoint. | Done | T057, T090 | T248 | API tests cover create/update/test/delete. |
 | T093 | Implement CommandOnceDriver | Spawn one process per task using exec with context cancellation. | Done | T090 | T094 | Can run fake CLI; cancel/timeout works; no shell by default. |
 | T094 | Implement prompt delivery modes | Support prompt via stdin, arg, or temp file. | Done | T093, T060 | T095 | Tests cover all delivery modes and temp cleanup. |
-| T095 | Implement stdout/stderr capture | Capture outputs separately with size limits and artifacts. | Not started | T093, T060 | T096 | Raw artifacts stored; truncation marked in metadata. |
+| T095 | Implement stdout/stderr capture | Capture outputs separately with size limits and artifacts. | Done | T093, T060 | T096 | Raw artifacts stored; truncation marked in metadata. |
 | T096 | Implement output parsers | Parse JSON, JSONL/NDJSON, and text fallback. | Not started | T095, T013 | T170 | Parser tests cover valid/invalid/mixed outputs. |
 | T097 | Implement CLI health check | Validate command exists, version if possible, and auth smoke prompt if enabled. | Not started | T092, T093 | T248 | Health endpoint reports installed/missing/error states. |
 | T098 | Implement agent run persistence | Create/update agent_runs around CLI execution. | Not started | T057, T093 | T140 | Agent run rows include status, duration, artifacts, errors. |

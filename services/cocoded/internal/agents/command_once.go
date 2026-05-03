@@ -249,6 +249,7 @@ func emitCommandOutput(events chan<- AgentEvent, runID string, stdout *limitedOu
 			Stream:    "stdout",
 			Text:      text,
 			Truncated: stdout.Truncated(),
+			Metadata:  outputEventMetadata(text, stdout),
 		}
 	}
 	if text := stderr.String(); text != "" || stderr.Truncated() {
@@ -259,7 +260,16 @@ func emitCommandOutput(events chan<- AgentEvent, runID string, stdout *limitedOu
 			Stream:    "stderr",
 			Text:      text,
 			Truncated: stderr.Truncated(),
+			Metadata:  outputEventMetadata(text, stderr),
 		}
+	}
+}
+
+func outputEventMetadata(text string, output *limitedOutput) map[string]any {
+	return map[string]any{
+		"captured_bytes": int64(len([]byte(text))),
+		"limit_bytes":    output.Limit(),
+		"truncated":      output.Truncated(),
 	}
 }
 
@@ -350,6 +360,12 @@ func (o *limitedOutput) Truncated() bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.truncated
+}
+
+func (o *limitedOutput) Limit() int64 {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.limit
 }
 
 func outputLimit(value int64, fallback int64) int64 {

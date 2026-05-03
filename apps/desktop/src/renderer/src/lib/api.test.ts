@@ -165,6 +165,100 @@ describe("ApiClient", () => {
     ]);
   });
 
+  it("controls live reviews, queries findings, and reads SSE events", async () => {
+    const seen: { url: string; method: string; headers: Headers }[] = [];
+    const fetcher = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        seen.push({
+          url,
+          method,
+          headers: new Headers(init?.headers),
+        });
+
+        if (url.endsWith("/api/review-sessions/session_1/pause")) {
+          return jsonResponse({
+            data: { ...reviewSessionFixture, status: "paused" },
+            error: null,
+          });
+        }
+        if (url.endsWith("/api/review-sessions/session_1/resume")) {
+          return jsonResponse({
+            data: { ...reviewSessionFixture, status: "running" },
+            error: null,
+          });
+        }
+        if (url.endsWith("/api/review-sessions/session_1/cancel")) {
+          return jsonResponse({
+            data: { ...reviewSessionFixture, status: "canceled" },
+            error: null,
+          });
+        }
+        if (url.includes("/api/review-sessions/session_1/findings")) {
+          return jsonResponse({ data: findingListFixture, error: null });
+        }
+        if (
+          url.endsWith("/api/review-sessions/session_1/events?after_sequence=2")
+        ) {
+          return streamResponse(
+            [
+              ": keep-alive",
+              "event: heartbeat",
+              "data: {}",
+              "",
+              "id: 3",
+              "event: review.event",
+              `data: ${JSON.stringify(reviewEventFixture)}`,
+              "",
+            ].join("\n"),
+          );
+        }
+        return jsonResponse({ data: null, error: null });
+      },
+    );
+    const client = createCocodeClient({
+      baseUrl: "http://127.0.0.1:17658",
+      authToken: "local-token",
+      fetch: fetcher,
+    });
+
+    await expect(client.pauseReviewSession("session_1")).resolves.toMatchObject(
+      { status: "paused" },
+    );
+    await expect(
+      client.resumeReviewSession("session_1"),
+    ).resolves.toMatchObject({ status: "running" });
+    await expect(
+      client.cancelReviewSession("session_1"),
+    ).resolves.toMatchObject({ status: "canceled" });
+    await expect(
+      client.listFindings("session_1", {
+        status: "needs_triage",
+        severity: "high",
+        q: "auth",
+      }),
+    ).resolves.toEqual(findingListFixture);
+
+    const events: unknown[] = [];
+    await client.streamReviewEvents("session_1", {
+      afterSequence: 2,
+      onEvent: (event) => events.push(event),
+    });
+
+    expect(events).toEqual([reviewEventFixture]);
+    expect(seen.map((request) => `${request.method} ${request.url}`)).toEqual([
+      "POST http://127.0.0.1:17658/api/review-sessions/session_1/pause",
+      "POST http://127.0.0.1:17658/api/review-sessions/session_1/resume",
+      "POST http://127.0.0.1:17658/api/review-sessions/session_1/cancel",
+      "GET http://127.0.0.1:17658/api/review-sessions/session_1/findings?status=needs_triage&severity=high&q=auth",
+      "GET http://127.0.0.1:17658/api/review-sessions/session_1/events?after_sequence=2",
+    ]);
+    for (const request of seen) {
+      expect(request.headers.get("Authorization")).toBe("Bearer local-token");
+    }
+  });
+
   it("manages agent configs through typed helpers", async () => {
     const seen: { url: string; method: string; body: unknown }[] = [];
     const fetcher = vi.fn(
@@ -334,6 +428,22 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+function streamResponse(body: string): Response {
+  const encoder = new TextEncoder();
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(body));
+        controller.close();
+      },
+    }),
+    {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    },
+  );
+}
+
 const workspaceFixture = {
   id: "workspace_1",
   name: "cocode",
@@ -393,6 +503,56 @@ const reviewSessionFixture = {
   agents: [],
   created_at: "2026-05-04T00:00:00Z",
   updated_at: "2026-05-04T00:00:00Z",
+};
+
+const findingFixture = {
+  id: "finding_1",
+  review_session_id: "session_1",
+  canonical_claim: "Auth middleware is not applied to the admin route.",
+  category: "security",
+  severity: "high",
+  confidence: 0.91,
+  verification_status: "verified",
+  decision_status: "needs_triage",
+  primary_path: "src/app.ts",
+  primary_start_line: 42,
+  primary_end_line: 45,
+  evidence_summary: "Route registration bypasses the protected group.",
+  counter_evidence_summary: "",
+  suggested_fix: "Mount the handler under the protected router group.",
+  draft_comment: "This route appears to bypass auth.",
+  fingerprint: "finding_auth_admin",
+  merged_from_count: 2,
+  introduced_in_sha: "abc123",
+  first_seen_at: "2026-05-04T00:00:00Z",
+  updated_at: "2026-05-04T00:00:00Z",
+};
+
+const findingListFixture = {
+  items: [findingFixture],
+  stats: {
+    total: 1,
+    filtered: 1,
+    by_decision: { needs_triage: 1 },
+    by_severity: { high: 1 },
+    by_verification: { verified: 1 },
+    needs_triage: 1,
+  },
+};
+
+const reviewEventFixture = {
+  id: "event_3",
+  review_session_id: "session_1",
+  agent_run_id: "run_1",
+  type: "FindingCreated",
+  level: "info",
+  sequence: 3,
+  payload: {
+    finding_id: "finding_1",
+    severity: "high",
+  },
+  artifact_id: "artifact_1",
+  created_at: "2026-05-04T00:00:00Z",
 };
 
 const agentConfigFixture = {

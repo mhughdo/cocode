@@ -4,7 +4,7 @@
 **Document type:** Implementation task breakdown  
 **Scope:** MVP implementation with non-interactive CLI agents, Evidence Map, copy fix packets, GitHub publishing, Electron + Go/Gin + SQLite  
 **Status baseline:** Tasks are planned unless explicitly marked done  
-**Last updated:** 2026-05-03
+**Last updated:** 2026-05-04
 
 ---
 
@@ -332,12 +332,12 @@ Large parallel workstreams:
 | T246 | Implement Configure Review screen | Changed files, agents, policies/context, runtime table, start review. | Done | T081, T092, T140 | T247 | Configure Review shows bounded changed-file previews for large diffs, review-safe agent selection, runtime/depth controls, context policy toggles, focus prompt, and create/start review API flow. |
 | T247 | Implement context policy UI | Toggles for changed code, call sites, tests, conventions, redaction, local-only files. | Done | T132, T246 | T248 | Configure Review sends the strict backend `context_policy` JSON, including prompt material, changed code, related code/tests/conventions, prior context, redaction, token/item budgets, and changed-file local-only paths. |
 | T248 | Implement agent settings UI | Agent list, CLI config, health check, custom CLI creation. | Done | T092, T097 | T246 | Agent settings loads presets/configs from API, supports create-from-preset including OpenCode/custom CLI, edits command/args/env/output/runtime settings, saves through typed CRUD helpers, and runs health checks. |
-| T249 | Implement review thread tabs | Chat, Review details, Findings, Publish tabs. | Not started | T240, T140 | T250 | Tabs route correctly and preserve state. |
-| T250 | Implement review running screen | Status panel, progress bar, agent cards, early findings, pause/cancel controls. | Not started | T146, T153 | T251 | Live events update UI from fake review. |
-| T251 | Implement chat composer | Review/follow-up composer with runtime/model/reasoning/tool/permission controls. | Not started | T249, T092 | T280 | Composer state can submit thread/finding questions. |
-| T252 | Implement event timeline/debug panel | Show event log/provenance in Review details. | Not started | T146, T135 | T253 | User can inspect agent events and artifacts. |
-| T253 | Implement early findings list | Show early findings in review running screen. | Not started | T152, T183 | T256 | Early findings display and deep-link to findings. |
-| T254 | Implement review controls UI | Pause, cancel review, cancel one agent. | Not started | T150, T151, T100 | T250 | Controls call APIs and reflect state. |
+| T249 | Implement review thread tabs | Chat, Review details, Findings, Publish tabs. | Done | T240, T140 | T250 | Review thread renders Chat, Review details, Findings, and Publish tabs, and keeps live review state scoped to the active session. |
+| T250 | Implement review running screen | Status panel, progress bar, agent cards, early findings, pause/cancel controls. | Done | T146, T153 | T251 | Review screen loads summary data, consumes authenticated SSE events, shows bounded event/finding lists, and exposes session pause/resume/cancel controls. |
+| T251 | Implement chat composer | Review/follow-up composer with runtime/model/reasoning/tool/permission controls. | In progress | T249, T092 | T280 | Composer controls render, but submit remains disabled until the UI is wired to review-level or finding-scoped question endpoints. |
+| T252 | Implement event timeline/debug panel | Show event log/provenance in Review details. | Done | T146, T135 | T253 | Review details tab shows a bounded live event timeline with event level, type, sequence, agent run, artifact, timestamp, and payload preview. |
+| T253 | Implement early findings list | Show early findings in review running screen. | Done | T152, T183 | T256 | Review running screen and Findings tab load early/canonical findings from the findings API and keep them refreshed during live review updates. |
+| T254 | Implement review controls UI | Pause, cancel review, cancel one agent. | In progress | T150, T151, T100 | T250 | Session-level pause/resume/cancel controls call APIs and reflect state; per-agent cancel still needs an exposed agent-run cancel API route before completion. |
 | T255 | Implement finding search/filter UI | Search and filter controls for findings board. | Not started | T183, T062 | T256 | Filters update list without losing selected item. |
 | T256 | Implement Findings Board screen | Summary cards, list, selected finding preview, copy/accept/dismiss actions. | Not started | T183, T185, T242 | T257 | Board matches mockup with seeded/API data. |
 | T257 | Implement finding card | Reusable card with severity/status/agents/location/actions. | Not started | T256 | T258 | Card supports selected/hover/actions states. |

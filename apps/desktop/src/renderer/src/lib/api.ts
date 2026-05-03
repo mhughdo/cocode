@@ -245,6 +245,55 @@ export interface ReviewSessionSummary {
   finding_counts?: Record<string, unknown>;
 }
 
+export interface ReviewEvent {
+  id: string;
+  review_session_id: string;
+  agent_run_id?: string;
+  type: string;
+  level: string;
+  sequence: number;
+  payload: Record<string, unknown>;
+  artifact_id?: string;
+  created_at: string;
+}
+
+export interface Finding {
+  id: string;
+  review_session_id: string;
+  canonical_claim: string;
+  category: string;
+  severity: string;
+  confidence: number;
+  verification_status: string;
+  decision_status: string;
+  primary_path?: string;
+  primary_start_line?: number;
+  primary_end_line?: number;
+  evidence_summary?: string;
+  counter_evidence_summary?: string;
+  suggested_fix?: string;
+  draft_comment?: string;
+  fingerprint: string;
+  merged_from_count: number;
+  introduced_in_sha?: string;
+  first_seen_at: string;
+  updated_at: string;
+}
+
+export interface FindingListStats {
+  total: number;
+  filtered: number;
+  by_decision: Record<string, number>;
+  by_severity: Record<string, number>;
+  by_verification: Record<string, number>;
+  needs_triage: number;
+}
+
+export interface FindingListResponse {
+  items: Finding[];
+  stats: FindingListStats;
+}
+
 export interface RedactionReport {
   bundle_id: string;
   redaction_count: number;
@@ -530,6 +579,88 @@ export class ApiClient {
     );
   }
 
+  pauseReviewSession(
+    id: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.post<ReviewSession>(
+      `/api/review-sessions/${encodeURIComponent(id)}/pause`,
+      undefined,
+      options,
+    );
+  }
+
+  resumeReviewSession(
+    id: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.post<ReviewSession>(
+      `/api/review-sessions/${encodeURIComponent(id)}/resume`,
+      undefined,
+      options,
+    );
+  }
+
+  cancelReviewSession(
+    id: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.post<ReviewSession>(
+      `/api/review-sessions/${encodeURIComponent(id)}/cancel`,
+      undefined,
+      options,
+    );
+  }
+
+  listFindings(
+    reviewSessionId: string,
+    query: {
+      status?: string;
+      severity?: string;
+      q?: string;
+    } = {},
+    options: Omit<ApiRequestOptions, "method" | "body" | "query"> = {},
+  ) {
+    return this.get<FindingListResponse>(
+      `/api/review-sessions/${encodeURIComponent(reviewSessionId)}/findings`,
+      { ...options, query },
+    );
+  }
+
+  async streamReviewEvents(
+    id: string,
+    options: {
+      afterSequence?: number;
+      signal?: AbortSignal;
+      onEvent: (event: ReviewEvent) => void;
+    },
+  ) {
+    const response = await this.fetcher(
+      endpointUrl(
+        this.baseUrl,
+        `/api/review-sessions/${encodeURIComponent(id)}/events`,
+        { after_sequence: options.afterSequence },
+      ),
+      {
+        method: "GET",
+        headers: requestHeaders(this.authToken, {}),
+        signal: options.signal,
+      },
+    );
+    if (!response.ok) {
+      await parseEnvelopeResponse<never>(response);
+      return;
+    }
+    if (!response.body) {
+      throw new ApiError({
+        message: "Review event stream is unavailable",
+        status: response.status,
+        code: "STREAM_UNAVAILABLE",
+      });
+    }
+    await readReviewEventStream(response.body, options.onEvent);
+  }
+
   previewReviewContext(
     id: string,
     body: {
@@ -675,6 +806,78 @@ async function readJSON(response: Response): Promise<unknown> {
       message: "Backend response was not valid JSON",
       status: response.status,
       code: "INVALID_JSON",
+      cause: error,
+    });
+  }
+}
+
+async function readReviewEventStream(
+  body: ReadableStream<Uint8Array>,
+  onEvent: (event: ReviewEvent) => void,
+) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    buffer = consumeSSEBuffer(buffer, onEvent);
+  }
+
+  buffer += decoder.decode();
+  consumeSSEBuffer(buffer + "\n\n", onEvent);
+}
+
+function consumeSSEBuffer(
+  buffer: string,
+  onEvent: (event: ReviewEvent) => void,
+) {
+  buffer = buffer.replace(/\r\n/g, "\n");
+  let separator = buffer.indexOf("\n\n");
+  while (separator >= 0) {
+    const block = buffer.slice(0, separator);
+    emitSSEBlock(block, onEvent);
+    buffer = buffer.slice(separator + 2);
+    separator = buffer.indexOf("\n\n");
+  }
+  return buffer;
+}
+
+function emitSSEBlock(block: string, onEvent: (event: ReviewEvent) => void) {
+  let eventName = "message";
+  const data: string[] = [];
+
+  for (const line of block.split("\n")) {
+    if (line.startsWith(":") || line.trim() === "") {
+      continue;
+    }
+    const separator = line.indexOf(":");
+    const field = separator >= 0 ? line.slice(0, separator) : line;
+    const rawValue = separator >= 0 ? line.slice(separator + 1) : "";
+    const value = rawValue.startsWith(" ") ? rawValue.slice(1) : rawValue;
+    if (field === "event") {
+      eventName = value;
+    }
+    if (field === "data") {
+      data.push(value);
+    }
+  }
+
+  if (eventName !== "review.event" || data.length === 0) {
+    return;
+  }
+
+  try {
+    onEvent(JSON.parse(data.join("\n")) as ReviewEvent);
+  } catch (error) {
+    throw new ApiError({
+      message: "Review event stream emitted invalid JSON",
+      status: 200,
+      code: "INVALID_SSE_EVENT",
       cause: error,
     });
   }

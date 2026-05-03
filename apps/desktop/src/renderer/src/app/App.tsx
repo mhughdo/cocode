@@ -62,6 +62,7 @@ import {
   NativeSelect,
   NativeSelectOption,
 } from "@/components/ui/native-select";
+import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
@@ -81,9 +82,13 @@ import {
   successApiState,
   type ApiSessionResponse,
   type Loadable,
+  type Finding,
+  type FindingListResponse,
   type OpenRepositoryResponse,
   type Repository,
   type ReviewContextPolicy,
+  type ReviewEvent,
+  type ReviewSessionSummary,
   type ReviewSession,
   type Snapshot,
   type Workspace,
@@ -93,6 +98,7 @@ import { cn } from "@/lib/utils";
 const MAX_SIDEBAR_SESSIONS = 12;
 const MAX_SEARCH_RESULTS = 5;
 const MAX_CHANGED_FILES_RENDERED = 120;
+const MAX_REVIEW_EVENTS_RENDERED = 120;
 
 type MainView = "new-thread" | "configure" | "review" | "agent-settings";
 type SnapshotSource = "github" | "local-changes" | "branch-compare";
@@ -149,6 +155,8 @@ export function App() {
     useState<Loadable<ChangedFile[]>>(idleApiState());
   const [agentConfigs, setAgentConfigs] =
     useState<Loadable<AgentConfig[]>>(idleApiState());
+  const [currentReviewSession, setCurrentReviewSession] =
+    useState<ReviewSession | null>(null);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState("");
   const [activeRepositoryId, setActiveRepositoryId] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -296,6 +304,7 @@ export function App() {
     repositoryList.find((repository) => repository.id === activeRepositoryId) ??
     repositoryList[0];
   const activeSession = sessionList[0];
+  const displayedSession = currentReviewSession ?? activeSession;
 
   const handleSelectWorkspace = useCallback(
     (workspaceId: string) => {
@@ -478,7 +487,7 @@ export function App() {
         header={
           <TopNav
             activeRepository={activeRepository}
-            activeSession={activeSession}
+            activeSession={displayedSession}
             activeWorkspace={activeWorkspace}
             isOpeningRepository={repositoryOpenState.status === "loading"}
             onOpenRepository={handleOpenRepository}
@@ -504,6 +513,7 @@ export function App() {
             changedFiles={changedFilesState}
             client={client}
             onReviewStarted={(session) => {
+              setCurrentReviewSession(session);
               setMainView("review");
               if (client) {
                 void refreshNavigation(client, session.workspace_id);
@@ -513,7 +523,13 @@ export function App() {
           />
         )}
         {mainView === "review" && (
-          <ReviewThread apiSession={apiSession} backendDetail={backendDetail} />
+          <ReviewThread
+            agentConfigs={agentConfigs}
+            apiSession={apiSession}
+            backendDetail={backendDetail}
+            client={client}
+            session={displayedSession}
+          />
         )}
         {mainView === "agent-settings" && (
           <AgentSettingsScreen
@@ -2375,16 +2391,33 @@ function CommitDropdown() {
 }
 
 function ReviewThread({
+  agentConfigs,
   apiSession,
   backendDetail,
+  client,
+  session,
 }: {
+  agentConfigs: Loadable<AgentConfig[]>;
   apiSession: Loadable<ApiSessionResponse>;
   backendDetail: string;
+  client: ApiClient | null;
+  session?: ReviewSession;
 }) {
+  const [activeTab, setActiveTab] = useState("chat");
+  const live = useReviewSessionLiveData(client, session);
+
+  const agentList = agentConfigs.status === "success" ? agentConfigs.data : [];
+  const selectedAgents =
+    session?.agents
+      .map((sessionAgent) =>
+        agentList.find((agent) => agent.id === sessionAgent.agent_config_id),
+      )
+      .filter((agent): agent is AgentConfig => Boolean(agent)) ?? [];
+
   return (
     <section className="flex min-w-0 flex-col">
       <ScrollArea className="flex-1 px-6 py-5">
-        <div className="mx-auto flex max-w-3xl flex-col gap-5">
+        <div className="mx-auto flex max-w-5xl flex-col gap-5">
           {apiSession.status === "loading" && (
             <LoadingRows rows={2} className="rounded-lg border p-4" />
           )}
@@ -2395,36 +2428,571 @@ function ReviewThread({
             />
           )}
 
-          <div className="bg-surface self-end rounded-full px-4 py-2 text-sm">
-            Review this PR for auth, billing, and data integrity.
-          </div>
-
-          <div className="flex items-start gap-3">
-            <div className="bg-primary text-primary-foreground mt-1 flex size-7 items-center justify-center rounded-md">
-              <BotIcon />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="mb-2 flex items-center gap-2 text-sm">
-                <span className="font-medium">cocode</span>
-                <Badge variant="secondary">4 agents</Badge>
-                <span className="text-muted-foreground">Phase 1 of 3</span>
-              </div>
-              <p className="text-sm leading-6">
-                I found a likely authorization bypass in the billing route
-                group. Codex, Gemini, OpenCode, and Local Verifier agree on the
-                affected line range and there is supporting evidence from route
-                setup, middleware, and tests.
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h1 className="truncate text-xl font-semibold">
+                {session?.title ?? "Review thread"}
+              </h1>
+              <p className="text-muted-foreground mt-1 text-sm">
+                {session
+                  ? `${session.review_depth} review • ${session.status}`
+                  : "Create or select a review session to stream live progress."}
               </p>
             </div>
+            {session && (
+              <ReviewControlButtons
+                client={client}
+                onSessionUpdated={live.setSession}
+                session={live.session ?? session}
+              />
+            )}
           </div>
 
-          <ChangedFilesPanel />
-          <FindingsPanel />
+          <Tabs value={activeTab} onValueChange={setActiveTab}>
+            <TabsList variant="line">
+              <TabsTrigger value="chat">Chat</TabsTrigger>
+              <TabsTrigger value="details">Review details</TabsTrigger>
+              <TabsTrigger value="findings">Findings</TabsTrigger>
+              <TabsTrigger value="publish">Publish</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="chat" className="mt-4 flex flex-col gap-4">
+              {session ? (
+                <>
+                  <ReviewRunningPanel
+                    agents={selectedAgents}
+                    summary={live.summary}
+                    session={live.session ?? session}
+                  />
+                  <EarlyFindingsPanel findings={live.findings} />
+                </>
+              ) : (
+                <>
+                  <div className="bg-surface self-end rounded-full px-4 py-2 text-sm">
+                    Review this PR for auth, billing, and data integrity.
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <div className="bg-primary text-primary-foreground mt-1 flex size-7 items-center justify-center rounded-md">
+                      <BotIcon />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="mb-2 flex items-center gap-2 text-sm">
+                        <span className="font-medium">cocode</span>
+                        <Badge variant="secondary">4 agents</Badge>
+                        <span className="text-muted-foreground">
+                          Phase 1 of 3
+                        </span>
+                      </div>
+                      <p className="text-sm leading-6">
+                        I found a likely authorization bypass in the billing
+                        route group. Codex, Gemini, OpenCode, and Local Verifier
+                        agree on the affected line range and there is supporting
+                        evidence from route setup, middleware, and tests.
+                      </p>
+                    </div>
+                  </div>
+                  <ChangedFilesPanel />
+                  <FindingsPanel />
+                </>
+              )}
+            </TabsContent>
+
+            <TabsContent value="details" className="mt-4">
+              <ReviewEventTimeline events={live.events} />
+            </TabsContent>
+
+            <TabsContent value="findings" className="mt-4">
+              <ReviewFindingsBoard findings={live.findings} />
+            </TabsContent>
+
+            <TabsContent value="publish" className="mt-4">
+              <EmptyState
+                title="Publish preview comes next"
+                description="Accepted findings will feed the GitHub preview and copy packet screens."
+                icon={CopyIcon}
+              />
+            </TabsContent>
+          </Tabs>
         </div>
       </ScrollArea>
 
-      <MessageComposer backendDetail={backendDetail} />
+      <MessageComposer
+        agentConfigs={agentConfigs}
+        backendDetail={backendDetail}
+        disabled={!session}
+      />
     </section>
+  );
+}
+
+function useReviewSessionLiveData(
+  client: ApiClient | null,
+  initialSession?: ReviewSession,
+) {
+  const [session, setSession] = useState<ReviewSession | undefined>(
+    initialSession,
+  );
+  const [summary, setSummary] =
+    useState<Loadable<ReviewSessionSummary>>(idleApiState());
+  const [findings, setFindings] =
+    useState<Loadable<FindingListResponse>>(idleApiState());
+  const [events, setEvents] = useState<ReviewEvent[]>([]);
+
+  useEffect(() => {
+    let canceled = false;
+    queueMicrotask(() => {
+      if (!canceled) {
+        setSession(initialSession);
+        setEvents([]);
+      }
+    });
+    return () => {
+      canceled = true;
+    };
+  }, [initialSession?.id, initialSession]);
+
+  useEffect(() => {
+    if (!client || !initialSession) {
+      return;
+    }
+    const api = client;
+    const sessionId = initialSession.id;
+    let canceled = false;
+
+    async function load() {
+      setSummary(loadingApiState());
+      setFindings(loadingApiState());
+      const [summaryState, findingsState] = await Promise.all([
+        loadApiResource(() => api.reviewSessionSummary(sessionId)),
+        loadApiResource(() => api.listFindings(sessionId)),
+      ]);
+      if (canceled) {
+        return;
+      }
+      setSummary(summaryState);
+      setFindings(findingsState);
+    }
+
+    queueMicrotask(() => {
+      if (!canceled) {
+        void load();
+      }
+    });
+    const interval = window.setInterval(() => void load(), 2500);
+    return () => {
+      canceled = true;
+      window.clearInterval(interval);
+    };
+  }, [client, initialSession]);
+
+  useEffect(() => {
+    if (!client || !initialSession) {
+      return;
+    }
+    const api = client;
+    const sessionId = initialSession.id;
+    const controller = new AbortController();
+    void api
+      .streamReviewEvents(sessionId, {
+        signal: controller.signal,
+        onEvent: (event) => {
+          setEvents((current) => appendBoundedEvent(current, event));
+          if (
+            event.type.startsWith("ReviewSession") ||
+            event.type.startsWith("Finding") ||
+            event.type.startsWith("AgentRun")
+          ) {
+            void loadApiResource(() =>
+              api.reviewSessionSummary(sessionId),
+            ).then(setSummary);
+            if (event.type.includes("Finding")) {
+              void loadApiResource(() => api.listFindings(sessionId)).then(
+                setFindings,
+              );
+            }
+          }
+        },
+      })
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          setEvents((current) =>
+            appendBoundedEvent(current, {
+              id: "local_stream_error",
+              review_session_id: sessionId,
+              type: "EventStreamError",
+              level: "warn",
+              sequence: current.at(-1)?.sequence ?? 0,
+              payload: { message: toErrorMessage(error) },
+              created_at: new Date().toISOString(),
+            }),
+          );
+        }
+      });
+    return () => controller.abort();
+  }, [client, initialSession]);
+
+  return { events, findings, session, setSession, summary };
+}
+
+function ReviewControlButtons({
+  client,
+  onSessionUpdated,
+  session,
+}: {
+  client: ApiClient | null;
+  onSessionUpdated: (session: ReviewSession) => void;
+  session: ReviewSession;
+}) {
+  const [controlState, setControlState] =
+    useState<Loadable<ReviewSession>>(idleApiState());
+  const isPaused = session.status === "paused";
+  const isTerminal = ["completed", "failed", "canceled"].includes(
+    session.status,
+  );
+
+  async function runControl(action: "pause" | "resume" | "cancel") {
+    if (!client) {
+      setControlState(
+        errorApiState(new Error("Backend client is unavailable")),
+      );
+      return;
+    }
+    setControlState(loadingApiState());
+    const state = await loadApiResource(() => {
+      if (action === "pause") {
+        return client.pauseReviewSession(session.id);
+      }
+      if (action === "resume") {
+        return client.resumeReviewSession(session.id);
+      }
+      return client.cancelReviewSession(session.id);
+    });
+    setControlState(state);
+    if (state.status === "success") {
+      onSessionUpdated(state.data);
+    }
+  }
+
+  return (
+    <div className="flex shrink-0 items-center gap-2">
+      {controlState.status === "error" && (
+        <span className="text-destructive max-w-56 truncate text-xs">
+          {controlState.error.message}
+        </span>
+      )}
+      <Button
+        disabled={isTerminal || controlState.status === "loading"}
+        size="sm"
+        variant="outline"
+        onClick={() => void runControl(isPaused ? "resume" : "pause")}
+      >
+        <PauseIcon data-icon="inline-start" />
+        {isPaused ? "Resume" : "Pause"}
+      </Button>
+      <Button
+        disabled={isTerminal || controlState.status === "loading"}
+        size="sm"
+        variant="outline"
+        onClick={() => void runControl("cancel")}
+      >
+        Cancel
+      </Button>
+    </div>
+  );
+}
+
+function ReviewRunningPanel({
+  agents,
+  session,
+  summary,
+}: {
+  agents: AgentConfig[];
+  session: ReviewSession;
+  summary: Loadable<ReviewSessionSummary>;
+}) {
+  const data = summary.status === "success" ? summary.data : undefined;
+  const progress = data?.progress_percent ?? statusProgress(session.status);
+  const activeAgents = data?.active_agents ?? 0;
+  const agentCounts = data?.agent_status_counts ?? {};
+  const agentCards =
+    agents.length > 0
+      ? agents.map((agent) => ({ id: agent.id, name: agent.name }))
+      : session.agents.map((agent) => ({
+          id: agent.id,
+          name: agent.agent_config_id,
+        }));
+
+  return (
+    <section className="bg-surface-raised rounded-lg border">
+      <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
+        <div className="min-w-0">
+          <div className="text-sm font-medium">Review running</div>
+          <div className="text-muted-foreground mt-1 truncate text-xs">
+            {data?.phase ?? "workflow"} • {data?.phase_status ?? session.status}
+          </div>
+        </div>
+        <Badge variant="secondary">{session.status}</Badge>
+      </div>
+      <div className="flex flex-col gap-4 p-4">
+        {summary.status === "error" && (
+          <ErrorState
+            title="Summary unavailable"
+            description={summary.error.message}
+          />
+        )}
+        <div className="flex items-center gap-3">
+          <Progress value={progress} />
+          <span className="w-12 text-right text-xs">{progress}%</span>
+        </div>
+        <div className="grid grid-cols-4 gap-3">
+          <RunMetric label="Files" value={formatFileScan(data)} />
+          <RunMetric
+            label="Runs"
+            value={String(data?.agent_runs_total ?? agents.length)}
+          />
+          <RunMetric label="Active" value={String(activeAgents)} />
+          <RunMetric label="Findings" value={formatFindingCount(data)} />
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          {agentCards.map((agent, index) => {
+            const status =
+              agentCounts.succeeded && index < Number(agentCounts.succeeded)
+                ? "succeeded"
+                : activeAgents > index
+                  ? "running"
+                  : "queued";
+            return (
+              <div
+                key={agent.id}
+                className="bg-background flex items-center gap-3 rounded-md border px-3 py-2"
+              >
+                <BotIcon />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium">
+                    {agent.name}
+                  </div>
+                  <div className="text-muted-foreground text-xs">{status}</div>
+                </div>
+                <Badge variant="outline">{status}</Badge>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function RunMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="bg-background rounded-md border px-3 py-2">
+      <div className="text-muted-foreground text-xs">{label}</div>
+      <div className="mt-1 truncate text-sm font-medium">{value}</div>
+    </div>
+  );
+}
+
+function EarlyFindingsPanel({
+  findings,
+}: {
+  findings: Loadable<FindingListResponse>;
+}) {
+  const visibleFindings =
+    findings.status === "success" ? findings.data.items.slice(0, 5) : [];
+
+  return (
+    <section className="bg-surface-raised rounded-lg border">
+      <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
+        <div className="flex items-center gap-2">
+          <ShieldCheckIcon />
+          <span className="text-sm font-medium">Early findings</span>
+        </div>
+        {findings.status === "success" && (
+          <Badge variant="secondary">{findings.data.stats.total} total</Badge>
+        )}
+      </div>
+      {findings.status === "loading" && (
+        <LoadingRows rows={3} className="p-4" />
+      )}
+      {findings.status === "error" && (
+        <ErrorState
+          className="m-3"
+          title="Findings unavailable"
+          description={findings.error.message}
+        />
+      )}
+      {findings.status === "success" && visibleFindings.length === 0 && (
+        <EmptyState
+          className="border-0 p-6"
+          title="No findings yet"
+          description="Findings will appear here as agents and the verifier emit evidence."
+          icon={FileSearchIcon}
+        />
+      )}
+      {visibleFindings.map((finding) => (
+        <LiveFindingRow key={finding.id} finding={finding} />
+      ))}
+    </section>
+  );
+}
+
+function ReviewEventTimeline({ events }: { events: ReviewEvent[] }) {
+  return (
+    <section className="bg-surface-raised rounded-lg border">
+      <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
+        <div className="min-w-0">
+          <div className="text-sm font-medium">Event timeline</div>
+          <div className="text-muted-foreground mt-1 text-xs">
+            Live SSE events with sequence IDs for replay/debugging.
+          </div>
+        </div>
+        <Badge variant="secondary">{events.length}</Badge>
+      </div>
+      {events.length === 0 ? (
+        <EmptyState
+          className="border-0 p-6"
+          title="No events yet"
+          description="Start a review to stream workflow, agent, and finding events."
+          icon={ClockIcon}
+        />
+      ) : (
+        <div className="max-h-[520px] overflow-y-auto">
+          {events.map((event) => (
+            <div
+              key={`${event.sequence}-${event.id}`}
+              className="grid grid-cols-[72px_minmax(0,1fr)] gap-3 border-b px-4 py-3 text-sm last:border-b-0"
+            >
+              <div className="text-muted-foreground text-xs">
+                #{event.sequence}
+              </div>
+              <div className="min-w-0">
+                <div className="flex min-w-0 items-center gap-2">
+                  <Badge
+                    variant={
+                      event.level === "error" ? "destructive" : "outline"
+                    }
+                  >
+                    {event.level || "info"}
+                  </Badge>
+                  <span className="truncate font-medium">{event.type}</span>
+                </div>
+                <div className="text-muted-foreground mt-1 truncate text-xs">
+                  {formatRelativeAge(event.created_at)}
+                  {event.agent_run_id ? ` • ${event.agent_run_id}` : ""}
+                  {event.artifact_id ? ` • ${event.artifact_id}` : ""}
+                </div>
+                <div className="text-muted-foreground mt-2 line-clamp-2 font-mono text-xs">
+                  {JSON.stringify(event.payload)}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ReviewFindingsBoard({
+  findings,
+}: {
+  findings: Loadable<FindingListResponse>;
+}) {
+  if (findings.status === "loading") {
+    return <LoadingRows rows={5} className="rounded-lg border p-4" />;
+  }
+  if (findings.status === "error") {
+    return (
+      <ErrorState
+        title="Findings unavailable"
+        description={findings.error.message}
+      />
+    );
+  }
+  if (findings.status !== "success") {
+    return (
+      <EmptyState
+        title="No review selected"
+        description="Findings load after a review session is available."
+        icon={FileSearchIcon}
+      />
+    );
+  }
+
+  return (
+    <section className="bg-surface-raised rounded-lg border">
+      <div className="grid grid-cols-4 gap-3 border-b p-3">
+        <RunMetric label="Total" value={String(findings.data.stats.total)} />
+        <RunMetric
+          label="Needs triage"
+          value={String(findings.data.stats.needs_triage)}
+        />
+        <RunMetric
+          label="High"
+          value={String(findings.data.stats.by_severity.high ?? 0)}
+        />
+        <RunMetric
+          label="Verified"
+          value={String(findings.data.stats.by_verification.verified ?? 0)}
+        />
+      </div>
+      {findings.data.items.length === 0 ? (
+        <EmptyState
+          className="border-0 p-6"
+          title="No findings yet"
+          description="The board will fill as candidates are normalized and verified."
+          icon={ShieldCheckIcon}
+        />
+      ) : (
+        findings.data.items.map((finding) => (
+          <LiveFindingRow key={finding.id} finding={finding} />
+        ))
+      )}
+    </section>
+  );
+}
+
+function LiveFindingRow({ finding }: { finding: Finding }) {
+  return (
+    <button
+      className="hover:bg-surface flex w-full items-start gap-3 border-b px-4 py-3 text-left last:border-b-0"
+      type="button"
+    >
+      <CircleIcon
+        className={cn(
+          "mt-1",
+          finding.severity === "high"
+            ? "text-destructive"
+            : "text-muted-foreground",
+        )}
+      />
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-sm font-medium">
+          {finding.canonical_claim}
+        </div>
+        <div className="text-muted-foreground mt-1 flex min-w-0 items-center gap-2 text-xs">
+          <span className="truncate font-mono">
+            {finding.primary_path || "no location"}
+          </span>
+          {finding.primary_start_line ? (
+            <span>L{finding.primary_start_line}</span>
+          ) : null}
+        </div>
+        {finding.evidence_summary && (
+          <div className="text-muted-foreground mt-2 line-clamp-2 text-xs">
+            {finding.evidence_summary}
+          </div>
+        )}
+      </div>
+      <div className="flex shrink-0 gap-1">
+        <Badge
+          variant={finding.severity === "high" ? "destructive" : "secondary"}
+        >
+          {finding.severity}
+        </Badge>
+        <Badge variant="outline">{finding.verification_status}</Badge>
+      </div>
+    </button>
   );
 }
 
@@ -2489,39 +3057,92 @@ function FindingsPanel() {
   );
 }
 
-function MessageComposer({ backendDetail }: { backendDetail: string }) {
+function MessageComposer({
+  agentConfigs,
+  backendDetail,
+  disabled,
+}: {
+  agentConfigs?: Loadable<AgentConfig[]>;
+  backendDetail: string;
+  disabled?: boolean;
+}) {
+  const [mode, setMode] = useState("review");
+  const [runtime, setRuntime] = useState("standard");
+  const [reasoning, setReasoning] = useState("high");
+  const [permission, setPermission] = useState("review-mode");
+  const agents = agentConfigs?.status === "success" ? agentConfigs.data : [];
+  const availableAgentCount = agents.filter(
+    (agent) => agent.enabled && !agent.capabilities.can_write,
+  ).length;
+
   return (
     <div className="bg-surface-raised border-t p-4">
-      <div className="bg-background mx-auto max-w-3xl rounded-2xl border shadow-sm">
+      <div className="bg-background mx-auto max-w-5xl rounded-2xl border shadow-sm">
         <InputGroup className="min-h-24 items-stretch border-0">
           <InputGroupTextarea
             aria-label="Follow-up prompt"
-            placeholder="Ask a follow-up grounded in this evidence bundle..."
+            disabled={disabled}
+            placeholder={
+              disabled
+                ? "Start a review before asking follow-up questions..."
+                : "Ask a follow-up grounded in this review context..."
+            }
             className="min-h-20"
           />
         </InputGroup>
         <div className="flex items-center justify-between border-t px-3 py-2">
           <div className="flex items-center gap-2">
-            <Button size="sm" variant="ghost">
+            <Button disabled={disabled} size="sm" variant="ghost">
               <MessageSquareIcon data-icon="inline-start" />
-              Review
+              {mode}
             </Button>
-            <ComposerDropdown label="GPT-5.5 Fast" />
-            <ComposerDropdown label="Low" />
+            <ComposerDropdown
+              label={runtime}
+              onSelect={setRuntime}
+              options={["quick", "standard", "deep"]}
+            />
+            <ComposerDropdown
+              label={reasoning}
+              onSelect={setReasoning}
+              options={["low", "medium", "high"]}
+            />
+            <ComposerDropdown
+              label={permission}
+              onSelect={setPermission}
+              options={["review-mode", "local-only"]}
+            />
+            <ComposerDropdown
+              label={`${availableAgentCount} agents`}
+              onSelect={setMode}
+              options={["review", "finding follow-up"]}
+            />
           </div>
-          <InputGroupButton size="icon-sm" aria-label="Send follow-up">
+          <InputGroupButton
+            disabled
+            size="icon-sm"
+            aria-label="Review-level follow-up submit is not available yet"
+          >
             <ArrowUpIcon />
           </InputGroupButton>
         </div>
       </div>
-      <div className="text-muted-foreground mx-auto mt-2 max-w-3xl truncate text-center text-xs">
-        {backendDetail}
+      <div className="text-muted-foreground mx-auto mt-2 max-w-5xl truncate text-center text-xs">
+        Review-level follow-up submit needs a backend endpoint; finding-scoped
+        follow-up is wired in a later screen. {backendDetail}
       </div>
     </div>
   );
 }
 
-function ComposerDropdown({ label }: { label: string }) {
+function ComposerDropdown({
+  label,
+  onSelect,
+  options,
+}: {
+  label: string;
+  onSelect?: (value: string) => void;
+  options?: string[];
+}) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -2532,9 +3153,11 @@ function ComposerDropdown({ label }: { label: string }) {
       </DropdownMenuTrigger>
       <DropdownMenuContent>
         <DropdownMenuGroup>
-          <DropdownMenuItem>Fast</DropdownMenuItem>
-          <DropdownMenuItem>Balanced</DropdownMenuItem>
-          <DropdownMenuItem>Deep</DropdownMenuItem>
+          {(options ?? ["Fast", "Balanced", "Deep"]).map((option) => (
+            <DropdownMenuItem key={option} onSelect={() => onSelect?.(option)}>
+              {option}
+            </DropdownMenuItem>
+          ))}
         </DropdownMenuGroup>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -2743,6 +3366,60 @@ function CodeLine({
       <span className="truncate px-3 whitespace-pre">{text || " "}</span>
     </div>
   );
+}
+
+function appendBoundedEvent(events: ReviewEvent[], event: ReviewEvent) {
+  const exists = events.some(
+    (candidate) =>
+      candidate.id === event.id || candidate.sequence === event.sequence,
+  );
+  if (exists) {
+    return events;
+  }
+  return [...events, event]
+    .sort((left, right) => left.sequence - right.sequence)
+    .slice(-MAX_REVIEW_EVENTS_RENDERED);
+}
+
+function statusProgress(status: string) {
+  switch (status) {
+    case "draft":
+      return 0;
+    case "queued":
+      return 8;
+    case "running":
+      return 45;
+    case "paused":
+      return 45;
+    case "canceling":
+      return 70;
+    case "completed":
+      return 100;
+    case "failed":
+    case "canceled":
+      return 100;
+    default:
+      return 0;
+  }
+}
+
+function formatFileScan(summary?: ReviewSessionSummary) {
+  if (!summary) {
+    return "0/0";
+  }
+  return `${summary.changed_files_scanned}/${summary.changed_files_total}`;
+}
+
+function formatFindingCount(summary?: ReviewSessionSummary) {
+  if (!summary?.finding_counts) {
+    return "0";
+  }
+  const total = summary.finding_counts.total;
+  return typeof total === "number" ? String(total) : "0";
+}
+
+function toErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function snapshotTitle(snapshot: Snapshot, repository?: Repository): string {

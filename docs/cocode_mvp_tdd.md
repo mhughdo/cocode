@@ -4,7 +4,7 @@
 **Document type:** Comprehensive technical design for MVP implementation  
 **Scope:** Local-first Electron app, Go + Gin backend, SQLite, non-interactive CLI agent adapters, Evidence Map, copy fix packets, GitHub review publishing  
 **Status:** Updated after latest PRD, UI mockups, and adapter scope decisions  
-**Last updated:** 2026-05-02
+**Last updated:** 2026-05-04
 
 ---
 
@@ -147,6 +147,8 @@ Workspace navigation uses `GET /api/workspaces`, `POST /api/workspaces/open-repo
 The New Thread and Configure Review screens use typed snapshot and review-session helpers from the renderer API client. Configure Review renders changed files as a bounded preview (`MAX_CHANGED_FILES_RENDERED`) and relies on later finding/diff screens for deeper browsing so very large PRs do not overwhelm initial configuration. Configure Review also sends the explicit backend `context_policy` shape, including local-only changed-file paths for external-agent omission.
 
 Agent Settings uses the real preset, config, and health endpoints for Codex, Gemini, OpenCode, and custom CLI setup. Preset creation copies the backend command, args, capabilities, settings, env allowlist, and output-mode constraints into an editable form, then saves through the typed renderer API client.
+
+The Review thread renderer uses the summary, findings, and authenticated SSE endpoints to keep the running review surface live without requiring browser `EventSource` auth workarounds. The current UI exposes session-level pause/resume/cancel controls. Review-level composer submission and per-agent cancellation require explicit backend routes before those controls can become active.
 
 Electron keeps the renderer sandbox enabled, so the preload bundle is emitted as CommonJS (`out/preload/index.cjs`) and explicitly externalizes `electron`. This preserves `contextIsolation`, `sandbox`, and `nodeIntegration: false` while still exposing the narrow `window.cocode` bridge.
 

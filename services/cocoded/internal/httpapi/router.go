@@ -292,6 +292,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.POST("/review-sessions/:id/cancel", cancelReviewSessionHandler(services))
 	api.GET("/review-sessions/:id/checkpoint", reviewSessionCheckpointHandler(services))
 	api.GET("/review-sessions/:id/summary", reviewSessionSummaryHandler(services))
+	api.GET("/review-sessions/:id/audit-log", reviewSessionAuditLogHandler(services))
 	api.GET("/review-sessions/:id/events", reviewSessionEventsHandler(services))
 	api.GET("/review-sessions/:id/findings", listFindingsHandler(queries))
 	api.POST("/review-sessions/:id/export/copy-packet", createCopyPacketHandler(services))

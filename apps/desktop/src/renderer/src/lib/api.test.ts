@@ -630,6 +630,35 @@ describe("ApiClient", () => {
       status: 409,
     });
   });
+
+  it("reads review audit log entries", async () => {
+    let seen = "";
+    const client = createCocodeClient({
+      baseUrl: "http://127.0.0.1:17658",
+      authToken: "local-token",
+      fetch: async (input) => {
+        seen = String(input);
+        return jsonResponse({
+          data: auditLogFixture,
+          error: null,
+        });
+      },
+    });
+
+    await expect(client.getReviewAuditLog("session_1")).resolves.toMatchObject({
+      entries: [
+        {
+          id: "decision_1",
+          kind: "decision",
+          status: "accepted",
+          finding_id: "finding_1",
+        },
+      ],
+    });
+    expect(seen).toBe(
+      "http://127.0.0.1:17658/api/review-sessions/session_1/audit-log",
+    );
+  });
 });
 
 describe("API load states", () => {
@@ -1110,6 +1139,21 @@ const reviewEventFixture = {
   },
   artifact_id: "artifact_1",
   created_at: "2026-05-04T00:00:00Z",
+};
+
+const auditLogFixture = {
+  entries: [
+    {
+      id: "decision_1",
+      kind: "decision",
+      title: "Finding accepted",
+      review_session_id: "session_1",
+      status: "accepted",
+      finding_id: "finding_1",
+      created_at: "2026-05-04T00:01:00Z",
+      metadata: { source: "triage" },
+    },
+  ],
 };
 
 const agentConfigFixture = {

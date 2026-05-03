@@ -257,6 +257,29 @@ export interface ReviewEvent {
   created_at: string;
 }
 
+export interface ReviewAuditLogResponse {
+  entries: ReviewAuditLogEntry[];
+}
+
+export interface ReviewAuditLogEntry {
+  id: string;
+  kind: string;
+  title: string;
+  review_session_id: string;
+  level?: string;
+  status?: string;
+  sequence?: number;
+  finding_id?: string;
+  agent_run_id?: string;
+  artifact_id?: string;
+  copy_packet_id?: string;
+  publish_draft_id?: string;
+  github_publication_id?: string;
+  review_event?: string;
+  created_at: string;
+  metadata: Record<string, unknown>;
+}
+
 export interface Finding {
   id: string;
   review_session_id: string;
@@ -897,6 +920,16 @@ export class ApiClient {
   ) {
     return this.get<ReviewSessionSummary>(
       `/api/review-sessions/${encodeURIComponent(id)}/summary`,
+      options,
+    );
+  }
+
+  getReviewAuditLog(
+    id: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.get<ReviewAuditLogResponse>(
+      `/api/review-sessions/${encodeURIComponent(id)}/audit-log`,
       options,
     );
   }

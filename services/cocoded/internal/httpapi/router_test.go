@@ -2143,6 +2143,98 @@ func TestGitHubPreviewEndpointCreatesDraftWithWarnings(t *testing.T) {
 	}
 }
 
+func TestReviewSessionAuditLogEndpointCombinesReviewActions(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+	if _, err := queries.CreateEvent(context.Background(), dbgen.CreateEventParams{
+		ID:              "event_audit_1",
+		ReviewSessionID: nullableString("review_session_findings"),
+		AgentRunID:      nullableString("agent_run_findings"),
+		Type:            "FindingMerged",
+		Level:           "info",
+		Sequence:        1,
+		PayloadJson:     `{"finding_id":"finding_auth"}`,
+		CreatedAt:       "2026-05-03T00:16:00Z",
+	}); err != nil {
+		t.Fatalf("CreateEvent() error = %v", err)
+	}
+
+	previewRequest := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/review-sessions/review_session_findings/github/preview", map[string]any{
+		"finding_ids":  []string{"finding_auth"},
+		"review_event": "COMMENT",
+	})
+	previewResponse := httptest.NewRecorder()
+	router.ServeHTTP(previewResponse, previewRequest)
+	if previewResponse.Code != http.StatusOK {
+		t.Fatalf("github preview status = %d, body = %s", previewResponse.Code, previewResponse.Body.String())
+	}
+	preview := decodeGitHubPreviewResponse(t, previewResponse.Body.Bytes())
+	if _, err := queries.CreateGitHubPublication(context.Background(), dbgen.CreateGitHubPublicationParams{
+		ID:                   "github_publication_audit",
+		ReviewSessionID:      "review_session_findings",
+		PublishDraftID:       nullableString(preview.PublishDraftID),
+		GithubReviewID:       nullableString("12345"),
+		GithubCommentIdsJson: `["100","101"]`,
+		Status:               "submitted",
+		CreatedAt:            "2026-05-03T00:18:00Z",
+	}); err != nil {
+		t.Fatalf("CreateGitHubPublication() error = %v", err)
+	}
+
+	copyRequest := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/review-sessions/review_session_findings/export/copy-packet", map[string]any{
+		"format":      "markdown",
+		"finding_ids": []string{"finding_auth"},
+	})
+	copyResponse := httptest.NewRecorder()
+	router.ServeHTTP(copyResponse, copyRequest)
+	if copyResponse.Code != http.StatusOK {
+		t.Fatalf("copy packet status = %d, body = %s", copyResponse.Code, copyResponse.Body.String())
+	}
+	packet := decodeCreateCopyPacketResponse(t, copyResponse.Body.Bytes())
+
+	copiedRequest := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/copy-packets/"+packet.CopyPacketID+"/copied", map[string]any{})
+	copiedResponse := httptest.NewRecorder()
+	router.ServeHTTP(copiedResponse, copiedRequest)
+	if copiedResponse.Code != http.StatusOK {
+		t.Fatalf("mark copied status = %d, body = %s", copiedResponse.Code, copiedResponse.Body.String())
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/review-sessions/review_session_findings/audit-log", nil)
+	request.Header.Set("X-Cocode-Token", "test-token")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("audit status = %d, body = %s", response.Code, response.Body.String())
+	}
+	audit := decodeAuditLogResponse(t, response.Body.Bytes())
+	kinds := map[string]AuditLogEntryResponse{}
+	for _, entry := range audit.Entries {
+		kinds[entry.Kind] = entry
+		if entry.ReviewSessionID != "review_session_findings" {
+			t.Fatalf("entry missing review session: %+v", entry)
+		}
+	}
+	for _, kind := range []string{"event", "decision", "copy_packet", "copy_packet_copied", "publish_draft", "github_publication"} {
+		if _, ok := kinds[kind]; !ok {
+			t.Fatalf("audit entries missing %s: %+v", kind, audit.Entries)
+		}
+	}
+	var publishMetadata map[string]any
+	if err := json.Unmarshal(kinds["publish_draft"].Metadata, &publishMetadata); err != nil {
+		t.Fatalf("decode publish metadata: %v", err)
+	}
+	if publishMetadata["comment_count"] != float64(1) || publishMetadata["comments_json"] != nil {
+		t.Fatalf("publish metadata = %+v", publishMetadata)
+	}
+	var publicationMetadata map[string]any
+	if err := json.Unmarshal(kinds["github_publication"].Metadata, &publicationMetadata); err != nil {
+		t.Fatalf("decode publication metadata: %v", err)
+	}
+	if publicationMetadata["github_comment_ids"] != float64(2) {
+		t.Fatalf("publication metadata = %+v", publicationMetadata)
+	}
+}
+
 func TestGitHubPreviewEndpointRejectsUnacceptedFinding(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
 	createHTTPAPIFindingFixture(t, queries)
@@ -3278,6 +3370,22 @@ func decodeMarkCopyPacketCopiedResponse(t *testing.T, content []byte) MarkCopyPa
 	var envelope struct {
 		Data  MarkCopyPacketCopiedResponse `json:"data"`
 		Error any                          `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeAuditLogResponse(t *testing.T, content []byte) AuditLogResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  AuditLogResponse `json:"data"`
+		Error any              `json:"error"`
 	}
 	if err := json.Unmarshal(content, &envelope); err != nil {
 		t.Fatalf("decode response: %v", err)

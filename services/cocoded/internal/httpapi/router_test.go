@@ -1750,6 +1750,52 @@ func TestFindingCopyPacketEndpointRendersSingleJSON(t *testing.T) {
 	}
 }
 
+func TestCopyPacketCopiedEndpointMarksPacketAndFindings(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+
+	createRequest := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/review-sessions/review_session_findings/export/copy-packet", map[string]any{
+		"format":      "markdown",
+		"finding_ids": []string{"finding_budget", "finding_auth"},
+	})
+	createResponse := httptest.NewRecorder()
+	router.ServeHTTP(createResponse, createRequest)
+	if createResponse.Code != http.StatusOK {
+		t.Fatalf("copy packet status = %d, body = %s", createResponse.Code, createResponse.Body.String())
+	}
+	packet := decodeCreateCopyPacketResponse(t, createResponse.Body.Bytes())
+
+	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/copy-packets/"+packet.CopyPacketID+"/copied", map[string]any{})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("mark copied status = %d, body = %s", response.Code, response.Body.String())
+	}
+	copied := decodeMarkCopyPacketCopiedResponse(t, response.Body.Bytes())
+	if copied.CopyPacketID != packet.CopyPacketID ||
+		copied.CopiedAt == "" ||
+		len(copied.FindingIDs) != 2 ||
+		len(copied.Decisions) != 2 {
+		t.Fatalf("copied = %+v", copied)
+	}
+	stored, err := queries.GetCopyPacket(context.Background(), packet.CopyPacketID)
+	if err != nil {
+		t.Fatalf("GetCopyPacket() error = %v", err)
+	}
+	if !stored.CopiedAt.Valid {
+		t.Fatalf("stored packet = %+v", stored)
+	}
+	for _, findingID := range []string{"finding_budget", "finding_auth"} {
+		finding, err := queries.GetFinding(context.Background(), findingID)
+		if err != nil {
+			t.Fatalf("GetFinding(%s) error = %v", findingID, err)
+		}
+		if finding.DecisionStatus != "copied" {
+			t.Fatalf("finding %s = %+v", findingID, finding)
+		}
+	}
+}
+
 func TestFindingDraftCommentEndpointPersistsEdit(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
 	createHTTPAPIFindingFixture(t, queries)
@@ -2833,6 +2879,22 @@ func decodeCreateCopyPacketResponse(t *testing.T, content []byte) CreateCopyPack
 	var envelope struct {
 		Data  CreateCopyPacketResponse `json:"data"`
 		Error any                      `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeMarkCopyPacketCopiedResponse(t *testing.T, content []byte) MarkCopyPacketCopiedResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  MarkCopyPacketCopiedResponse `json:"data"`
+		Error any                          `json:"error"`
 	}
 	if err := json.Unmarshal(content, &envelope); err != nil {
 		t.Fatalf("decode response: %v", err)

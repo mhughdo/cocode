@@ -20,6 +20,7 @@ import (
 var ErrCopyPacketSourceNotFound = errors.New("copy packet source was not found")
 
 type Service struct {
+	Database  *sql.DB
 	Queries   *dbgen.Queries
 	Artifacts *artifact.Store
 	Now       func() time.Time
@@ -41,6 +42,16 @@ type CreateCopyPacketResult struct {
 	Packet   dbgen.CopyPacket
 	Artifact dbgen.Artifact
 	Rendered Packet
+}
+
+type MarkCopyPacketCopiedParams struct {
+	CopyPacketID string
+}
+
+type MarkCopyPacketCopiedResult struct {
+	Packet     dbgen.CopyPacket
+	FindingIDs []string
+	Decisions  []dbgen.HumanDecision
 }
 
 func (s Service) CreateCopyPacket(ctx context.Context, params CreateCopyPacketParams) (CreateCopyPacketResult, error) {
@@ -131,6 +142,91 @@ func (s Service) CreateCopyPacket(ctx context.Context, params CreateCopyPacketPa
 		return CreateCopyPacketResult{}, fmt.Errorf("create copy packet row: %w", err)
 	}
 	return CreateCopyPacketResult{Packet: packetRow, Artifact: artifactRow, Rendered: rendered}, nil
+}
+
+func (s Service) MarkCopyPacketCopied(ctx context.Context, params MarkCopyPacketCopiedParams) (MarkCopyPacketCopiedResult, error) {
+	if s.Queries == nil {
+		return MarkCopyPacketCopiedResult{}, fmt.Errorf("%w: queries are required", ErrInvalidCopyPacket)
+	}
+	if s.Database == nil {
+		return MarkCopyPacketCopiedResult{}, fmt.Errorf("%w: database is required", ErrInvalidCopyPacket)
+	}
+	packetID := strings.TrimSpace(params.CopyPacketID)
+	if packetID == "" {
+		return MarkCopyPacketCopiedResult{}, fmt.Errorf("%w: copy packet id is required", ErrInvalidCopyPacket)
+	}
+	packet, err := s.Queries.GetCopyPacket(ctx, packetID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return MarkCopyPacketCopiedResult{}, ErrCopyPacketSourceNotFound
+		}
+		return MarkCopyPacketCopiedResult{}, fmt.Errorf("read copy packet: %w", err)
+	}
+	findingIDs, err := s.copyPacketFindingIDs(ctx, packet)
+	if err != nil {
+		return MarkCopyPacketCopiedResult{}, err
+	}
+	tx, err := s.Database.BeginTx(ctx, nil)
+	if err != nil {
+		return MarkCopyPacketCopiedResult{}, fmt.Errorf("begin copy packet copied update: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	txQueries := s.Queries.WithTx(tx)
+	now := s.now().Format(time.RFC3339Nano)
+	updatedPacket, err := txQueries.MarkCopyPacketCopied(ctx, dbgen.MarkCopyPacketCopiedParams{
+		ID:       packet.ID,
+		CopiedAt: sql.NullString{String: now, Valid: true},
+	})
+	if err != nil {
+		return MarkCopyPacketCopiedResult{}, fmt.Errorf("mark copy packet copied: %w", err)
+	}
+	decisions := make([]dbgen.HumanDecision, 0, len(findingIDs))
+	for _, findingID := range findingIDs {
+		finding, err := txQueries.GetFinding(ctx, findingID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return MarkCopyPacketCopiedResult{}, ErrCopyPacketSourceNotFound
+			}
+			return MarkCopyPacketCopiedResult{}, fmt.Errorf("read copied finding: %w", err)
+		}
+		if finding.ReviewSessionID != packet.ReviewSessionID {
+			return MarkCopyPacketCopiedResult{}, ErrCopyPacketSourceNotFound
+		}
+		if _, err := txQueries.UpdateFindingDecisionStatus(ctx, dbgen.UpdateFindingDecisionStatusParams{
+			ID:             finding.ID,
+			DecisionStatus: "copied",
+			UpdatedAt:      now,
+		}); err != nil {
+			return MarkCopyPacketCopiedResult{}, fmt.Errorf("update copied finding: %w", err)
+		}
+		metadata, err := copiedDecisionMetadata(packet)
+		if err != nil {
+			return MarkCopyPacketCopiedResult{}, err
+		}
+		decision, err := txQueries.CreateHumanDecision(ctx, dbgen.CreateHumanDecisionParams{
+			ID:              s.newID("human_decision_"),
+			FindingID:       finding.ID,
+			ReviewSessionID: finding.ReviewSessionID,
+			Decision:        "copied",
+			Reason:          sql.NullString{String: "copy_packet", Valid: true},
+			MetadataJson:    string(metadata),
+			CreatedAt:       now,
+		})
+		if err != nil {
+			return MarkCopyPacketCopiedResult{}, fmt.Errorf("store copied decision: %w", err)
+		}
+		decisions = append(decisions, decision)
+	}
+	if err := tx.Commit(); err != nil {
+		return MarkCopyPacketCopiedResult{}, fmt.Errorf("commit copy packet copied update: %w", err)
+	}
+	committed = true
+	return MarkCopyPacketCopiedResult{Packet: updatedPacket, FindingIDs: findingIDs, Decisions: decisions}, nil
 }
 
 func (s Service) selectCopyPacketFindings(ctx context.Context, params CreateCopyPacketParams) ([]dbgen.Finding, string, error) {
@@ -272,6 +368,42 @@ func copyPacketMetadata(params CreateCopyPacketParams, findings []dbgen.Finding,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode copy packet metadata: %w", err)
+	}
+	return metadata, nil
+}
+
+func (s Service) copyPacketFindingIDs(ctx context.Context, packet dbgen.CopyPacket) ([]string, error) {
+	if packet.FindingID.Valid && strings.TrimSpace(packet.FindingID.String) != "" {
+		return []string{strings.TrimSpace(packet.FindingID.String)}, nil
+	}
+	artifactRow, err := s.Queries.GetArtifact(ctx, packet.ContentArtifactID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrCopyPacketSourceNotFound
+		}
+		return nil, fmt.Errorf("read copy packet artifact: %w", err)
+	}
+	var metadata struct {
+		FindingIDs []string `json:"finding_ids"`
+	}
+	if err := json.Unmarshal([]byte(artifactRow.MetadataJson), &metadata); err != nil {
+		return nil, fmt.Errorf("%w: copy packet metadata is invalid", ErrInvalidCopyPacket)
+	}
+	findingIDs := uniqueStrings(metadata.FindingIDs)
+	if len(findingIDs) == 0 {
+		return nil, fmt.Errorf("%w: copy packet has no findings", ErrInvalidCopyPacket)
+	}
+	return findingIDs, nil
+}
+
+func copiedDecisionMetadata(packet dbgen.CopyPacket) (json.RawMessage, error) {
+	metadata, err := json.Marshal(map[string]any{
+		"source":              "copy_packet",
+		"copy_packet_id":      packet.ID,
+		"content_artifact_id": packet.ContentArtifactID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode copied decision metadata: %w", err)
 	}
 	return metadata, nil
 }

@@ -212,6 +212,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 		contextBuilder:    contextBuilder,
 		contextBuilderErr: artifactErr,
 		copyPackets: &exports.Service{
+			Database:  database,
 			Queries:   queries,
 			Artifacts: artifactStore,
 		},
@@ -279,6 +280,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.GET("/review-sessions/:id/events", reviewSessionEventsHandler(services))
 	api.GET("/review-sessions/:id/findings", listFindingsHandler(queries))
 	api.POST("/review-sessions/:id/export/copy-packet", createCopyPacketHandler(services))
+	api.POST("/copy-packets/:copy_packet_id/copied", markCopyPacketCopiedHandler(services))
 	api.GET("/review-sessions/:id/findings/:finding_id", findingDetailHandler(queries))
 	api.GET("/review-sessions/:id/findings/:finding_id/evidence", findingEvidenceHandler(queries))
 	api.GET("/review-sessions/:id/findings/:finding_id/evidence-map", findingEvidenceMapHandler(services, false))

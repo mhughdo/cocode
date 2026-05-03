@@ -365,7 +365,7 @@ Large parallel workstreams:
 | T290 | Implement copy packet renderer | Render Markdown/XML-ish/JSON/compact/GitHub summary. | Done | T184, T185, T060 | T291 | Snapshot + selected findings render accurately. |
 | T291 | Implement copy packet API | Generate packet, store artifact, return content/token estimate. | Done | T290, T060 | T292 | API works for single/selected/accepted findings. |
 | T292 | Implement clipboard UI action | Use Electron bridge to copy packet/comment. | Not started | T034, T291 | T266 | Copy action works and shows success/failure toast. |
-| T293 | Mark findings copied | Record copied decisions and packet metadata. | Not started | T291, T185 | T266 | Copied state appears on findings/publish screen. |
+| T293 | Mark findings copied | Record copied decisions and packet metadata. | Done | T291, T185 | T266 | Copied state appears on findings/publish screen. |
 | T294 | Implement GitHub diff mapper | Map finding file/line to GitHub diff position/line/side. | Not started | T079, T076 | T295 | Tests cover add/remove/context/multi-hunk cases. |
 | T295 | Implement GitHub review preview service | Build review body and comments JSON from selected findings. | Not started | T187, T294 | T296 | Preview returns comment list and anchor warnings. |
 | T296 | Implement GitHub preview API | Endpoint returns publish preview artifact and checklist status. | Not started | T295 | T266 | Publish screen loads preview with seeded findings. |

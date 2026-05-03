@@ -26,6 +26,13 @@ type CreateCopyPacketResponse struct {
 	ContentArtifactID string `json:"content_artifact_id"`
 }
 
+type MarkCopyPacketCopiedResponse struct {
+	CopyPacketID string                  `json:"copy_packet_id"`
+	CopiedAt     string                  `json:"copied_at"`
+	FindingIDs   []string                `json:"finding_ids"`
+	Decisions    []HumanDecisionResponse `json:"decisions"`
+}
+
 func createCopyPacketHandler(services routerServices) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var request CreateCopyPacketRequest
@@ -57,6 +64,37 @@ func createCopyPacketHandler(services routerServices) gin.HandlerFunc {
 			FindingCount:      result.Packet.FindingCount,
 			TokenEstimate:     result.Packet.TokenEstimate,
 			ContentArtifactID: result.Packet.ContentArtifactID,
+		})
+	}
+}
+
+func markCopyPacketCopiedHandler(services routerServices) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		service := services.copyPackets
+		if service == nil {
+			service = &exports.Service{Database: services.database, Queries: services.queries}
+		}
+		result, err := service.MarkCopyPacketCopied(c.Request.Context(), exports.MarkCopyPacketCopiedParams{
+			CopyPacketID: c.Param("copy_packet_id"),
+		})
+		if err != nil {
+			respondError(c, copyPacketError(err))
+			return
+		}
+		decisions := make([]HumanDecisionResponse, 0, len(result.Decisions))
+		for _, decision := range result.Decisions {
+			response, appErr := humanDecisionResponse(decision)
+			if appErr != nil {
+				respondError(c, appErr)
+				return
+			}
+			decisions = append(decisions, response)
+		}
+		respondOK(c, MarkCopyPacketCopiedResponse{
+			CopyPacketID: result.Packet.ID,
+			CopiedAt:     nullableValue(result.Packet.CopiedAt),
+			FindingIDs:   result.FindingIDs,
+			Decisions:    decisions,
 		})
 	}
 }

@@ -1824,6 +1824,7 @@ Evidence Map is done when:
 ```text
 POST /api/review-sessions/:id/export/copy-packet
 POST /api/findings/:id/export/copy-packet
+POST /api/copy-packets/:id/copied
 ```
 
 Request:
@@ -1855,6 +1856,8 @@ Response:
 ```
 
 The copy packet API renders through the deterministic backend renderer, saves a `copy_packet` artifact, and writes a `copy_packets` row. Session-level requests with `finding_ids` preserve the selected order; session-level requests without `finding_ids` render currently accepted findings; finding-level requests render exactly one finding.
+
+`POST /api/copy-packets/:id/copied` stamps `copy_packets.copied_at` and records a `copied` human decision for each finding in the packet. Single-finding packets use `copy_packets.finding_id`; multi-finding packets read the persisted artifact metadata `finding_ids` so copied state remains tied to the exact generated packet.
 
 ### 16.3 Clipboard flow
 

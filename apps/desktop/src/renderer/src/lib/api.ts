@@ -294,6 +294,79 @@ export interface FindingListResponse {
   stats: FindingListStats;
 }
 
+export interface FindingCandidate {
+  id: string;
+  review_session_id: string;
+  agent_run_id: string;
+  raw_artifact_id?: string;
+  category: string;
+  severity: string;
+  confidence: number;
+  claim: string;
+  primary_path?: string;
+  primary_start_line?: number;
+  primary_end_line?: number;
+  locations: unknown;
+  evidence: unknown;
+  suggested_fix?: string;
+  draft_comment?: string;
+  fingerprint?: string;
+  created_at: string;
+  relation?: string;
+}
+
+export interface EvidenceItem {
+  id: string;
+  finding_id: string;
+  kind: string;
+  title: string;
+  summary: string;
+  path?: string;
+  start_line?: number;
+  end_line?: number;
+  artifact_id?: string;
+  confidence: number;
+  code_snippet?: string;
+  line_window?: { start_line: number; end_line: number };
+  metadata: unknown;
+  created_at: string;
+}
+
+export interface EvidenceGroups {
+  supporting: EvidenceItem[];
+  counter: EvidenceItem[];
+  neutral: EvidenceItem[];
+  missing: EvidenceItem[];
+  test: EvidenceItem[];
+  search: EvidenceItem[];
+  agent: EvidenceItem[];
+  static_analysis: EvidenceItem[];
+}
+
+export interface HumanDecision {
+  id: string;
+  finding_id: string;
+  review_session_id: string;
+  decision: string;
+  reason?: string;
+  metadata: unknown;
+  created_at: string;
+}
+
+export interface FindingDetailResponse {
+  finding: Finding;
+  candidates: FindingCandidate[];
+  evidence_items: EvidenceItem[];
+  evidence_groups: EvidenceGroups;
+  decisions: HumanDecision[];
+}
+
+export interface UpdateFindingDecisionRequest {
+  decision: string;
+  reason?: string;
+  rule_memory_suggestion?: string;
+}
+
 export interface RedactionReport {
   bundle_id: string;
   redaction_count: number;
@@ -624,6 +697,40 @@ export class ApiClient {
     return this.get<FindingListResponse>(
       `/api/review-sessions/${encodeURIComponent(reviewSessionId)}/findings`,
       { ...options, query },
+    );
+  }
+
+  getFindingDetail(
+    findingId: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.get<FindingDetailResponse>(
+      `/api/findings/${encodeURIComponent(findingId)}`,
+      options,
+    );
+  }
+
+  updateFindingDecision(
+    findingId: string,
+    body: UpdateFindingDecisionRequest,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.patch<FindingDetailResponse>(
+      `/api/findings/${encodeURIComponent(findingId)}/decision`,
+      body,
+      options,
+    );
+  }
+
+  updateFindingDraftComment(
+    findingId: string,
+    draftComment: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.patch<Finding>(
+      `/api/findings/${encodeURIComponent(findingId)}/draft-comment`,
+      { draft_comment: draftComment },
+      options,
     );
   }
 

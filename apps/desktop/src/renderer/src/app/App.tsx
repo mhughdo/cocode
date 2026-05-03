@@ -83,6 +83,7 @@ import {
   type ApiSessionResponse,
   type Loadable,
   type Finding,
+  type FindingDetailResponse,
   type FindingListResponse,
   type OpenRepositoryResponse,
   type Repository,
@@ -99,10 +100,27 @@ const MAX_SIDEBAR_SESSIONS = 12;
 const MAX_SEARCH_RESULTS = 5;
 const MAX_CHANGED_FILES_RENDERED = 120;
 const MAX_REVIEW_EVENTS_RENDERED = 120;
+const MAX_FINDINGS_RENDERED = 150;
 
 type MainView = "new-thread" | "configure" | "review" | "agent-settings";
 type SnapshotSource = "github" | "local-changes" | "branch-compare";
 type PromptDelivery = "stdin" | "arg" | "temp_file";
+type FindingStatusFilter =
+  | "all"
+  | "needs_triage"
+  | "verified"
+  | "accepted"
+  | "dismissed"
+  | "deferred"
+  | "copied"
+  | "published";
+type FindingSeverityFilter =
+  | "all"
+  | "blocker"
+  | "high"
+  | "medium"
+  | "low"
+  | "info";
 
 const changedFiles = [
   { path: "api/routes/billing.go", additions: 132, deletions: 18 },
@@ -400,6 +418,11 @@ export function App() {
     [activeRepository, activeWorkspace, client, loadConfigureData],
   );
 
+  const handleSelectReviewSession = useCallback((session: ReviewSession) => {
+    setCurrentReviewSession(session);
+    setMainView("review");
+  }, []);
+
   const backendDetail =
     apiSession.status === "error"
       ? apiSession.error.message
@@ -411,6 +434,7 @@ export function App() {
             title: session.title,
             description: `${session.status} • ${formatRelativeAge(session.updated_at)}`,
             icon: GitPullRequestIcon,
+            onSelect: () => handleSelectReviewSession(session),
           }))
         : [
             {
@@ -465,7 +489,13 @@ export function App() {
         ],
       },
     ];
-  }, [handleOpenRepository, handleSelectWorkspace, sessionList, workspaceList]);
+  }, [
+    handleOpenRepository,
+    handleSelectReviewSession,
+    handleSelectWorkspace,
+    sessionList,
+    workspaceList,
+  ]);
 
   return (
     <>
@@ -473,6 +503,7 @@ export function App() {
         sidebar={
           <Sidebar
             backendStatus={backendStatus}
+            activeSessionId={displayedSession?.id}
             activeWorkspaceId={activeWorkspaceId}
             workspaces={workspaces}
             reviewSessions={reviewSessions}
@@ -481,6 +512,7 @@ export function App() {
             onOpenSearch={() => setSearchOpen(true)}
             onOpenAgentSettings={() => setMainView("agent-settings")}
             onOpenNewThread={() => setMainView("new-thread")}
+            onSelectReviewSession={handleSelectReviewSession}
             onSelectWorkspace={handleSelectWorkspace}
           />
         }
@@ -494,7 +526,11 @@ export function App() {
             onOpenSearch={() => setSearchOpen(true)}
           />
         }
-        detailPane={mainView === "agent-settings" ? undefined : <ReviewPane />}
+        detailPane={
+          mainView === "new-thread" || mainView === "configure" ? (
+            <ReviewPane />
+          ) : undefined
+        }
       >
         {mainView === "new-thread" && (
           <NewThreadScreen
@@ -2140,6 +2176,7 @@ function formatHealthMetadata(metadata: Record<string, unknown>) {
 }
 
 function Sidebar({
+  activeSessionId,
   activeWorkspaceId,
   backendStatus,
   repositoryOpenState,
@@ -2149,8 +2186,10 @@ function Sidebar({
   onOpenNewThread,
   onOpenRepository,
   onOpenSearch,
+  onSelectReviewSession,
   onSelectWorkspace,
 }: {
+  activeSessionId?: string;
   activeWorkspaceId: string;
   backendStatus: string;
   repositoryOpenState: Loadable<OpenRepositoryResponse>;
@@ -2160,6 +2199,7 @@ function Sidebar({
   onOpenNewThread: () => void;
   onOpenRepository: () => void;
   onOpenSearch: () => void;
+  onSelectReviewSession: (session: ReviewSession) => void;
   onSelectWorkspace: (workspaceId: string) => void;
 }) {
   const workspaceList = workspaces.status === "success" ? workspaces.data : [];
@@ -2231,12 +2271,13 @@ function Sidebar({
             No review threads yet
           </div>
         )}
-        {sessionList.map((session, index) => (
+        {sessionList.map((session) => (
           <SidebarNavButton
             key={session.id}
             label={session.title}
             meta={formatRelativeAge(session.updated_at)}
-            active={index === 0}
+            active={session.id === activeSessionId}
+            onClick={() => onSelectReviewSession(session)}
           />
         ))}
       </SidebarSection>
@@ -2502,7 +2543,11 @@ function ReviewThread({
             </TabsContent>
 
             <TabsContent value="findings" className="mt-4">
-              <ReviewFindingsBoard findings={live.findings} />
+              <ReviewFindingsBoard
+                client={client}
+                findings={live.findings}
+                session={live.session ?? session}
+              />
             </TabsContent>
 
             <TabsContent value="publish" className="mt-4">
@@ -2894,22 +2939,247 @@ function ReviewEventTimeline({ events }: { events: ReviewEvent[] }) {
 }
 
 function ReviewFindingsBoard({
+  client,
   findings,
+  session,
 }: {
+  client: ApiClient | null;
   findings: Loadable<FindingListResponse>;
+  session?: ReviewSession;
 }) {
-  if (findings.status === "loading") {
-    return <LoadingRows rows={5} className="rounded-lg border p-4" />;
-  }
-  if (findings.status === "error") {
-    return (
-      <ErrorState
-        title="Findings unavailable"
-        description={findings.error.message}
-      />
+  const [statusFilter, setStatusFilter] = useState<FindingStatusFilter>("all");
+  const [severityFilter, setSeverityFilter] =
+    useState<FindingSeverityFilter>("all");
+  const [query, setQuery] = useState("");
+  const debouncedQuery = useDebouncedValue(query, 250);
+  const [boardFindings, setBoardFindings] =
+    useState<Loadable<FindingListResponse>>(findings);
+  const [selectedFindingId, setSelectedFindingId] = useState<string | null>(
+    null,
+  );
+  const [selectedDetail, setSelectedDetail] =
+    useState<Loadable<FindingDetailResponse>>(idleApiState());
+  const [dismissReason, setDismissReason] = useState("");
+  const [boardReloadKey, setBoardReloadKey] = useState(0);
+  const boardSessionId = session?.id;
+  const [actionState, setActionState] = useState<{
+    status: "idle" | "loading" | "success" | "error";
+    findingId?: string;
+    action?: string;
+    message?: string;
+  }>({ status: "idle" });
+
+  useEffect(() => {
+    if (!client || !boardSessionId) {
+      let canceled = false;
+      queueMicrotask(() => {
+        if (!canceled) {
+          setBoardFindings(idleApiState());
+        }
+      });
+      return () => {
+        canceled = true;
+      };
+    }
+
+    const api = client;
+    const sessionId = boardSessionId;
+    let canceled = false;
+    async function load() {
+      setBoardFindings(loadingApiState());
+      const state = await loadApiResource(() =>
+        api.listFindings(sessionId, {
+          status: statusFilter === "all" ? undefined : statusFilter,
+          severity: severityFilter === "all" ? undefined : severityFilter,
+          q: debouncedQuery.trim() || undefined,
+        }),
+      );
+      if (!canceled) {
+        setBoardFindings(state);
+      }
+    }
+
+    queueMicrotask(() => {
+      if (!canceled) {
+        void load();
+      }
+    });
+    return () => {
+      canceled = true;
+    };
+  }, [
+    boardReloadKey,
+    boardSessionId,
+    client,
+    debouncedQuery,
+    severityFilter,
+    statusFilter,
+  ]);
+
+  useEffect(() => {
+    if (boardFindings.status !== "success" || selectedFindingId) {
+      return;
+    }
+    const firstFinding = boardFindings.data.items[0];
+    if (!firstFinding) {
+      return;
+    }
+    let canceled = false;
+    queueMicrotask(() => {
+      if (!canceled) {
+        setSelectedFindingId(firstFinding.id);
+      }
+    });
+    return () => {
+      canceled = true;
+    };
+  }, [boardFindings, selectedFindingId]);
+
+  useEffect(() => {
+    if (!client || !selectedFindingId) {
+      let canceled = false;
+      queueMicrotask(() => {
+        if (!canceled) {
+          setSelectedDetail(idleApiState());
+        }
+      });
+      return () => {
+        canceled = true;
+      };
+    }
+
+    const api = client;
+    const findingId = selectedFindingId;
+    let canceled = false;
+    async function load() {
+      setSelectedDetail(loadingApiState());
+      const state = await loadApiResource(() =>
+        api.getFindingDetail(findingId),
+      );
+      if (!canceled) {
+        setSelectedDetail(state);
+      }
+    }
+
+    queueMicrotask(() => {
+      if (!canceled) {
+        void load();
+      }
+    });
+    return () => {
+      canceled = true;
+    };
+  }, [client, selectedFindingId]);
+
+  const listState = boardFindings;
+  const listedFindings =
+    listState.status === "success" ? listState.data.items : [];
+  const renderedFindings = listedFindings.slice(0, MAX_FINDINGS_RENDERED);
+  const selectedFinding =
+    selectedDetail.status === "success"
+      ? selectedDetail.data.finding
+      : listedFindings.find((finding) => finding.id === selectedFindingId);
+  const selectedOutsideFilter = Boolean(
+    selectedFinding &&
+    listedFindings.length > 0 &&
+    !listedFindings.some((finding) => finding.id === selectedFinding.id),
+  );
+  const hasFilters =
+    statusFilter !== "all" || severityFilter !== "all" || query.trim() !== "";
+
+  async function updateDecision(
+    decision: "accepted" | "dismissed",
+    finding = selectedFinding,
+  ) {
+    if (!client || !finding) {
+      setActionState({
+        status: "error",
+        message: "Select a finding before updating it.",
+      });
+      return;
+    }
+    const reason =
+      decision === "dismissed"
+        ? dismissReason.trim()
+        : "accepted from findings board";
+    if (decision === "dismissed" && reason === "") {
+      setActionState({
+        status: "error",
+        message: "Dismissal needs a reason.",
+      });
+      return;
+    }
+    setActionState({
+      status: "loading",
+      findingId: finding.id,
+      action: decision,
+    });
+    const state = await loadApiResource(() =>
+      client.updateFindingDecision(finding.id, { decision, reason }),
     );
+    if (state.status === "success") {
+      setSelectedDetail(state);
+      setSelectedFindingId(state.data.finding.id);
+      setDismissReason("");
+      setBoardReloadKey((current) => current + 1);
+      setActionState({
+        status: "success",
+        findingId: finding.id,
+        action: decision,
+        message: `${formatDecisionLabel(decision)} saved`,
+      });
+      return;
+    }
+    setActionState({
+      status: "error",
+      message:
+        state.status === "error" ? state.error.message : "Decision failed",
+    });
   }
-  if (findings.status !== "success") {
+
+  async function copyFinding(finding = selectedFinding) {
+    if (!client || !finding) {
+      setActionState({
+        status: "error",
+        message: "Select a finding before copying it.",
+      });
+      return;
+    }
+    const content = findingClipboardText(finding);
+    setActionState({
+      status: "loading",
+      findingId: finding.id,
+      action: "copied",
+    });
+    const state = await loadApiResource(async () => {
+      if (!window.cocode?.writeClipboard) {
+        throw new Error("Clipboard bridge is unavailable");
+      }
+      await window.cocode.writeClipboard(content);
+      return client.updateFindingDecision(finding.id, {
+        decision: "copied",
+        reason: "copied from findings board",
+      });
+    });
+    if (state.status === "success") {
+      setSelectedDetail(state);
+      setSelectedFindingId(state.data.finding.id);
+      setBoardReloadKey((current) => current + 1);
+      setActionState({
+        status: "success",
+        findingId: finding.id,
+        action: "copied",
+        message: "Copied",
+      });
+      return;
+    }
+    setActionState({
+      status: "error",
+      message: state.status === "error" ? state.error.message : "Copy failed",
+    });
+  }
+
+  if (!session) {
     return (
       <EmptyState
         title="No review selected"
@@ -2919,36 +3189,383 @@ function ReviewFindingsBoard({
     );
   }
 
+  const stats =
+    listState.status === "success"
+      ? listState.data.stats
+      : findings.status === "success"
+        ? findings.data.stats
+        : undefined;
+
   return (
     <section className="bg-surface-raised rounded-lg border">
       <div className="grid grid-cols-4 gap-3 border-b p-3">
-        <RunMetric label="Total" value={String(findings.data.stats.total)} />
+        <RunMetric label="Total" value={String(stats?.total ?? 0)} />
+        <RunMetric label="Filtered" value={String(stats?.filtered ?? 0)} />
         <RunMetric
           label="Needs triage"
-          value={String(findings.data.stats.needs_triage)}
-        />
-        <RunMetric
-          label="High"
-          value={String(findings.data.stats.by_severity.high ?? 0)}
+          value={String(stats?.needs_triage ?? 0)}
         />
         <RunMetric
           label="Verified"
-          value={String(findings.data.stats.by_verification.verified ?? 0)}
+          value={String(stats?.by_verification.verified ?? 0)}
         />
       </div>
-      {findings.data.items.length === 0 ? (
-        <EmptyState
-          className="border-0 p-6"
-          title="No findings yet"
-          description="The board will fill as candidates are normalized and verified."
-          icon={ShieldCheckIcon}
+
+      <div className="flex flex-wrap items-center gap-2 border-b p-3">
+        <div className="relative min-w-56 flex-1">
+          <SearchIcon className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
+          <Input
+            aria-label="Search findings"
+            className="pl-8"
+            placeholder="Search findings"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </div>
+        <NativeSelect
+          aria-label="Finding status"
+          className="w-40"
+          size="sm"
+          value={statusFilter}
+          onChange={(event) =>
+            setStatusFilter(event.target.value as FindingStatusFilter)
+          }
+        >
+          <NativeSelectOption value="all">All statuses</NativeSelectOption>
+          <NativeSelectOption value="needs_triage">
+            Needs triage
+          </NativeSelectOption>
+          <NativeSelectOption value="verified">Verified</NativeSelectOption>
+          <NativeSelectOption value="accepted">Accepted</NativeSelectOption>
+          <NativeSelectOption value="dismissed">Dismissed</NativeSelectOption>
+          <NativeSelectOption value="deferred">Deferred</NativeSelectOption>
+          <NativeSelectOption value="copied">Copied</NativeSelectOption>
+          <NativeSelectOption value="published">Published</NativeSelectOption>
+        </NativeSelect>
+        <NativeSelect
+          aria-label="Finding severity"
+          className="w-36"
+          size="sm"
+          value={severityFilter}
+          onChange={(event) =>
+            setSeverityFilter(event.target.value as FindingSeverityFilter)
+          }
+        >
+          <NativeSelectOption value="all">All severities</NativeSelectOption>
+          <NativeSelectOption value="blocker">Blocker</NativeSelectOption>
+          <NativeSelectOption value="high">High</NativeSelectOption>
+          <NativeSelectOption value="medium">Medium</NativeSelectOption>
+          <NativeSelectOption value="low">Low</NativeSelectOption>
+          <NativeSelectOption value="info">Info</NativeSelectOption>
+        </NativeSelect>
+        <Button
+          disabled={!hasFilters}
+          size="sm"
+          variant="outline"
+          onClick={() => {
+            setStatusFilter("all");
+            setSeverityFilter("all");
+            setQuery("");
+          }}
+        >
+          Reset
+        </Button>
+      </div>
+
+      {actionState.status === "error" && (
+        <ErrorState
+          className="m-3"
+          title="Finding action failed"
+          description={actionState.message ?? "The finding was not updated."}
         />
-      ) : (
-        findings.data.items.map((finding) => (
-          <LiveFindingRow key={finding.id} finding={finding} />
-        ))
       )}
+
+      <div className="grid min-h-[480px] grid-cols-[minmax(0,1fr)_minmax(320px,0.8fr)]">
+        <div className="min-w-0 border-r">
+          {listState.status === "loading" && (
+            <LoadingRows rows={5} className="p-4" />
+          )}
+          {listState.status === "error" && (
+            <ErrorState
+              className="m-3"
+              title="Findings unavailable"
+              description={listState.error.message}
+            />
+          )}
+          {listState.status === "success" && listedFindings.length === 0 && (
+            <EmptyState
+              className="border-0 p-6"
+              title="No findings"
+              description="No findings match the current view."
+              icon={ShieldCheckIcon}
+            />
+          )}
+          {renderedFindings.map((finding) => (
+            <FindingCard
+              key={finding.id}
+              actionState={actionState}
+              finding={finding}
+              selected={finding.id === selectedFindingId}
+              onAccept={() => {
+                setSelectedFindingId(finding.id);
+                void updateDecision("accepted", finding);
+              }}
+              onCopy={() => {
+                setSelectedFindingId(finding.id);
+                void copyFinding(finding);
+              }}
+              onSelect={() => setSelectedFindingId(finding.id)}
+            />
+          ))}
+          {listState.status === "success" &&
+            listedFindings.length > renderedFindings.length && (
+              <div className="text-muted-foreground border-t px-4 py-3 text-xs">
+                Showing {renderedFindings.length} of {listedFindings.length}
+              </div>
+            )}
+        </div>
+
+        <div className="min-w-0 p-4">
+          {selectedDetail.status === "loading" && <LoadingRows rows={5} />}
+          {selectedDetail.status === "error" && (
+            <ErrorState
+              title="Finding detail unavailable"
+              description={selectedDetail.error.message}
+            />
+          )}
+          {!selectedFinding && selectedDetail.status !== "loading" && (
+            <EmptyState
+              className="border-0"
+              title="No finding selected"
+              description="Select a finding to inspect evidence and actions."
+              icon={FileSearchIcon}
+            />
+          )}
+          {selectedFinding && selectedDetail.status !== "loading" && (
+            <div className="flex min-w-0 flex-col gap-4">
+              <div>
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <Badge
+                    variant={
+                      selectedFinding.severity === "high" ||
+                      selectedFinding.severity === "blocker"
+                        ? "destructive"
+                        : "secondary"
+                    }
+                  >
+                    {selectedFinding.severity}
+                  </Badge>
+                  <Badge variant="outline">
+                    {formatDecisionLabel(selectedFinding.decision_status)}
+                  </Badge>
+                  <Badge variant="secondary">
+                    {formatDecisionLabel(selectedFinding.verification_status)}
+                  </Badge>
+                  {selectedOutsideFilter && (
+                    <Badge variant="outline">Outside filter</Badge>
+                  )}
+                </div>
+                <h2 className="text-base leading-6 font-semibold">
+                  {selectedFinding.canonical_claim}
+                </h2>
+                <div className="text-muted-foreground mt-2 text-xs">
+                  {formatFindingLocation(selectedFinding)}
+                </div>
+              </div>
+
+              {selectedFinding.evidence_summary && (
+                <div className="rounded-md border p-3">
+                  <div className="text-xs font-medium">Evidence</div>
+                  <p className="text-muted-foreground mt-2 text-sm leading-6">
+                    {selectedFinding.evidence_summary}
+                  </p>
+                </div>
+              )}
+
+              {selectedFinding.counter_evidence_summary && (
+                <div className="rounded-md border p-3">
+                  <div className="text-xs font-medium">Counter-evidence</div>
+                  <p className="text-muted-foreground mt-2 text-sm leading-6">
+                    {selectedFinding.counter_evidence_summary}
+                  </p>
+                </div>
+              )}
+
+              {selectedFinding.suggested_fix && (
+                <div className="rounded-md border p-3">
+                  <div className="text-xs font-medium">Suggested fix</div>
+                  <p className="text-muted-foreground mt-2 text-sm leading-6">
+                    {selectedFinding.suggested_fix}
+                  </p>
+                </div>
+              )}
+
+              <div className="rounded-md border p-3">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <div className="text-xs font-medium">Draft comment</div>
+                  <Badge variant="outline">
+                    {selectedDetail.status === "success"
+                      ? `${selectedDetail.data.candidates.length} candidates`
+                      : `${selectedFinding.merged_from_count} merged`}
+                  </Badge>
+                </div>
+                <p className="text-muted-foreground line-clamp-5 text-sm leading-6">
+                  {selectedFinding.draft_comment ||
+                    selectedFinding.suggested_fix ||
+                    selectedFinding.canonical_claim}
+                </p>
+              </div>
+
+              <Input
+                aria-label="Dismissal reason"
+                placeholder="Dismissal reason"
+                value={dismissReason}
+                onChange={(event) => setDismissReason(event.target.value)}
+              />
+
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  disabled={actionState.status === "loading"}
+                  size="sm"
+                  onClick={() => void updateDecision("accepted")}
+                >
+                  <CheckIcon data-icon="inline-start" />
+                  Accept
+                </Button>
+                <Button
+                  disabled={actionState.status === "loading"}
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void copyFinding()}
+                >
+                  <CopyIcon data-icon="inline-start" />
+                  Copy
+                </Button>
+                <Button
+                  disabled={actionState.status === "loading"}
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void updateDecision("dismissed")}
+                >
+                  Dismiss
+                </Button>
+                {actionState.status === "success" && actionState.message && (
+                  <span className="text-muted-foreground text-xs">
+                    {actionState.message}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
     </section>
+  );
+}
+
+function FindingCard({
+  actionState,
+  finding,
+  onAccept,
+  onCopy,
+  onSelect,
+  selected,
+}: {
+  actionState: {
+    status: "idle" | "loading" | "success" | "error";
+    findingId?: string;
+    action?: string;
+  };
+  finding: Finding;
+  onAccept: () => void;
+  onCopy: () => void;
+  onSelect: () => void;
+  selected: boolean;
+}) {
+  const pending =
+    actionState.status === "loading" && actionState.findingId === finding.id;
+  return (
+    <div
+      className={cn(
+        "hover:bg-surface flex w-full cursor-pointer items-start gap-3 border-b px-4 py-3 text-left last:border-b-0",
+        selected && "bg-surface",
+      )}
+      aria-selected={selected}
+      onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
+      role="button"
+      tabIndex={0}
+    >
+      <CircleIcon
+        className={cn(
+          "mt-1",
+          finding.severity === "high"
+            ? "text-destructive"
+            : "text-muted-foreground",
+        )}
+      />
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-sm font-medium">
+          {finding.canonical_claim}
+        </div>
+        <div className="text-muted-foreground mt-1 flex min-w-0 items-center gap-2 text-xs">
+          <span className="truncate font-mono">
+            {finding.primary_path || "no location"}
+          </span>
+          {finding.primary_start_line ? (
+            <span>L{finding.primary_start_line}</span>
+          ) : null}
+        </div>
+        {finding.evidence_summary && (
+          <div className="text-muted-foreground mt-2 line-clamp-2 text-xs">
+            {finding.evidence_summary}
+          </div>
+        )}
+      </div>
+      <div className="flex shrink-0 flex-col items-end gap-2">
+        <div className="flex gap-1">
+          <Badge
+            variant={finding.severity === "high" ? "destructive" : "secondary"}
+          >
+            {finding.severity}
+          </Badge>
+          <Badge variant="outline">
+            {formatDecisionLabel(finding.verification_status)}
+          </Badge>
+        </div>
+        <div className="flex gap-1">
+          <Button
+            disabled={pending}
+            size="sm"
+            variant="ghost"
+            onClick={(event) => {
+              event.stopPropagation();
+              onAccept();
+            }}
+          >
+            <CheckIcon data-icon="inline-start" />
+            Accept
+          </Button>
+          <Button
+            disabled={pending}
+            size="sm"
+            variant="ghost"
+            onClick={(event) => {
+              event.stopPropagation();
+              onCopy();
+            }}
+          >
+            <CopyIcon data-icon="inline-start" />
+            Copy
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -3420,6 +4037,52 @@ function formatFindingCount(summary?: ReviewSessionSummary) {
 
 function toErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function formatDecisionLabel(value: string) {
+  const normalized = value === "undecided" ? "needs_triage" : value;
+  return normalized
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function formatFindingLocation(finding: Finding) {
+  if (!finding.primary_path) {
+    return "No primary location";
+  }
+  if (finding.primary_start_line && finding.primary_end_line) {
+    return `${finding.primary_path}:L${finding.primary_start_line}-L${finding.primary_end_line}`;
+  }
+  if (finding.primary_start_line) {
+    return `${finding.primary_path}:L${finding.primary_start_line}`;
+  }
+  return finding.primary_path;
+}
+
+function findingClipboardText(finding: Finding) {
+  return [
+    finding.draft_comment || finding.canonical_claim,
+    "",
+    `Finding: ${finding.canonical_claim}`,
+    `Severity: ${formatDecisionLabel(finding.severity)}`,
+    `Status: ${formatDecisionLabel(finding.verification_status)}`,
+    `Location: ${formatFindingLocation(finding)}`,
+    finding.evidence_summary ? `Evidence: ${finding.evidence_summary}` : "",
+    finding.suggested_fix ? `Suggested fix: ${finding.suggested_fix}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setDebounced(value), delayMs);
+    return () => window.clearTimeout(timeout);
+  }, [delayMs, value]);
+
+  return debounced;
 }
 
 function snapshotTitle(snapshot: Snapshot, repository?: Repository): string {

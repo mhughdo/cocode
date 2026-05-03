@@ -166,7 +166,12 @@ describe("ApiClient", () => {
   });
 
   it("controls live reviews, queries findings, and reads SSE events", async () => {
-    const seen: { url: string; method: string; headers: Headers }[] = [];
+    const seen: {
+      url: string;
+      method: string;
+      headers: Headers;
+      body: unknown;
+    }[] = [];
     const fetcher = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
@@ -175,6 +180,7 @@ describe("ApiClient", () => {
           url,
           method,
           headers: new Headers(init?.headers),
+          body: init?.body ? JSON.parse(String(init.body)) : null,
         });
 
         if (url.endsWith("/api/review-sessions/session_1/pause")) {
@@ -197,6 +203,27 @@ describe("ApiClient", () => {
         }
         if (url.includes("/api/review-sessions/session_1/findings")) {
           return jsonResponse({ data: findingListFixture, error: null });
+        }
+        if (url.endsWith("/api/findings/finding_1") && method === "GET") {
+          return jsonResponse({ data: findingDetailFixture, error: null });
+        }
+        if (url.endsWith("/api/findings/finding_1/decision")) {
+          return jsonResponse({
+            data: {
+              ...findingDetailFixture,
+              finding: { ...findingFixture, decision_status: "accepted" },
+            },
+            error: null,
+          });
+        }
+        if (url.endsWith("/api/findings/finding_1/draft-comment")) {
+          return jsonResponse({
+            data: {
+              ...findingFixture,
+              draft_comment: "Please add the missing middleware.",
+            },
+            error: null,
+          });
         }
         if (
           url.endsWith("/api/review-sessions/session_1/events?after_sequence=2")
@@ -239,6 +266,26 @@ describe("ApiClient", () => {
         q: "auth",
       }),
     ).resolves.toEqual(findingListFixture);
+    await expect(client.getFindingDetail("finding_1")).resolves.toEqual(
+      findingDetailFixture,
+    );
+    await expect(
+      client.updateFindingDecision("finding_1", {
+        decision: "accepted",
+        reason: "verified from board",
+      }),
+    ).resolves.toMatchObject({
+      finding: { id: "finding_1", decision_status: "accepted" },
+    });
+    await expect(
+      client.updateFindingDraftComment(
+        "finding_1",
+        "Please add the missing middleware.",
+      ),
+    ).resolves.toMatchObject({
+      id: "finding_1",
+      draft_comment: "Please add the missing middleware.",
+    });
 
     const events: unknown[] = [];
     await client.streamReviewEvents("session_1", {
@@ -252,8 +299,18 @@ describe("ApiClient", () => {
       "POST http://127.0.0.1:17658/api/review-sessions/session_1/resume",
       "POST http://127.0.0.1:17658/api/review-sessions/session_1/cancel",
       "GET http://127.0.0.1:17658/api/review-sessions/session_1/findings?status=needs_triage&severity=high&q=auth",
+      "GET http://127.0.0.1:17658/api/findings/finding_1",
+      "PATCH http://127.0.0.1:17658/api/findings/finding_1/decision",
+      "PATCH http://127.0.0.1:17658/api/findings/finding_1/draft-comment",
       "GET http://127.0.0.1:17658/api/review-sessions/session_1/events?after_sequence=2",
     ]);
+    expect(seen[5]?.body).toEqual({
+      decision: "accepted",
+      reason: "verified from board",
+    });
+    expect(seen[6]?.body).toEqual({
+      draft_comment: "Please add the missing middleware.",
+    });
     for (const request of seen) {
       expect(request.headers.get("Authorization")).toBe("Bearer local-token");
     }
@@ -538,6 +595,23 @@ const findingListFixture = {
     by_verification: { verified: 1 },
     needs_triage: 1,
   },
+};
+
+const findingDetailFixture = {
+  finding: findingFixture,
+  candidates: [],
+  evidence_items: [],
+  evidence_groups: {
+    supporting: [],
+    counter: [],
+    neutral: [],
+    missing: [],
+    test: [],
+    search: [],
+    agent: [],
+    static_analysis: [],
+  },
+  decisions: [],
 };
 
 const reviewEventFixture = {

@@ -4777,6 +4777,8 @@ function ReviewFindingsBoard({
     action?: string;
     message?: string;
   }>({ status: "idle" });
+  const hasFilters =
+    statusFilter !== "all" || severityFilter !== "all" || query.trim() !== "";
 
   useEffect(() => {
     if (!client || !boardSessionId) {
@@ -4824,6 +4826,21 @@ function ReviewFindingsBoard({
     severityFilter,
     statusFilter,
   ]);
+
+  useEffect(() => {
+    if (hasFilters) {
+      return;
+    }
+    let canceled = false;
+    queueMicrotask(() => {
+      if (!canceled) {
+        setBoardFindings(findings);
+      }
+    });
+    return () => {
+      canceled = true;
+    };
+  }, [findings, hasFilters]);
 
   useEffect(() => {
     if (boardFindings.status !== "success" || selectedFindingId) {
@@ -4915,9 +4932,6 @@ function ReviewFindingsBoard({
     listedFindings.length > 0 &&
     !listedFindings.some((finding) => finding.id === selectedFinding.id),
   );
-  const hasFilters =
-    statusFilter !== "all" || severityFilter !== "all" || query.trim() !== "";
-
   async function updateDecision(
     decision: "accepted" | "dismissed",
     finding = selectedFinding,

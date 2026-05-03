@@ -1,8 +1,8 @@
 import { _electron as electron, expect, type Page } from "@playwright/test";
 import type { ElectronApplication, TestInfo } from "@playwright/test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 
 type BackendInfo = {
   baseUrl: string;
@@ -13,6 +13,15 @@ type BackendInfo = {
 
 type CocodeBridge = {
   getBackendInfo: () => Promise<BackendInfo>;
+};
+
+type ApiEnvelope<T> = {
+  data: T | null;
+  error: { message?: string } | null;
+};
+
+type AgentConfig = {
+  id: string;
 };
 
 export type CocodeApp = {
@@ -102,6 +111,121 @@ export function createBranchReviewRepo(repoPath: string): string {
   runGit(repoPath, "commit", "-m", "loosen repository update guard");
 
   return repoPath;
+}
+
+export function createFakeReviewAgent(commandPath: string): string {
+  mkdirSync(dirname(commandPath), { recursive: true });
+  writeFileSync(
+    commandPath,
+    `#!/bin/sh
+set -eu
+
+if [ "\${1:-}" = "--version" ]; then
+  printf 'cocode-e2e-fake-agent 0.1.0\\n'
+  exit 0
+fi
+
+/bin/cat >/dev/null || true
+
+cat <<'JSON'
+{
+  "summary": "Found one deterministic branch comparison issue.",
+  "findings": [
+    {
+      "claim": "Repository update permissions now allow members to mutate settings.",
+      "category": "security",
+      "severity": "high",
+      "confidence": 0.91,
+      "locations": [
+        {
+          "path": "src/auth.ts",
+          "start_line": 2,
+          "end_line": 2,
+          "side": "RIGHT"
+        }
+      ],
+      "evidence": [
+        {
+          "title": "Branch change permits member writes",
+          "summary": "The changed permission predicate now returns true for member roles.",
+          "path": "src/auth.ts",
+          "start_line": 2,
+          "end_line": 2
+        }
+      ],
+      "counter_evidence_request": "Show a later admin-only guard before repository settings mutation.",
+      "suggested_fix": "Keep repository settings updates restricted to admin roles and add a member-denied regression test.",
+      "draft_comment": "Please keep repository settings updates admin-only."
+    }
+  ]
+}
+JSON
+`,
+  );
+  chmodSync(commandPath, 0o755);
+  return commandPath;
+}
+
+export async function createFakeAgentConfig(
+  backendInfo: BackendInfo,
+  commandPath: string,
+): Promise<AgentConfig> {
+  return apiRequest<AgentConfig>(backendInfo, "/api/agents/configs", {
+    method: "POST",
+    body: {
+      name: "E2E Fake Reviewer",
+      role: "primary_reviewer",
+      adapter_kind: "cli_noninteractive",
+      command: commandPath,
+      args: [],
+      cwd_mode: "repo_root",
+      env_allowlist: [],
+      output_mode: "json",
+      model_label: "deterministic",
+      reasoning_label: "fixture",
+      capabilities: {
+        supports_json: true,
+        supports_streaming: false,
+        supports_sessions: false,
+        can_read: true,
+        can_write: false,
+        can_cancel: true,
+        output_modes: ["json", "text"],
+      },
+      settings: {
+        prompt_delivery: "stdin",
+        version_args: ["--version"],
+      },
+      enabled: true,
+    },
+  });
+}
+
+async function apiRequest<T>(
+  backendInfo: BackendInfo,
+  path: string,
+  options: { method?: "GET" | "POST"; body?: unknown } = {},
+): Promise<T> {
+  const response = await fetch(`${backendInfo.baseUrl}${path}`, {
+    method: options.method ?? "GET",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${backendInfo.authToken}`,
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+  const envelope = (await response.json()) as ApiEnvelope<T>;
+  if (!response.ok || envelope.error) {
+    throw new Error(
+      envelope.error?.message ??
+        `Backend request failed with status ${response.status}`,
+    );
+  }
+  if (envelope.data === null) {
+    throw new Error("Backend response did not include data");
+  }
+  return envelope.data;
 }
 
 function runGit(cwd: string, ...args: string[]): void {

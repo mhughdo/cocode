@@ -261,7 +261,7 @@ Large parallel workstreams:
 | T148 | Implement Local Verifier scheduling | Run deterministic verifier as part of workflow. | Not started | T142, T200 | T149 | Verifier produces evidence/status for seeded findings. |
 | T149 | Implement partial failure handling | Continue workflow when one agent fails if policy allows. | Done | T142, T098 | T150 | Failed agent emits error; other findings survive. |
 | T150 | Implement workflow cancel | Cancel all running agents and mark session canceled. | Done | T100, T144 | T254 | Cancel stops processes and preserves partial results. |
-| T151 | Implement pause/resume skeleton | Pause new phases and resume where safe. | Not started | T143, T144 | T254 | MVP can mark pause/resume; complex active process pausing documented. |
+| T151 | Implement pause/resume skeleton | Pause new phases and resume where safe. | Done | T143, T144 | T254 | MVP can mark pause/resume; complex active process pausing documented. |
 | T152 | Implement early findings emission | Emit finding events before full workflow completes. | Not started | T170, T145 | T254 | Early findings appear in UI event stream. |
 | T153 | Implement run summary stats | Compute progress %, files scanned, active agents, finding counts. | Not started | T145, T056 | T254 | Review Running screen receives summary model. |
 

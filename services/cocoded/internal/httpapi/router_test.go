@@ -1248,6 +1248,67 @@ func TestCancelReviewSessionEndpointStopsRunningWorkflow(t *testing.T) {
 	}
 }
 
+func TestPauseResumeReviewSessionEndpoint(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	repoPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoPath, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, "src", "new.go"), []byte("package src\n\nfunc RequireAdmin() bool { return true }\n"), 0o644); err != nil {
+		t.Fatalf("write repo file: %v", err)
+	}
+	createHTTPAPISnapshotAt(t, queries, repoPath)
+	createHTTPAPIAgentConfigWithCommand(t, queries, "agent_config_pause", "primary_reviewer", 1, writeSleepHTTPAPIAgent(t, "1"), agents.OutputJSON, `{"prompt_delivery":"stdin","timeout_seconds":30}`)
+	session := createHTTPAPIReviewSessionRow(t, queries, "review_session_pause", []string{"agent_config_pause"})
+
+	startRequest := httptest.NewRequest(http.MethodPost, "/api/review-sessions/"+session.ID+"/start", nil)
+	startRequest.Header.Set("X-Cocode-Token", "test-token")
+	startResponse := httptest.NewRecorder()
+	router.ServeHTTP(startResponse, startRequest)
+	if startResponse.Code != http.StatusOK {
+		t.Fatalf("start status = %d, body = %s", startResponse.Code, startResponse.Body.String())
+	}
+	waitForHTTPAPIAgentRunStatus(t, queries, session.ID, "running")
+
+	pauseRequest := httptest.NewRequest(http.MethodPost, "/api/review-sessions/"+session.ID+"/pause", nil)
+	pauseRequest.Header.Set("X-Cocode-Token", "test-token")
+	pauseResponse := httptest.NewRecorder()
+	router.ServeHTTP(pauseResponse, pauseRequest)
+	if pauseResponse.Code != http.StatusOK {
+		t.Fatalf("pause status = %d, body = %s", pauseResponse.Code, pauseResponse.Body.String())
+	}
+	paused := decodeReviewSessionResponse(t, pauseResponse.Body.Bytes())
+	if paused.Status != "paused" {
+		t.Fatalf("paused response = %+v", paused)
+	}
+
+	resumeRequest := httptest.NewRequest(http.MethodPost, "/api/review-sessions/"+session.ID+"/resume", nil)
+	resumeRequest.Header.Set("X-Cocode-Token", "test-token")
+	resumeResponse := httptest.NewRecorder()
+	router.ServeHTTP(resumeResponse, resumeRequest)
+	if resumeResponse.Code != http.StatusOK {
+		t.Fatalf("resume status = %d, body = %s", resumeResponse.Code, resumeResponse.Body.String())
+	}
+	resumed := decodeReviewSessionResponse(t, resumeResponse.Body.Bytes())
+	if resumed.Status != "running" {
+		t.Fatalf("resumed response = %+v", resumed)
+	}
+	waitForHTTPAPIReviewSessionStatus(t, queries, session.ID, "completed")
+	events, err := queries.ListEventsByReviewSession(context.Background(), nullableString(session.ID))
+	if err != nil {
+		t.Fatalf("ListEventsByReviewSession() error = %v", err)
+	}
+	seen := map[string]bool{}
+	for _, event := range events {
+		seen[event.Type] = true
+	}
+	for _, typ := range []string{"ReviewSessionPaused", "ReviewSessionResumed", "ReviewSessionCompleted"} {
+		if !seen[typ] {
+			t.Fatalf("events missing %s: %+v", typ, events)
+		}
+	}
+}
+
 func TestBuildReviewContextPreviewEndpointPersistsBundle(t *testing.T) {
 	repoPath := t.TempDir()
 	writeHTTPAPIRepoFile(t, repoPath, "app/main.go", "package main\n\nconst apiKey = \"sk-abcdefghijklmnopqrstuvwxyz\"\n\nfunc RequireAdmin() {}\n")
@@ -1701,10 +1762,16 @@ func fakeJSONAgentPath(t *testing.T) string {
 func writeSlowHTTPAPIAgent(t *testing.T) string {
 	t.Helper()
 
-	path := filepath.Join(t.TempDir(), "slow-agent.sh")
-	content := "#!/bin/sh\nset -eu\n/bin/cat >/dev/null || true\n/bin/sleep 10\nprintf '{\"findings\":[]}'\n"
+	return writeSleepHTTPAPIAgent(t, "10")
+}
+
+func writeSleepHTTPAPIAgent(t *testing.T, seconds string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "sleep-agent.sh")
+	content := "#!/bin/sh\nset -eu\n/bin/cat >/dev/null || true\n/bin/sleep " + seconds + "\nprintf '{\"findings\":[]}'\n"
 	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
-		t.Fatalf("write slow agent: %v", err)
+		t.Fatalf("write sleep agent: %v", err)
 	}
 	return path
 }

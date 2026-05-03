@@ -232,6 +232,47 @@ func (s *Service) Cancel(ctx context.Context, reviewSessionID string) (dbgen.Rev
 	return updated, nil
 }
 
+func (s *Service) Pause(ctx context.Context, reviewSessionID string) (dbgen.ReviewSession, error) {
+	if err := s.validate(); err != nil {
+		return dbgen.ReviewSession{}, err
+	}
+	session, err := s.Transition(ctx, reviewSessionID, StatusPaused)
+	if err != nil {
+		return dbgen.ReviewSession{}, err
+	}
+	if err := s.appendEvent(ctx, appendEventParams{
+		ReviewSessionID: session.ID,
+		Type:            "ReviewSessionPaused",
+		Payload: map[string]any{
+			"status": session.Status,
+			"scope":  "phase_boundary",
+		},
+	}); err != nil {
+		return dbgen.ReviewSession{}, err
+	}
+	return session, nil
+}
+
+func (s *Service) Resume(ctx context.Context, reviewSessionID string) (dbgen.ReviewSession, error) {
+	if err := s.validate(); err != nil {
+		return dbgen.ReviewSession{}, err
+	}
+	session, err := s.Transition(ctx, reviewSessionID, StatusRunning)
+	if err != nil {
+		return dbgen.ReviewSession{}, err
+	}
+	if err := s.appendEvent(ctx, appendEventParams{
+		ReviewSessionID: session.ID,
+		Type:            "ReviewSessionResumed",
+		Payload: map[string]any{
+			"status": session.Status,
+		},
+	}); err != nil {
+		return dbgen.ReviewSession{}, err
+	}
+	return session, nil
+}
+
 func (s *Service) Transition(ctx context.Context, reviewSessionID string, next string) (dbgen.ReviewSession, error) {
 	if err := s.validateQueries(); err != nil {
 		return dbgen.ReviewSession{}, err
@@ -440,6 +481,9 @@ func (s *Service) run(ctx context.Context, reviewSessionID string) error {
 	} else if canceled {
 		return s.completeCanceled(ctx, session.ID)
 	}
+	if err := s.waitWhilePaused(ctx, session.ID); err != nil {
+		return err
+	}
 
 	failedRuns := 0
 	succeededRuns := 0
@@ -463,6 +507,9 @@ func (s *Service) run(ctx context.Context, reviewSessionID string) error {
 		return err
 	} else if canceled {
 		return s.completeCanceled(ctx, session.ID)
+	}
+	if err := s.waitWhilePaused(ctx, session.ID); err != nil {
+		return err
 	}
 	if failedRuns > 0 {
 		if err := s.appendEvent(ctx, appendEventParams{
@@ -493,6 +540,9 @@ func (s *Service) run(ctx context.Context, reviewSessionID string) error {
 		} else if canceled {
 			return s.completeCanceled(ctx, session.ID)
 		}
+		if err := s.waitWhilePaused(ctx, session.ID); err != nil {
+			return err
+		}
 		if err := s.withPhase(ctx, session.ID, phase, func() error { return nil }); err != nil {
 			return err
 		}
@@ -501,6 +551,9 @@ func (s *Service) run(ctx context.Context, reviewSessionID string) error {
 		return err
 	} else if canceled {
 		return s.completeCanceled(ctx, session.ID)
+	}
+	if err := s.waitWhilePaused(ctx, session.ID); err != nil {
+		return err
 	}
 
 	completed, err := s.Transition(ctx, session.ID, StatusCompleted)
@@ -514,6 +567,27 @@ func (s *Service) run(ctx context.Context, reviewSessionID string) error {
 			"status": completed.Status,
 		},
 	})
+}
+
+func (s *Service) waitWhilePaused(ctx context.Context, reviewSessionID string) error {
+	for {
+		session, err := s.Queries.GetReviewSession(ctx, reviewSessionID)
+		if err != nil {
+			return fmt.Errorf("read review session pause state: %w", err)
+		}
+		switch session.Status {
+		case StatusPaused:
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+		case StatusCanceling, StatusCanceled:
+			return s.completeCanceled(ctx, reviewSessionID)
+		default:
+			return nil
+		}
+	}
 }
 
 func (s *Service) cancellationRequested(ctx context.Context, reviewSessionID string) (bool, error) {

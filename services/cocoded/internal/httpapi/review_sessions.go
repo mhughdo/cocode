@@ -224,6 +224,46 @@ func cancelReviewSessionHandler(services routerServices) gin.HandlerFunc {
 	}
 }
 
+func pauseReviewSessionHandler(services routerServices) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if services.reviewWorkflowErr != nil || services.reviewWorkflow == nil {
+			respondError(c, apperror.Internal("review workflow is not configured"))
+			return
+		}
+		session, err := services.reviewWorkflow.Pause(c.Request.Context(), c.Param("id"))
+		if err != nil {
+			respondReviewWorkflowError(c, err)
+			return
+		}
+		response, appErr := reviewSessionResponse(c.Request.Context(), services.queries, session)
+		if appErr != nil {
+			respondError(c, appErr)
+			return
+		}
+		respondOK(c, response)
+	}
+}
+
+func resumeReviewSessionHandler(services routerServices) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if services.reviewWorkflowErr != nil || services.reviewWorkflow == nil {
+			respondError(c, apperror.Internal("review workflow is not configured"))
+			return
+		}
+		session, err := services.reviewWorkflow.Resume(c.Request.Context(), c.Param("id"))
+		if err != nil {
+			respondReviewWorkflowError(c, err)
+			return
+		}
+		response, appErr := reviewSessionResponse(c.Request.Context(), services.queries, session)
+		if appErr != nil {
+			respondError(c, appErr)
+			return
+		}
+		respondOK(c, response)
+	}
+}
+
 func reviewSessionCheckpointHandler(services routerServices) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if services.reviewWorkflowErr != nil || services.reviewWorkflow == nil {

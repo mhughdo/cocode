@@ -250,6 +250,8 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.GET("/review-sessions", listReviewSessionsHandler(queries))
 	api.GET("/review-sessions/:id", getReviewSessionHandler(queries))
 	api.POST("/review-sessions/:id/start", startReviewSessionHandler(services))
+	api.POST("/review-sessions/:id/pause", pauseReviewSessionHandler(services))
+	api.POST("/review-sessions/:id/resume", resumeReviewSessionHandler(services))
 	api.POST("/review-sessions/:id/cancel", cancelReviewSessionHandler(services))
 	api.GET("/review-sessions/:id/checkpoint", reviewSessionCheckpointHandler(services))
 	api.GET("/review-sessions/:id/events", reviewSessionEventsHandler(services))

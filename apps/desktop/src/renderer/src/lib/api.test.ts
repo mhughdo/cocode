@@ -165,6 +165,91 @@ describe("ApiClient", () => {
     ]);
   });
 
+  it("manages agent configs through typed helpers", async () => {
+    const seen: { url: string; method: string; body: unknown }[] = [];
+    const fetcher = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        const body = init?.body ? JSON.parse(String(init.body)) : null;
+        seen.push({ url, method, body });
+
+        if (url.endsWith("/api/agents/configs") && method === "POST") {
+          return jsonResponse({
+            data: { ...agentConfigFixture, ...(body as object) },
+            error: null,
+          });
+        }
+        if (
+          url.endsWith("/api/agents/configs/agent_config_1") &&
+          method === "PATCH"
+        ) {
+          return jsonResponse({
+            data: { ...agentConfigFixture, ...(body as object) },
+            error: null,
+          });
+        }
+        if (url.endsWith("/api/agents/configs/agent_config_1/test")) {
+          return jsonResponse({ data: agentHealthFixture, error: null });
+        }
+        if (
+          url.endsWith("/api/agents/configs/agent_config_1") &&
+          method === "DELETE"
+        ) {
+          return jsonResponse({ data: { deleted: true }, error: null });
+        }
+        return jsonResponse({ data: null, error: null });
+      },
+    );
+    const client = createCocodeClient({
+      baseUrl: "http://127.0.0.1:17658",
+      authToken: "local-token",
+      fetch: fetcher,
+    });
+
+    await expect(
+      client.createAgentConfig({
+        name: "OpenCode",
+        role: "primary_reviewer",
+        adapter_kind: "cli_non_interactive",
+        command: "opencode",
+        args: ["run", "--format", "json", "{{prompt}}"],
+        cwd_mode: "repo_root",
+        env_allowlist: ["OPENROUTER_API_KEY"],
+        output_mode: "jsonl",
+        capabilities: {
+          can_read: true,
+          output_modes: ["jsonl", "json", "text"],
+          metadata: { provider: "opencode", egress: "external" },
+        },
+        settings: { prompt_delivery: "arg", timeout_seconds: 1800 },
+        enabled: true,
+      }),
+    ).resolves.toMatchObject({
+      id: "agent_config_1",
+      command: "opencode",
+      capabilities: {
+        metadata: { provider: "opencode", egress: "external" },
+      },
+    });
+    await expect(
+      client.updateAgentConfig("agent_config_1", { enabled: false }),
+    ).resolves.toMatchObject({ enabled: false });
+    await expect(client.testAgentConfig("agent_config_1")).resolves.toEqual(
+      agentHealthFixture,
+    );
+    await expect(client.deleteAgentConfig("agent_config_1")).resolves.toEqual({
+      deleted: true,
+    });
+
+    expect(seen.map((request) => `${request.method} ${request.url}`)).toEqual([
+      "POST http://127.0.0.1:17658/api/agents/configs",
+      "PATCH http://127.0.0.1:17658/api/agents/configs/agent_config_1",
+      "POST http://127.0.0.1:17658/api/agents/configs/agent_config_1/test",
+      "DELETE http://127.0.0.1:17658/api/agents/configs/agent_config_1",
+    ]);
+  });
+
   it("throws ApiError for backend envelopes with errors", async () => {
     const client = createCocodeClient({
       baseUrl: "http://127.0.0.1:17658",
@@ -308,4 +393,43 @@ const reviewSessionFixture = {
   agents: [],
   created_at: "2026-05-04T00:00:00Z",
   updated_at: "2026-05-04T00:00:00Z",
+};
+
+const agentConfigFixture = {
+  id: "agent_config_1",
+  name: "OpenCode",
+  description: "OpenCode CLI",
+  role: "primary_reviewer",
+  adapter_kind: "cli_non_interactive",
+  command: "opencode",
+  args: ["run", "--format", "json", "{{prompt}}"],
+  cwd_mode: "repo_root",
+  env_allowlist: ["OPENROUTER_API_KEY"],
+  output_mode: "jsonl",
+  model_label: "opencode",
+  reasoning_label: "",
+  settings: { prompt_delivery: "arg", timeout_seconds: 1800 },
+  capabilities: {
+    can_read: true,
+    can_cancel: true,
+    supports_json: true,
+    supports_streaming: true,
+    output_modes: ["jsonl", "json", "text"],
+    metadata: { provider: "opencode", egress: "external" },
+  },
+  enabled: true,
+  created_at: "2026-05-04T00:00:00Z",
+  updated_at: "2026-05-04T00:00:00Z",
+};
+
+const agentHealthFixture = {
+  agent_config_id: "agent_config_1",
+  status: "available",
+  message: "opencode is available",
+  checked_at: "2026-05-04T00:00:00Z",
+  capabilities: agentConfigFixture.capabilities,
+  metadata: {
+    version: "opencode 1.0.0",
+    resolved_path: "/usr/local/bin/opencode",
+  },
 };

@@ -144,7 +144,9 @@ The renderer talks to the local backend through a typed REST client in `apps/des
 
 Workspace navigation uses `GET /api/workspaces`, `POST /api/workspaces/open-repository`, and `GET /api/workspaces/:id/repositories`. The open-repository route is the HTTP counterpart to the Electron repo picker: it validates the selected path through the git repository service, creates or reuses the workspace/repository records, and returns the active workspace plus repository list for the renderer shell. Sidebar rendering must cap visible recent review sessions so a large local history does not make the desktop shell sluggish.
 
-The New Thread and Configure Review screens use typed snapshot and review-session helpers from the renderer API client. Configure Review renders changed files as a bounded preview (`MAX_CHANGED_FILES_RENDERED`) and relies on later finding/diff screens for deeper browsing so very large PRs do not overwhelm initial configuration.
+The New Thread and Configure Review screens use typed snapshot and review-session helpers from the renderer API client. Configure Review renders changed files as a bounded preview (`MAX_CHANGED_FILES_RENDERED`) and relies on later finding/diff screens for deeper browsing so very large PRs do not overwhelm initial configuration. Configure Review also sends the explicit backend `context_policy` shape, including local-only changed-file paths for external-agent omission.
+
+Agent Settings uses the real preset, config, and health endpoints for Codex, Gemini, OpenCode, and custom CLI setup. Preset creation copies the backend command, args, capabilities, settings, env allowlist, and output-mode constraints into an editable form, then saves through the typed renderer API client.
 
 Electron keeps the renderer sandbox enabled, so the preload bundle is emitted as CommonJS (`out/preload/index.cjs`) and explicitly externalizes `electron`. This preserves `contextIsolation`, `sandbox`, and `nodeIntegration: false` while still exposing the narrow `window.cocode` bridge.
 

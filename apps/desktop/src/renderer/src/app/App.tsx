@@ -42,6 +42,7 @@ import {
 } from "@/components/app/chrome";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -57,11 +58,19 @@ import {
   InputGroupTextarea,
 } from "@/components/ui/input-group";
 import { Input } from "@/components/ui/input";
+import {
+  NativeSelect,
+  NativeSelectOption,
+} from "@/components/ui/native-select";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   type AgentConfig,
+  type AgentConfigHealth,
+  type AgentConfigInput,
+  type AgentPreset,
   type ApiClient,
   type ChangedFile,
   createCocodeClient,
@@ -74,6 +83,7 @@ import {
   type Loadable,
   type OpenRepositoryResponse,
   type Repository,
+  type ReviewContextPolicy,
   type ReviewSession,
   type Snapshot,
   type Workspace,
@@ -84,8 +94,9 @@ const MAX_SIDEBAR_SESSIONS = 12;
 const MAX_SEARCH_RESULTS = 5;
 const MAX_CHANGED_FILES_RENDERED = 120;
 
-type MainView = "new-thread" | "configure" | "review";
+type MainView = "new-thread" | "configure" | "review" | "agent-settings";
 type SnapshotSource = "github" | "local-changes" | "branch-compare";
+type PromptDelivery = "stdin" | "arg" | "temp_file";
 
 const changedFiles = [
   { path: "api/routes/billing.go", additions: 132, deletions: 18 },
@@ -399,6 +410,7 @@ export function App() {
                 "Start from PR URL, local changes, or branch compare",
               shortcut: "N",
               icon: PlusIcon,
+              onSelect: () => setMainView("new-thread"),
             },
           ];
 
@@ -433,11 +445,13 @@ export function App() {
             title: "Configure CLI agents",
             description: "Codex, Gemini, OpenCode, and custom CLIs",
             icon: TerminalIcon,
+            onSelect: () => setMainView("agent-settings"),
           },
           {
             title: "Open app settings",
             description: "Credentials, presets, privacy, and logs",
             icon: SettingsIcon,
+            onSelect: () => setMainView("agent-settings"),
           },
         ],
       },
@@ -456,6 +470,8 @@ export function App() {
             repositoryOpenState={repositoryOpenState}
             onOpenRepository={handleOpenRepository}
             onOpenSearch={() => setSearchOpen(true)}
+            onOpenAgentSettings={() => setMainView("agent-settings")}
+            onOpenNewThread={() => setMainView("new-thread")}
             onSelectWorkspace={handleSelectWorkspace}
           />
         }
@@ -469,7 +485,7 @@ export function App() {
             onOpenSearch={() => setSearchOpen(true)}
           />
         }
-        detailPane={<ReviewPane />}
+        detailPane={mainView === "agent-settings" ? undefined : <ReviewPane />}
       >
         {mainView === "new-thread" && (
           <NewThreadScreen
@@ -498,6 +514,12 @@ export function App() {
         )}
         {mainView === "review" && (
           <ReviewThread apiSession={apiSession} backendDetail={backendDetail} />
+        )}
+        {mainView === "agent-settings" && (
+          <AgentSettingsScreen
+            client={client}
+            onBack={() => setMainView("new-thread")}
+          />
         )}
       </AppShell>
       {searchOpen && (
@@ -785,7 +807,8 @@ function ConfigureReviewScreen({
   const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string> | null>(
     null,
   );
-  const [contextPolicy, setContextPolicy] = useState({
+  const [contextPolicy, setContextPolicy] = useState<ReviewContextPolicy>({
+    include_prompt_material: true,
     include_changed_code: true,
     include_related_call_sites: true,
     include_related_tests: true,
@@ -793,6 +816,7 @@ function ConfigureReviewScreen({
     include_prior_comments: true,
     include_prior_decisions: true,
     redact_secrets: true,
+    local_only_paths: [],
     max_tokens: 18_000,
     max_items: 200,
   });
@@ -823,6 +847,10 @@ function ConfigureReviewScreen({
     changedFiles.status === "success"
       ? Math.max(changedFiles.data.length - visibleChangedFiles.length, 0)
       : 0;
+  const localOnlyPaths = contextPolicy.local_only_paths ?? [];
+  const externalAgentCount = safeAgents.filter(
+    (agent) => agentEgress(agent) === "external",
+  ).length;
 
   async function startReview() {
     if (
@@ -966,12 +994,11 @@ function ConfigureReviewScreen({
                       key={agent.id}
                       className="hover:bg-surface flex items-center gap-3 rounded-md px-2 py-2 text-sm"
                     >
-                      <input
+                      <Checkbox
                         checked={effectiveSelectedAgentIds.has(agent.id)}
-                        type="checkbox"
-                        onChange={(event) => {
+                        onCheckedChange={(checked) => {
                           const next = new Set(effectiveSelectedAgentIds);
-                          if (event.target.checked) {
+                          if (checked === true) {
                             next.add(agent.id);
                           } else {
                             next.delete(agent.id);
@@ -983,9 +1010,13 @@ function ConfigureReviewScreen({
                         {agent.name}
                       </span>
                       <Badge
-                        variant={agent.local_only ? "outline" : "secondary"}
+                        variant={
+                          agentEgress(agent) === "local"
+                            ? "outline"
+                            : "secondary"
+                        }
                       >
-                        {agent.local_only ? "local" : (agent.provider ?? "cli")}
+                        {agentProvider(agent)}
                       </Badge>
                     </label>
                   ))}
@@ -1020,28 +1051,123 @@ function ConfigureReviewScreen({
               </section>
 
               <section className="bg-surface-raised rounded-lg border p-4">
-                <div className="mb-3 text-sm font-medium">Context policy</div>
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium">Context policy</div>
+                    <div className="text-muted-foreground mt-1 text-xs">
+                      Explicitly maps to the backend review context schema.
+                    </div>
+                  </div>
+                  <Badge
+                    variant={externalAgentCount > 0 ? "secondary" : "outline"}
+                  >
+                    {externalAgentCount > 0
+                      ? `${externalAgentCount} external`
+                      : "local only"}
+                  </Badge>
+                </div>
                 <div className="grid grid-cols-2 gap-2">
-                  {Object.entries(contextPolicy)
-                    .filter(([, value]) => typeof value === "boolean")
-                    .map(([key, value]) => (
+                  {(
+                    [
+                      "include_prompt_material",
+                      "include_changed_code",
+                      "include_related_call_sites",
+                      "include_related_tests",
+                      "include_project_conventions",
+                      "include_prior_comments",
+                      "include_prior_decisions",
+                      "redact_secrets",
+                    ] as const
+                  ).map((key) => (
+                    <PolicySwitch
+                      key={key}
+                      checked={Boolean(contextPolicy[key])}
+                      label={formatPolicyLabel(key)}
+                      onCheckedChange={(checked) =>
+                        setContextPolicy((current) => ({
+                          ...current,
+                          [key]: checked,
+                        }))
+                      }
+                    />
+                  ))}
+                </div>
+
+                <div className="mt-4 grid grid-cols-2 gap-3">
+                  <label className="flex flex-col gap-2 text-xs font-medium">
+                    Token budget
+                    <Input
+                      min={1000}
+                      step={1000}
+                      type="number"
+                      value={contextPolicy.max_tokens ?? 18_000}
+                      onChange={(event) =>
+                        setContextPolicy((current) => ({
+                          ...current,
+                          max_tokens: Number(event.target.value),
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className="flex flex-col gap-2 text-xs font-medium">
+                    Item budget
+                    <Input
+                      min={1}
+                      step={10}
+                      type="number"
+                      value={contextPolicy.max_items ?? 200}
+                      onChange={(event) =>
+                        setContextPolicy((current) => ({
+                          ...current,
+                          max_items: Number(event.target.value),
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
+
+                <div className="mt-4 rounded-md border">
+                  <div className="flex items-center justify-between gap-3 border-b px-3 py-2">
+                    <div className="min-w-0">
+                      <div className="text-xs font-medium">
+                        Local-only files
+                      </div>
+                      <div className="text-muted-foreground mt-1 text-xs">
+                        These paths are omitted from external-agent context.
+                      </div>
+                    </div>
+                    <Badge variant="outline">{localOnlyPaths.length}</Badge>
+                  </div>
+                  <div className="max-h-44 overflow-y-auto p-2">
+                    {visibleChangedFiles.length === 0 && (
+                      <div className="text-muted-foreground px-1 py-2 text-xs">
+                        Changed files will appear here after snapshot loading.
+                      </div>
+                    )}
+                    {visibleChangedFiles.map((file) => (
                       <label
-                        key={key}
+                        key={file.id}
                         className="hover:bg-surface flex items-center gap-2 rounded-md px-2 py-1.5 text-xs"
                       >
-                        <input
-                          checked={Boolean(value)}
-                          type="checkbox"
-                          onChange={(event) =>
+                        <Checkbox
+                          checked={localOnlyPaths.includes(file.path)}
+                          onCheckedChange={(checked) => {
                             setContextPolicy((current) => ({
                               ...current,
-                              [key]: event.target.checked,
-                            }))
-                          }
+                              local_only_paths: nextLocalOnlyPaths(
+                                current.local_only_paths ?? [],
+                                file.path,
+                                checked === true,
+                              ),
+                            }));
+                          }}
                         />
-                        <span>{formatPolicyLabel(key)}</span>
+                        <span className="min-w-0 flex-1 truncate font-mono">
+                          {file.path}
+                        </span>
                       </label>
                     ))}
+                  </div>
                 </div>
               </section>
             </div>
@@ -1105,12 +1231,906 @@ function ChangedFileRow({ file }: { file: ChangedFile }) {
   );
 }
 
+function PolicySwitch({
+  checked,
+  label,
+  onCheckedChange,
+}: {
+  checked: boolean;
+  label: string;
+  onCheckedChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="hover:bg-surface flex items-center justify-between gap-3 rounded-md px-2 py-1.5 text-xs">
+      <span className="min-w-0 truncate">{label}</span>
+      <Switch checked={checked} size="sm" onCheckedChange={onCheckedChange} />
+    </label>
+  );
+}
+
+type AgentConfigFormState = {
+  id?: string;
+  sourcePresetId?: string;
+  name: string;
+  role: string;
+  adapterKind: string;
+  command: string;
+  argsText: string;
+  cwdMode: string;
+  envAllowlistText: string;
+  outputMode: string;
+  modelLabel: string;
+  reasoningLabel: string;
+  enabled: boolean;
+  capabilities: AgentConfigInput["capabilities"];
+  settings: Record<string, unknown>;
+  promptDelivery: PromptDelivery;
+  timeoutSeconds: number;
+  versionArgsText: string;
+  skipVersion: boolean;
+  smokePromptEnabled: boolean;
+  smokePrompt: string;
+  allowRiskyCommand: boolean;
+};
+
+function AgentSettingsScreen({
+  client,
+  onBack,
+}: {
+  client: ApiClient | null;
+  onBack: () => void;
+}) {
+  const [presets, setPresets] =
+    useState<Loadable<AgentPreset[]>>(idleApiState());
+  const [configs, setConfigs] =
+    useState<Loadable<AgentConfig[]>>(idleApiState());
+  const [formMode, setFormMode] = useState<"create" | "edit">("create");
+  const [form, setForm] = useState<AgentConfigFormState>(
+    defaultAgentConfigForm(),
+  );
+  const [saveState, setSaveState] =
+    useState<Loadable<AgentConfig>>(idleApiState());
+  const [healthByConfigId, setHealthByConfigId] = useState<
+    Record<string, Loadable<AgentConfigHealth>>
+  >({});
+
+  const presetList = presets.status === "success" ? presets.data : [];
+  const configList = configs.status === "success" ? configs.data : [];
+  const activeHealth = form.id ? healthByConfigId[form.id] : undefined;
+  const outputModes = supportedOutputModes(form.capabilities, form.outputMode);
+
+  useEffect(() => {
+    let canceled = false;
+
+    queueMicrotask(() => {
+      if (canceled) {
+        return;
+      }
+      if (!client) {
+        setPresets(errorApiState(new Error("Backend client is unavailable")));
+        setConfigs(errorApiState(new Error("Backend client is unavailable")));
+        return;
+      }
+
+      setPresets(loadingApiState());
+      setConfigs(loadingApiState());
+      void Promise.all([
+        loadApiResource(() => client.listAgentPresets()),
+        loadApiResource(() => client.listAgentConfigs()),
+      ]).then(([presetState, configState]) => {
+        if (canceled) {
+          return;
+        }
+        setPresets(presetState);
+        setConfigs(configState);
+
+        if (configState.status === "success" && configState.data[0]) {
+          setFormMode("edit");
+          setForm(formFromAgentConfig(configState.data[0]));
+          return;
+        }
+        if (presetState.status === "success") {
+          const defaultPreset =
+            presetState.data.find((preset) => preset.id === "codex-cli") ??
+            presetState.data[0];
+          if (defaultPreset) {
+            setFormMode("create");
+            setForm(formFromAgentPreset(defaultPreset));
+          }
+        }
+      });
+    });
+
+    return () => {
+      canceled = true;
+    };
+  }, [client]);
+
+  function selectPreset(preset: AgentPreset) {
+    setFormMode("create");
+    setForm(formFromAgentPreset(preset));
+    setSaveState(idleApiState());
+  }
+
+  function selectConfig(config: AgentConfig) {
+    setFormMode("edit");
+    setForm(formFromAgentConfig(config));
+    setSaveState(idleApiState());
+  }
+
+  async function saveAgentConfig() {
+    if (!client) {
+      setSaveState(errorApiState(new Error("Backend client is unavailable")));
+      return;
+    }
+
+    const bodyResult = agentConfigBodyFromForm(form);
+    if (bodyResult instanceof Error) {
+      setSaveState(errorApiState(bodyResult));
+      return;
+    }
+
+    setSaveState(loadingApiState());
+    const nextState =
+      formMode === "edit" && form.id
+        ? await loadApiResource(() =>
+            client.updateAgentConfig(form.id as string, bodyResult),
+          )
+        : await loadApiResource(() => client.createAgentConfig(bodyResult));
+
+    setSaveState(nextState);
+    if (nextState.status !== "success") {
+      return;
+    }
+
+    setFormMode("edit");
+    setForm(formFromAgentConfig(nextState.data));
+    setConfigs((current) => {
+      if (current.status !== "success") {
+        return successApiState([nextState.data]);
+      }
+      const exists = current.data.some((item) => item.id === nextState.data.id);
+      return successApiState(
+        exists
+          ? current.data.map((item) =>
+              item.id === nextState.data.id ? nextState.data : item,
+            )
+          : [nextState.data, ...current.data],
+      );
+    });
+  }
+
+  async function testHealth(configId: string) {
+    if (!client) {
+      return;
+    }
+    setHealthByConfigId((current) => ({
+      ...current,
+      [configId]: loadingApiState(),
+    }));
+    const state = await loadApiResource(() => client.testAgentConfig(configId));
+    setHealthByConfigId((current) => ({ ...current, [configId]: state }));
+  }
+
+  return (
+    <section className="flex min-w-0 flex-col">
+      <ScrollArea className="flex-1 px-6 py-5">
+        <div className="mx-auto flex max-w-6xl flex-col gap-5">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h1 className="text-xl font-semibold">Agent settings</h1>
+              <p className="text-muted-foreground mt-1 text-sm">
+                Configure local CLI reviewers, presets, health checks, and
+                review-safe capabilities.
+              </p>
+            </div>
+            <Button variant="outline" onClick={onBack}>
+              New thread
+              <ArrowUpIcon data-icon="inline-end" />
+            </Button>
+          </div>
+
+          <div className="grid grid-cols-[320px_minmax(0,1fr)] gap-4">
+            <div className="flex min-w-0 flex-col gap-4">
+              <section className="bg-surface-raised rounded-lg border">
+                <div className="border-b px-3 py-2 text-sm font-medium">
+                  Presets
+                </div>
+                <div className="flex flex-col gap-1 p-2">
+                  {presets.status === "loading" && <LoadingRows rows={4} />}
+                  {presets.status === "error" && (
+                    <ErrorState
+                      className="border-0 p-2"
+                      title="Presets unavailable"
+                      description={presets.error.message}
+                    />
+                  )}
+                  {presetList.map((preset) => (
+                    <button
+                      key={preset.id}
+                      className={cn(
+                        "hover:bg-surface flex w-full items-start gap-3 rounded-md px-2 py-2 text-left text-sm",
+                        formMode === "create" &&
+                          form.sourcePresetId === preset.id &&
+                          "bg-surface",
+                      )}
+                      type="button"
+                      onClick={() => selectPreset(preset)}
+                    >
+                      <TerminalIcon />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-medium">
+                          {preset.name}
+                        </span>
+                        <span className="text-muted-foreground mt-1 line-clamp-2 text-xs">
+                          {preset.description}
+                        </span>
+                      </span>
+                      <Badge
+                        variant={
+                          agentEgress(preset) === "local"
+                            ? "outline"
+                            : "secondary"
+                        }
+                      >
+                        {agentProvider(preset)}
+                      </Badge>
+                    </button>
+                  ))}
+                </div>
+              </section>
+
+              <section className="bg-surface-raised rounded-lg border">
+                <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
+                  <span className="text-sm font-medium">Configured</span>
+                  {configs.status === "success" && (
+                    <Badge variant="secondary">{configs.data.length}</Badge>
+                  )}
+                </div>
+                <div className="flex flex-col gap-1 p-2">
+                  {configs.status === "loading" && <LoadingRows rows={4} />}
+                  {configs.status === "error" && (
+                    <ErrorState
+                      className="border-0 p-2"
+                      title="Agents unavailable"
+                      description={configs.error.message}
+                    />
+                  )}
+                  {configs.status === "success" && configList.length === 0 && (
+                    <EmptyState
+                      className="border-0 p-3"
+                      title="No saved agents"
+                      description="Choose a preset, adjust the command, and save it."
+                      icon={TerminalIcon}
+                    />
+                  )}
+                  {configList.map((config) => (
+                    <button
+                      key={config.id}
+                      className={cn(
+                        "hover:bg-surface flex w-full items-center gap-3 rounded-md px-2 py-2 text-left text-sm",
+                        formMode === "edit" &&
+                          form.id === config.id &&
+                          "bg-surface",
+                      )}
+                      type="button"
+                      onClick={() => selectConfig(config)}
+                    >
+                      <BotIcon />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-medium">
+                          {config.name}
+                        </span>
+                        <span className="text-muted-foreground mt-1 flex min-w-0 items-center gap-1 text-xs">
+                          <span className="truncate">
+                            {config.command || config.adapter_kind}
+                          </span>
+                          <span>•</span>
+                          <span>{config.output_mode}</span>
+                        </span>
+                      </span>
+                      <Badge variant={config.enabled ? "secondary" : "outline"}>
+                        {config.enabled ? "enabled" : "off"}
+                      </Badge>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            </div>
+
+            <section className="bg-surface-raised min-w-0 rounded-lg border">
+              <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium">
+                    {formMode === "edit"
+                      ? "Edit CLI agent"
+                      : "Create CLI agent"}
+                  </div>
+                  <div className="text-muted-foreground mt-1 truncate text-xs">
+                    Flags stay in args. The backend validates command safety and
+                    output compatibility.
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <Badge
+                    variant={
+                      agentEgress(form) === "local" ? "outline" : "secondary"
+                    }
+                  >
+                    {agentProvider(form)}
+                  </Badge>
+                  <Badge
+                    variant={
+                      form.capabilities.can_write ? "destructive" : "outline"
+                    }
+                  >
+                    {form.capabilities.can_write
+                      ? "write-capable"
+                      : "review-safe"}
+                  </Badge>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 p-4">
+                <label className="flex flex-col gap-2 text-sm font-medium">
+                  Name
+                  <Input
+                    value={form.name}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        name: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+                <label className="flex flex-col gap-2 text-sm font-medium">
+                  Role
+                  <Input
+                    value={form.role}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        role: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+                <label className="flex flex-col gap-2 text-sm font-medium">
+                  Command
+                  <Input
+                    placeholder="codex"
+                    value={form.command}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        command: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+                <label className="flex flex-col gap-2 text-sm font-medium">
+                  Output mode
+                  <NativeSelect
+                    className="w-full"
+                    value={form.outputMode}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        outputMode: event.target.value,
+                      }))
+                    }
+                  >
+                    {outputModes.map((mode) => (
+                      <NativeSelectOption key={mode} value={mode}>
+                        {mode}
+                      </NativeSelectOption>
+                    ))}
+                  </NativeSelect>
+                </label>
+                <label className="col-span-2 flex flex-col gap-2 text-sm font-medium">
+                  Arguments
+                  <InputGroup className="min-h-24 items-stretch">
+                    <InputGroupTextarea
+                      className="min-h-20 font-mono text-xs"
+                      placeholder={"exec\n--json\n-"}
+                      value={form.argsText}
+                      onChange={(event) =>
+                        setForm((current) => ({
+                          ...current,
+                          argsText: event.target.value,
+                        }))
+                      }
+                    />
+                  </InputGroup>
+                  <span className="text-muted-foreground text-xs font-normal">
+                    One argument per line. Use {"{{prompt}}"} only for arg-mode
+                    CLIs.
+                  </span>
+                </label>
+                <label className="flex flex-col gap-2 text-sm font-medium">
+                  CWD mode
+                  <NativeSelect
+                    className="w-full"
+                    value={form.cwdMode}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        cwdMode: event.target.value,
+                      }))
+                    }
+                  >
+                    <NativeSelectOption value="repo_root">
+                      repo_root
+                    </NativeSelectOption>
+                    <NativeSelectOption value="workspace_root">
+                      workspace_root
+                    </NativeSelectOption>
+                  </NativeSelect>
+                </label>
+                <label className="flex flex-col gap-2 text-sm font-medium">
+                  Prompt delivery
+                  <NativeSelect
+                    className="w-full"
+                    value={form.promptDelivery}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        promptDelivery: event.target.value as PromptDelivery,
+                      }))
+                    }
+                  >
+                    <NativeSelectOption value="stdin">stdin</NativeSelectOption>
+                    <NativeSelectOption value="arg">arg</NativeSelectOption>
+                    <NativeSelectOption value="temp_file">
+                      temp_file
+                    </NativeSelectOption>
+                  </NativeSelect>
+                </label>
+                <label className="flex flex-col gap-2 text-sm font-medium">
+                  Model label
+                  <Input
+                    value={form.modelLabel}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        modelLabel: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+                <label className="flex flex-col gap-2 text-sm font-medium">
+                  Reasoning label
+                  <Input
+                    value={form.reasoningLabel}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        reasoningLabel: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+                <label className="flex flex-col gap-2 text-sm font-medium">
+                  Timeout seconds
+                  <Input
+                    min={1}
+                    type="number"
+                    value={form.timeoutSeconds}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        timeoutSeconds: Number(event.target.value),
+                      }))
+                    }
+                  />
+                </label>
+                <label className="flex flex-col gap-2 text-sm font-medium">
+                  Version args
+                  <Input
+                    placeholder="--version"
+                    value={form.versionArgsText}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        versionArgsText: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+                <label className="col-span-2 flex flex-col gap-2 text-sm font-medium">
+                  Environment allowlist
+                  <Input
+                    placeholder="OPENAI_API_KEY, GEMINI_API_KEY"
+                    value={form.envAllowlistText}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        envAllowlistText: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+
+                <div className="col-span-2 grid grid-cols-3 gap-3">
+                  <AgentSettingSwitch
+                    checked={form.enabled}
+                    label="Enabled"
+                    onCheckedChange={(checked) =>
+                      setForm((current) => ({ ...current, enabled: checked }))
+                    }
+                  />
+                  <AgentSettingSwitch
+                    checked={form.skipVersion}
+                    label="Skip version"
+                    onCheckedChange={(checked) =>
+                      setForm((current) => ({
+                        ...current,
+                        skipVersion: checked,
+                      }))
+                    }
+                  />
+                  <AgentSettingSwitch
+                    checked={form.allowRiskyCommand}
+                    label="Risky command"
+                    onCheckedChange={(checked) =>
+                      setForm((current) => ({
+                        ...current,
+                        allowRiskyCommand: checked,
+                      }))
+                    }
+                  />
+                </div>
+
+                <div className="col-span-2 rounded-md border p-3">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div className="text-sm font-medium">Health check</div>
+                    <div className="flex items-center gap-2">
+                      {form.id && (
+                        <Button
+                          disabled={activeHealth?.status === "loading"}
+                          size="sm"
+                          variant="outline"
+                          onClick={() => void testHealth(form.id as string)}
+                        >
+                          <ClockIcon data-icon="inline-start" />
+                          {activeHealth?.status === "loading"
+                            ? "Testing..."
+                            : "Test"}
+                        </Button>
+                      )}
+                      <Button
+                        disabled={saveState.status === "loading"}
+                        size="sm"
+                        onClick={() => void saveAgentConfig()}
+                      >
+                        <CheckIcon data-icon="inline-start" />
+                        {saveState.status === "loading" ? "Saving..." : "Save"}
+                      </Button>
+                    </div>
+                  </div>
+                  {!form.id && (
+                    <div className="text-muted-foreground text-sm">
+                      Save this config before running command health checks.
+                    </div>
+                  )}
+                  {activeHealth?.status === "success" && (
+                    <HealthSummary health={activeHealth.data} />
+                  )}
+                  {activeHealth?.status === "error" && (
+                    <ErrorState
+                      className="border-0 p-0"
+                      title="Health check failed"
+                      description={activeHealth.error.message}
+                    />
+                  )}
+                  {saveState.status === "error" && (
+                    <ErrorState
+                      className="mt-3"
+                      title="Could not save agent"
+                      description={saveState.error.message}
+                    />
+                  )}
+                  {saveState.status === "success" && (
+                    <div className="text-muted-foreground mt-3 text-xs">
+                      Saved {saveState.data.name}. Run a health check to verify
+                      the local command and optional version output.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </ScrollArea>
+    </section>
+  );
+}
+
+function AgentSettingSwitch({
+  checked,
+  label,
+  onCheckedChange,
+}: {
+  checked: boolean;
+  label: string;
+  onCheckedChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="bg-background flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-sm">
+      <span className="truncate">{label}</span>
+      <Switch checked={checked} size="sm" onCheckedChange={onCheckedChange} />
+    </label>
+  );
+}
+
+function HealthSummary({ health }: { health: AgentConfigHealth }) {
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <Badge
+          variant={
+            health.status === "unavailable" ? "destructive" : "secondary"
+          }
+        >
+          {health.status}
+        </Badge>
+        {health.message && (
+          <span className="text-muted-foreground min-w-0 truncate text-sm">
+            {health.message}
+          </span>
+        )}
+      </div>
+      {formatHealthMetadata(health.metadata).length > 0 && (
+        <div className="grid grid-cols-2 gap-2">
+          {formatHealthMetadata(health.metadata).map(([key, value]) => (
+            <div
+              key={key}
+              className="bg-background rounded-md border px-2 py-1"
+            >
+              <div className="text-muted-foreground text-xs">{key}</div>
+              <div className="truncate font-mono text-xs">{value}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function defaultAgentConfigForm(): AgentConfigFormState {
+  return {
+    name: "Custom CLI",
+    role: "custom_reviewer",
+    adapterKind: "cli_non_interactive",
+    command: "",
+    argsText: "",
+    cwdMode: "repo_root",
+    envAllowlistText: "",
+    outputMode: "text",
+    modelLabel: "custom",
+    reasoningLabel: "",
+    enabled: false,
+    capabilities: {
+      can_read: true,
+      can_cancel: true,
+      supports_json: true,
+      output_modes: ["text", "json", "jsonl", "ndjson"],
+      metadata: { provider: "custom", egress: "external" },
+    },
+    settings: {
+      prompt_delivery: "stdin",
+      timeout_seconds: 1800,
+      skip_version: true,
+      smoke_prompt_enabled: false,
+    },
+    promptDelivery: "stdin",
+    timeoutSeconds: 1800,
+    versionArgsText: "",
+    skipVersion: true,
+    smokePromptEnabled: false,
+    smokePrompt: "",
+    allowRiskyCommand: false,
+  };
+}
+
+function formFromAgentPreset(preset: AgentPreset): AgentConfigFormState {
+  return formFromAgentLike({
+    ...preset,
+    name: preset.id === "custom-cli" ? "Custom CLI" : preset.name,
+    enabled: preset.enabled && preset.id !== "custom-cli",
+    sourcePresetId: preset.id,
+  });
+}
+
+function formFromAgentConfig(config: AgentConfig): AgentConfigFormState {
+  return formFromAgentLike(config);
+}
+
+function formFromAgentLike(
+  source: (AgentPreset | AgentConfig) & {
+    id?: string;
+    enabled: boolean;
+    sourcePresetId?: string;
+  },
+): AgentConfigFormState {
+  const settings = source.settings ?? {};
+  return {
+    id: "created_at" in source ? source.id : undefined,
+    sourcePresetId: source.sourcePresetId,
+    name: source.name,
+    role: source.role,
+    adapterKind: source.adapter_kind,
+    command: source.command ?? "",
+    argsText: (source.args ?? []).join("\n"),
+    cwdMode: source.cwd_mode || "repo_root",
+    envAllowlistText: (source.env_allowlist ?? []).join(", "),
+    outputMode: source.output_mode || "text",
+    modelLabel: source.model_label ?? "",
+    reasoningLabel: source.reasoning_label ?? "",
+    enabled: source.enabled,
+    capabilities: source.capabilities,
+    settings,
+    promptDelivery: promptDeliveryValue(settings.prompt_delivery),
+    timeoutSeconds: numberSetting(settings.timeout_seconds, 1800),
+    versionArgsText: stringArraySetting(settings.version_args).join(" "),
+    skipVersion: Boolean(settings.skip_version),
+    smokePromptEnabled: Boolean(settings.smoke_prompt_enabled),
+    smokePrompt: stringSetting(settings.smoke_prompt),
+    allowRiskyCommand: Boolean(settings.allow_risky_command),
+  };
+}
+
+function agentConfigBodyFromForm(
+  form: AgentConfigFormState,
+): AgentConfigInput | Error {
+  const command = form.command.trim();
+  if (form.adapterKind === "cli_non_interactive" && command === "") {
+    return new Error("CLI agents require a command before saving.");
+  }
+  if (!Number.isFinite(form.timeoutSeconds) || form.timeoutSeconds <= 0) {
+    return new Error("Timeout seconds must be a positive number.");
+  }
+  if (
+    !supportedOutputModes(form.capabilities, form.outputMode).includes(
+      form.outputMode,
+    )
+  ) {
+    return new Error("Selected output mode is not supported by this agent.");
+  }
+
+  const settings: Record<string, unknown> = {
+    ...form.settings,
+    prompt_delivery: form.promptDelivery,
+    timeout_seconds: form.timeoutSeconds,
+    skip_version: form.skipVersion,
+    smoke_prompt_enabled: form.smokePromptEnabled,
+    allow_risky_command: form.allowRiskyCommand,
+  };
+  const versionArgs = parseInlineList(form.versionArgsText);
+  if (versionArgs.length > 0) {
+    settings.version_args = versionArgs;
+  } else {
+    delete settings.version_args;
+  }
+  if (form.smokePrompt.trim()) {
+    settings.smoke_prompt = form.smokePrompt.trim();
+  } else {
+    delete settings.smoke_prompt;
+  }
+
+  return {
+    name: form.name.trim(),
+    role: form.role.trim(),
+    adapter_kind: form.adapterKind,
+    command,
+    args: parseArgLines(form.argsText),
+    cwd_mode: form.cwdMode.trim() || "repo_root",
+    env_allowlist: parseInlineList(form.envAllowlistText),
+    output_mode: form.outputMode,
+    model_label: form.modelLabel.trim(),
+    reasoning_label: form.reasoningLabel.trim(),
+    capabilities: form.capabilities,
+    settings,
+    enabled: form.enabled,
+  };
+}
+
+function supportedOutputModes(
+  capabilities: AgentConfigInput["capabilities"],
+  currentMode: string,
+) {
+  const modes = Array.isArray(capabilities.output_modes)
+    ? capabilities.output_modes.filter(
+        (mode): mode is string => typeof mode === "string",
+      )
+    : [];
+  if (modes.length === 0) {
+    if (capabilities.supports_json) {
+      modes.push("json");
+    }
+    modes.push("text");
+  }
+  if (currentMode && !modes.includes(currentMode)) {
+    modes.push(currentMode);
+  }
+  return Array.from(new Set(modes));
+}
+
+function promptDeliveryValue(value: unknown): PromptDelivery {
+  return value === "arg" || value === "temp_file" ? value : "stdin";
+}
+
+function numberSetting(value: unknown, fallback: number) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function stringSetting(value: unknown) {
+  return typeof value === "string" ? value : "";
+}
+
+function stringArraySetting(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function parseArgLines(value: string) {
+  return value
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function parseInlineList(value: string) {
+  return value
+    .split(/[\n,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function nextLocalOnlyPaths(paths: string[], path: string, enabled: boolean) {
+  const clean = path.trim();
+  if (!clean) {
+    return paths;
+  }
+  const next = enabled
+    ? [...paths, clean]
+    : paths.filter((candidate) => candidate !== clean);
+  return Array.from(new Set(next)).sort((left, right) =>
+    left.localeCompare(right),
+  );
+}
+
+type AgentVisibilitySource = {
+  capabilities: AgentConfigInput["capabilities"];
+};
+
+function agentProvider(agent: AgentVisibilitySource) {
+  const provider = agent.capabilities.metadata?.provider;
+  return typeof provider === "string" && provider.trim() ? provider : "local";
+}
+
+function agentEgress(agent: AgentVisibilitySource) {
+  const egress = agent.capabilities.metadata?.egress;
+  return typeof egress === "string" && egress.trim() ? egress : "local";
+}
+
+function formatHealthMetadata(metadata: Record<string, unknown>) {
+  return ["version", "resolved_path", "path", "error"]
+    .map((key) => [key, metadata[key]] as const)
+    .filter(([, value]) => typeof value === "string" && value.trim())
+    .map(([key, value]) => [key, value as string] as const);
+}
+
 function Sidebar({
   activeWorkspaceId,
   backendStatus,
   repositoryOpenState,
   reviewSessions,
   workspaces,
+  onOpenAgentSettings,
+  onOpenNewThread,
   onOpenRepository,
   onOpenSearch,
   onSelectWorkspace,
@@ -1120,6 +2140,8 @@ function Sidebar({
   repositoryOpenState: Loadable<OpenRepositoryResponse>;
   reviewSessions: Loadable<ReviewSession[]>;
   workspaces: Loadable<Workspace[]>;
+  onOpenAgentSettings: () => void;
+  onOpenNewThread: () => void;
   onOpenRepository: () => void;
   onOpenSearch: () => void;
   onSelectWorkspace: (workspaceId: string) => void;
@@ -1151,7 +2173,11 @@ function Sidebar({
       </div>
 
       <nav className="flex flex-col gap-1 px-2">
-        <SidebarNavButton icon={PlusIcon} label="New thread" />
+        <SidebarNavButton
+          icon={PlusIcon}
+          label="New thread"
+          onClick={onOpenNewThread}
+        />
         <SidebarNavButton
           icon={FolderOpenIcon}
           label={
@@ -1240,7 +2266,11 @@ function Sidebar({
 
       <div className="mt-auto flex flex-col gap-1 p-2">
         <Separator className="-mx-2 mb-1" />
-        <SidebarNavButton icon={SettingsIcon} label="Settings" />
+        <SidebarNavButton
+          icon={SettingsIcon}
+          label="Settings"
+          onClick={onOpenAgentSettings}
+        />
         <div className="text-sidebar-muted px-2 pt-1 pb-2 text-xs">
           Backend {backendStatus}
         </div>

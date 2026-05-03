@@ -26,6 +26,9 @@ func TestCodexCLIPreset(t *testing.T) {
 		preset.Args[2] != "-" {
 		t.Fatalf("preset args = %+v", preset.Args)
 	}
+	if !containsString(preset.EnvAllowlist, "PATH") {
+		t.Fatalf("env allowlist = %+v", preset.EnvAllowlist)
+	}
 	settings := decodePresetSettings(t, preset)
 	if settings.PromptDelivery != agents.PromptViaStdin ||
 		settings.TimeoutSeconds != 1800 ||
@@ -55,6 +58,9 @@ func TestClaudeCodeCLIPreset(t *testing.T) {
 		preset.Args[2] != "--output-format" ||
 		preset.Args[3] != "json" {
 		t.Fatalf("preset args = %+v", preset.Args)
+	}
+	if !containsString(preset.EnvAllowlist, "PATH") {
+		t.Fatalf("env allowlist = %+v", preset.EnvAllowlist)
 	}
 	settings := decodePresetSettings(t, preset)
 	if settings.PromptDelivery != agents.PromptViaArg ||
@@ -94,7 +100,8 @@ func TestGeminiCLIPreset(t *testing.T) {
 		settings.SmokePromptEnabled {
 		t.Fatalf("settings = %+v", settings)
 	}
-	if !containsString(preset.EnvAllowlist, "GEMINI_API_KEY") ||
+	if !containsString(preset.EnvAllowlist, "PATH") ||
+		!containsString(preset.EnvAllowlist, "GEMINI_API_KEY") ||
 		!containsString(preset.EnvAllowlist, "GOOGLE_APPLICATION_CREDENTIALS") {
 		t.Fatalf("env allowlist = %+v", preset.EnvAllowlist)
 	}
@@ -129,7 +136,8 @@ func TestOpenCodeCLIPreset(t *testing.T) {
 		settings.SmokePromptEnabled {
 		t.Fatalf("settings = %+v", settings)
 	}
-	if !containsString(preset.EnvAllowlist, "OPENAI_API_KEY") ||
+	if !containsString(preset.EnvAllowlist, "PATH") ||
+		!containsString(preset.EnvAllowlist, "OPENAI_API_KEY") ||
 		!containsString(preset.EnvAllowlist, "ANTHROPIC_API_KEY") {
 		t.Fatalf("env allowlist = %+v", preset.EnvAllowlist)
 	}
@@ -156,6 +164,9 @@ func TestCustomCLIPreset(t *testing.T) {
 		!settings.SkipVersion ||
 		settings.SmokePromptEnabled {
 		t.Fatalf("settings = %+v", settings)
+	}
+	if !containsString(preset.EnvAllowlist, "PATH") {
+		t.Fatalf("env allowlist = %+v", preset.EnvAllowlist)
 	}
 }
 

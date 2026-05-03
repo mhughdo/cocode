@@ -6,6 +6,8 @@ import (
 	"github.com/hughdo/cocode/services/cocoded/internal/agents"
 )
 
+var pathEnvAllowlist = []string{"PATH"}
+
 type Preset struct {
 	ID             string                   `json:"id"`
 	Name           string                   `json:"name"`
@@ -39,7 +41,7 @@ func CodexCLI() Preset {
 		Command:        "codex",
 		Args:           []string{"exec", "--json", "-"},
 		CWDMode:        "repo_root",
-		EnvAllowlist:   []string{},
+		EnvAllowlist:   pathEnvAllowlist,
 		OutputMode:     agents.OutputJSONL,
 		ModelLabel:     "gpt-5.3-codex",
 		ReasoningLabel: "high",
@@ -67,7 +69,7 @@ func ClaudeCodeCLI() Preset {
 		Command:        "claude",
 		Args:           []string{"-p", agents.PromptArgPlaceholder, "--output-format", "json"},
 		CWDMode:        "repo_root",
-		EnvAllowlist:   []string{"ANTHROPIC_API_KEY"},
+		EnvAllowlist:   append(pathEnvAllowlist, "ANTHROPIC_API_KEY"),
 		OutputMode:     agents.OutputJSON,
 		ModelLabel:     "claude",
 		ReasoningLabel: "",
@@ -94,7 +96,7 @@ func GeminiCLI() Preset {
 		Command:        "gemini",
 		Args:           []string{"--model", "pro", "--output-format", "json"},
 		CWDMode:        "repo_root",
-		EnvAllowlist:   []string{"GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"},
+		EnvAllowlist:   append(pathEnvAllowlist, "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"),
 		OutputMode:     agents.OutputJSON,
 		ModelLabel:     "pro",
 		ReasoningLabel: "",
@@ -121,7 +123,7 @@ func OpenCodeCLI() Preset {
 		Command:        "opencode",
 		Args:           []string{"run", "--format", "json", agents.PromptArgPlaceholder},
 		CWDMode:        "repo_root",
-		EnvAllowlist:   []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"},
+		EnvAllowlist:   append(pathEnvAllowlist, "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"),
 		OutputMode:     agents.OutputJSONL,
 		ModelLabel:     "opencode",
 		ReasoningLabel: "",
@@ -149,7 +151,7 @@ func CustomCLI() Preset {
 		Command:        "",
 		Args:           []string{},
 		CWDMode:        "repo_root",
-		EnvAllowlist:   []string{},
+		EnvAllowlist:   pathEnvAllowlist,
 		OutputMode:     agents.OutputText,
 		ModelLabel:     "custom",
 		ReasoningLabel: "",

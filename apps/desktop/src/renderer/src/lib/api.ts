@@ -113,21 +113,20 @@ export interface ChangedFile {
 
 export interface AgentCapabilities {
   can_read?: boolean;
-  can_search?: boolean;
-  can_shell?: boolean;
+  can_cancel?: boolean;
   can_write?: boolean;
   can_publish?: boolean;
   supports_json?: boolean;
-  supports_jsonl?: boolean;
-  supports_text?: boolean;
+  supports_sessions?: boolean;
+  supports_streaming?: boolean;
   output_modes?: string[];
+  metadata?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
-export interface AgentPreset {
-  id: string;
+interface AgentDefinition {
   name: string;
-  description: string;
+  role: string;
   adapter_kind: string;
   command: string;
   args: string[];
@@ -138,16 +137,38 @@ export interface AgentPreset {
   reasoning_label?: string;
   settings: Record<string, unknown>;
   capabilities: AgentCapabilities;
-  local_only?: boolean;
-  provider?: string;
-  egress?: string;
 }
 
-export interface AgentConfig extends AgentPreset {
+export interface AgentPreset extends AgentDefinition {
+  id: string;
+  description: string;
+  enabled: boolean;
+}
+
+export interface AgentConfig extends AgentDefinition {
+  id: string;
   enabled: boolean;
   created_at: string;
   updated_at: string;
 }
+
+export interface AgentConfigInput {
+  name: string;
+  role: string;
+  adapter_kind: string;
+  command: string;
+  args: string[];
+  cwd_mode: string;
+  env_allowlist: string[];
+  output_mode: string;
+  model_label?: string;
+  reasoning_label?: string;
+  capabilities: AgentCapabilities;
+  settings: Record<string, unknown>;
+  enabled?: boolean;
+}
+
+export type UpdateAgentConfigInput = Partial<AgentConfigInput>;
 
 export interface AgentConfigHealth {
   agent_config_id: string;
@@ -174,6 +195,20 @@ export interface ReviewSession {
   updated_at: string;
 }
 
+export interface ReviewContextPolicy {
+  include_prompt_material?: boolean;
+  include_changed_code?: boolean;
+  include_related_call_sites?: boolean;
+  include_related_tests?: boolean;
+  include_project_conventions?: boolean;
+  include_prior_comments?: boolean;
+  include_prior_decisions?: boolean;
+  redact_secrets?: boolean;
+  local_only_paths?: string[];
+  max_tokens?: number;
+  max_items?: number;
+}
+
 export interface CreateReviewSessionRequest {
   workspace_id?: string;
   snapshot_id: string;
@@ -183,7 +218,7 @@ export interface CreateReviewSessionRequest {
   focus_prompt?: string;
   agent_config_ids: string[];
   runtime_limit_seconds?: number;
-  context_policy?: Record<string, unknown>;
+  context_policy?: ReviewContextPolicy;
 }
 
 export interface ReviewSessionAgent {
@@ -228,12 +263,15 @@ export interface RedactionReportItem {
 export interface VisibilityReport {
   recipient: {
     agent_config_id?: string;
+    adapter_kind?: string;
     provider?: string;
     egress?: string;
     local_only?: boolean;
   };
   sent_item_count: number;
   sent_item_by_kind?: Record<string, number>;
+  local_only_enforced?: boolean;
+  local_only_paths?: string[];
   omitted?: VisibilityOmission[];
 }
 
@@ -404,6 +442,35 @@ export class ApiClient {
     return this.get<AgentConfig[]>("/api/agents/configs", options);
   }
 
+  createAgentConfig(
+    body: AgentConfigInput,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.post<AgentConfig>("/api/agents/configs", body, options);
+  }
+
+  updateAgentConfig(
+    id: string,
+    body: UpdateAgentConfigInput,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.patch<AgentConfig>(
+      `/api/agents/configs/${encodeURIComponent(id)}`,
+      body,
+      options,
+    );
+  }
+
+  deleteAgentConfig(
+    id: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.delete<{ deleted: boolean }>(
+      `/api/agents/configs/${encodeURIComponent(id)}`,
+      options,
+    );
+  }
+
   testAgentConfig(
     id: string,
     options: Omit<ApiRequestOptions, "method" | "body"> = {},
@@ -468,7 +535,7 @@ export class ApiClient {
     body: {
       agent_config_id?: string;
       persist?: boolean;
-      context_policy?: Record<string, unknown>;
+      context_policy?: ReviewContextPolicy;
     },
     options: Omit<ApiRequestOptions, "method" | "body"> = {},
   ) {

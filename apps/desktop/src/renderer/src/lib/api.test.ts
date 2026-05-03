@@ -100,6 +100,71 @@ describe("ApiClient", () => {
     expect(seenPath).toBe("/repo/cocode");
   });
 
+  it("creates snapshots and starts reviews through typed helpers", async () => {
+    const seen: { url: string; body: unknown }[] = [];
+    const fetcher = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        seen.push({
+          url: String(input),
+          body: init?.body ? JSON.parse(String(init.body)) : null,
+        });
+        const url = String(input);
+        if (url.endsWith("/api/pr-snapshots/from-local-changes")) {
+          return jsonResponse({ data: snapshotFixture, error: null });
+        }
+        if (url.endsWith("/api/pr-snapshots/snapshot_1/changed-files")) {
+          return jsonResponse({ data: [changedFileFixture], error: null });
+        }
+        if (url.endsWith("/api/review-sessions")) {
+          return jsonResponse({ data: reviewSessionFixture, error: null });
+        }
+        if (url.endsWith("/api/review-sessions/session_1/start")) {
+          return jsonResponse({
+            data: { ...reviewSessionFixture, status: "queued" },
+            error: null,
+          });
+        }
+        return jsonResponse({ data: null, error: null });
+      },
+    );
+    const client = createCocodeClient({
+      baseUrl: "http://127.0.0.1:17658",
+      authToken: "local-token",
+      fetch: fetcher,
+    });
+
+    await expect(
+      client.createLocalChangesSnapshot({
+        workspace_id: "workspace_1",
+        repository_id: "repo_1",
+      }),
+    ).resolves.toMatchObject({ id: "snapshot_1" });
+    await expect(client.listChangedFiles("snapshot_1")).resolves.toHaveLength(
+      1,
+    );
+    await expect(
+      client.createReviewSession({
+        workspace_id: "workspace_1",
+        snapshot_id: "snapshot_1",
+        title: "Review local changes",
+        review_depth: "standard",
+        agent_config_ids: ["agent_1"],
+        runtime_limit_seconds: 1800,
+        context_policy: { redact_secrets: true },
+      }),
+    ).resolves.toMatchObject({ id: "session_1", status: "draft" });
+    await expect(client.startReviewSession("session_1")).resolves.toMatchObject(
+      { status: "queued" },
+    );
+
+    expect(seen.map((request) => request.url)).toEqual([
+      "http://127.0.0.1:17658/api/pr-snapshots/from-local-changes",
+      "http://127.0.0.1:17658/api/pr-snapshots/snapshot_1/changed-files",
+      "http://127.0.0.1:17658/api/review-sessions",
+      "http://127.0.0.1:17658/api/review-sessions/session_1/start",
+    ]);
+  });
+
   it("throws ApiError for backend envelopes with errors", async () => {
     const client = createCocodeClient({
       baseUrl: "http://127.0.0.1:17658",
@@ -203,6 +268,44 @@ const repositoryFixture = {
   remote_url: null,
   local_path: "/repo/cocode",
   default_branch: "main",
+  created_at: "2026-05-04T00:00:00Z",
+  updated_at: "2026-05-04T00:00:00Z",
+};
+
+const snapshotFixture = {
+  id: "snapshot_1",
+  repository_id: "repo_1",
+  source_type: "local_changes",
+  base_ref: "HEAD",
+  head_ref: "WORKTREE",
+  metadata: {},
+  changed_file_count: 1,
+};
+
+const changedFileFixture = {
+  id: "changed_file_1",
+  snapshot_id: "snapshot_1",
+  path: "src/app.ts",
+  status: "modified",
+  additions: 10,
+  deletions: 2,
+  is_binary: false,
+  is_generated: false,
+  is_excluded: false,
+  line_ranges: [],
+};
+
+const reviewSessionFixture = {
+  id: "session_1",
+  workspace_id: "workspace_1",
+  repository_id: "repo_1",
+  snapshot_id: "snapshot_1",
+  title: "Review local changes",
+  status: "draft",
+  review_depth: "standard",
+  context_policy: {},
+  runtime_limit_seconds: 1800,
+  agents: [],
   created_at: "2026-05-04T00:00:00Z",
   updated_at: "2026-05-04T00:00:00Z",
 };

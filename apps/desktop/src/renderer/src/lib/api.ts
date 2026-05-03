@@ -76,6 +76,41 @@ export interface OpenRepositoryResponse {
   repositories: Repository[];
 }
 
+export interface Snapshot {
+  id: string;
+  repository_id: string;
+  source_type: string;
+  provider?: string;
+  owner?: string;
+  repo?: string;
+  pr_number?: number;
+  pr_title?: string;
+  pr_url?: string;
+  base_ref?: string;
+  head_ref?: string;
+  base_sha?: string;
+  head_sha?: string;
+  diff_artifact_id?: string;
+  previous_comments_artifact_id?: string;
+  metadata: unknown;
+  changed_file_count?: number;
+}
+
+export interface ChangedFile {
+  id: string;
+  snapshot_id: string;
+  path: string;
+  old_path?: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  is_binary: boolean;
+  is_generated: boolean;
+  is_excluded: boolean;
+  line_ranges: unknown;
+  patch_artifact_id?: string;
+}
+
 export interface AgentCapabilities {
   can_read?: boolean;
   can_search?: boolean;
@@ -137,6 +172,18 @@ export interface ReviewSession {
   agents: ReviewSessionAgent[];
   created_at: string;
   updated_at: string;
+}
+
+export interface CreateReviewSessionRequest {
+  workspace_id?: string;
+  snapshot_id: string;
+  title?: string;
+  review_depth?: "quick" | "standard" | "deep";
+  preset?: string;
+  focus_prompt?: string;
+  agent_config_ids: string[];
+  runtime_limit_seconds?: number;
+  context_policy?: Record<string, unknown>;
 }
 
 export interface ReviewSessionAgent {
@@ -293,6 +340,62 @@ export class ApiClient {
     );
   }
 
+  createGitHubSnapshot(
+    body: {
+      workspace_id: string;
+      repository_id: string;
+      url: string;
+      github_token?: string;
+    },
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.post<Snapshot>(
+      "/api/pr-snapshots/from-github-url",
+      body,
+      options,
+    );
+  }
+
+  createLocalCompareSnapshot(
+    body: {
+      workspace_id: string;
+      repository_id: string;
+      base_ref: string;
+      head_ref: string;
+    },
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.post<Snapshot>(
+      "/api/pr-snapshots/from-local-compare",
+      body,
+      options,
+    );
+  }
+
+  createLocalChangesSnapshot(
+    body: {
+      workspace_id: string;
+      repository_id: string;
+    },
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.post<Snapshot>(
+      "/api/pr-snapshots/from-local-changes",
+      body,
+      options,
+    );
+  }
+
+  listChangedFiles(
+    snapshotId: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.get<ChangedFile[]>(
+      `/api/pr-snapshots/${encodeURIComponent(snapshotId)}/changed-files`,
+      options,
+    );
+  }
+
   listAgentPresets(options: Omit<ApiRequestOptions, "method" | "body"> = {}) {
     return this.get<AgentPreset[]>("/api/agents/presets", options);
   }
@@ -322,6 +425,13 @@ export class ApiClient {
     });
   }
 
+  createReviewSession(
+    body: CreateReviewSessionRequest,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.post<ReviewSession>("/api/review-sessions", body, options);
+  }
+
   getReviewSession(
     id: string,
     options: Omit<ApiRequestOptions, "method" | "body"> = {},
@@ -338,6 +448,17 @@ export class ApiClient {
   ) {
     return this.get<ReviewSessionSummary>(
       `/api/review-sessions/${encodeURIComponent(id)}/summary`,
+      options,
+    );
+  }
+
+  startReviewSession(
+    id: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.post<ReviewSession>(
+      `/api/review-sessions/${encodeURIComponent(id)}/start`,
+      undefined,
       options,
     );
   }

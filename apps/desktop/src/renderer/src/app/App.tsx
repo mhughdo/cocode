@@ -25,6 +25,7 @@ import {
   SparklesIcon,
   SquareIcon,
   TerminalIcon,
+  type LucideIcon,
 } from "lucide-react";
 
 import {
@@ -55,11 +56,14 @@ import {
   InputGroupButton,
   InputGroupTextarea,
 } from "@/components/ui/input-group";
+import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  type AgentConfig,
   type ApiClient,
+  type ChangedFile,
   createCocodeClient,
   errorApiState,
   idleApiState,
@@ -71,12 +75,17 @@ import {
   type OpenRepositoryResponse,
   type Repository,
   type ReviewSession,
+  type Snapshot,
   type Workspace,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const MAX_SIDEBAR_SESSIONS = 12;
 const MAX_SEARCH_RESULTS = 5;
+const MAX_CHANGED_FILES_RENDERED = 120;
+
+type MainView = "new-thread" | "configure" | "review";
+type SnapshotSource = "github" | "local-changes" | "branch-compare";
 
 const changedFiles = [
   { path: "api/routes/billing.go", additions: 132, deletions: 18 },
@@ -111,6 +120,7 @@ const findings = [
 
 export function App() {
   const [client, setClient] = useState<ApiClient | null>(null);
+  const [mainView, setMainView] = useState<MainView>("new-thread");
   const [backendStatus, setBackendStatus] = useState("loading");
   const [backendUrl, setBackendUrl] = useState("");
   const [apiSession, setApiSession] =
@@ -123,6 +133,11 @@ export function App() {
     useState<Loadable<ReviewSession[]>>(idleApiState());
   const [repositoryOpenState, setRepositoryOpenState] =
     useState<Loadable<OpenRepositoryResponse>>(idleApiState());
+  const [snapshot, setSnapshot] = useState<Loadable<Snapshot>>(idleApiState());
+  const [changedFilesState, setChangedFilesState] =
+    useState<Loadable<ChangedFile[]>>(idleApiState());
+  const [agentConfigs, setAgentConfigs] =
+    useState<Loadable<AgentConfig[]>>(idleApiState());
   const [activeWorkspaceId, setActiveWorkspaceId] = useState("");
   const [activeRepositoryId, setActiveRepositoryId] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -180,6 +195,20 @@ export function App() {
       await loadWorkspaceDetails(api, nextWorkspace);
     },
     [loadWorkspaceDetails],
+  );
+
+  const loadConfigureData = useCallback(
+    async (api: ApiClient, nextSnapshot: Snapshot) => {
+      setChangedFilesState(loadingApiState());
+      setAgentConfigs(loadingApiState());
+      const [changedFiles, agents] = await Promise.all([
+        loadApiResource(() => api.listChangedFiles(nextSnapshot.id)),
+        loadApiResource(() => api.listAgentConfigs()),
+      ]);
+      setChangedFilesState(changedFiles);
+      setAgentConfigs(agents);
+    },
+    [],
   );
 
   useEffect(() => {
@@ -296,8 +325,60 @@ export function App() {
     setActiveWorkspaceId(state.data.workspace.id);
     setActiveRepositoryId(state.data.repository.id);
     setRepositories(successApiState(state.data.repositories));
+    setSnapshot(idleApiState());
+    setMainView("new-thread");
     await refreshNavigation(client, state.data.workspace.id);
   }, [client, refreshNavigation]);
+
+  const handleCreateSnapshot = useCallback(
+    async (request: {
+      source: SnapshotSource;
+      githubUrl: string;
+      baseRef: string;
+      headRef: string;
+    }) => {
+      if (!client || !activeWorkspace || !activeRepository) {
+        setSnapshot(
+          errorApiState(
+            new Error("Open a local repository before creating a review"),
+          ),
+        );
+        return;
+      }
+
+      setSnapshot(loadingApiState());
+      const nextSnapshot = await loadApiResource(() => {
+        if (request.source === "github") {
+          return client.createGitHubSnapshot({
+            workspace_id: activeWorkspace.id,
+            repository_id: activeRepository.id,
+            url: request.githubUrl,
+            github_token: "",
+          });
+        }
+        if (request.source === "branch-compare") {
+          return client.createLocalCompareSnapshot({
+            workspace_id: activeWorkspace.id,
+            repository_id: activeRepository.id,
+            base_ref: request.baseRef,
+            head_ref: request.headRef,
+          });
+        }
+        return client.createLocalChangesSnapshot({
+          workspace_id: activeWorkspace.id,
+          repository_id: activeRepository.id,
+        });
+      });
+
+      setSnapshot(nextSnapshot);
+      if (nextSnapshot.status !== "success") {
+        return;
+      }
+      setMainView("configure");
+      await loadConfigureData(client, nextSnapshot.data);
+    },
+    [activeRepository, activeWorkspace, client, loadConfigureData],
+  );
 
   const backendDetail =
     apiSession.status === "error"
@@ -390,7 +471,34 @@ export function App() {
         }
         detailPane={<ReviewPane />}
       >
-        <ReviewThread apiSession={apiSession} backendDetail={backendDetail} />
+        {mainView === "new-thread" && (
+          <NewThreadScreen
+            activeRepository={activeRepository}
+            activeWorkspace={activeWorkspace}
+            onCreateSnapshot={handleCreateSnapshot}
+            onOpenRepository={handleOpenRepository}
+            snapshot={snapshot}
+          />
+        )}
+        {mainView === "configure" && (
+          <ConfigureReviewScreen
+            activeRepository={activeRepository}
+            activeWorkspace={activeWorkspace}
+            agentConfigs={agentConfigs}
+            changedFiles={changedFilesState}
+            client={client}
+            onReviewStarted={(session) => {
+              setMainView("review");
+              if (client) {
+                void refreshNavigation(client, session.workspace_id);
+              }
+            }}
+            snapshot={snapshot}
+          />
+        )}
+        {mainView === "review" && (
+          <ReviewThread apiSession={apiSession} backendDetail={backendDetail} />
+        )}
       </AppShell>
       {searchOpen && (
         <SearchCommandDialog
@@ -400,6 +508,600 @@ export function App() {
         />
       )}
     </>
+  );
+}
+
+function NewThreadScreen({
+  activeRepository,
+  activeWorkspace,
+  onCreateSnapshot,
+  onOpenRepository,
+  snapshot,
+}: {
+  activeRepository?: Repository;
+  activeWorkspace?: Workspace;
+  onCreateSnapshot: (request: {
+    source: SnapshotSource;
+    githubUrl: string;
+    baseRef: string;
+    headRef: string;
+  }) => void;
+  onOpenRepository: () => void;
+  snapshot: Loadable<Snapshot>;
+}) {
+  const [source, setSource] = useState<SnapshotSource>("local-changes");
+  const [githubUrl, setGitHubUrl] = useState("");
+  const [baseRef, setBaseRef] = useState(
+    activeRepository?.default_branch ?? "main",
+  );
+  const [headRef, setHeadRef] = useState("HEAD");
+  const [localError, setLocalError] = useState("");
+
+  const canCreate = Boolean(activeWorkspace && activeRepository);
+
+  function submit() {
+    if (!canCreate) {
+      setLocalError("Open a git repository before creating a review.");
+      return;
+    }
+    if (source === "github" && githubUrl.trim() === "") {
+      setLocalError("Enter a GitHub pull request URL.");
+      return;
+    }
+    if (
+      source === "branch-compare" &&
+      (baseRef.trim() === "" || headRef.trim() === "")
+    ) {
+      setLocalError("Enter both base and head refs.");
+      return;
+    }
+    setLocalError("");
+    onCreateSnapshot({
+      source,
+      githubUrl: githubUrl.trim(),
+      baseRef: baseRef.trim(),
+      headRef: headRef.trim(),
+    });
+  }
+
+  return (
+    <section className="flex min-w-0 flex-col">
+      <ScrollArea className="flex-1 px-6 py-5">
+        <div className="mx-auto flex max-w-4xl flex-col gap-5">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h1 className="text-xl font-semibold">New review thread</h1>
+              <p className="text-muted-foreground mt-1 text-sm">
+                Start from a PR URL, local changes, or a branch comparison.
+              </p>
+            </div>
+            <Button variant="outline" onClick={onOpenRepository}>
+              <FolderOpenIcon data-icon="inline-start" />
+              {activeRepository ? "Switch repo" : "Open repo"}
+            </Button>
+          </div>
+
+          {!canCreate && (
+            <EmptyState
+              title="Open a repository first"
+              description="cocode needs a local git repository so snapshots, branch comparisons, and local-only context stay grounded on your machine."
+              action={
+                <Button onClick={onOpenRepository}>
+                  <FolderOpenIcon data-icon="inline-start" />
+                  Open local repo
+                </Button>
+              }
+              icon={FolderOpenIcon}
+            />
+          )}
+
+          {canCreate && (
+            <>
+              <section className="bg-surface-raised rounded-lg border p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium">
+                      {activeRepository?.name ?? "Repository"}
+                    </div>
+                    <div className="text-muted-foreground truncate text-xs">
+                      {activeRepository?.local_path ??
+                        activeWorkspace?.root_path}
+                    </div>
+                  </div>
+                  <Badge variant="secondary">
+                    {activeRepository?.default_branch ?? "git repo"}
+                  </Badge>
+                </div>
+              </section>
+
+              <div className="grid grid-cols-3 gap-3">
+                <SourceButton
+                  active={source === "local-changes"}
+                  description="Review staged, unstaged, and untracked local changes."
+                  icon={Code2Icon}
+                  label="Local changes"
+                  onClick={() => setSource("local-changes")}
+                />
+                <SourceButton
+                  active={source === "branch-compare"}
+                  description="Compare two refs in the selected local repository."
+                  icon={GitBranchIcon}
+                  label="Branch compare"
+                  onClick={() => setSource("branch-compare")}
+                />
+                <SourceButton
+                  active={source === "github"}
+                  description="Fetch PR metadata and diff from GitHub."
+                  icon={GitPullRequestIcon}
+                  label="GitHub PR"
+                  onClick={() => setSource("github")}
+                />
+              </div>
+
+              <section className="bg-surface-raised rounded-lg border p-4">
+                {source === "github" && (
+                  <div className="flex flex-col gap-2">
+                    <label className="text-sm font-medium" htmlFor="github-url">
+                      Pull request URL
+                    </label>
+                    <Input
+                      id="github-url"
+                      placeholder="https://github.com/owner/repo/pull/123"
+                      value={githubUrl}
+                      onChange={(event) => setGitHubUrl(event.target.value)}
+                    />
+                  </div>
+                )}
+
+                {source === "branch-compare" && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="flex flex-col gap-2">
+                      <label className="text-sm font-medium" htmlFor="base-ref">
+                        Base ref
+                      </label>
+                      <Input
+                        id="base-ref"
+                        value={baseRef}
+                        onChange={(event) => setBaseRef(event.target.value)}
+                      />
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <label className="text-sm font-medium" htmlFor="head-ref">
+                        Head ref
+                      </label>
+                      <Input
+                        id="head-ref"
+                        value={headRef}
+                        onChange={(event) => setHeadRef(event.target.value)}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {source === "local-changes" && (
+                  <div className="flex items-start gap-3">
+                    <div className="bg-muted flex size-8 shrink-0 items-center justify-center rounded-lg">
+                      <Code2Icon />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium">
+                        Snapshot current working tree
+                      </div>
+                      <p className="text-muted-foreground mt-1 text-sm">
+                        Captures tracked and untracked local changes through the
+                        backend git collector with existing output limits.
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </section>
+
+              {(localError || snapshot.status === "error") && (
+                <ErrorState
+                  title="Could not create snapshot"
+                  description={
+                    localError ||
+                    (snapshot.status === "error"
+                      ? snapshot.error.message
+                      : undefined)
+                  }
+                />
+              )}
+
+              <div className="flex justify-end">
+                <Button
+                  disabled={snapshot.status === "loading"}
+                  onClick={submit}
+                >
+                  {snapshot.status === "loading"
+                    ? "Creating snapshot..."
+                    : "Continue to configure"}
+                  <ArrowUpIcon data-icon="inline-end" />
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
+      </ScrollArea>
+    </section>
+  );
+}
+
+function SourceButton({
+  active,
+  description,
+  icon: Icon,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  description: string;
+  icon: LucideIcon;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      className={cn(
+        "bg-surface-raised hover:bg-surface flex min-h-28 flex-col gap-2 rounded-lg border p-4 text-left transition-colors",
+        active && "border-foreground ring-foreground/10 ring-2",
+      )}
+      type="button"
+      onClick={onClick}
+    >
+      <Icon />
+      <span className="text-sm font-medium">{label}</span>
+      <span className="text-muted-foreground text-xs leading-5">
+        {description}
+      </span>
+    </button>
+  );
+}
+
+function ConfigureReviewScreen({
+  activeRepository,
+  activeWorkspace,
+  agentConfigs,
+  changedFiles,
+  client,
+  onReviewStarted,
+  snapshot,
+}: {
+  activeRepository?: Repository;
+  activeWorkspace?: Workspace;
+  agentConfigs: Loadable<AgentConfig[]>;
+  changedFiles: Loadable<ChangedFile[]>;
+  client: ApiClient | null;
+  onReviewStarted: (session: ReviewSession) => void;
+  snapshot: Loadable<Snapshot>;
+}) {
+  const [reviewDepth, setReviewDepth] = useState<"quick" | "standard" | "deep">(
+    "standard",
+  );
+  const [runtimeLimitSeconds, setRuntimeLimitSeconds] = useState(1800);
+  const [focusPrompt, setFocusPrompt] = useState("");
+  const [startState, setStartState] =
+    useState<Loadable<ReviewSession>>(idleApiState());
+  const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string> | null>(
+    null,
+  );
+  const [contextPolicy, setContextPolicy] = useState({
+    include_changed_code: true,
+    include_related_call_sites: true,
+    include_related_tests: true,
+    include_project_conventions: true,
+    include_prior_comments: true,
+    include_prior_decisions: true,
+    redact_secrets: true,
+    max_tokens: 18_000,
+    max_items: 200,
+  });
+
+  const safeAgents = useMemo(
+    () =>
+      agentConfigs.status === "success"
+        ? agentConfigs.data.filter(
+            (agent) => agent.enabled && !agent.capabilities.can_write,
+          )
+        : [],
+    [agentConfigs],
+  );
+
+  const effectiveSelectedAgentIds = useMemo(
+    () => selectedAgentIds ?? new Set(safeAgents.map((agent) => agent.id)),
+    [safeAgents, selectedAgentIds],
+  );
+
+  const visibleChangedFiles = useMemo(
+    () =>
+      changedFiles.status === "success"
+        ? changedFiles.data.slice(0, MAX_CHANGED_FILES_RENDERED)
+        : [],
+    [changedFiles],
+  );
+  const hiddenChangedFiles =
+    changedFiles.status === "success"
+      ? Math.max(changedFiles.data.length - visibleChangedFiles.length, 0)
+      : 0;
+
+  async function startReview() {
+    if (
+      !client ||
+      !activeWorkspace ||
+      snapshot.status !== "success" ||
+      effectiveSelectedAgentIds.size === 0 ||
+      !Number.isFinite(runtimeLimitSeconds) ||
+      runtimeLimitSeconds < 60
+    ) {
+      setStartState(
+        errorApiState(
+          new Error(
+            "Choose a snapshot, at least one review-safe agent, and a runtime limit of 60 seconds or more.",
+          ),
+        ),
+      );
+      return;
+    }
+
+    setStartState(loadingApiState());
+    const created = await loadApiResource(() =>
+      client.createReviewSession({
+        workspace_id: activeWorkspace.id,
+        snapshot_id: snapshot.data.id,
+        title: snapshotTitle(snapshot.data, activeRepository),
+        review_depth: reviewDepth,
+        focus_prompt: focusPrompt.trim() || undefined,
+        agent_config_ids: Array.from(effectiveSelectedAgentIds),
+        runtime_limit_seconds: runtimeLimitSeconds,
+        context_policy: contextPolicy,
+      }),
+    );
+    if (created.status !== "success") {
+      setStartState(created);
+      return;
+    }
+
+    const started = await loadApiResource(() =>
+      client.startReviewSession(created.data.id),
+    );
+    setStartState(started);
+    if (started.status === "success") {
+      onReviewStarted(started.data);
+    }
+  }
+
+  return (
+    <section className="flex min-w-0 flex-col">
+      <ScrollArea className="flex-1 px-6 py-5">
+        <div className="mx-auto flex max-w-5xl flex-col gap-5">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h1 className="text-xl font-semibold">Configure review</h1>
+              <p className="text-muted-foreground mt-1 truncate text-sm">
+                {snapshot.status === "success"
+                  ? snapshotTitle(snapshot.data, activeRepository)
+                  : "Snapshot details are loading"}
+              </p>
+            </div>
+            <Badge variant="secondary">
+              {snapshot.status === "success"
+                ? `${snapshot.data.changed_file_count ?? 0} files`
+                : "snapshot"}
+            </Badge>
+          </div>
+
+          {snapshot.status === "error" && (
+            <ErrorState
+              title="Snapshot failed"
+              description={snapshot.error.message}
+            />
+          )}
+
+          <div className="grid grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)] gap-4">
+            <section className="bg-surface-raised rounded-lg border">
+              <div className="flex items-center justify-between border-b px-3 py-2">
+                <span className="text-sm font-medium">Changed files</span>
+                {changedFiles.status === "success" && (
+                  <Badge variant="secondary">
+                    {changedFiles.data.length} total
+                  </Badge>
+                )}
+              </div>
+              <div className="max-h-[420px] overflow-y-auto">
+                {changedFiles.status === "loading" && (
+                  <LoadingRows rows={4} className="p-4" />
+                )}
+                {changedFiles.status === "error" && (
+                  <ErrorState
+                    className="m-3"
+                    title="Changed files unavailable"
+                    description={changedFiles.error.message}
+                  />
+                )}
+                {changedFiles.status === "success" &&
+                  visibleChangedFiles.map((file) => (
+                    <ChangedFileRow key={file.id} file={file} />
+                  ))}
+                {changedFiles.status === "success" &&
+                  visibleChangedFiles.length === 0 && (
+                    <EmptyState
+                      className="border-0 p-6"
+                      title="No changed files"
+                      description="The selected snapshot did not contain reviewable changed files."
+                      icon={InboxIcon}
+                    />
+                  )}
+                {hiddenChangedFiles > 0 && (
+                  <div className="text-muted-foreground border-t px-3 py-2 text-xs">
+                    {hiddenChangedFiles} more files hidden in this preview.
+                    Filters and virtualized diff browsing arrive in later
+                    screens.
+                  </div>
+                )}
+              </div>
+            </section>
+
+            <div className="flex min-w-0 flex-col gap-4">
+              <section className="bg-surface-raised rounded-lg border p-4">
+                <div className="mb-3 text-sm font-medium">Agents</div>
+                {agentConfigs.status === "loading" && <LoadingRows rows={3} />}
+                {agentConfigs.status === "error" && (
+                  <ErrorState
+                    title="Agents unavailable"
+                    description={agentConfigs.error.message}
+                  />
+                )}
+                {agentConfigs.status === "success" &&
+                  safeAgents.length === 0 && (
+                    <EmptyState
+                      className="border-0 p-2"
+                      title="No review-safe agents"
+                      description="Enable at least one read-only CLI agent in settings before starting."
+                      icon={TerminalIcon}
+                    />
+                  )}
+                <div className="flex flex-col gap-2">
+                  {safeAgents.map((agent) => (
+                    <label
+                      key={agent.id}
+                      className="hover:bg-surface flex items-center gap-3 rounded-md px-2 py-2 text-sm"
+                    >
+                      <input
+                        checked={effectiveSelectedAgentIds.has(agent.id)}
+                        type="checkbox"
+                        onChange={(event) => {
+                          const next = new Set(effectiveSelectedAgentIds);
+                          if (event.target.checked) {
+                            next.add(agent.id);
+                          } else {
+                            next.delete(agent.id);
+                          }
+                          setSelectedAgentIds(next);
+                        }}
+                      />
+                      <span className="min-w-0 flex-1 truncate">
+                        {agent.name}
+                      </span>
+                      <Badge
+                        variant={agent.local_only ? "outline" : "secondary"}
+                      >
+                        {agent.local_only ? "local" : (agent.provider ?? "cli")}
+                      </Badge>
+                    </label>
+                  ))}
+                </div>
+              </section>
+
+              <section className="bg-surface-raised rounded-lg border p-4">
+                <div className="mb-3 text-sm font-medium">Runtime</div>
+                <div className="grid grid-cols-3 gap-2">
+                  {(["quick", "standard", "deep"] as const).map((depth) => (
+                    <Button
+                      key={depth}
+                      variant={reviewDepth === depth ? "default" : "outline"}
+                      onClick={() => setReviewDepth(depth)}
+                    >
+                      {depth}
+                    </Button>
+                  ))}
+                </div>
+                <label className="mt-3 flex flex-col gap-2 text-sm">
+                  Runtime limit seconds
+                  <Input
+                    min={60}
+                    step={60}
+                    type="number"
+                    value={runtimeLimitSeconds}
+                    onChange={(event) =>
+                      setRuntimeLimitSeconds(Number(event.target.value))
+                    }
+                  />
+                </label>
+              </section>
+
+              <section className="bg-surface-raised rounded-lg border p-4">
+                <div className="mb-3 text-sm font-medium">Context policy</div>
+                <div className="grid grid-cols-2 gap-2">
+                  {Object.entries(contextPolicy)
+                    .filter(([, value]) => typeof value === "boolean")
+                    .map(([key, value]) => (
+                      <label
+                        key={key}
+                        className="hover:bg-surface flex items-center gap-2 rounded-md px-2 py-1.5 text-xs"
+                      >
+                        <input
+                          checked={Boolean(value)}
+                          type="checkbox"
+                          onChange={(event) =>
+                            setContextPolicy((current) => ({
+                              ...current,
+                              [key]: event.target.checked,
+                            }))
+                          }
+                        />
+                        <span>{formatPolicyLabel(key)}</span>
+                      </label>
+                    ))}
+                </div>
+              </section>
+            </div>
+          </div>
+
+          <section className="bg-surface-raised rounded-lg border p-4">
+            <label className="flex flex-col gap-2 text-sm font-medium">
+              Focus prompt
+              <InputGroup className="min-h-24 items-stretch">
+                <InputGroupTextarea
+                  className="min-h-20"
+                  placeholder="Optional review focus, risk areas, or files to prioritize..."
+                  value={focusPrompt}
+                  onChange={(event) => setFocusPrompt(event.target.value)}
+                />
+              </InputGroup>
+            </label>
+          </section>
+
+          {startState.status === "error" && (
+            <ErrorState
+              title="Could not start review"
+              description={startState.error.message}
+            />
+          )}
+
+          <div className="flex justify-end">
+            <Button
+              disabled={startState.status === "loading"}
+              onClick={startReview}
+            >
+              {startState.status === "loading"
+                ? "Starting review..."
+                : "Start review"}
+              <ArrowUpIcon data-icon="inline-end" />
+            </Button>
+          </div>
+        </div>
+      </ScrollArea>
+    </section>
+  );
+}
+
+function ChangedFileRow({ file }: { file: ChangedFile }) {
+  return (
+    <div className="flex items-center justify-between gap-3 border-b px-3 py-2 text-sm last:border-b-0">
+      <div className="min-w-0">
+        <div className="truncate font-mono text-xs">{file.path}</div>
+        <div className="mt-1 flex items-center gap-1">
+          {file.is_generated && <Badge variant="outline">generated</Badge>}
+          {file.is_binary && <Badge variant="outline">binary</Badge>}
+          {file.is_excluded && <Badge variant="outline">excluded</Badge>}
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-2 text-xs">
+        <Badge variant="outline">{file.status}</Badge>
+        <span className="text-success">+{file.additions}</span>
+        <span className="text-destructive">-{file.deletions}</span>
+      </div>
+    </div>
   );
 }
 
@@ -1011,6 +1713,29 @@ function CodeLine({
       <span className="truncate px-3 whitespace-pre">{text || " "}</span>
     </div>
   );
+}
+
+function snapshotTitle(snapshot: Snapshot, repository?: Repository): string {
+  if (snapshot.pr_title) {
+    return snapshot.pr_title;
+  }
+  if (snapshot.pr_number && snapshot.owner && snapshot.repo) {
+    return `${snapshot.owner}/${snapshot.repo}#${snapshot.pr_number}`;
+  }
+  if (snapshot.source_type === "branch_compare") {
+    return `${repository?.name ?? "Repository"} ${snapshot.base_ref ?? "base"}..${snapshot.head_ref ?? "head"}`;
+  }
+  if (snapshot.source_type === "local_changes") {
+    return `${repository?.name ?? "Repository"} local changes`;
+  }
+  return `Review ${snapshot.id}`;
+}
+
+function formatPolicyLabel(key: string): string {
+  return key
+    .replace(/^include_/, "")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function formatRelativeAge(value: string): string {

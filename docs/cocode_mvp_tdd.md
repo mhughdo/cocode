@@ -144,6 +144,8 @@ The renderer talks to the local backend through a typed REST client in `apps/des
 
 Workspace navigation uses `GET /api/workspaces`, `POST /api/workspaces/open-repository`, and `GET /api/workspaces/:id/repositories`. The open-repository route is the HTTP counterpart to the Electron repo picker: it validates the selected path through the git repository service, creates or reuses the workspace/repository records, and returns the active workspace plus repository list for the renderer shell. Sidebar rendering must cap visible recent review sessions so a large local history does not make the desktop shell sluggish.
 
+The New Thread and Configure Review screens use typed snapshot and review-session helpers from the renderer API client. Configure Review renders changed files as a bounded preview (`MAX_CHANGED_FILES_RENDERED`) and relies on later finding/diff screens for deeper browsing so very large PRs do not overwhelm initial configuration.
+
 Electron keeps the renderer sandbox enabled, so the preload bundle is emitted as CommonJS (`out/preload/index.cjs`) and explicitly externalizes `electron`. This preserves `contextIsolation`, `sandbox`, and `nodeIntegration: false` while still exposing the narrow `window.cocode` bridge.
 
 The desktop shell uses shadcn `radix-nova` primitives as the lowest-level UI layer. App-specific chrome lives under `apps/desktop/src/renderer/src/components/app/` and stays limited to layout/navigation/state composition: sidebar sections, pane headers, command-search dialog wiring, and loading/empty/error state blocks. Feature-specific components such as diff rows, evidence cards, and finding cards should stay near their screen implementation until their data contracts stabilize.

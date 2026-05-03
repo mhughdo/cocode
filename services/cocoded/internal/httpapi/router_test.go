@@ -871,6 +871,137 @@ func TestCreateLocalChangesSnapshotEndpointIncludesUntrackedBinary(t *testing.T)
 	}
 }
 
+func TestReviewSessionEndpointCreateGetList(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPISnapshot(t, queries)
+	createHTTPAPIAgentConfig(t, queries, "agent_config_codex", "reviewer", 1)
+	createHTTPAPIAgentConfig(t, queries, "agent_config_verifier", "verifier", 1)
+
+	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/review-sessions", map[string]any{
+		"workspace_id":          "workspace_1",
+		"snapshot_id":           "snapshot_1",
+		"title":                 "Review auth changes",
+		"review_depth":          "deep",
+		"preset":                "security_sensitive",
+		"focus_prompt":          "Focus auth guard behavior.",
+		"agent_config_ids":      []string{"agent_config_codex", "agent_config_verifier"},
+		"runtime_limit_seconds": 900,
+		"context_policy": map[string]any{
+			"include_related_tests": false,
+			"max_tokens":            4096,
+		},
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", response.Code, response.Body.String())
+	}
+	created := decodeReviewSessionResponse(t, response.Body.Bytes())
+	if !strings.HasPrefix(created.ID, "review_session_") ||
+		created.Status != "draft" ||
+		created.Title != "Review auth changes" ||
+		created.ReviewDepth != "deep" ||
+		created.Preset != "security_sensitive" ||
+		created.FocusPrompt != "Focus auth guard behavior." ||
+		created.RuntimeLimitSeconds != 900 ||
+		len(created.Agents) != 2 ||
+		created.Agents[0].AgentConfigID != "agent_config_codex" ||
+		created.Agents[0].RunOrder != 1 ||
+		created.Agents[1].AgentConfigID != "agent_config_verifier" ||
+		created.Agents[1].Role != "verifier" {
+		t.Fatalf("created session = %+v", created)
+	}
+	var policy struct {
+		IncludeRelatedTests bool  `json:"include_related_tests"`
+		MaxTokens           int64 `json:"max_tokens"`
+	}
+	if err := json.Unmarshal(created.ContextPolicy, &policy); err != nil {
+		t.Fatalf("decode context policy: %v", err)
+	}
+	if policy.IncludeRelatedTests || policy.MaxTokens != 4096 {
+		t.Fatalf("context policy = %s", string(created.ContextPolicy))
+	}
+
+	getRequest := httptest.NewRequest(http.MethodGet, "/api/review-sessions/"+created.ID, nil)
+	getRequest.Header.Set("X-Cocode-Token", "test-token")
+	getResponse := httptest.NewRecorder()
+	router.ServeHTTP(getResponse, getRequest)
+	if getResponse.Code != http.StatusOK {
+		t.Fatalf("get status = %d, body = %s", getResponse.Code, getResponse.Body.String())
+	}
+	got := decodeReviewSessionResponse(t, getResponse.Body.Bytes())
+	if got.ID != created.ID || len(got.Agents) != 2 {
+		t.Fatalf("got session = %+v", got)
+	}
+
+	listRequest := httptest.NewRequest(http.MethodGet, "/api/review-sessions?workspace_id=workspace_1", nil)
+	listRequest.Header.Set("X-Cocode-Token", "test-token")
+	listResponse := httptest.NewRecorder()
+	router.ServeHTTP(listResponse, listRequest)
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", listResponse.Code, listResponse.Body.String())
+	}
+	list := decodeReviewSessionListResponse(t, listResponse.Body.Bytes())
+	if len(list) != 1 || list[0].ID != created.ID {
+		t.Fatalf("list = %+v", list)
+	}
+}
+
+func TestReviewSessionCreateRejectsInvalidInputs(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPISnapshot(t, queries)
+	createHTTPAPIAgentConfig(t, queries, "agent_config_disabled", "reviewer", 0)
+
+	tests := []struct {
+		name string
+		body map[string]any
+		code int
+	}{
+		{
+			name: "missing agent configs",
+			body: map[string]any{
+				"snapshot_id": "snapshot_1",
+			},
+			code: http.StatusBadRequest,
+		},
+		{
+			name: "disabled agent",
+			body: map[string]any{
+				"snapshot_id":      "snapshot_1",
+				"agent_config_ids": []string{"agent_config_disabled"},
+			},
+			code: http.StatusBadRequest,
+		},
+		{
+			name: "missing snapshot",
+			body: map[string]any{
+				"snapshot_id":      "missing_snapshot",
+				"agent_config_ids": []string{"agent_config_disabled"},
+			},
+			code: http.StatusNotFound,
+		},
+		{
+			name: "invalid policy",
+			body: map[string]any{
+				"snapshot_id":      "snapshot_1",
+				"agent_config_ids": []string{"agent_config_disabled"},
+				"context_policy":   map[string]any{"max_tokens": 0},
+			},
+			code: http.StatusBadRequest,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/review-sessions", tt.body)
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			if response.Code != tt.code {
+				t.Fatalf("status = %d, want %d, body = %s", response.Code, tt.code, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestBuildReviewContextPreviewEndpointPersistsBundle(t *testing.T) {
 	repoPath := t.TempDir()
 	writeHTTPAPIRepoFile(t, repoPath, "app/main.go", "package main\n\nconst apiKey = \"sk-abcdefghijklmnopqrstuvwxyz\"\n\nfunc RequireAdmin() {}\n")
@@ -1171,6 +1302,29 @@ func createHTTPAPIWorkspaceAndRepository(t *testing.T, queries *dbgen.Queries, r
 	}
 }
 
+func createHTTPAPIAgentConfig(t *testing.T, queries *dbgen.Queries, id string, role string, enabled int64) {
+	t.Helper()
+
+	if _, err := queries.CreateAgentConfig(context.Background(), dbgen.CreateAgentConfigParams{
+		ID:               id,
+		Name:             id,
+		Role:             role,
+		AdapterKind:      "cli_noninteractive",
+		Command:          nullableString("codex"),
+		ArgsJson:         "[]",
+		CwdMode:          "repo_root",
+		EnvAllowlistJson: "[]",
+		OutputMode:       "json",
+		CapabilitiesJson: `{"supports_json":true,"can_read":true,"output_modes":["json"]}`,
+		SettingsJson:     "{}",
+		Enabled:          enabled,
+		CreatedAt:        "2026-05-03T00:06:00Z",
+		UpdatedAt:        "2026-05-03T00:06:00Z",
+	}); err != nil {
+		t.Fatalf("CreateAgentConfig(%s) error = %v", id, err)
+	}
+}
+
 func nullableString(value string) sql.NullString {
 	return sql.NullString{String: value, Valid: true}
 }
@@ -1210,6 +1364,38 @@ func decodeBuildReviewContextResponse(t *testing.T, content []byte) BuildReviewC
 	var envelope struct {
 		Data  BuildReviewContextResponse `json:"data"`
 		Error any                        `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeReviewSessionResponse(t *testing.T, content []byte) ReviewSessionResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  ReviewSessionResponse `json:"data"`
+		Error any                   `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeReviewSessionListResponse(t *testing.T, content []byte) []ReviewSessionResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  []ReviewSessionResponse `json:"data"`
+		Error any                     `json:"error"`
 	}
 	if err := json.Unmarshal(content, &envelope); err != nil {
 		t.Fatalf("decode response: %v", err)

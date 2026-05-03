@@ -3,6 +3,8 @@ node_modules/
 dist/
 out/
 coverage/
+playwright-report/
+test-results/
 .vite/
 *.log
 

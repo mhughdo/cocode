@@ -195,6 +195,124 @@ func TestWorkflowRunsFakeAgentEndToEnd(t *testing.T) {
 	}
 }
 
+func TestWorkflowPersistsStructuredFindingCandidates(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	env.Driver.stdout = `{
+		"summary": "one finding",
+		"findings": [
+			{
+				"claim": "Settings mutation lacks admin guard",
+				"category": "security",
+				"severity": "high",
+				"confidence": 0.91,
+				"locations": [{"path":"src/new.go","start_line":3,"end_line":3,"side":"RIGHT"}],
+				"evidence": [{"title":"handler is reachable","summary":"the changed function can be called without an admin guard"}],
+				"suggested_fix": "Require admin before mutation.",
+				"draft_comment": "Please require admin permission before mutating settings."
+			}
+		]
+	}`
+	session := createWorkflowSession(t, env, "review_session_candidates", StatusDraft)
+	if _, err := env.Service.Transition(context.Background(), session.ID, StatusQueued); err != nil {
+		t.Fatalf("Transition(draft -> queued) error = %v", err)
+	}
+	if err := env.Service.Run(context.Background(), session.ID); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	candidates, err := env.Queries.ListFindingCandidatesBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListFindingCandidatesBySession() error = %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+	candidate := candidates[0]
+	if candidate.Claim != "Settings mutation lacks admin guard" ||
+		candidate.Category != "security" ||
+		candidate.Severity != "high" ||
+		candidate.Confidence != 0.91 ||
+		candidate.PrimaryPath.String != "src/new.go" ||
+		candidate.PrimaryStartLine.Int64 != 3 ||
+		!candidate.RawArtifactID.Valid ||
+		!strings.Contains(candidate.EvidenceJson, `"kind":"unknown"`) {
+		t.Fatalf("candidate = %+v", candidate)
+	}
+
+	events, err := env.Events.ListByReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListByReviewSession() error = %v", err)
+	}
+	assertEventTypes(t, events, []string{
+		"FindingCandidateCreated",
+		"FindingNormalized",
+		"ReviewSessionCompleted",
+	})
+
+	summary, err := env.Service.Summary(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("Summary() error = %v", err)
+	}
+	if summary.FindingCounts.Candidates != 1 {
+		t.Fatalf("finding summary = %+v", summary.FindingCounts)
+	}
+}
+
+func TestWorkflowPersistsDelimitedFindingCandidateEvents(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	config, err := env.Queries.GetAgentConfig(context.Background(), "agent_config_1")
+	if err != nil {
+		t.Fatalf("GetAgentConfig() error = %v", err)
+	}
+	if _, err := env.Queries.UpdateAgentConfig(context.Background(), dbgen.UpdateAgentConfigParams{
+		ID:               config.ID,
+		Name:             config.Name,
+		Role:             config.Role,
+		Command:          config.Command,
+		ArgsJson:         config.ArgsJson,
+		CwdMode:          config.CwdMode,
+		EnvAllowlistJson: config.EnvAllowlistJson,
+		OutputMode:       string(agents.OutputNDJSON),
+		ModelLabel:       config.ModelLabel,
+		ReasoningLabel:   config.ReasoningLabel,
+		CapabilitiesJson: config.CapabilitiesJson,
+		SettingsJson:     config.SettingsJson,
+		Enabled:          config.Enabled,
+		UpdatedAt:        "2026-05-03T00:04:30Z",
+	}); err != nil {
+		t.Fatalf("UpdateAgentConfig(output mode) error = %v", err)
+	}
+	env.Driver.stdout = `review started
+{"event":"finding","finding":{"claim":"Role cache can be stale","category":"reliability","severity":"medium","confidence":0.72,"locations":[{"path":"src/new.go","start_line":1,"end_line":3,"side":"RIGHT"}],"evidence":[{"title":"cache lacks expiry","summary":"the event cites stale role handling"}]}}
+{"event":"done","count":1}
+`
+	session := createWorkflowSession(t, env, "review_session_ndjson_candidates", StatusDraft)
+	if _, err := env.Service.Transition(context.Background(), session.ID, StatusQueued); err != nil {
+		t.Fatalf("Transition(draft -> queued) error = %v", err)
+	}
+	if err := env.Service.Run(context.Background(), session.ID); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	candidates, err := env.Queries.ListFindingCandidatesBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListFindingCandidatesBySession() error = %v", err)
+	}
+	if len(candidates) != 1 ||
+		candidates[0].Claim != "Role cache can be stale" ||
+		candidates[0].Severity != "medium" {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+	events, err := env.Events.ListByReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListByReviewSession() error = %v", err)
+	}
+	assertEventTypes(t, events, []string{"FindingNormalizationDiagnostics", "FindingCandidateCreated"})
+}
+
 func TestWorkflowRunsSelectedAgentsInParallel(t *testing.T) {
 	t.Parallel()
 
@@ -544,6 +662,7 @@ type workflowDriver struct {
 	mu          sync.Mutex
 	prompts     []string
 	delay       time.Duration
+	stdout      string
 	current     int
 	max         int
 	failConfigs map[string]bool
@@ -575,7 +694,7 @@ func (c workflowConnection) SendTask(_ context.Context, task agents.AgentTask) (
 	exitCode := 0
 	events := make(chan agents.AgentEvent, 3)
 	events <- agents.AgentEvent{Type: agents.EventStarted, RunID: task.RunID, Message: "fake agent started"}
-	events <- agents.AgentEvent{Type: agents.EventOutput, RunID: task.RunID, Stream: "stdout", Text: `{"summary":"ok","findings":[]}`}
+	events <- agents.AgentEvent{Type: agents.EventOutput, RunID: task.RunID, Stream: "stdout", Text: c.driver.stdoutText()}
 	events <- agents.AgentEvent{Type: agents.EventCompleted, RunID: task.RunID, ExitCode: &exitCode, Message: "fake agent completed"}
 	close(events)
 	return events, nil
@@ -620,6 +739,15 @@ func (d *workflowDriver) shouldFail(agentConfigID string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.failConfigs[agentConfigID]
+}
+
+func (d *workflowDriver) stdoutText() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.stdout != "" {
+		return d.stdout
+	}
+	return `{"summary":"ok","findings":[]}`
 }
 
 func nullableTestString(value string) sql.NullString {

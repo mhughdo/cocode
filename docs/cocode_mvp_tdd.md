@@ -1544,6 +1544,8 @@ RawAgentOutput
 -> FindingCandidate records
 ```
 
+The MVP implementation persists structured JSON and JSONL/NDJSON candidates during the `normalize_outputs` phase. Each candidate keeps the agent run ID plus the raw stdout artifact as provenance, while `FindingCandidateCreated` events allow the running review stream to surface candidates before the whole workflow completes.
+
 ### 13.2 Fingerprint strategy
 
 Fingerprint input:

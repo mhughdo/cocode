@@ -262,7 +262,7 @@ Large parallel workstreams:
 | T149 | Implement partial failure handling | Continue workflow when one agent fails if policy allows. | Done | T142, T098 | T150 | Failed agent emits error; other findings survive. |
 | T150 | Implement workflow cancel | Cancel all running agents and mark session canceled. | Done | T100, T144 | T254 | Cancel stops processes and preserves partial results. |
 | T151 | Implement pause/resume skeleton | Pause new phases and resume where safe. | Done | T143, T144 | T254 | MVP can mark pause/resume; complex active process pausing documented. |
-| T152 | Implement early findings emission | Emit finding events before full workflow completes. | Not started | T170, T145 | T254 | Early findings appear in UI event stream. |
+| T152 | Implement early findings emission | Emit finding events before full workflow completes. | Done | T170, T145 | T254 | Early findings appear in UI event stream. |
 | T153 | Implement run summary stats | Compute progress %, files scanned, active agents, finding counts. | Done | T145, T056 | T254 | Review Running screen receives summary model. |
 
 ---
@@ -272,12 +272,12 @@ Large parallel workstreams:
 | ID | Task | Description | Status | Dependencies | Parallelization | Done criteria |
 |---|---|---|---|---|---|---|
 | T170 | Define finding schemas | Create JSON schemas for agent output and finding candidate. | Done | T013 | T171 | Schemas validate sample outputs; versioned. |
-| T171 | Implement structured output parser | Parse valid JSON agent output into candidates. | Not started | T096, T170 | T172 | Valid fake JSON agent produces candidate rows. |
-| T172 | Implement JSONL/NDJSON parser | Parse streaming/event outputs into final candidate set. | Not started | T096, T170 | T173 | Tests cover line-by-line agent output. |
+| T171 | Implement structured output parser | Parse valid JSON agent output into candidates. | Done | T096, T170 | T172 | Valid fake JSON agent produces candidate rows. |
+| T172 | Implement JSONL/NDJSON parser | Parse streaming/event outputs into final candidate set. | Done | T096, T170 | T173 | Tests cover line-by-line agent output. |
 | T173 | Implement text output normalizer | Convert text agent output into candidates using deterministic heuristics and optional repair prompt. | Not started | T096, T170 | T174 | Text fixture produces reasonable candidates or clear low-confidence output. |
 | T174 | Implement malformed output repair | Attempt one repair pass for malformed structured output. | Not started | T173, T103 | T175 | Broken JSON fixture repaired or marked invalid with raw artifact. |
 | T175 | Implement location normalization | Normalize path/line ranges and map to changed files where possible. | Not started | T079, T171 | T176 | Invalid paths flagged; line ranges validated. |
-| T176 | Implement candidate persistence | Store FindingCandidate rows with raw artifact links. | Not started | T058, T171 | T177 | Candidates persist with agent provenance. |
+| T176 | Implement candidate persistence | Store FindingCandidate rows with raw artifact links. | Done | T058, T171 | T177 | Candidates persist with agent provenance. |
 | T177 | Implement finding fingerprinting | Compute stable fingerprints for duplicate detection. | Not started | T176 | T178 | Similar samples produce same/near fingerprints. |
 | T178 | Implement dedupe exact/overlap | Merge candidates by fingerprint and line overlap. | Not started | T177 | T179 | Duplicate candidates merge into one finding. |
 | T179 | Implement optional LLM dedupe hook | Add interface for future/optional LLM dedupe when deterministic merge is uncertain. | Not started | T178 | T180 | Hook is feature-flagged; default deterministic path works. |

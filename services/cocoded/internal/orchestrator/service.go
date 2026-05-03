@@ -587,11 +587,13 @@ func (s *Service) run(ctx context.Context, reviewSessionID string) error {
 
 	failedRuns := 0
 	succeededRuns := 0
+	runResults := []agentrun.RunResult{}
 	if err := s.withPhase(ctx, session.ID, PhaseRunAgents, func() error {
 		results, err := s.runAgents(ctx, runContexts)
 		if err != nil {
 			return err
 		}
+		runResults = results
 		for _, result := range results {
 			if result.Run.Status == agentrun.RunStatusSucceeded {
 				succeededRuns++
@@ -643,7 +645,13 @@ func (s *Service) run(ctx context.Context, reviewSessionID string) error {
 		if err := s.waitWhilePaused(ctx, session.ID); err != nil {
 			return err
 		}
-		if err := s.withPhase(ctx, session.ID, phase, func() error { return nil }); err != nil {
+		runPhase := func() error { return nil }
+		if phase == PhaseNormalizeOutputs {
+			runPhase = func() error {
+				return s.normalizeAgentOutputs(ctx, session, runResults)
+			}
+		}
+		if err := s.withPhase(ctx, session.ID, phase, runPhase); err != nil {
 			return err
 		}
 	}
@@ -879,6 +887,113 @@ func (s *Service) parseAgentOutput(ctx context.Context, item runContext, result 
 			"requested_output_mode": string(outputMode),
 		},
 	})
+}
+
+func (s *Service) normalizeAgentOutputs(ctx context.Context, session dbgen.ReviewSession, results []agentrun.RunResult) error {
+	totalCandidates := 0
+	totalDiagnostics := 0
+	for _, result := range results {
+		run := result.Run
+		if run.Status != agentrun.RunStatusSucceeded || !run.ParsedOutputArtifactID.Valid {
+			continue
+		}
+		content, _, err := s.Artifacts.Read(ctx, run.ParsedOutputArtifactID.String)
+		if err != nil {
+			return fmt.Errorf("read parsed output artifact %s: %w", run.ParsedOutputArtifactID.String, err)
+		}
+		var parsed agentoutput.ParsedOutput
+		if err := json.Unmarshal(content, &parsed); err != nil {
+			return fmt.Errorf("decode parsed output artifact %s: %w", run.ParsedOutputArtifactID.String, err)
+		}
+		extracted := agentoutput.ExtractCandidates(parsed)
+		totalDiagnostics += len(extracted.Diagnostics)
+		if len(extracted.Diagnostics) > 0 {
+			if err := s.appendEvent(ctx, appendEventParams{
+				ReviewSessionID: session.ID,
+				AgentRunID:      nullableEventString(run.ID),
+				Type:            "FindingNormalizationDiagnostics",
+				Level:           "warn",
+				ArtifactID:      run.ParsedOutputArtifactID,
+				Payload: map[string]any{
+					"phase":            PhaseNormalizeOutputs,
+					"agent_run_id":     run.ID,
+					"diagnostic_count": len(extracted.Diagnostics),
+					"diagnostics":      extracted.Diagnostics,
+				},
+			}); err != nil {
+				return err
+			}
+		}
+		for _, candidate := range extracted.Candidates {
+			created, err := s.createFindingCandidate(ctx, session, run, candidate)
+			if err != nil {
+				return err
+			}
+			totalCandidates++
+			if err := s.appendEvent(ctx, appendEventParams{
+				ReviewSessionID: session.ID,
+				AgentRunID:      nullableEventString(run.ID),
+				Type:            "FindingCandidateCreated",
+				ArtifactID:      run.StdoutArtifactID,
+				Payload: map[string]any{
+					"phase":                PhaseNormalizeOutputs,
+					"agent_run_id":         run.ID,
+					"finding_candidate_id": created.ID,
+					"claim":                created.Claim,
+					"category":             created.Category,
+					"severity":             created.Severity,
+					"confidence":           created.Confidence,
+					"raw_artifact_id":      nullableValue(created.RawArtifactID),
+				},
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	return s.appendEvent(ctx, appendEventParams{
+		ReviewSessionID: session.ID,
+		Type:            "FindingNormalized",
+		Payload: map[string]any{
+			"phase":              PhaseNormalizeOutputs,
+			"candidate_count":    totalCandidates,
+			"diagnostic_count":   totalDiagnostics,
+			"agent_runs_scanned": len(results),
+		},
+	})
+}
+
+func (s *Service) createFindingCandidate(ctx context.Context, session dbgen.ReviewSession, run dbgen.AgentRun, candidate agentoutput.Candidate) (dbgen.FindingCandidate, error) {
+	locationsJSON, err := json.Marshal(candidate.Locations)
+	if err != nil {
+		return dbgen.FindingCandidate{}, fmt.Errorf("encode candidate locations: %w", err)
+	}
+	evidenceJSON, err := json.Marshal(candidate.Evidence)
+	if err != nil {
+		return dbgen.FindingCandidate{}, fmt.Errorf("encode candidate evidence: %w", err)
+	}
+	created, err := s.Queries.CreateFindingCandidate(ctx, dbgen.CreateFindingCandidateParams{
+		ID:               s.newID("finding_candidate_"),
+		ReviewSessionID:  session.ID,
+		AgentRunID:       run.ID,
+		RawArtifactID:    run.StdoutArtifactID,
+		Category:         candidate.Category,
+		Severity:         candidate.Severity,
+		Confidence:       candidate.Confidence,
+		Claim:            candidate.Claim,
+		PrimaryPath:      nullableString(candidate.PrimaryPath),
+		PrimaryStartLine: nullablePositiveInt64(candidate.PrimaryStartLine),
+		PrimaryEndLine:   nullablePositiveInt64(candidate.PrimaryEndLine),
+		LocationsJson:    string(locationsJSON),
+		EvidenceJson:     string(evidenceJSON),
+		SuggestedFix:     nullableString(candidate.SuggestedFix),
+		DraftComment:     nullableString(candidate.DraftComment),
+		Fingerprint:      nullableString(candidate.Fingerprint),
+		CreatedAt:        s.now().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		return dbgen.FindingCandidate{}, fmt.Errorf("create finding candidate for run %s: %w", run.ID, err)
+	}
+	return created, nil
 }
 
 func (s *Service) connectionConfig(item runContext) (agents.ConnectionConfig, agents.TaskLimits, error) {
@@ -1307,6 +1422,13 @@ func nullableString(value string) sql.NullString {
 		return sql.NullString{}
 	}
 	return sql.NullString{String: value, Valid: true}
+}
+
+func nullablePositiveInt64(value int64) sql.NullInt64 {
+	if value < 1 {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: value, Valid: true}
 }
 
 func nullableEventString(value string) sql.NullString {

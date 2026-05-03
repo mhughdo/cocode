@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  ArrowLeftIcon,
   ArrowUpIcon,
   BellIcon,
   BotIcon,
@@ -9,17 +10,21 @@ import {
   ClockIcon,
   Code2Icon,
   CopyIcon,
+  ExternalLinkIcon,
   FileSearchIcon,
   FolderOpenIcon,
   GitBranchIcon,
   GitPullRequestIcon,
   InboxIcon,
+  MapIcon,
   MessageSquareIcon,
   MoreHorizontalIcon,
   PanelRightIcon,
   PauseIcon,
   PlusIcon,
+  RefreshCwIcon,
   SearchIcon,
+  SendIcon,
   SettingsIcon,
   ShieldCheckIcon,
   SparklesIcon,
@@ -83,7 +88,16 @@ import {
   successApiState,
   type ApiSessionResponse,
   type Loadable,
+  type AskFindingQuestionResponse,
   type EvidenceItem,
+  type EvidenceMapCallPath,
+  type EvidenceMapCallPathStep,
+  type EvidenceMapEdge,
+  type EvidenceMapGraphRef,
+  type EvidenceMapHierarchyItem,
+  type EvidenceMapNode,
+  type EvidenceMapPanelEvidenceRef,
+  type EvidenceMapResponse,
   type Finding,
   type FindingDetailResponse,
   type FindingListResponse,
@@ -104,6 +118,10 @@ const MAX_CHANGED_FILES_RENDERED = 120;
 const MAX_REVIEW_EVENTS_RENDERED = 120;
 const MAX_FINDINGS_RENDERED = 150;
 const MAX_CODE_LINES_RENDERED = 80;
+const EVIDENCE_MAP_NODE_WIDTH = 190;
+const EVIDENCE_MAP_NODE_HEIGHT = 68;
+const EVIDENCE_MAP_COLUMN_GAP = 250;
+const EVIDENCE_MAP_ROW_GAP = 104;
 
 type MainView = "new-thread" | "configure" | "review" | "agent-settings";
 type SnapshotSource = "github" | "local-changes" | "branch-compare";
@@ -563,6 +581,7 @@ export function App() {
         )}
         {mainView === "review" && (
           <ReviewThread
+            activeRepository={activeRepository}
             agentConfigs={agentConfigs}
             apiSession={apiSession}
             backendDetail={backendDetail}
@@ -2435,12 +2454,14 @@ function CommitDropdown() {
 }
 
 function ReviewThread({
+  activeRepository,
   agentConfigs,
   apiSession,
   backendDetail,
   client,
   session,
 }: {
+  activeRepository?: Repository;
   agentConfigs: Loadable<AgentConfig[]>;
   apiSession: Loadable<ApiSessionResponse>;
   backendDetail: string;
@@ -2448,7 +2469,27 @@ function ReviewThread({
   session?: ReviewSession;
 }) {
   const [activeTab, setActiveTab] = useState("chat");
+  const [evidenceMapFinding, setEvidenceMapFinding] = useState<Finding | null>(
+    null,
+  );
   const live = useReviewSessionLiveData(client, session);
+
+  useEffect(() => {
+    let canceled = false;
+    queueMicrotask(() => {
+      if (!canceled) {
+        setEvidenceMapFinding(null);
+      }
+    });
+    return () => {
+      canceled = true;
+    };
+  }, [session?.id]);
+
+  const openEvidenceMap = useCallback((finding: Finding) => {
+    setEvidenceMapFinding(finding);
+    setActiveTab("evidence-map");
+  }, []);
 
   const agentList = agentConfigs.status === "success" ? agentConfigs.data : [];
   const selectedAgents =
@@ -2461,7 +2502,12 @@ function ReviewThread({
   return (
     <section className="flex min-w-0 flex-col">
       <ScrollArea className="flex-1 px-6 py-5">
-        <div className="mx-auto flex max-w-5xl flex-col gap-5">
+        <div
+          className={cn(
+            "mx-auto flex flex-col gap-5",
+            activeTab === "evidence-map" ? "max-w-7xl" : "max-w-5xl",
+          )}
+        >
           {apiSession.status === "loading" && (
             <LoadingRows rows={2} className="rounded-lg border p-4" />
           )}
@@ -2497,6 +2543,9 @@ function ReviewThread({
               <TabsTrigger value="chat">Chat</TabsTrigger>
               <TabsTrigger value="details">Review details</TabsTrigger>
               <TabsTrigger value="findings">Findings</TabsTrigger>
+              <TabsTrigger value="evidence-map" disabled={!evidenceMapFinding}>
+                Evidence Map
+              </TabsTrigger>
               <TabsTrigger value="publish">Publish</TabsTrigger>
             </TabsList>
 
@@ -2549,8 +2598,27 @@ function ReviewThread({
               <ReviewFindingsBoard
                 client={client}
                 findings={live.findings}
+                onOpenEvidenceMap={openEvidenceMap}
                 session={live.session ?? session}
               />
+            </TabsContent>
+
+            <TabsContent value="evidence-map" className="mt-4">
+              {evidenceMapFinding ? (
+                <EvidenceMapScreen
+                  activeRepository={activeRepository}
+                  agentConfigs={agentConfigs}
+                  client={client}
+                  finding={evidenceMapFinding}
+                  onBack={() => setActiveTab("findings")}
+                />
+              ) : (
+                <EmptyState
+                  title="Select a finding first"
+                  description="Open Evidence Map from a selected finding to inspect graph context."
+                  icon={MapIcon}
+                />
+              )}
             </TabsContent>
 
             <TabsContent value="publish" className="mt-4">
@@ -2944,10 +3012,12 @@ function ReviewEventTimeline({ events }: { events: ReviewEvent[] }) {
 function ReviewFindingsBoard({
   client,
   findings,
+  onOpenEvidenceMap,
   session,
 }: {
   client: ApiClient | null;
   findings: Loadable<FindingListResponse>;
+  onOpenEvidenceMap: (finding: Finding) => void;
   session?: ReviewSession;
 }) {
   const [statusFilter, setStatusFilter] = useState<FindingStatusFilter>("all");
@@ -3579,6 +3649,15 @@ function ReviewFindingsBoard({
                   disabled={actionState.status === "loading"}
                   size="sm"
                   variant="outline"
+                  onClick={() => onOpenEvidenceMap(selectedFinding)}
+                >
+                  <MapIcon data-icon="inline-start" />
+                  Map
+                </Button>
+                <Button
+                  disabled={actionState.status === "loading"}
+                  size="sm"
+                  variant="outline"
                   onClick={() => void updateDecision("dismissed")}
                 >
                   Dismiss
@@ -3594,6 +3673,792 @@ function ReviewFindingsBoard({
         </div>
       </div>
     </section>
+  );
+}
+
+type EvidenceMapSelection =
+  | { kind: "node"; id: string }
+  | { kind: "edge"; id: string }
+  | { kind: "call_path"; id: string };
+
+interface PositionedEvidenceMapNode {
+  node: EvidenceMapNode;
+  x: number;
+  y: number;
+}
+
+interface EvidenceMapLayout {
+  nodes: PositionedEvidenceMapNode[];
+  nodeById: Map<string, PositionedEvidenceMapNode>;
+  width: number;
+  height: number;
+}
+
+function EvidenceMapScreen({
+  activeRepository,
+  agentConfigs,
+  client,
+  finding,
+  onBack,
+}: {
+  activeRepository?: Repository;
+  agentConfigs: Loadable<AgentConfig[]>;
+  client: ApiClient | null;
+  finding: Finding;
+  onBack: () => void;
+}) {
+  const [mapState, setMapState] =
+    useState<Loadable<EvidenceMapResponse>>(idleApiState());
+  const [selection, setSelection] = useState<EvidenceMapSelection | null>(null);
+  const [question, setQuestion] = useState("");
+  const [askState, setAskState] =
+    useState<Loadable<AskFindingQuestionResponse>>(idleApiState());
+  const [actionMessage, setActionMessage] = useState("");
+  const [isRebuilding, setIsRebuilding] = useState(false);
+  const [isOpeningEditor, setIsOpeningEditor] = useState(false);
+
+  useEffect(() => {
+    let canceled = false;
+    queueMicrotask(() => {
+      if (canceled) {
+        return;
+      }
+      if (!client) {
+        setMapState(errorApiState(new Error("Backend client is unavailable")));
+        return;
+      }
+      setMapState(loadingApiState());
+      setSelection(null);
+      setActionMessage("");
+      void loadApiResource(() => client.getFindingEvidenceMap(finding.id)).then(
+        (state) => {
+          if (canceled) {
+            return;
+          }
+          setMapState(state);
+          if (state.status === "success") {
+            setSelection(firstEvidenceMapSelection(state.data));
+          }
+        },
+      );
+    });
+    return () => {
+      canceled = true;
+    };
+  }, [client, finding.id]);
+
+  const map = mapState.status === "success" ? mapState.data : undefined;
+  const agentList = agentConfigs.status === "success" ? agentConfigs.data : [];
+  const verifierAgent =
+    agentList.find(
+      (agent) =>
+        agent.enabled &&
+        (agent.role.toLowerCase().includes("verifier") ||
+          agent.adapter_kind === "local_verifier"),
+    ) ?? agentList.find((agent) => agent.enabled);
+  const selectedNode =
+    map && selection?.kind === "node"
+      ? map.nodes.find((node) => node.id === selection.id)
+      : undefined;
+  const selectedEdge =
+    map && selection?.kind === "edge"
+      ? map.edges.find((edge) => edge.id === selection.id)
+      : undefined;
+  const selectedCallPath =
+    map && selection?.kind === "call_path"
+      ? map.call_paths.find((path) => path.id === selection.id)
+      : undefined;
+
+  async function rebuildMap() {
+    if (!client) {
+      setActionMessage("Backend client is unavailable.");
+      return;
+    }
+    setIsRebuilding(true);
+    setActionMessage("");
+    const state = await loadApiResource(() =>
+      client.rebuildFindingEvidenceMap(finding.id),
+    );
+    setIsRebuilding(false);
+    setMapState(state);
+    if (state.status === "success") {
+      setSelection(firstEvidenceMapSelection(state.data));
+      setActionMessage("Evidence Map rebuilt");
+      return;
+    }
+    setActionMessage(
+      state.status === "error" ? state.error.message : "Rebuild failed",
+    );
+  }
+
+  async function askVerifier() {
+    if (!client || !question.trim()) {
+      return;
+    }
+    setAskState(loadingApiState());
+    const state = await loadApiResource(() =>
+      client.askEvidenceMapQuestion(finding.id, {
+        question: question.trim(),
+        agent_config_id: verifierAgent?.id,
+        graph_refs: evidenceMapGraphRefs(selection),
+        context_policy: { max_tokens: 10_000, max_items: 120 },
+      }),
+    );
+    setAskState(state);
+    if (state.status === "success") {
+      setQuestion("");
+    }
+  }
+
+  async function openSelectedInEditor() {
+    const target = evidenceMapOpenTarget(
+      selectedNode,
+      selectedCallPath,
+      activeRepository,
+    );
+    if (!target) {
+      setActionMessage("Select a node or call path step with a file path.");
+      return;
+    }
+    if (!window.cocode?.openFile) {
+      setActionMessage("Editor bridge is unavailable.");
+      return;
+    }
+    setIsOpeningEditor(true);
+    setActionMessage("");
+    const state = await loadApiResource(() => window.cocode!.openFile(target));
+    setIsOpeningEditor(false);
+    setActionMessage(
+      state.status === "success"
+        ? "Opened in editor"
+        : state.status === "error"
+          ? state.error.message
+          : "Open failed",
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <PaneHeader
+        title="Evidence Map"
+        description={finding.canonical_claim}
+        actions={
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={onBack}>
+              <ArrowLeftIcon data-icon="inline-start" />
+              Findings
+            </Button>
+            <Button
+              disabled={mapState.status !== "success" || isRebuilding}
+              size="sm"
+              variant="outline"
+              onClick={() => void rebuildMap()}
+            >
+              <RefreshCwIcon data-icon="inline-start" />
+              Rebuild
+            </Button>
+          </div>
+        }
+      />
+
+      {mapState.status === "loading" && (
+        <LoadingRows rows={8} className="rounded-lg border p-4" />
+      )}
+      {mapState.status === "error" && (
+        <ErrorState
+          title="Evidence Map failed to load"
+          description={mapState.error.message}
+        />
+      )}
+      {map && (
+        <div className="grid min-h-[650px] overflow-hidden rounded-lg border 2xl:grid-cols-[230px_minmax(0,1fr)_330px]">
+          <EvidenceMapHierarchyPane
+            hierarchy={map.hierarchy}
+            selection={selection}
+            onSelect={setSelection}
+          />
+
+          <div className="bg-background flex min-w-0 flex-col">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <Badge
+                  variant={map.graph.status === "ready" ? "default" : "outline"}
+                >
+                  {map.graph.status}
+                </Badge>
+                <Badge variant="secondary">{map.nodes.length} nodes</Badge>
+                <Badge variant="secondary">{map.edges.length} edges</Badge>
+                {map.missing_reasons && map.missing_reasons.length > 0 && (
+                  <Badge variant="outline">
+                    {map.missing_reasons.length} missing
+                  </Badge>
+                )}
+              </div>
+              {actionMessage && (
+                <span className="text-muted-foreground text-xs">
+                  {actionMessage}
+                </span>
+              )}
+            </div>
+
+            <EvidenceMapGraphCanvas
+              map={map}
+              selection={selection}
+              onSelect={setSelection}
+            />
+
+            <EvidenceMapCallPathPanel
+              map={map}
+              selection={selection}
+              onSelect={setSelection}
+            />
+          </div>
+
+          <EvidenceMapRightPanel
+            activeRepository={activeRepository}
+            askState={askState}
+            canAsk={Boolean(client && question.trim())}
+            isOpeningEditor={isOpeningEditor}
+            map={map}
+            onAsk={() => void askVerifier()}
+            onOpenEditor={() => void openSelectedInEditor()}
+            question={question}
+            selectedCallPath={selectedCallPath}
+            selectedEdge={selectedEdge}
+            selectedNode={selectedNode}
+            selection={selection}
+            setQuestion={setQuestion}
+            verifierAgent={verifierAgent}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EvidenceMapHierarchyPane({
+  hierarchy,
+  onSelect,
+  selection,
+}: {
+  hierarchy: EvidenceMapHierarchyItem[];
+  onSelect: (selection: EvidenceMapSelection) => void;
+  selection: EvidenceMapSelection | null;
+}) {
+  return (
+    <aside className="bg-surface/40 min-w-0 border-b 2xl:border-r 2xl:border-b-0">
+      <div className="border-b px-4 py-3">
+        <div className="text-sm font-medium">Code hierarchy</div>
+        <div className="text-muted-foreground mt-1 text-xs">
+          {hierarchy.length} locations
+        </div>
+      </div>
+      <ScrollArea className="h-48 2xl:h-[590px]">
+        <div className="flex flex-col gap-1 p-2">
+          {hierarchy.map((item) => {
+            const targetNodeId = item.node_ids[0];
+            const selected =
+              selection?.kind === "node" &&
+              Boolean(targetNodeId) &&
+              selection.id === targetNodeId;
+            return (
+              <button
+                key={`${item.path}:${item.start_line ?? 0}:${item.kind}`}
+                className={cn(
+                  "hover:bg-surface-raised flex min-w-0 flex-col items-start rounded-md px-3 py-2 text-left text-sm",
+                  selected && "bg-surface-raised ring-border ring-1",
+                )}
+                disabled={!targetNodeId}
+                type="button"
+                onClick={() => {
+                  if (targetNodeId) {
+                    onSelect({ kind: "node", id: targetNodeId });
+                  }
+                }}
+              >
+                <span className="w-full truncate font-medium">
+                  {shortPath(item.path)}
+                </span>
+                <span className="text-muted-foreground mt-1 flex max-w-full items-center gap-2 text-xs">
+                  <span>{item.kind.replaceAll("_", " ")}</span>
+                  {item.start_line ? (
+                    <span>
+                      L{formatLineRange(item.start_line, item.end_line)}
+                    </span>
+                  ) : null}
+                </span>
+              </button>
+            );
+          })}
+          {hierarchy.length === 0 && (
+            <div className="text-muted-foreground px-3 py-8 text-sm">
+              No hierarchy data is available for this graph.
+            </div>
+          )}
+        </div>
+      </ScrollArea>
+    </aside>
+  );
+}
+
+function EvidenceMapGraphCanvas({
+  map,
+  onSelect,
+  selection,
+}: {
+  map: EvidenceMapResponse;
+  onSelect: (selection: EvidenceMapSelection) => void;
+  selection: EvidenceMapSelection | null;
+}) {
+  const layout = useMemo(() => buildEvidenceMapLayout(map), [map]);
+
+  return (
+    <div className="bg-surface/20 min-h-[420px] min-w-0 flex-1 overflow-auto">
+      <svg
+        aria-label="Evidence Map graph"
+        className="min-h-[420px]"
+        height={layout.height}
+        role="img"
+        width={layout.width}
+      >
+        <defs>
+          <marker
+            id="evidence-map-arrow"
+            markerHeight="7"
+            markerWidth="7"
+            orient="auto"
+            refX="6"
+            refY="3.5"
+          >
+            <path d="M0,0 L7,3.5 L0,7 Z" className="fill-muted-foreground" />
+          </marker>
+        </defs>
+        {map.edges.map((edge) => {
+          const source = layout.nodeById.get(edge.source);
+          const target = layout.nodeById.get(edge.target);
+          if (!source || !target) {
+            return null;
+          }
+          const selected =
+            selection?.kind === "edge" && selection.id === edge.id;
+          const sourceX = source.x + EVIDENCE_MAP_NODE_WIDTH;
+          const sourceY = source.y + EVIDENCE_MAP_NODE_HEIGHT / 2;
+          const targetX = target.x;
+          const targetY = target.y + EVIDENCE_MAP_NODE_HEIGHT / 2;
+          const control = Math.max(70, Math.abs(targetX - sourceX) / 2);
+          return (
+            <g
+              key={edge.id}
+              className="cursor-pointer"
+              role="button"
+              tabIndex={0}
+              onClick={() => onSelect({ kind: "edge", id: edge.id })}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  onSelect({ kind: "edge", id: edge.id });
+                }
+              }}
+            >
+              <path
+                className={cn(
+                  "stroke-muted-foreground/45 fill-none",
+                  selected && "stroke-primary",
+                  edge.status === "missing" && "stroke-destructive",
+                )}
+                d={`M ${sourceX} ${sourceY} C ${sourceX + control} ${sourceY}, ${
+                  targetX - control
+                } ${targetY}, ${targetX} ${targetY}`}
+                markerEnd="url(#evidence-map-arrow)"
+                strokeDasharray={edge.status === "missing" ? "7 5" : undefined}
+                strokeWidth={selected ? 2.8 : 1.8}
+              />
+              {edge.label && (
+                <text
+                  className="fill-muted-foreground text-[11px]"
+                  x={(sourceX + targetX) / 2}
+                  y={(sourceY + targetY) / 2 - 8}
+                >
+                  {truncate(edge.label, 28)}
+                </text>
+              )}
+            </g>
+          );
+        })}
+
+        {layout.nodes.map(({ node, x, y }) => {
+          const selected =
+            selection?.kind === "node" && selection.id === node.id;
+          const labelLines = wrapSvgLabel(node.label, 24).slice(0, 2);
+          return (
+            <g
+              key={node.id}
+              className="cursor-pointer"
+              role="button"
+              tabIndex={0}
+              transform={`translate(${x}, ${y})`}
+              onClick={() => onSelect({ kind: "node", id: node.id })}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  onSelect({ kind: "node", id: node.id });
+                }
+              }}
+            >
+              <rect
+                className={cn(
+                  "fill-background stroke-border",
+                  selected && "stroke-primary",
+                  node.kind === "missing_guard" && "fill-destructive/5",
+                  node.kind === "counter_evidence" && "fill-warning/10",
+                )}
+                height={EVIDENCE_MAP_NODE_HEIGHT}
+                rx="8"
+                strokeWidth={selected ? 2.4 : 1.2}
+                width={EVIDENCE_MAP_NODE_WIDTH}
+              />
+              <text className="fill-foreground text-[12px] font-medium">
+                {labelLines.map((line, index) => (
+                  <tspan key={`${node.id}:${index}`} x="12" y={20 + index * 15}>
+                    {line}
+                  </tspan>
+                ))}
+              </text>
+              <text className="fill-muted-foreground text-[10px]">
+                <tspan x="12" y="57">
+                  {truncate(node.kind.replaceAll("_", " "), 18)}
+                </tspan>
+                <tspan x="142" y="57">
+                  {Math.round(node.confidence * 100)}%
+                </tspan>
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+function EvidenceMapCallPathPanel({
+  map,
+  onSelect,
+  selection,
+}: {
+  map: EvidenceMapResponse;
+  onSelect: (selection: EvidenceMapSelection) => void;
+  selection: EvidenceMapSelection | null;
+}) {
+  return (
+    <div className="border-t px-4 py-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="text-sm font-medium">Call path</div>
+        <Badge variant="outline">{map.call_paths.length} paths</Badge>
+      </div>
+      {map.call_paths.length > 0 ? (
+        <div className="flex gap-2 overflow-x-auto pb-1">
+          {map.call_paths.map((path) => (
+            <button
+              key={path.id}
+              className={cn(
+                "hover:bg-surface-raised flex min-w-[220px] flex-col items-start rounded-md border px-3 py-2 text-left",
+                selection?.kind === "call_path" &&
+                  selection.id === path.id &&
+                  "border-primary bg-surface-raised",
+              )}
+              type="button"
+              onClick={() => onSelect({ kind: "call_path", id: path.id })}
+            >
+              <span className="truncate text-sm font-medium">
+                {path.label || "Evidence path"}
+              </span>
+              <span className="text-muted-foreground mt-1 text-xs">
+                {path.steps.length} steps / {Math.round(path.confidence * 100)}%
+              </span>
+              <span className="text-muted-foreground mt-2 line-clamp-2 text-xs">
+                {path.steps.map((step) => step.label).join(" -> ")}
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : (
+        <p className="text-muted-foreground text-sm">
+          {map.call_path_unavailable_reason ||
+            "No readable call path is available."}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function EvidenceMapRightPanel({
+  activeRepository,
+  askState,
+  canAsk,
+  isOpeningEditor,
+  map,
+  onAsk,
+  onOpenEditor,
+  question,
+  selectedCallPath,
+  selectedEdge,
+  selectedNode,
+  selection,
+  setQuestion,
+  verifierAgent,
+}: {
+  activeRepository?: Repository;
+  askState: Loadable<AskFindingQuestionResponse>;
+  canAsk: boolean;
+  isOpeningEditor: boolean;
+  map: EvidenceMapResponse;
+  onAsk: () => void;
+  onOpenEditor: () => void;
+  question: string;
+  selectedCallPath?: EvidenceMapCallPath;
+  selectedEdge?: EvidenceMapEdge;
+  selectedNode?: EvidenceMapNode;
+  selection: EvidenceMapSelection | null;
+  setQuestion: (question: string) => void;
+  verifierAgent?: AgentConfig;
+}) {
+  const openTarget = evidenceMapOpenTarget(
+    selectedNode,
+    selectedCallPath,
+    activeRepository,
+  );
+
+  return (
+    <aside className="bg-surface/40 min-w-0 border-t 2xl:border-t-0 2xl:border-l">
+      <ScrollArea className="h-96 2xl:h-[650px]">
+        <div className="flex flex-col gap-4 p-4">
+          <div>
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <Badge>{map.panel.severity}</Badge>
+              <Badge variant="outline">{map.panel.verification_status}</Badge>
+              <Badge variant="outline">{map.panel.decision_status}</Badge>
+            </div>
+            <h2 className="text-base leading-6 font-semibold">
+              {map.panel.claim}
+            </h2>
+            {map.graph.summary && (
+              <p className="text-muted-foreground mt-2 text-sm leading-6">
+                {map.graph.summary}
+              </p>
+            )}
+          </div>
+
+          <Separator />
+
+          <div>
+            <div className="mb-2 text-sm font-medium">Selected context</div>
+            <SelectedEvidenceMapDetail
+              edge={selectedEdge}
+              node={selectedNode}
+              callPath={selectedCallPath}
+              selection={selection}
+            />
+            <Button
+              className="mt-3 w-full justify-start"
+              disabled={!openTarget || isOpeningEditor}
+              size="sm"
+              variant="outline"
+              onClick={onOpenEditor}
+            >
+              <ExternalLinkIcon data-icon="inline-start" />
+              Open in editor
+            </Button>
+          </div>
+
+          <Separator />
+
+          <div>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="text-sm font-medium">Ask verifier</div>
+              <Badge variant="outline">
+                {verifierAgent?.name ?? "auto-select"}
+              </Badge>
+            </div>
+            <Textarea
+              aria-label="Ask verifier about Evidence Map"
+              className="min-h-24"
+              placeholder="Ask about the selected graph path..."
+              value={question}
+              onChange={(event) => setQuestion(event.target.value)}
+            />
+            <Button
+              className="mt-2 w-full justify-start"
+              disabled={!canAsk || askState.status === "loading"}
+              size="sm"
+              onClick={onAsk}
+            >
+              <SendIcon data-icon="inline-start" />
+              Ask verifier
+            </Button>
+            {askState.status === "error" && (
+              <p className="text-destructive mt-2 text-sm">
+                {askState.error.message}
+              </p>
+            )}
+            {askState.status === "success" && (
+              <div className="bg-background mt-3 rounded-md border p-3">
+                <div className="text-xs font-medium">Verifier response</div>
+                <p className="text-muted-foreground mt-2 text-sm leading-6">
+                  {askState.data.assistant_message.content}
+                </p>
+              </div>
+            )}
+          </div>
+
+          <Separator />
+
+          <EvidenceMapLegend map={map} />
+
+          {map.panel.evidence.length > 0 && (
+            <>
+              <Separator />
+              <div>
+                <div className="mb-2 text-sm font-medium">Evidence bundle</div>
+                <div className="flex flex-col gap-2">
+                  {map.panel.evidence.slice(0, 8).map((item) => (
+                    <div key={item.id} className="rounded-md border p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate text-sm font-medium">
+                          {item.title}
+                        </span>
+                        <Badge variant={evidenceBadgeVariant(item.kind)}>
+                          {item.kind}
+                        </Badge>
+                      </div>
+                      <div className="text-muted-foreground mt-1 text-xs">
+                        {formatEvidenceRefLocation(item)}
+                      </div>
+                      <p className="text-muted-foreground mt-2 line-clamp-3 text-sm leading-6">
+                        {item.summary}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      </ScrollArea>
+    </aside>
+  );
+}
+
+function SelectedEvidenceMapDetail({
+  callPath,
+  edge,
+  node,
+  selection,
+}: {
+  callPath?: EvidenceMapCallPath;
+  edge?: EvidenceMapEdge;
+  node?: EvidenceMapNode;
+  selection: EvidenceMapSelection | null;
+}) {
+  if (node) {
+    return (
+      <div className="rounded-md border p-3">
+        <div className="flex items-center justify-between gap-2">
+          <span className="truncate text-sm font-medium">{node.label}</span>
+          <Badge variant="outline">{node.kind.replaceAll("_", " ")}</Badge>
+        </div>
+        <div className="text-muted-foreground mt-2 text-xs">
+          {formatEvidenceNodeLocation(node)}
+        </div>
+        {node.symbol && (
+          <div className="text-muted-foreground mt-2 text-sm">
+            Symbol: {node.symbol}
+          </div>
+        )}
+        <div className="text-muted-foreground mt-2 text-sm">
+          Confidence {Math.round(node.confidence * 100)}%
+        </div>
+      </div>
+    );
+  }
+
+  if (edge) {
+    return (
+      <div className="rounded-md border p-3">
+        <div className="flex items-center justify-between gap-2">
+          <span className="truncate text-sm font-medium">
+            {edge.label || edge.kind.replaceAll("_", " ")}
+          </span>
+          <Badge
+            variant={edge.status === "missing" ? "destructive" : "outline"}
+          >
+            {edge.status}
+          </Badge>
+        </div>
+        <div className="text-muted-foreground mt-2 text-sm leading-6">
+          {edge.source} {"->"} {edge.target}
+        </div>
+        <div className="text-muted-foreground mt-2 text-sm">
+          Confidence {Math.round(edge.confidence * 100)}%
+        </div>
+      </div>
+    );
+  }
+
+  if (callPath) {
+    return (
+      <div className="rounded-md border p-3">
+        <div className="text-sm font-medium">
+          {callPath.label || "Evidence path"}
+        </div>
+        <div className="text-muted-foreground mt-2 text-sm">
+          Confidence {Math.round(callPath.confidence * 100)}%
+        </div>
+        <div className="mt-3 flex flex-col gap-2">
+          {callPath.steps.map((step) => (
+            <div key={`${step.step_index}:${step.label}`} className="text-sm">
+              <span className="text-muted-foreground mr-2">
+                {step.step_index + 1}.
+              </span>
+              {step.label}
+              {step.path && (
+                <div className="text-muted-foreground ml-6 text-xs">
+                  {formatCallPathStepLocation(step)}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="text-muted-foreground rounded-md border p-3 text-sm">
+      {selection
+        ? "The selected graph item is no longer available."
+        : "Select a node, edge, or call path to inspect it."}
+    </div>
+  );
+}
+
+function EvidenceMapLegend({ map }: { map: EvidenceMapResponse }) {
+  return (
+    <div>
+      <div className="mb-2 text-sm font-medium">Legend</div>
+      <div className="flex flex-col gap-2">
+        {map.legend.map((item) => (
+          <div key={item.kind} className="rounded-md border p-3">
+            <div className="text-sm font-medium">{item.label}</div>
+            <p className="text-muted-foreground mt-1 text-xs leading-5">
+              {item.description}
+            </p>
+          </div>
+        ))}
+        {map.legend.length === 0 && (
+          <p className="text-muted-foreground text-sm">
+            No legend entries are available.
+          </p>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -4423,6 +5288,240 @@ function evidenceBadgeVariant(kind: string) {
     return "secondary";
   }
   return "outline";
+}
+
+function firstEvidenceMapSelection(
+  map: EvidenceMapResponse,
+): EvidenceMapSelection | null {
+  const callPathNode = map.call_path.find((step) => step.node_id)?.node_id;
+  const primaryNode =
+    map.nodes.find((node) => node.kind === "changed_code")?.id ??
+    callPathNode ??
+    map.nodes[0]?.id;
+  if (primaryNode) {
+    return { kind: "node", id: primaryNode };
+  }
+  if (map.edges[0]) {
+    return { kind: "edge", id: map.edges[0].id };
+  }
+  if (map.call_paths[0]) {
+    return { kind: "call_path", id: map.call_paths[0].id };
+  }
+  return null;
+}
+
+function evidenceMapGraphRefs(
+  selection: EvidenceMapSelection | null,
+): EvidenceMapGraphRef[] {
+  if (!selection) {
+    return [];
+  }
+  if (selection.kind === "node") {
+    return [{ node_id: selection.id }];
+  }
+  if (selection.kind === "edge") {
+    return [{ edge_id: selection.id }];
+  }
+  return [{ call_path_id: selection.id }];
+}
+
+function buildEvidenceMapLayout(map: EvidenceMapResponse): EvidenceMapLayout {
+  const levels = evidenceMapNodeLevels(map);
+  const grouped = new Map<number, EvidenceMapNode[]>();
+  for (const node of map.nodes) {
+    const level = levels.get(node.id) ?? 1;
+    const nodes = grouped.get(level) ?? [];
+    nodes.push(node);
+    grouped.set(level, nodes);
+  }
+
+  const positioned: PositionedEvidenceMapNode[] = [];
+  const levelEntries = [...grouped.entries()].sort(
+    ([left], [right]) => left - right,
+  );
+  for (const [level, nodes] of levelEntries) {
+    nodes.forEach((node, index) => {
+      positioned.push({
+        node,
+        x: 40 + level * EVIDENCE_MAP_COLUMN_GAP,
+        y: 40 + index * EVIDENCE_MAP_ROW_GAP,
+      });
+    });
+  }
+
+  const maxLevel = levelEntries.at(-1)?.[0] ?? 0;
+  const maxRows = Math.max(1, ...levelEntries.map(([, nodes]) => nodes.length));
+  const width = Math.max(
+    680,
+    80 + (maxLevel + 1) * EVIDENCE_MAP_COLUMN_GAP + EVIDENCE_MAP_NODE_WIDTH,
+  );
+  const height = Math.max(
+    420,
+    80 + maxRows * EVIDENCE_MAP_ROW_GAP + EVIDENCE_MAP_NODE_HEIGHT,
+  );
+  const nodeById = new Map(positioned.map((node) => [node.node.id, node]));
+  return { nodes: positioned, nodeById, width, height };
+}
+
+function evidenceMapNodeLevels(map: EvidenceMapResponse) {
+  const levels = new Map<string, number>();
+  const outgoing = new Map<string, string[]>();
+  for (const edge of map.edges) {
+    const targets = outgoing.get(edge.source) ?? [];
+    targets.push(edge.target);
+    outgoing.set(edge.source, targets);
+  }
+
+  const roots = [
+    ...new Set(
+      [
+        ...map.call_path
+          .filter((step) => Boolean(step.node_id))
+          .map((step) => step.node_id as string),
+        map.nodes.find((node) => node.kind === "changed_code")?.id,
+        map.nodes[0]?.id,
+      ].filter((id): id is string => Boolean(id)),
+    ),
+  ];
+  const queue = roots.map((id) => ({ id, level: 0 }));
+  for (const root of roots) {
+    levels.set(root, 0);
+  }
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current) {
+      break;
+    }
+    for (const target of outgoing.get(current.id) ?? []) {
+      const nextLevel = current.level + 1;
+      const existing = levels.get(target);
+      if (existing !== undefined && existing <= nextLevel) {
+        continue;
+      }
+      levels.set(target, nextLevel);
+      queue.push({ id: target, level: nextLevel });
+    }
+  }
+
+  const fallbackLevels: Record<string, number> = {
+    changed_code: 0,
+    handler: 1,
+    middleware: 1,
+    guard: 2,
+    config: 2,
+    related_code: 2,
+    test: 3,
+    supporting: 3,
+    counter_evidence: 3,
+    missing_guard: 3,
+    unknown: 1,
+  };
+  for (const node of map.nodes) {
+    if (!levels.has(node.id)) {
+      levels.set(node.id, fallbackLevels[node.kind] ?? 2);
+    }
+  }
+  return levels;
+}
+
+function evidenceMapOpenTarget(
+  node: EvidenceMapNode | undefined,
+  callPath: EvidenceMapCallPath | undefined,
+  repository: Repository | undefined,
+): { filePath: string; line?: number; column?: number } | null {
+  const nodePath = node?.deep_link?.path ?? node?.path;
+  if (nodePath) {
+    return {
+      filePath: resolveRepositoryFilePath(repository, nodePath),
+      line: node?.deep_link?.start_line ?? node?.start_line,
+    };
+  }
+  const step = callPath?.steps.find((candidate) => Boolean(candidate.path));
+  if (!step?.path) {
+    return null;
+  }
+  return {
+    filePath: resolveRepositoryFilePath(repository, step.path),
+    line: step.start_line,
+  };
+}
+
+function resolveRepositoryFilePath(
+  repository: Repository | undefined,
+  filePath: string,
+) {
+  if (/^(?:\/|[A-Za-z]:[\\/])/.test(filePath)) {
+    return filePath;
+  }
+  const root = repository?.local_path?.replace(/\/+$/, "");
+  if (!root) {
+    return filePath;
+  }
+  return `${root}/${filePath.replace(/^\/+/, "")}`;
+}
+
+function formatEvidenceNodeLocation(node: EvidenceMapNode) {
+  const path = node.deep_link?.path ?? node.path;
+  if (!path) {
+    return node.kind.replaceAll("_", " ");
+  }
+  return `${path}${node.start_line ? `:L${formatLineRange(node.start_line, node.end_line)}` : ""}`;
+}
+
+function formatEvidenceRefLocation(item: EvidenceMapPanelEvidenceRef) {
+  if (!item.path) {
+    return item.kind;
+  }
+  return `${item.path}${item.start_line ? `:L${formatLineRange(item.start_line, item.end_line)}` : ""}`;
+}
+
+function formatCallPathStepLocation(step: EvidenceMapCallPathStep) {
+  if (!step.path) {
+    return "No file location";
+  }
+  return `${step.path}${step.start_line ? `:L${formatLineRange(step.start_line, step.end_line)}` : ""}`;
+}
+
+function formatLineRange(startLine: number, endLine?: number) {
+  if (endLine && endLine !== startLine) {
+    return `${startLine}-L${endLine}`;
+  }
+  return String(startLine);
+}
+
+function shortPath(path: string) {
+  const parts = path.split("/");
+  if (parts.length <= 3) {
+    return path;
+  }
+  return `${parts.at(-3)}/${parts.at(-2)}/${parts.at(-1)}`;
+}
+
+function truncate(value: string, maxLength: number) {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return `${value.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
+function wrapSvgLabel(value: string, maxLineLength: number) {
+  const words = value.split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let current = "";
+  for (const word of words) {
+    const next = current ? `${current} ${word}` : word;
+    if (next.length > maxLineLength && current) {
+      lines.push(current);
+      current = word;
+      continue;
+    }
+    current = next;
+  }
+  if (current) {
+    lines.push(current);
+  }
+  return lines.length > 0 ? lines : [value];
 }
 
 function useDebouncedValue<T>(value: T, delayMs: number): T {

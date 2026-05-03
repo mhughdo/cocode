@@ -226,6 +226,27 @@ describe("ApiClient", () => {
           });
         }
         if (
+          url.endsWith("/api/findings/finding_1/evidence-map") &&
+          method === "GET"
+        ) {
+          return jsonResponse({ data: evidenceMapFixture, error: null });
+        }
+        if (url.endsWith("/api/findings/finding_1/evidence-map/rebuild")) {
+          return jsonResponse({
+            data: {
+              ...evidenceMapFixture,
+              graph: { ...evidenceMapFixture.graph, status: "ready" },
+            },
+            error: null,
+          });
+        }
+        if (url.endsWith("/api/findings/finding_1/evidence-map/question")) {
+          return jsonResponse({
+            data: askEvidenceMapQuestionFixture,
+            error: null,
+          });
+        }
+        if (
           url.endsWith("/api/review-sessions/session_1/events?after_sequence=2")
         ) {
           return streamResponse(
@@ -286,6 +307,22 @@ describe("ApiClient", () => {
       id: "finding_1",
       draft_comment: "Please add the missing middleware.",
     });
+    await expect(client.getFindingEvidenceMap("finding_1")).resolves.toEqual(
+      evidenceMapFixture,
+    );
+    await expect(
+      client.rebuildFindingEvidenceMap("finding_1"),
+    ).resolves.toMatchObject({ graph: { status: "ready" } });
+    await expect(
+      client.askEvidenceMapQuestion("finding_1", {
+        question: "Does this graph prove the missing guard?",
+        agent_config_id: "agent_config_1",
+        graph_refs: [{ node_id: "node_1" }],
+        context_policy: { max_tokens: 5000, max_items: 30 },
+      }),
+    ).resolves.toMatchObject({
+      assistant_message: { content: "The graph still shows a missing guard." },
+    });
 
     const events: unknown[] = [];
     await client.streamReviewEvents("session_1", {
@@ -302,6 +339,9 @@ describe("ApiClient", () => {
       "GET http://127.0.0.1:17658/api/findings/finding_1",
       "PATCH http://127.0.0.1:17658/api/findings/finding_1/decision",
       "PATCH http://127.0.0.1:17658/api/findings/finding_1/draft-comment",
+      "GET http://127.0.0.1:17658/api/findings/finding_1/evidence-map",
+      "POST http://127.0.0.1:17658/api/findings/finding_1/evidence-map/rebuild",
+      "POST http://127.0.0.1:17658/api/findings/finding_1/evidence-map/question",
       "GET http://127.0.0.1:17658/api/review-sessions/session_1/events?after_sequence=2",
     ]);
     expect(seen[5]?.body).toEqual({
@@ -310,6 +350,12 @@ describe("ApiClient", () => {
     });
     expect(seen[6]?.body).toEqual({
       draft_comment: "Please add the missing middleware.",
+    });
+    expect(seen[9]?.body).toEqual({
+      question: "Does this graph prove the missing guard?",
+      agent_config_id: "agent_config_1",
+      graph_refs: [{ node_id: "node_1" }],
+      context_policy: { max_tokens: 5000, max_items: 30 },
     });
     for (const request of seen) {
       expect(request.headers.get("Authorization")).toBe("Bearer local-token");
@@ -612,6 +658,157 @@ const findingDetailFixture = {
     static_analysis: [],
   },
   decisions: [],
+};
+
+const evidenceMapFixture = {
+  graph: {
+    id: "graph_1",
+    finding_id: "finding_1",
+    review_session_id: "session_1",
+    status: "partial",
+    summary: "Auth guard graph.",
+    layout: {},
+    created_at: "2026-05-04T00:00:00Z",
+    updated_at: "2026-05-04T00:00:00Z",
+  },
+  finding: findingFixture,
+  hierarchy: [
+    {
+      path: "src/app.ts",
+      kind: "changed_code",
+      start_line: 42,
+      end_line: 45,
+      node_ids: ["node_1"],
+      evidence_item_ids: ["evidence_1"],
+    },
+  ],
+  nodes: [
+    {
+      id: "node_1",
+      kind: "changed_code",
+      label: "Admin route",
+      path: "src/app.ts",
+      symbol: "router.patch",
+      start_line: 42,
+      end_line: 45,
+      evidence_item_id: "evidence_1",
+      confidence: 0.91,
+      deep_link: {
+        kind: "file",
+        path: "src/app.ts",
+        start_line: 42,
+        end_line: 45,
+      },
+      metadata: {},
+    },
+  ],
+  edges: [
+    {
+      id: "edge_1",
+      source: "node_1",
+      target: "node_missing_guard",
+      kind: "missing_guard",
+      status: "missing",
+      label: "admin guard",
+      confidence: 0.89,
+      metadata: {},
+    },
+  ],
+  call_path: [
+    {
+      id: "step_1",
+      node_id: "node_1",
+      step_index: 0,
+      path: "src/app.ts",
+      start_line: 42,
+      end_line: 45,
+      label: "PATCH /admin",
+    },
+  ],
+  call_paths: [
+    {
+      id: "path_1",
+      label: "Route to mutation",
+      confidence: 0.89,
+      steps: [
+        {
+          id: "step_1",
+          node_id: "node_1",
+          step_index: 0,
+          path: "src/app.ts",
+          start_line: 42,
+          end_line: 45,
+          label: "PATCH /admin",
+        },
+      ],
+    },
+  ],
+  call_path_unavailable_reason: "No complete path.",
+  legend: [
+    {
+      kind: "changed_code",
+      label: "Changed code",
+      description: "Node from the diff.",
+    },
+  ],
+  panel: {
+    claim: findingFixture.canonical_claim,
+    severity: "high",
+    verification_status: "verified",
+    decision_status: "needs_triage",
+    evidence_summary: findingFixture.evidence_summary,
+    counter_evidence_summary: "",
+    evidence_counts: { supporting: 1 },
+    evidence: [
+      {
+        id: "evidence_1",
+        kind: "supporting",
+        title: "Route registration",
+        summary: "The route bypasses the protected group.",
+        path: "src/app.ts",
+        start_line: 42,
+        end_line: 45,
+        confidence: 0.91,
+      },
+    ],
+  },
+  missing_reasons: ["No admin guard edge was found."],
+};
+
+const findingThreadViewFixture = {
+  finding: findingFixture,
+  thread: {
+    id: "thread_1",
+    finding_id: "finding_1",
+    review_session_id: "session_1",
+    title: "Auth middleware is not applied",
+    created_at: "2026-05-04T00:00:00Z",
+    updated_at: "2026-05-04T00:00:00Z",
+  },
+  messages: [],
+};
+
+const askEvidenceMapQuestionFixture = {
+  thread: findingThreadViewFixture,
+  user_message: {
+    id: "message_user_1",
+    thread_id: "thread_1",
+    role: "user",
+    content: "Does this graph prove the missing guard?",
+    evidence_refs: [{ node_id: "node_1" }],
+    created_at: "2026-05-04T00:00:00Z",
+  },
+  assistant_message: {
+    id: "message_assistant_1",
+    thread_id: "thread_1",
+    role: "assistant",
+    agent_config_id: "agent_config_1",
+    content: "The graph still shows a missing guard.",
+    evidence_refs: [{ node_id: "node_1" }],
+    created_at: "2026-05-04T00:00:00Z",
+  },
+  agent_run_id: "run_graph_1",
+  context_bundle_id: "bundle_graph_1",
 };
 
 const reviewEventFixture = {

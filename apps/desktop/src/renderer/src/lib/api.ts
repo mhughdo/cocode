@@ -361,6 +361,181 @@ export interface FindingDetailResponse {
   decisions: HumanDecision[];
 }
 
+export interface EvidenceMapGraph {
+  id: string;
+  finding_id: string;
+  review_session_id: string;
+  status: string;
+  summary?: string;
+  layout: unknown;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EvidenceMapFinding {
+  id: string;
+  review_session_id: string;
+  canonical_claim: string;
+  category: string;
+  severity: string;
+  confidence: number;
+  verification_status: string;
+  decision_status: string;
+  primary_path?: string;
+  primary_start_line?: number;
+  primary_end_line?: number;
+  evidence_summary?: string;
+  counter_evidence_summary?: string;
+}
+
+export interface EvidenceMapHierarchyItem {
+  path: string;
+  kind: string;
+  start_line?: number;
+  end_line?: number;
+  node_ids: string[];
+  evidence_item_ids?: string[];
+}
+
+export interface EvidenceMapNodeDeepLink {
+  kind: string;
+  path: string;
+  start_line?: number;
+  end_line?: number;
+}
+
+export interface EvidenceMapNode {
+  id: string;
+  kind: string;
+  label: string;
+  path?: string;
+  symbol?: string;
+  start_line?: number;
+  end_line?: number;
+  evidence_item_id?: string;
+  confidence: number;
+  deep_link?: EvidenceMapNodeDeepLink;
+  metadata: unknown;
+}
+
+export interface EvidenceMapEdge {
+  id: string;
+  source: string;
+  target: string;
+  kind: string;
+  status: string;
+  label?: string;
+  confidence: number;
+  metadata: unknown;
+}
+
+export interface EvidenceMapCallPathStep {
+  id?: string;
+  node_id?: string;
+  step_index: number;
+  path?: string;
+  start_line?: number;
+  end_line?: number;
+  label: string;
+}
+
+export interface EvidenceMapCallPath {
+  id: string;
+  label?: string;
+  confidence: number;
+  steps: EvidenceMapCallPathStep[];
+}
+
+export interface EvidenceMapLegendItem {
+  kind: string;
+  label: string;
+  description: string;
+}
+
+export interface EvidenceMapPanelEvidenceRef {
+  id: string;
+  kind: string;
+  title: string;
+  summary: string;
+  path?: string;
+  start_line?: number;
+  end_line?: number;
+  confidence: number;
+}
+
+export interface EvidenceMapPanel {
+  claim: string;
+  severity: string;
+  verification_status: string;
+  decision_status: string;
+  evidence_summary?: string;
+  counter_evidence_summary?: string;
+  evidence_counts: Record<string, number>;
+  evidence: EvidenceMapPanelEvidenceRef[];
+}
+
+export interface EvidenceMapResponse {
+  graph: EvidenceMapGraph;
+  finding: EvidenceMapFinding;
+  hierarchy: EvidenceMapHierarchyItem[];
+  nodes: EvidenceMapNode[];
+  edges: EvidenceMapEdge[];
+  call_path: EvidenceMapCallPathStep[];
+  call_paths: EvidenceMapCallPath[];
+  call_path_unavailable_reason?: string;
+  legend: EvidenceMapLegendItem[];
+  panel: EvidenceMapPanel;
+  missing_reasons?: string[];
+}
+
+export interface EvidenceMapGraphRef {
+  node_id?: string;
+  edge_id?: string;
+  call_path_id?: string;
+  [key: string]: unknown;
+}
+
+export interface FindingThreadMessage {
+  id: string;
+  thread_id: string;
+  role: string;
+  agent_config_id?: string;
+  content: string;
+  evidence_refs: unknown;
+  artifact_id?: string;
+  created_at: string;
+}
+
+export interface FindingThread {
+  id: string;
+  finding_id: string;
+  review_session_id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FindingThreadView {
+  finding: Finding;
+  thread: FindingThread;
+  messages: FindingThreadMessage[];
+}
+
+export interface AskEvidenceMapQuestionRequest {
+  question: string;
+  agent_config_id?: string;
+  context_policy?: ReviewContextPolicy;
+  graph_refs?: EvidenceMapGraphRef[];
+}
+
+export interface AskFindingQuestionResponse {
+  thread: FindingThreadView;
+  user_message: FindingThreadMessage;
+  assistant_message: FindingThreadMessage;
+  agent_run_id?: string;
+  context_bundle_id?: string;
+}
+
 export interface UpdateFindingDecisionRequest {
   decision: string;
   reason?: string;
@@ -730,6 +905,39 @@ export class ApiClient {
     return this.patch<Finding>(
       `/api/findings/${encodeURIComponent(findingId)}/draft-comment`,
       { draft_comment: draftComment },
+      options,
+    );
+  }
+
+  getFindingEvidenceMap(
+    findingId: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.get<EvidenceMapResponse>(
+      `/api/findings/${encodeURIComponent(findingId)}/evidence-map`,
+      options,
+    );
+  }
+
+  rebuildFindingEvidenceMap(
+    findingId: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.post<EvidenceMapResponse>(
+      `/api/findings/${encodeURIComponent(findingId)}/evidence-map/rebuild`,
+      undefined,
+      options,
+    );
+  }
+
+  askEvidenceMapQuestion(
+    findingId: string,
+    body: AskEvidenceMapQuestionRequest,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.post<AskFindingQuestionResponse>(
+      `/api/findings/${encodeURIComponent(findingId)}/evidence-map/question`,
+      body,
       options,
     );
   }

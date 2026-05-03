@@ -154,6 +154,8 @@ The Findings Board uses backend finding list filters for status, severity, and s
 
 Finding Detail is currently presented as the selected-detail pane inside the Findings Board. It loads `GET /api/findings/:id`, renders candidate-derived consensus, bounded code snippets from evidence metadata, prioritized evidence cards, and a draft comment editor backed by `PATCH /api/findings/:id/draft-comment`.
 
+The Evidence Map opens from a selected finding as a full review subview rather than a narrow nested detail tab. It uses the existing API envelope client for `GET/POST /api/findings/:id/evidence-map`, renders an in-app SVG graph without an added graph dependency, keeps node/edge/call-path selection in local UI state, sends selected graph refs to the evidence-map question endpoint, and resolves backend deep-link paths through the Electron `openFile` bridge.
+
 Electron keeps the renderer sandbox enabled, so the preload bundle is emitted as CommonJS (`out/preload/index.cjs`) and explicitly externalizes `electron`. This preserves `contextIsolation`, `sandbox`, and `nodeIntegration: false` while still exposing the narrow `window.cocode` bridge.
 
 The desktop shell uses shadcn `radix-nova` primitives as the lowest-level UI layer. App-specific chrome lives under `apps/desktop/src/renderer/src/components/app/` and stays limited to layout/navigation/state composition: sidebar sections, pane headers, command-search dialog wiring, and loading/empty/error state blocks. Feature-specific components such as diff rows, evidence cards, and finding cards should stay near their screen implementation until their data contracts stabilize.

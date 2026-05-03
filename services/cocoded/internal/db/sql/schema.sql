@@ -144,6 +144,19 @@ CREATE TABLE context_bundles (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE context_items (
+  id TEXT PRIMARY KEY,
+  context_bundle_id TEXT NOT NULL REFERENCES context_bundles(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  path TEXT,
+  start_line INTEGER,
+  end_line INTEGER,
+  title TEXT,
+  content_artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+  token_estimate INTEGER NOT NULL DEFAULT 0,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
 CREATE TABLE agent_runs (
   id TEXT PRIMARY KEY,
   review_session_id TEXT NOT NULL REFERENCES review_sessions(id) ON DELETE CASCADE,
@@ -166,6 +179,8 @@ CREATE TABLE agent_runs (
 CREATE INDEX idx_review_sessions_workspace ON review_sessions(workspace_id, created_at DESC);
 CREATE INDEX idx_agent_runs_session ON agent_runs(review_session_id, status);
 CREATE INDEX idx_events_session_sequence ON events(review_session_id, sequence);
+CREATE INDEX idx_context_bundles_session ON context_bundles(review_session_id, scope, created_at DESC);
+CREATE INDEX idx_context_items_bundle ON context_items(context_bundle_id, kind);
 
 CREATE TABLE finding_candidates (
   id TEXT PRIMARY KEY,

@@ -106,6 +106,19 @@ type ContextBundle struct {
 	CreatedAt       string         `json:"created_at"`
 }
 
+type ContextItem struct {
+	ID                string         `json:"id"`
+	ContextBundleID   string         `json:"context_bundle_id"`
+	Kind              string         `json:"kind"`
+	Path              sql.NullString `json:"path"`
+	StartLine         sql.NullInt64  `json:"start_line"`
+	EndLine           sql.NullInt64  `json:"end_line"`
+	Title             sql.NullString `json:"title"`
+	ContentArtifactID sql.NullString `json:"content_artifact_id"`
+	TokenEstimate     int64          `json:"token_estimate"`
+	MetadataJson      string         `json:"metadata_json"`
+}
+
 type CredentialRef struct {
 	ID              string `json:"id"`
 	Kind            string `json:"kind"`

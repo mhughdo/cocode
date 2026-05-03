@@ -401,6 +401,8 @@ CREATE TABLE review_rules (
 CREATE INDEX idx_changed_files_snapshot ON changed_files(snapshot_id);
 CREATE INDEX idx_review_sessions_workspace ON review_sessions(workspace_id, created_at DESC);
 CREATE INDEX idx_events_session_sequence ON events(review_session_id, sequence);
+CREATE INDEX idx_context_bundles_session ON context_bundles(review_session_id, scope, created_at DESC);
+CREATE INDEX idx_context_items_bundle ON context_items(context_bundle_id, kind);
 CREATE INDEX idx_agent_runs_session ON agent_runs(review_session_id, status);
 CREATE INDEX idx_candidates_session ON finding_candidates(review_session_id);
 CREATE INDEX idx_candidates_fingerprint ON finding_candidates(review_session_id, fingerprint);

@@ -227,7 +227,7 @@ Large parallel workstreams:
 
 | ID | Task | Description | Status | Dependencies | Parallelization | Done criteria |
 |---|---|---|---|---|---|---|
-| T120 | Define ContextBundle model | Implement domain/API models for bundles and items. | Not started | T058, T060 | T121 | Model maps to DB; artifacts can store rendered bundle. |
+| T120 | Define ContextBundle model | Implement domain/API models for bundles and items. | Done | T058, T060 | T121 | Model maps to DB; artifacts can store rendered bundle. |
 | T121 | Build diff context items | Convert changed file hunks into context items. | Not started | T079, T120 | T122 | Context includes file/path/line/content; tests cover multiple hunks. |
 | T122 | Add changed-file full/slice context | Include full small files or slices around changed lines. | Not started | T071, T121 | T123 | Respects size/token budgets and exclusions. |
 | T123 | Add related call-site search | Use ripgrep/code search to find references to changed symbols/paths. | Not started | T071, T121 | T124 | Returns bounded related items with file/line refs. |

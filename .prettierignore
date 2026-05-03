@@ -1,0 +1,10 @@
+node_modules/
+apps/desktop/out/
+apps/desktop/node_modules/
+coverage/
+dist/
+release/
+pnpm-lock.yaml
+services/cocoded/go.sum
+docs/*.md
+docs/sample-ui/

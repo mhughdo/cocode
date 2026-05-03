@@ -108,10 +108,10 @@ Large parallel workstreams:
 | T014 | Configure Electron/Vite app | Create Electron main, preload, and renderer build pipeline. | Done | T010, T011 | T240 | Dev mode launches an empty window; production build creates app bundle. |
 | T015 | Configure TypeScript strictness | Enable strict TS settings and path aliases. | Done | T014 | T241 | `tsc --noEmit` passes; aliases documented. |
 | T016 | Configure Tailwind/shadcn | Install and configure shadcn/ui and Tailwind theme tokens. | Done | T014 | T242 | Base components render; theme matches mockup direction; dark-mode decision documented. |
-| T017 | Configure Go lint/format/test scripts | Add `gofmt`, `go test`, vet/staticcheck if chosen. | Not started | T012 | T030 | CI/local scripts run consistently; failures are clear. |
-| T018 | Configure frontend lint/format/test scripts | Add ESLint/Prettier/TS test script. | Not started | T014, T015 | T240 | Lint and format scripts run; rules do not fight shadcn patterns. |
-| T019 | Add commit hooks | Add optional pre-commit hooks for formatting/linting. | Not started | T017, T018 | T020 | Hooks are documented and can be bypassed for emergencies. |
-| T020 | Add CI skeleton | Add CI workflow for backend tests, frontend typecheck, lint, and build smoke. | Not started | T017, T018 | T360 | CI runs on PR; caches dependencies; failures are actionable. |
+| T017 | Configure Go lint/format/test scripts | Add `gofmt`, `go test`, vet/staticcheck if chosen. | Done | T012 | T030 | CI/local scripts run consistently; failures are clear. |
+| T018 | Configure frontend lint/format/test scripts | Add ESLint/Prettier/TS test script. | Done | T014, T015 | T240 | Lint and format scripts run; rules do not fight shadcn patterns. |
+| T019 | Add commit hooks | Add optional pre-commit hooks for formatting/linting. | Done | T017, T018 | T020 | Hooks are documented and can be bypassed for emergencies. |
+| T020 | Add CI skeleton | Add CI workflow for backend tests, frontend typecheck, lint, and build smoke. | Done | T017, T018 | T360 | CI runs on PR; caches dependencies; failures are actionable. |
 
 ---
 

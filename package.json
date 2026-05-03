@@ -7,11 +7,20 @@
   "scripts": {
     "dev": "pnpm --filter @cocode/desktop dev",
     "build": "pnpm --filter @cocode/desktop build",
+    "format": "prettier --write . && pnpm backend:fmt",
+    "format:check": "prettier --check . && pnpm backend:fmt:check",
     "typecheck": "pnpm --filter @cocode/desktop typecheck",
-    "lint": "pnpm --filter @cocode/desktop lint",
+    "lint": "pnpm --filter @cocode/desktop lint && pnpm backend:vet",
+    "test": "pnpm --filter @cocode/desktop test && pnpm backend:test",
     "backend:dev": "cd services/cocoded && go run ./cmd/cocoded",
+    "backend:fmt": "gofmt -w services/cocoded",
+    "backend:fmt:check": "scripts/go-fmt-check.sh services/cocoded",
     "backend:test": "cd services/cocoded && go test ./...",
-    "check": "pnpm typecheck && pnpm backend:test"
+    "backend:vet": "cd services/cocoded && go vet ./...",
+    "check": "pnpm verify",
+    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "hooks:install": "git config core.hooksPath .githooks",
+    "hooks:uninstall": "git config --unset core.hooksPath"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
@@ -22,5 +31,9 @@
   "engines": {
     "node": ">=22.0.0",
     "pnpm": ">=10.0.0"
+  },
+  "devDependencies": {
+    "prettier": "^3.8.3",
+    "prettier-plugin-tailwindcss": "^0.8.0"
   }
 }

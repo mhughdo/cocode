@@ -10,6 +10,7 @@
     "build": "tsc --noEmit && electron-vite build",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings=0",
+    "test": "vitest run --passWithNoTests",
     "preview": "electron-vite preview"
   },
   "dependencies": {
@@ -41,6 +42,7 @@
     "tailwindcss": "^4.2.4",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.59.1",
-    "vite": "^8.0.10"
+    "vite": "^8.0.10",
+    "vitest": "^4.1.5"
   }
 }

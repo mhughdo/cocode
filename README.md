@@ -26,9 +26,26 @@ cocode/
 ```sh
 pnpm install
 pnpm dev
+pnpm format:check
+pnpm lint
+pnpm test
 pnpm typecheck
 pnpm backend:test
 pnpm check
 ```
 
 The desktop shell is currently a scaffold for T010-T016. The backend exposes a minimal health endpoint and is not launched by Electron yet.
+
+## Optional git hooks
+
+Enable local pre-commit checks with:
+
+```sh
+pnpm hooks:install
+```
+
+Disable them with:
+
+```sh
+pnpm hooks:uninstall
+```

@@ -4,13 +4,7 @@
   "title": "Finding",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "title",
-    "severity",
-    "file_path",
-    "line_start",
-    "description"
-  ],
+  "required": ["title", "severity", "file_path", "line_start", "description"],
   "properties": {
     "title": {
       "type": "string",
@@ -18,13 +12,7 @@
     },
     "severity": {
       "type": "string",
-      "enum": [
-        "critical",
-        "high",
-        "medium",
-        "low",
-        "info"
-      ]
+      "enum": ["critical", "high", "medium", "low", "info"]
     },
     "file_path": {
       "type": "string",

@@ -1895,6 +1895,8 @@ The preview builder creates a review summary body plus one comment draft per sel
 
 The GitHub publish client submits review bodies and anchored comment drafts to `POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews` using current `line`/`side` comment fields. It rejects unanchored comments before the network call so summary-only fallback remains explicit.
 
+Successful publication records create a `github_publications` row with the GitHub review/comment IDs, then mark each finding referenced by the publish draft comments as `published` with a `published` human decision. Failed publication records keep finding decisions unchanged and persist the error state for recovery.
+
 If mapping fails:
 
 1. Mark comment as unanchored.

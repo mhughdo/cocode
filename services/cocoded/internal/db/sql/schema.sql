@@ -233,6 +233,30 @@ CREATE TABLE finding_candidate_links (
   PRIMARY KEY(finding_id, finding_candidate_id)
 );
 
+CREATE TABLE finding_threads (
+  id TEXT PRIMARY KEY,
+  finding_id TEXT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+  review_session_id TEXT NOT NULL REFERENCES review_sessions(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(finding_id)
+);
+
+CREATE TABLE finding_thread_messages (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL REFERENCES finding_threads(id) ON DELETE CASCADE,
+  role TEXT NOT NULL CHECK(role IN ('user','assistant','system','agent')),
+  agent_config_id TEXT REFERENCES agent_configs(id) ON DELETE SET NULL,
+  content TEXT NOT NULL,
+  evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+  artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX idx_finding_threads_session ON finding_threads(review_session_id, updated_at DESC);
+CREATE INDEX idx_finding_thread_messages_thread ON finding_thread_messages(thread_id, created_at ASC);
+
 CREATE TABLE human_decisions (
   id TEXT PRIMARY KEY,
   finding_id TEXT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,

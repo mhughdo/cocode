@@ -258,6 +258,26 @@ type FindingSearch struct {
 	DraftComment    string `json:"draft_comment"`
 }
 
+type FindingThread struct {
+	ID              string `json:"id"`
+	FindingID       string `json:"finding_id"`
+	ReviewSessionID string `json:"review_session_id"`
+	Title           string `json:"title"`
+	CreatedAt       string `json:"created_at"`
+	UpdatedAt       string `json:"updated_at"`
+}
+
+type FindingThreadMessage struct {
+	ID               string         `json:"id"`
+	ThreadID         string         `json:"thread_id"`
+	Role             string         `json:"role"`
+	AgentConfigID    sql.NullString `json:"agent_config_id"`
+	Content          string         `json:"content"`
+	EvidenceRefsJson string         `json:"evidence_refs_json"`
+	ArtifactID       sql.NullString `json:"artifact_id"`
+	CreatedAt        string         `json:"created_at"`
+}
+
 type HumanDecision struct {
 	ID              string         `json:"id"`
 	FindingID       string         `json:"finding_id"`

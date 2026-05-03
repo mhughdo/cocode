@@ -1260,6 +1260,86 @@ func TestFindingEvidenceMapEndpointBuildsAndRebuilds(t *testing.T) {
 	}
 }
 
+func TestFindingThreadEndpointCreatesAndReloadsThread(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/findings/finding_auth/thread", nil)
+	request.Header.Set("X-Cocode-Token", "test-token")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("thread status = %d, body = %s", response.Code, response.Body.String())
+	}
+	first := decodeFindingThreadViewResponse(t, response.Body.Bytes())
+	if first.Finding.ID != "finding_auth" ||
+		first.Thread.FindingID != "finding_auth" ||
+		first.Thread.ReviewSessionID != "review_session_findings" ||
+		first.Thread.Title == "" ||
+		len(first.Messages) != 0 {
+		t.Fatalf("thread view = %+v", first)
+	}
+	stored, err := queries.GetFindingThreadByFinding(context.Background(), "finding_auth")
+	if err != nil {
+		t.Fatalf("GetFindingThreadByFinding() error = %v", err)
+	}
+	if stored.ID != first.Thread.ID {
+		t.Fatalf("stored thread = %+v, response = %+v", stored, first.Thread)
+	}
+	if _, err := queries.CreateFindingThreadMessage(context.Background(), dbgen.CreateFindingThreadMessageParams{
+		ID:               "finding_thread_message_user",
+		ThreadID:         stored.ID,
+		Role:             "user",
+		Content:          "Can you re-check the guard path?",
+		EvidenceRefsJson: `[{"evidence_item_id":"evidence_auth_guard"}]`,
+		CreatedAt:        "2026-05-03T00:17:00Z",
+	}); err != nil {
+		t.Fatalf("CreateFindingThreadMessage(user) error = %v", err)
+	}
+	if _, err := queries.CreateArtifact(context.Background(), dbgen.CreateArtifactParams{
+		ID:              "artifact_thread_answer",
+		WorkspaceID:     "workspace_1",
+		ReviewSessionID: nullableString("review_session_findings"),
+		Kind:            "followup_answer",
+		RelativePath:    "followup/answer.md",
+		ContentType:     "text/markdown",
+		SizeBytes:       54,
+		MetadataJson:    "{}",
+		CreatedAt:       "2026-05-03T00:17:30Z",
+	}); err != nil {
+		t.Fatalf("CreateArtifact(thread answer) error = %v", err)
+	}
+	if _, err := queries.CreateFindingThreadMessage(context.Background(), dbgen.CreateFindingThreadMessageParams{
+		ID:               "finding_thread_message_assistant",
+		ThreadID:         stored.ID,
+		Role:             "assistant",
+		AgentConfigID:    nullableString("agent_config_findings"),
+		Content:          "The scoped evidence still supports the auth finding.",
+		EvidenceRefsJson: `[]`,
+		ArtifactID:       nullableString("artifact_thread_answer"),
+		CreatedAt:        "2026-05-03T00:18:00Z",
+	}); err != nil {
+		t.Fatalf("CreateFindingThreadMessage(assistant) error = %v", err)
+	}
+
+	reloadRequest := httptest.NewRequest(http.MethodGet, "/api/review-sessions/review_session_findings/findings/finding_auth/thread", nil)
+	reloadRequest.Header.Set("X-Cocode-Token", "test-token")
+	reloadResponse := httptest.NewRecorder()
+	router.ServeHTTP(reloadResponse, reloadRequest)
+	if reloadResponse.Code != http.StatusOK {
+		t.Fatalf("thread reload status = %d, body = %s", reloadResponse.Code, reloadResponse.Body.String())
+	}
+	reloaded := decodeFindingThreadViewResponse(t, reloadResponse.Body.Bytes())
+	if reloaded.Thread.ID != first.Thread.ID ||
+		len(reloaded.Messages) != 2 ||
+		reloaded.Messages[0].Role != "user" ||
+		string(reloaded.Messages[0].EvidenceRefs) != `[{"evidence_item_id":"evidence_auth_guard"}]` ||
+		reloaded.Messages[1].AgentConfigID != "agent_config_findings" ||
+		reloaded.Messages[1].ArtifactID != "artifact_thread_answer" {
+		t.Fatalf("reloaded thread = %+v", reloaded)
+	}
+}
+
 func TestFindingContextPreviewEndpointBuildsScopedBundle(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
 	createHTTPAPIFindingFixture(t, queries)
@@ -2396,6 +2476,22 @@ func decodeFindingEvidenceMapResponse(t *testing.T, content []byte) FindingEvide
 	var envelope struct {
 		Data  FindingEvidenceMapResponse `json:"data"`
 		Error any                        `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeFindingThreadViewResponse(t *testing.T, content []byte) FindingThreadViewResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  FindingThreadViewResponse `json:"data"`
+		Error any                       `json:"error"`
 	}
 	if err := json.Unmarshal(content, &envelope); err != nil {
 		t.Fatalf("decode response: %v", err)

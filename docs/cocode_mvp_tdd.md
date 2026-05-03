@@ -834,6 +834,7 @@ POST   /api/review-sessions/:id/findings/:finding_id/decision
 PATCH  /api/review-sessions/:id/findings/:finding_id/draft-comment
 POST   /api/findings/:id/question
 GET    /api/findings/:id/thread
+GET    /api/review-sessions/:id/findings/:finding_id/thread
 GET    /api/findings/:id/evidence-map
 POST   /api/findings/:id/evidence-map/rebuild
 POST   /api/findings/:id/context-bundles/preview
@@ -1432,6 +1433,8 @@ Use the evidence bundle first. Do not use unrelated repository assumptions.
 # User question
 {{question}}
 ```
+
+The MVP follow-up foundation creates exactly one thread per finding with `finding_threads.UNIQUE(finding_id)`. `GET /api/findings/:id/thread` and the review-session-scoped equivalent create the thread on first load, return the finding summary plus ordered messages, and preserve existing messages across reloads. Message rows keep role, optional agent config, optional artifact, and JSON evidence references so the later follow-up submit API can append user/assistant turns without changing the thread model.
 
 ### 11.10 GitHub comment drafter prompt
 

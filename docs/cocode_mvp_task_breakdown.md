@@ -358,7 +358,7 @@ Large parallel workstreams:
 
 | ID | Task | Description | Status | Dependencies | Parallelization | Done criteria |
 |---|---|---|---|---|---|---|
-| T280 | Implement finding thread service | Create/load finding-scoped follow-up thread. | Not started | T133, T185 | T281 | Thread exists per finding and persists messages. |
+| T280 | Implement finding thread service | Create/load finding-scoped follow-up thread. | Done | T133, T185 | T281 | Thread exists per finding and persists messages. |
 | T281 | Implement follow-up API | Submit question to selected CLI/local verifier with finding-scoped context. | Not started | T280, T090, T133 | T282 | Fake agent answer persists and cites evidence refs. |
 | T282 | Implement follow-up message persistence | Store user/assistant messages with evidence refs and artifacts. | Not started | T280 | T265 | Reloading finding shows thread history. |
 | T283 | Implement quick actions from follow-up | Ask counter-evidence, accept, dismiss, copy. | Not started | T281, T185 | T265 | Quick actions update finding state. |

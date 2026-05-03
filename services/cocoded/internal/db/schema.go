@@ -330,6 +330,9 @@ CREATE TABLE finding_thread_messages (
   created_at TEXT NOT NULL
 );
 
+CREATE INDEX idx_finding_threads_session ON finding_threads(review_session_id, updated_at DESC);
+CREATE INDEX idx_finding_thread_messages_thread ON finding_thread_messages(thread_id, created_at ASC);
+
 CREATE TABLE human_decisions (
   id TEXT PRIMARY KEY,
   finding_id TEXT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,

@@ -24,6 +24,7 @@ import (
 	"github.com/hughdo/cocode/services/cocoded/internal/eventbus"
 	"github.com/hughdo/cocode/services/cocoded/internal/eventlog"
 	"github.com/hughdo/cocode/services/cocoded/internal/evidence"
+	"github.com/hughdo/cocode/services/cocoded/internal/followup"
 	"github.com/hughdo/cocode/services/cocoded/internal/githubpr"
 	"github.com/hughdo/cocode/services/cocoded/internal/gitrepo"
 	"github.com/hughdo/cocode/services/cocoded/internal/orchestrator"
@@ -149,6 +150,7 @@ type routerServices struct {
 	snapshotInitErr     error
 	contextBuilder      *contextbundle.Service
 	contextBuilderErr   error
+	followups           *followup.Service
 	reviewWorkflow      *orchestrator.Service
 	reviewWorkflowErr   error
 	eventBus            *eventbus.Bus
@@ -205,6 +207,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 		snapshotInitErr:   snapshotErr,
 		contextBuilder:    contextBuilder,
 		contextBuilderErr: artifactErr,
+		followups:         &followup.Service{Queries: queries},
 		reviewWorkflow:    reviewWorkflow,
 		reviewWorkflowErr: workflowErr,
 		eventBus:          bus,
@@ -267,6 +270,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.POST("/review-sessions/:id/findings/:finding_id/evidence-map/rebuild", findingEvidenceMapHandler(services, true))
 	api.POST("/review-sessions/:id/findings/:finding_id/context-bundles/preview", buildFindingContextHandler(services, contextbundle.ScopeFinding))
 	api.POST("/review-sessions/:id/findings/:finding_id/evidence-map/context-bundles/preview", buildFindingContextHandler(services, contextbundle.ScopeEvidenceMap))
+	api.GET("/review-sessions/:id/findings/:finding_id/thread", findingThreadHandler(services))
 	api.POST("/review-sessions/:id/findings/:finding_id/decision", updateFindingDecisionHandler(services))
 	api.PATCH("/review-sessions/:id/findings/:finding_id/draft-comment", updateDraftCommentHandler(services))
 	api.GET("/findings/:finding_id", findingDetailHandler(queries))
@@ -275,6 +279,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.POST("/findings/:finding_id/evidence-map/rebuild", findingEvidenceMapHandler(services, true))
 	api.POST("/findings/:finding_id/context-bundles/preview", buildFindingContextHandler(services, contextbundle.ScopeFinding))
 	api.POST("/findings/:finding_id/evidence-map/context-bundles/preview", buildFindingContextHandler(services, contextbundle.ScopeEvidenceMap))
+	api.GET("/findings/:finding_id/thread", findingThreadHandler(services))
 	api.PATCH("/findings/:finding_id/decision", updateFindingDecisionHandler(services))
 	api.PATCH("/findings/:finding_id/draft-comment", updateDraftCommentHandler(services))
 	api.GET("/agents/presets", listAgentPresetsHandler())

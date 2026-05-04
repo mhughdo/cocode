@@ -10,7 +10,7 @@ import {
 import type { AddressInfo } from "node:net";
 import { dirname, join, resolve } from "node:path";
 
-type BackendInfo = {
+export type BackendInfo = {
   baseUrl: string;
   authToken: string;
   logPath: string;

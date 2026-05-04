@@ -11,6 +11,7 @@ import (
 const CandidateSchemaVersion = "finding-candidate/v1"
 
 var trailingJSONCommaRE = regexp.MustCompile(`,\s*([}\]])`)
+var jsonFenceRE = regexp.MustCompile("(?is)```(?:json)?\\s*(.*?)\\s*```")
 
 type CandidateParseResult struct {
 	Candidates  []Candidate  `json:"candidates"`
@@ -34,6 +35,92 @@ type Candidate struct {
 	Fingerprint            string              `json:"fingerprint,omitempty"`
 }
 
+func (c *Candidate) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		SchemaVersion          string              `json:"schema_version"`
+		Claim                  string              `json:"claim"`
+		Title                  string              `json:"title"`
+		Message                string              `json:"message"`
+		Description            string              `json:"description"`
+		Body                   string              `json:"body"`
+		Category               string              `json:"category"`
+		Severity               string              `json:"severity"`
+		Confidence             json.RawMessage     `json:"confidence"`
+		Locations              []CandidateLocation `json:"locations"`
+		Location               *CandidateLocation  `json:"location"`
+		Path                   string              `json:"path"`
+		File                   string              `json:"file"`
+		Filename               string              `json:"filename"`
+		StartLine              json.RawMessage     `json:"start_line"`
+		StartLineAlt           json.RawMessage     `json:"startLine"`
+		Line                   json.RawMessage     `json:"line"`
+		EndLine                json.RawMessage     `json:"end_line"`
+		EndLineAlt             json.RawMessage     `json:"endLine"`
+		PrimaryPath            string              `json:"primary_path"`
+		PrimaryStartLine       int64               `json:"primary_start_line"`
+		PrimaryEndLine         int64               `json:"primary_end_line"`
+		Evidence               json.RawMessage     `json:"evidence"`
+		CounterEvidenceRequest string              `json:"counter_evidence_request"`
+		SuggestedFix           string              `json:"suggested_fix"`
+		SuggestedFixAlt        string              `json:"suggestedFix"`
+		Recommendation         string              `json:"recommendation"`
+		DraftComment           string              `json:"draft_comment"`
+		Fingerprint            string              `json:"fingerprint"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	claim := firstNonEmpty(raw.Claim, raw.Title, raw.Message, raw.Description, raw.Body)
+	category := firstNonEmpty(raw.Category, inferCandidateCategory(claim, raw.Description, raw.Body, raw.Message, raw.Recommendation))
+	topPath := firstNonEmpty(raw.Path, raw.File, raw.Filename)
+	topStartLine := firstNonZeroInt64(
+		int64FromRaw(raw.StartLine),
+		int64FromRaw(raw.StartLineAlt),
+		int64FromRaw(raw.Line),
+	)
+	topEndLine := firstNonZeroInt64(
+		int64FromRaw(raw.EndLine),
+		int64FromRaw(raw.EndLineAlt),
+		int64FromRaw(raw.Line),
+		topStartLine,
+	)
+	*c = Candidate{
+		SchemaVersion:          raw.SchemaVersion,
+		Claim:                  claim,
+		Category:               category,
+		Severity:               raw.Severity,
+		Confidence:             confidenceFromRaw(raw.Confidence, confidenceFromSeverity(raw.Severity)),
+		Locations:              raw.Locations,
+		PrimaryPath:            firstNonEmpty(raw.PrimaryPath, topPath),
+		PrimaryStartLine:       firstNonZeroInt64(raw.PrimaryStartLine, topStartLine),
+		PrimaryEndLine:         firstNonZeroInt64(raw.PrimaryEndLine, topEndLine),
+		CounterEvidenceRequest: raw.CounterEvidenceRequest,
+		SuggestedFix:           firstNonEmpty(raw.SuggestedFix, raw.SuggestedFixAlt, raw.Recommendation),
+		DraftComment:           raw.DraftComment,
+		Fingerprint:            raw.Fingerprint,
+	}
+	if raw.Location != nil {
+		c.Locations = append(c.Locations, *raw.Location)
+	}
+	if topPath != "" && topStartLine > 0 && len(c.Locations) == 0 {
+		c.Locations = append(c.Locations, CandidateLocation{
+			Path:      topPath,
+			StartLine: topStartLine,
+			EndLine:   topEndLine,
+			Side:      "RIGHT",
+		})
+	}
+	evidence, err := evidenceFromRaw(raw.Evidence)
+	if err != nil {
+		return err
+	}
+	if len(evidence) == 0 {
+		evidence = synthesizedEvidence(claim, raw.Description, raw.Body, raw.Message, raw.Recommendation, topPath, topStartLine, topEndLine)
+	}
+	c.Evidence = evidence
+	return nil
+}
+
 type CandidateLocation struct {
 	Path          string `json:"path"`
 	StartLine     int64  `json:"start_line"`
@@ -44,6 +131,48 @@ type CandidateLocation struct {
 	Message       string `json:"message,omitempty"`
 }
 
+func (l *CandidateLocation) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Path          string          `json:"path"`
+		File          string          `json:"file"`
+		Filename      string          `json:"filename"`
+		StartLine     json.RawMessage `json:"start_line"`
+		StartLineAlt  json.RawMessage `json:"startLine"`
+		EndLine       json.RawMessage `json:"end_line"`
+		EndLineAlt    json.RawMessage `json:"endLine"`
+		Line          json.RawMessage `json:"line"`
+		Side          string          `json:"side"`
+		ChangedFileID string          `json:"changed_file_id"`
+		Valid         *bool           `json:"valid"`
+		Message       string          `json:"message"`
+		Snippet       string          `json:"snippet"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	startLine := firstNonZeroInt64(
+		int64FromRaw(raw.StartLine),
+		int64FromRaw(raw.StartLineAlt),
+		int64FromRaw(raw.Line),
+	)
+	endLine := firstNonZeroInt64(
+		int64FromRaw(raw.EndLine),
+		int64FromRaw(raw.EndLineAlt),
+		int64FromRaw(raw.Line),
+		startLine,
+	)
+	*l = CandidateLocation{
+		Path:          firstNonEmpty(raw.Path, raw.File, raw.Filename),
+		StartLine:     startLine,
+		EndLine:       endLine,
+		Side:          firstNonEmpty(raw.Side, "RIGHT"),
+		ChangedFileID: raw.ChangedFileID,
+		Valid:         raw.Valid,
+		Message:       firstNonEmpty(raw.Message, raw.Snippet),
+	}
+	return nil
+}
+
 type CandidateEvidence struct {
 	Title      string  `json:"title"`
 	Summary    string  `json:"summary"`
@@ -52,6 +181,57 @@ type CandidateEvidence struct {
 	StartLine  int64   `json:"start_line,omitempty"`
 	EndLine    int64   `json:"end_line,omitempty"`
 	Confidence float64 `json:"confidence,omitempty"`
+}
+
+func (e *CandidateEvidence) UnmarshalJSON(data []byte) error {
+	var text string
+	if err := json.Unmarshal(data, &text); err == nil {
+		*e = CandidateEvidence{
+			Title:   "Agent evidence",
+			Summary: text,
+			Kind:    "unknown",
+		}
+		return nil
+	}
+	var raw struct {
+		Title       string          `json:"title"`
+		Summary     string          `json:"summary"`
+		Message     string          `json:"message"`
+		Description string          `json:"description"`
+		Kind        string          `json:"kind"`
+		Path        string          `json:"path"`
+		File        string          `json:"file"`
+		StartLine   json.RawMessage `json:"start_line"`
+		StartLineA  json.RawMessage `json:"startLine"`
+		Line        json.RawMessage `json:"line"`
+		EndLine     json.RawMessage `json:"end_line"`
+		EndLineAlt  json.RawMessage `json:"endLine"`
+		Confidence  json.RawMessage `json:"confidence"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	startLine := firstNonZeroInt64(
+		int64FromRaw(raw.StartLine),
+		int64FromRaw(raw.StartLineA),
+		int64FromRaw(raw.Line),
+	)
+	endLine := firstNonZeroInt64(
+		int64FromRaw(raw.EndLine),
+		int64FromRaw(raw.EndLineAlt),
+		int64FromRaw(raw.Line),
+		startLine,
+	)
+	*e = CandidateEvidence{
+		Title:      firstNonEmpty(raw.Title, "Agent evidence"),
+		Summary:    firstNonEmpty(raw.Summary, raw.Description, raw.Message, raw.Title),
+		Kind:       raw.Kind,
+		Path:       firstNonEmpty(raw.Path, raw.File),
+		StartLine:  startLine,
+		EndLine:    endLine,
+		Confidence: confidenceFromRaw(raw.Confidence, 0),
+	}
+	return nil
 }
 
 func ExtractCandidates(parsed ParsedOutput) CandidateParseResult {
@@ -233,6 +413,173 @@ func textConfidence(value string, fallback float64) float64 {
 	return parsed
 }
 
+func confidenceFromRaw(raw json.RawMessage, fallback float64) float64 {
+	if len(raw) == 0 || string(raw) == "null" {
+		return fallback
+	}
+	var numeric float64
+	if err := json.Unmarshal(raw, &numeric); err == nil {
+		if numeric >= 0 && numeric <= 1 {
+			return numeric
+		}
+		if numeric >= 10 && numeric <= 100 {
+			return numeric / 100
+		}
+		return numeric
+	}
+	var label string
+	if err := json.Unmarshal(raw, &label); err != nil {
+		return fallback
+	}
+	normalized := strings.ToLower(strings.TrimSpace(label))
+	switch normalized {
+	case "very high":
+		return 0.95
+	case "high":
+		return 0.85
+	case "medium", "moderate":
+		return 0.6
+	case "low":
+		return 0.35
+	default:
+		return textConfidence(normalized, fallback)
+	}
+}
+
+func confidenceFromSeverity(severity string) float64 {
+	switch textSeverity(severity) {
+	case "blocker":
+		return 0.9
+	case "high":
+		return 0.78
+	case "medium":
+		return 0.62
+	case "low":
+		return 0.45
+	case "nit":
+		return 0.35
+	default:
+		return 0.55
+	}
+}
+
+func inferCandidateCategory(values ...string) string {
+	joined := strings.ToLower(strings.Join(values, " "))
+	switch {
+	case strings.Contains(joined, "security") ||
+		strings.Contains(joined, "auth") ||
+		strings.Contains(joined, "authorization") ||
+		strings.Contains(joined, "permission") ||
+		strings.Contains(joined, "privilege") ||
+		strings.Contains(joined, "admin"):
+		return "security"
+	case strings.Contains(joined, "test") || strings.Contains(joined, "coverage"):
+		return "testing"
+	case strings.Contains(joined, "latency") ||
+		strings.Contains(joined, "performance") ||
+		strings.Contains(joined, "slow") ||
+		strings.Contains(joined, "allocation"):
+		return "performance"
+	case strings.Contains(joined, "race") ||
+		strings.Contains(joined, "flaky") ||
+		strings.Contains(joined, "retry") ||
+		strings.Contains(joined, "timeout") ||
+		strings.Contains(joined, "stale"):
+		return "reliability"
+	case strings.Contains(joined, "api") ||
+		strings.Contains(joined, "contract") ||
+		strings.Contains(joined, "backward compatible"):
+		return "api"
+	case strings.Contains(joined, "doc") || strings.Contains(joined, "readme"):
+		return "docs"
+	case strings.Contains(joined, "style") || strings.Contains(joined, "format"):
+		return "style"
+	case strings.Contains(joined, "maintainability") ||
+		strings.Contains(joined, "readability") ||
+		strings.Contains(joined, "complexity") ||
+		strings.Contains(joined, "type safety"):
+		return "maintainability"
+	case strings.TrimSpace(joined) != "":
+		return "correctness"
+	default:
+		return ""
+	}
+}
+
+func synthesizedEvidence(claim string, description string, body string, message string, recommendation string, path string, startLine int64, endLine int64) []CandidateEvidence {
+	summary := firstNonEmpty(description, body, message, recommendation, claim)
+	if strings.TrimSpace(summary) == "" {
+		return nil
+	}
+	return []CandidateEvidence{{
+		Title:     firstNonEmpty(claim, "Agent evidence"),
+		Summary:   summary,
+		Kind:      "unknown",
+		Path:      path,
+		StartLine: startLine,
+		EndLine:   firstNonZeroInt64(endLine, startLine),
+	}}
+}
+
+func evidenceFromRaw(raw json.RawMessage) ([]CandidateEvidence, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return nil, nil
+		}
+		return []CandidateEvidence{{
+			Title:   "Agent evidence",
+			Summary: text,
+			Kind:    "unknown",
+		}}, nil
+	}
+	var list []CandidateEvidence
+	if err := json.Unmarshal(raw, &list); err == nil {
+		return list, nil
+	}
+	var item CandidateEvidence
+	if err := json.Unmarshal(raw, &item); err != nil {
+		return nil, err
+	}
+	return []CandidateEvidence{item}, nil
+}
+
+func int64FromRaw(raw json.RawMessage) int64 {
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0
+	}
+	var integer int64
+	if err := json.Unmarshal(raw, &integer); err == nil {
+		return integer
+	}
+	var number float64
+	if err := json.Unmarshal(raw, &number); err == nil {
+		return int64(number)
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil {
+		return 0
+	}
+	parsed, err := strconv.ParseInt(strings.TrimPrefix(strings.TrimSpace(text), "L"), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return parsed
+}
+
+func firstNonZeroInt64(values ...int64) int64 {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
+	}
+	return 0
+}
+
 func textLocation(value string) (CandidateLocation, bool) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -345,16 +692,35 @@ func candidatesFromWrappedText(raw json.RawMessage, documentIndex int, field str
 }
 
 func extractCandidatesFromWrappedText(text string) ([]Candidate, []Diagnostic) {
-	parsed := ParseAuto([]byte(text))
-	if parsed.Structured {
-		extracted := ExtractCandidates(parsed)
-		return extracted.Candidates, extracted.Diagnostics
-	}
-	if repaired, diagnostics := repairMalformedStructuredOutput(text); repaired.Structured {
-		extracted := ExtractCandidates(repaired)
-		return extracted.Candidates, append(diagnostics, extracted.Diagnostics...)
+	for _, candidateText := range candidateStructuredTexts(text) {
+		parsed := ParseAuto([]byte(candidateText))
+		if parsed.Structured {
+			extracted := ExtractCandidates(parsed)
+			return extracted.Candidates, extracted.Diagnostics
+		}
+		if repaired, diagnostics := repairMalformedStructuredOutput(candidateText); repaired.Structured {
+			extracted := ExtractCandidates(repaired)
+			return extracted.Candidates, append(diagnostics, extracted.Diagnostics...)
+		}
 	}
 	return nil, nil
+}
+
+func candidateStructuredTexts(text string) []string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return nil
+	}
+	candidates := []string{}
+	for _, match := range jsonFenceRE.FindAllStringSubmatch(text, -1) {
+		if len(match) > 1 && strings.TrimSpace(match[1]) != "" {
+			candidates = append(candidates, strings.TrimSpace(match[1]))
+		}
+	}
+	if len(candidates) > 0 {
+		return candidates
+	}
+	return []string{trimmed}
 }
 
 func candidatesFromFindings(raw json.RawMessage, documentIndex int) ([]Candidate, []Diagnostic) {

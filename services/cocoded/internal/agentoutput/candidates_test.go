@@ -1,6 +1,9 @@
 package agentoutput
 
 import (
+	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/hughdo/cocode/services/cocoded/internal/agents"
@@ -103,6 +106,48 @@ func TestExtractCandidatesIgnoresPlainTextRealCLIWrappers(t *testing.T) {
 	result := ExtractCandidates(parsed)
 	if len(result.Candidates) != 0 || len(result.Diagnostics) != 0 {
 		t.Fatalf("Candidates = %+v Diagnostics = %+v", result.Candidates, result.Diagnostics)
+	}
+}
+
+func TestExtractCandidatesNormalizesRealCLIReviewVariants(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(strings.Join([]string{
+		fmt.Sprintf(`{"type":"item.completed","item":{"type":"agent_message","text":%s}}`, jsonString(t, `{"findings":[{"title":"Repository update authorization was broadened to all members","body":"This changes canUpdateRepository() from admin-only to admin || member, allowing repository members to update protected settings.","severity":"high","path":"src/auth.ts","line":2}]}`)),
+		fmt.Sprintf(`{"response":%s}`, jsonString(t, "```json\n"+`{"findings":[{"file":"src/auth.ts","line":2,"severity":"high","description":"Security regression: The authorization for updating a repository has been expanded from admin only to include member.","suggestedFix":"Restore the admin-only guard."}]}`+"\n```")),
+		fmt.Sprintf(`{"type":"text","part":{"type":"text","text":%s}}`, jsonString(t, "```json\n"+`{"findings":[{"severity":"high","category":"security","file":"src/auth.ts","line":2,"title":"Authorization expansion: canUpdateRepository now allows members","description":"The canUpdateRepository function has been expanded from admin-only to also allow member.","evidence":"Changed from return role === \"admin\" to return role === \"admin\" || role === \"member\".","recommendation":"Verify this authorization change is intentional."}]}`+"\n```")),
+		fmt.Sprintf(`{"result":%s}`, jsonString(t, "Narrative before the payload.\n```json\n"+`{"findings":[{"severity":"high","category":"security","file":"src/auth.ts","line":2,"message":"Authorization privilege escalation: canUpdateRepository now grants repository update permissions to members in addition to admins","evidence":"Changed from an admin-only role check to admin or member.","recommendation":"Verify this authorization expansion or restore admin-only behavior."}]}`+"\n```")),
+	}, "\n"))
+	parsed := Parse(raw, agents.OutputJSONL)
+	result := ExtractCandidates(parsed)
+	if len(result.Diagnostics) != 0 {
+		t.Fatalf("Diagnostics = %+v", result.Diagnostics)
+	}
+	if len(result.Candidates) != 4 {
+		t.Fatalf("Candidates = %+v", result.Candidates)
+	}
+	claims := []string{}
+	for _, candidate := range result.Candidates {
+		claims = append(claims, candidate.Claim)
+		if candidate.PrimaryPath != "src/auth.ts" ||
+			candidate.PrimaryStartLine != 2 ||
+			candidate.PrimaryEndLine != 2 ||
+			candidate.Locations[0].Side != "RIGHT" ||
+			candidate.Evidence[0].Kind != "unknown" ||
+			candidate.Evidence[0].Summary == "" ||
+			candidate.Confidence <= 0 {
+			t.Fatalf("candidate = %+v", candidate)
+		}
+	}
+	for _, want := range []string{
+		"Repository update authorization was broadened to all members",
+		"Security regression: The authorization for updating a repository has been expanded from admin only to include member.",
+		"Authorization expansion: canUpdateRepository now allows members",
+		"Authorization privilege escalation: canUpdateRepository now grants repository update permissions to members in addition to admins",
+	} {
+		if !containsString(claims, want) {
+			t.Fatalf("claims = %+v, missing %q", claims, want)
+		}
 	}
 }
 
@@ -265,6 +310,16 @@ func assertDiagnosticCode(t *testing.T, diagnostics []Diagnostic, code string) {
 		}
 	}
 	t.Fatalf("diagnostic %q not found in %+v", code, diagnostics)
+}
+
+func jsonString(t *testing.T, value string) string {
+	t.Helper()
+
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	return string(encoded)
 }
 
 func containsString(values []string, target string) bool {

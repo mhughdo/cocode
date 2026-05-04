@@ -20,7 +20,10 @@ test("creates a GitHub PR snapshot and reports invalid PR URLs", async ({
 
   try {
     await saveGitHubToken(page);
-    await page.getByRole("button", { name: "Open local repo" }).last().click();
+    await page
+      .getByRole("button", { name: "Open local project" })
+      .last()
+      .click();
 
     await page.getByRole("button", { name: /GitHub PR/ }).click();
     await page

@@ -221,10 +221,10 @@ export function SearchCommandDialog({
       open={open}
       onOpenChange={onOpenChange}
       title="Search cocode"
-      description="Search reviews, repositories, settings, and actions."
+      description="Search threads, projects, settings, and actions."
     >
       <Command>
-        <CommandInput placeholder="Search reviews, repos, files, actions..." />
+        <CommandInput placeholder="Search threads, projects, files, actions..." />
         <CommandList>
           <CommandEmpty>No matching results.</CommandEmpty>
           {groups.map((group, index) => (

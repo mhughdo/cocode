@@ -27,8 +27,6 @@ import {
   InboxIcon,
   MapIcon,
   MessageSquareIcon,
-  MoreHorizontalIcon,
-  PanelRightIcon,
   PauseIcon,
   PlusIcon,
   RefreshCwIcon,
@@ -36,7 +34,6 @@ import {
   SendIcon,
   SettingsIcon,
   ShieldCheckIcon,
-  SparklesIcon,
   SquareIcon,
   TerminalIcon,
   Trash2Icon,
@@ -63,8 +60,6 @@ import {
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -534,7 +529,7 @@ export function App() {
         commands: reviewCommands,
       },
       {
-        heading: "Workspaces",
+        heading: "Projects",
         commands:
           workspaceList.length > 0
             ? workspaceList.slice(0, MAX_SEARCH_RESULTS).map((workspace) => ({
@@ -545,7 +540,7 @@ export function App() {
               }))
             : [
                 {
-                  title: "Open local repository",
+                  title: "Open local project",
                   description: "Select a git repository on this computer",
                   icon: FolderOpenIcon,
                   onSelect: handleOpenRepository,
@@ -603,6 +598,7 @@ export function App() {
             activeSession={displayedSession}
             activeWorkspace={activeWorkspace}
             isOpeningRepository={repositoryOpenState.status === "loading"}
+            onOpenNewThread={() => setMainView("new-thread")}
             onOpenRepository={handleOpenRepository}
             onOpenSearch={() => setSearchOpen(true)}
           />
@@ -744,7 +740,7 @@ function NewThreadScreen({
   return (
     <section className="bg-background flex min-w-0 flex-col">
       <ScrollArea className="flex-1">
-        <div className="cocode-page-wide flex flex-col gap-6 px-6 py-6">
+        <div className="cocode-page flex flex-col gap-6 px-6 py-6">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               <div className="text-muted-foreground mb-3 flex items-center gap-2 text-xs">
@@ -756,16 +752,16 @@ function NewThreadScreen({
                 What should we review?
               </h1>
               <p className="text-muted-foreground mt-1 text-sm">
-                Choose a source and setup to get expert agents working for you.
+                Choose a source for this project, then configure the review.
               </p>
             </div>
             <Button variant="outline" onClick={onOpenRepository}>
               <FolderOpenIcon data-icon="inline-start" />
-              {activeRepository ? "Switch repo" : "Open repo"}
+              {activeRepository ? "Switch project" : "Open project"}
             </Button>
           </div>
 
-          <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <div>
             <section className="cocode-panel p-4">
               {!canCreate && (
                 <div className="border-primary/20 bg-primary/5 mb-4 flex items-start gap-3 rounded-md border p-3">
@@ -774,7 +770,7 @@ function NewThreadScreen({
                   </div>
                   <div className="min-w-0">
                     <div className="text-sm font-medium">
-                      Open a repository first
+                      Open a project first
                     </div>
                     <p className="text-muted-foreground mt-1 text-sm">
                       cocode keeps snapshots and local-only context grounded in
@@ -811,6 +807,7 @@ function NewThreadScreen({
                 >
                   {source === "github" && (
                     <Input
+                      aria-label="Pull request URL"
                       disabled={!canCreate}
                       id="github-url"
                       placeholder="https://github.com/owner/repo/pull/123"
@@ -821,7 +818,7 @@ function NewThreadScreen({
                 </SourceButton>
                 <SourceButton
                   active={source === "local-changes"}
-                  description="Analyze uncommitted changes in your local workspace."
+                  description="Analyze uncommitted changes in the selected project."
                   icon={Code2Icon}
                   label="Review local changes"
                   onClick={() => setSource("local-changes")}
@@ -836,7 +833,7 @@ function NewThreadScreen({
                   {source === "branch-compare" && (
                     <div className="grid grid-cols-2 gap-3">
                       <label className="flex flex-col gap-2 text-xs font-medium">
-                        Base branch
+                        Base ref
                         <Input
                           disabled={!canCreate}
                           id="base-ref"
@@ -845,7 +842,7 @@ function NewThreadScreen({
                         />
                       </label>
                       <label className="flex flex-col gap-2 text-xs font-medium">
-                        Compare branch
+                        Head ref
                         <Input
                           disabled={!canCreate}
                           id="head-ref"
@@ -872,10 +869,6 @@ function NewThreadScreen({
               )}
 
               <div className="mt-5 flex flex-wrap justify-end gap-3">
-                <Button variant="outline" onClick={() => setSource("github")}>
-                  <SettingsIcon data-icon="inline-start" />
-                  Customize review
-                </Button>
                 <Button
                   disabled={snapshot.status === "loading"}
                   onClick={canCreate ? submit : onOpenRepository}
@@ -884,85 +877,12 @@ function NewThreadScreen({
                     ? snapshot.status === "loading"
                       ? "Creating snapshot..."
                       : "Continue to configure review"
-                    : "Open local repo"}
+                    : "Open project"}
                   <ArrowUpIcon data-icon="inline-end" />
                 </Button>
               </div>
             </section>
-
-            <section className="cocode-panel flex flex-col gap-5 p-4">
-              <div>
-                <h2 className="text-base font-semibold">Suggested setup</h2>
-                <p className="text-muted-foreground mt-1 text-sm">
-                  Review-safe defaults for the first pass.
-                </p>
-              </div>
-              <div className="flex flex-col gap-3">
-                <SuggestedSetupRow
-                  icon={BotIcon}
-                  label="Codex"
-                  value="Code analysis"
-                />
-                <SuggestedSetupRow
-                  icon={SparklesIcon}
-                  label="OpenCode"
-                  value="Deep reasoning"
-                />
-                <SuggestedSetupRow
-                  icon={TerminalIcon}
-                  label="Gemini"
-                  value="Architecture"
-                />
-                <SuggestedSetupRow
-                  icon={ShieldCheckIcon}
-                  label="Local Verifier"
-                  value="Security & tests"
-                />
-              </div>
-              <div className="bg-primary/5 mt-auto rounded-md border p-3">
-                <div className="flex items-start gap-2 text-sm">
-                  <ShieldCheckIcon className="text-primary mt-0.5 size-4 shrink-0" />
-                  <span>
-                    Local-only and redaction controls are configured before
-                    agents receive context.
-                  </span>
-                </div>
-              </div>
-            </section>
           </div>
-
-          <section className="cocode-panel p-4">
-            <InputGroup className="bg-background min-h-36 items-stretch rounded-md border">
-              <InputGroupTextarea
-                className="min-h-24"
-                disabled={!canCreate}
-                placeholder="Describe what you want the agents to review..."
-              />
-            </InputGroup>
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-              <div className="flex min-w-0 flex-wrap items-center gap-2">
-                <Badge className="h-8 rounded-md px-3" variant="secondary">
-                  Review
-                </Badge>
-                <Badge className="h-8 rounded-md px-3" variant="outline">
-                  Codex CLI
-                </Badge>
-                <Badge className="h-8 rounded-md px-3" variant="outline">
-                  Low
-                </Badge>
-                <Badge className="h-8 rounded-md px-3" variant="outline">
-                  Permissions · Default
-                </Badge>
-              </div>
-              <Button
-                aria-label="Submit review prompt"
-                disabled={!canCreate}
-                size="icon"
-              >
-                <SendIcon />
-              </Button>
-            </div>
-          </section>
         </div>
       </ScrollArea>
     </section>
@@ -1013,28 +933,6 @@ function SourceButton({
       </button>
       {children && <div className="pl-16">{children}</div>}
     </section>
-  );
-}
-
-function SuggestedSetupRow({
-  icon: Icon,
-  label,
-  value,
-}: {
-  icon: LucideIcon;
-  label: string;
-  value: string;
-}) {
-  return (
-    <div className="flex items-center gap-3">
-      <div className="bg-primary/10 text-primary flex size-8 shrink-0 items-center justify-center rounded-md">
-        <Icon className="size-4" />
-      </div>
-      <div className="min-w-0 flex-1 truncate text-sm font-medium">{label}</div>
-      <div className="text-muted-foreground max-w-32 truncate text-xs">
-        {value}
-      </div>
-    </div>
   );
 }
 
@@ -1631,9 +1529,15 @@ function AgentSettingsScreen({
     useState<Loadable<SettingsExportPayload | SettingsImportResponse>>(
       idleApiState(),
     );
+  const [showAdvancedAgentSettings, setShowAdvancedAgentSettings] =
+    useState(false);
+  const [showProjectSettings, setShowProjectSettings] = useState(false);
 
   const presetList = presets.status === "success" ? presets.data : [];
   const configList = configs.status === "success" ? configs.data : [];
+  const enabledConfigCount = configList.filter(
+    (config) => config.enabled,
+  ).length;
   const activeHealth = form.id ? healthByConfigId[form.id] : undefined;
   const outputModes = supportedOutputModes(form.capabilities, form.outputMode);
 
@@ -1770,7 +1674,7 @@ function AgentSettingsScreen({
   async function createReviewRule() {
     if (!client || !activeWorkspace) {
       setReviewRuleAction(
-        errorApiState(new Error("Open a workspace before saving rules")),
+        errorApiState(new Error("Open a project before saving rules")),
       );
       return;
     }
@@ -1830,7 +1734,7 @@ function AgentSettingsScreen({
   async function exportWorkspaceSettings() {
     if (!client || !activeWorkspace) {
       setSettingsPortabilityState(
-        errorApiState(new Error("Open a workspace before exporting settings")),
+        errorApiState(new Error("Open a project before exporting settings")),
       );
       return;
     }
@@ -1849,7 +1753,7 @@ function AgentSettingsScreen({
   async function importWorkspaceSettings() {
     if (!client || !activeWorkspace) {
       setSettingsPortabilityState(
-        errorApiState(new Error("Open a workspace before importing settings")),
+        errorApiState(new Error("Open a project before importing settings")),
       );
       return;
     }
@@ -1938,10 +1842,10 @@ function AgentSettingsScreen({
         <div className="mx-auto flex max-w-6xl flex-col gap-5">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
-              <h1 className="text-xl font-semibold">Agent settings</h1>
+              <h1 className="text-xl font-semibold">Settings</h1>
               <p className="text-muted-foreground mt-1 text-sm">
-                Configure local CLI reviewers, presets, health checks, and
-                review-safe capabilities.
+                Pick the local CLIs cocode can run. Project rules and
+                portability stay tucked away until you need them.
               </p>
             </div>
             <Button variant="outline" onClick={onBack}>
@@ -1950,47 +1854,11 @@ function AgentSettingsScreen({
             </Button>
           </div>
 
-          <GitHubCredentialPanel
-            deleteState={githubDeleteState}
-            displayName={githubDisplayName}
-            saveState={githubSaveState}
-            status={githubCredential}
-            token={githubToken}
-            onDelete={() => void deleteGitHubToken()}
-            onDisplayNameChange={setGitHubDisplayName}
-            onSave={() => void saveGitHubToken()}
-            onTokenChange={setGitHubToken}
-          />
-
-          <ReviewRuleMemoryPanel
-            actionState={reviewRuleAction}
-            draft={reviewRuleDraft}
-            rules={reviewRules}
-            workspace={activeWorkspace}
-            onCreate={() => void createReviewRule()}
-            onDelete={(rule) => void deleteReviewRule(rule)}
-            onDraftChange={setReviewRuleDraft}
-            onReload={() => void reloadReviewRules()}
-            onToggle={(rule, enabled) => void toggleReviewRule(rule, enabled)}
-          />
-
-          <SettingsPortabilityPanel
-            collisionPolicy={settingsCollisionPolicy}
-            exportText={settingsExportText}
-            importText={settingsImportText}
-            state={settingsPortabilityState}
-            workspace={activeWorkspace}
-            onCollisionPolicyChange={setSettingsCollisionPolicy}
-            onExport={() => void exportWorkspaceSettings()}
-            onImport={() => void importWorkspaceSettings()}
-            onImportTextChange={setSettingsImportText}
-          />
-
           <div className="grid grid-cols-[320px_minmax(0,1fr)] gap-4">
             <div className="flex min-w-0 flex-col gap-4">
               <section className="bg-surface-raised rounded-lg border">
                 <div className="border-b px-3 py-2 text-sm font-medium">
-                  Presets
+                  Available CLIs
                 </div>
                 <div className="flex flex-col gap-1 p-2">
                   {presets.status === "loading" && <LoadingRows rows={4} />}
@@ -2046,7 +1914,7 @@ function AgentSettingsScreen({
 
               <section className="bg-surface-raised rounded-lg border">
                 <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
-                  <span className="text-sm font-medium">Configured</span>
+                  <span className="text-sm font-medium">Saved connections</span>
                   {configs.status === "success" && (
                     <Badge variant="secondary">{configs.data.length}</Badge>
                   )}
@@ -2192,179 +2060,209 @@ function AgentSettingsScreen({
                     ))}
                   </NativeSelect>
                 </label>
-                <label className="col-span-2 flex flex-col gap-2 text-sm font-medium">
-                  Arguments
-                  <InputGroup className="min-h-24 items-stretch">
-                    <InputGroupTextarea
-                      className="min-h-20 font-mono text-xs"
-                      placeholder={"exec\n--json\n-"}
-                      value={form.argsText}
-                      onChange={(event) =>
-                        setForm((current) => ({
-                          ...current,
-                          argsText: event.target.value,
-                        }))
-                      }
-                    />
-                  </InputGroup>
-                  <span className="text-muted-foreground text-xs font-normal">
-                    One argument per line. Use {"{{prompt}}"} only for arg-mode
-                    CLIs.
-                  </span>
-                </label>
-                <label className="flex flex-col gap-2 text-sm font-medium">
-                  CWD mode
-                  <NativeSelect
-                    className="w-full"
-                    value={form.cwdMode}
-                    onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        cwdMode: event.target.value,
-                      }))
-                    }
-                  >
-                    <NativeSelectOption value="repo_root">
-                      repo_root
-                    </NativeSelectOption>
-                    <NativeSelectOption value="workspace_root">
-                      workspace_root
-                    </NativeSelectOption>
-                  </NativeSelect>
-                </label>
-                <label className="flex flex-col gap-2 text-sm font-medium">
-                  Prompt delivery
-                  <NativeSelect
-                    className="w-full"
-                    value={form.promptDelivery}
-                    onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        promptDelivery: event.target.value as PromptDelivery,
-                      }))
-                    }
-                  >
-                    <NativeSelectOption value="stdin">stdin</NativeSelectOption>
-                    <NativeSelectOption value="arg">arg</NativeSelectOption>
-                    <NativeSelectOption value="temp_file">
-                      temp_file
-                    </NativeSelectOption>
-                  </NativeSelect>
-                </label>
-                <label className="flex flex-col gap-2 text-sm font-medium">
-                  Model label
-                  <Input
-                    value={form.modelLabel}
-                    onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        modelLabel: event.target.value,
-                      }))
-                    }
-                  />
-                </label>
-                <label className="flex flex-col gap-2 text-sm font-medium">
-                  Reasoning label
-                  <Input
-                    value={form.reasoningLabel}
-                    onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        reasoningLabel: event.target.value,
-                      }))
-                    }
-                  />
-                </label>
-                <label className="flex flex-col gap-2 text-sm font-medium">
-                  Timeout seconds
-                  <Input
-                    min={1}
-                    type="number"
-                    value={form.timeoutSeconds}
-                    onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        timeoutSeconds: Number(event.target.value),
-                      }))
-                    }
-                  />
-                </label>
-                <label className="flex flex-col gap-2 text-sm font-medium">
-                  Version args
-                  <Input
-                    placeholder="--version"
-                    value={form.versionArgsText}
-                    onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        versionArgsText: event.target.value,
-                      }))
-                    }
-                  />
-                </label>
-                <label className="col-span-2 flex flex-col gap-2 text-sm font-medium">
-                  Environment allowlist
-                  <Input
-                    placeholder="OPENAI_API_KEY, GEMINI_API_KEY"
-                    value={form.envAllowlistText}
-                    onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        envAllowlistText: event.target.value,
-                      }))
-                    }
-                  />
-                </label>
-                <label className="col-span-2 flex flex-col gap-2 text-sm font-medium">
-                  Credential refs
-                  <InputGroup className="min-h-20 items-stretch">
-                    <InputGroupTextarea
-                      className="min-h-16 font-mono text-xs"
-                      placeholder={"OPENAI_API_KEY=credential:openai"}
-                      value={form.credentialRefsText}
-                      onChange={(event) =>
-                        setForm((current) => ({
-                          ...current,
-                          credentialRefsText: event.target.value,
-                        }))
-                      }
-                    />
-                  </InputGroup>
-                  <span className="text-muted-foreground text-xs font-normal">
-                    References only. Secret values stay in desktop safe storage
-                    or each CLI provider's own auth store.
-                  </span>
-                </label>
 
-                <div className="col-span-2 grid grid-cols-3 gap-3">
-                  <AgentSettingSwitch
-                    checked={form.enabled}
-                    label="Enabled"
-                    onCheckedChange={(checked) =>
-                      setForm((current) => ({ ...current, enabled: checked }))
+                <AgentSettingSwitch
+                  checked={form.enabled}
+                  label="Enabled"
+                  onCheckedChange={(checked) =>
+                    setForm((current) => ({ ...current, enabled: checked }))
+                  }
+                />
+
+                <div className="flex items-end justify-end">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      setShowAdvancedAgentSettings((current) => !current)
                     }
-                  />
-                  <AgentSettingSwitch
-                    checked={form.skipVersion}
-                    label="Skip version"
-                    onCheckedChange={(checked) =>
-                      setForm((current) => ({
-                        ...current,
-                        skipVersion: checked,
-                      }))
-                    }
-                  />
-                  <AgentSettingSwitch
-                    checked={form.allowRiskyCommand}
-                    label="Risky command"
-                    onCheckedChange={(checked) =>
-                      setForm((current) => ({
-                        ...current,
-                        allowRiskyCommand: checked,
-                      }))
-                    }
-                  />
+                  >
+                    {showAdvancedAgentSettings
+                      ? "Hide advanced"
+                      : "Advanced CLI settings"}
+                    <ChevronDownIcon
+                      className={cn(
+                        "transition-transform",
+                        showAdvancedAgentSettings && "rotate-180",
+                      )}
+                      data-icon="inline-end"
+                    />
+                  </Button>
                 </div>
+
+                {showAdvancedAgentSettings && (
+                  <>
+                    <label className="col-span-2 flex flex-col gap-2 text-sm font-medium">
+                      Arguments
+                      <InputGroup className="min-h-24 items-stretch">
+                        <InputGroupTextarea
+                          className="min-h-20 font-mono text-xs"
+                          placeholder={"exec\n--json\n-"}
+                          value={form.argsText}
+                          onChange={(event) =>
+                            setForm((current) => ({
+                              ...current,
+                              argsText: event.target.value,
+                            }))
+                          }
+                        />
+                      </InputGroup>
+                      <span className="text-muted-foreground text-xs font-normal">
+                        One argument per line. Use {"{{prompt}}"} only for
+                        arg-mode CLIs.
+                      </span>
+                    </label>
+                    <label className="flex flex-col gap-2 text-sm font-medium">
+                      CWD mode
+                      <NativeSelect
+                        className="w-full"
+                        value={form.cwdMode}
+                        onChange={(event) =>
+                          setForm((current) => ({
+                            ...current,
+                            cwdMode: event.target.value,
+                          }))
+                        }
+                      >
+                        <NativeSelectOption value="repo_root">
+                          Repository root
+                        </NativeSelectOption>
+                        <NativeSelectOption value="workspace_root">
+                          Project root
+                        </NativeSelectOption>
+                      </NativeSelect>
+                    </label>
+                    <label className="flex flex-col gap-2 text-sm font-medium">
+                      Prompt delivery
+                      <NativeSelect
+                        className="w-full"
+                        value={form.promptDelivery}
+                        onChange={(event) =>
+                          setForm((current) => ({
+                            ...current,
+                            promptDelivery: event.target
+                              .value as PromptDelivery,
+                          }))
+                        }
+                      >
+                        <NativeSelectOption value="stdin">
+                          stdin
+                        </NativeSelectOption>
+                        <NativeSelectOption value="arg">arg</NativeSelectOption>
+                        <NativeSelectOption value="temp_file">
+                          temp_file
+                        </NativeSelectOption>
+                      </NativeSelect>
+                    </label>
+                    <label className="flex flex-col gap-2 text-sm font-medium">
+                      Model label
+                      <Input
+                        value={form.modelLabel}
+                        onChange={(event) =>
+                          setForm((current) => ({
+                            ...current,
+                            modelLabel: event.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="flex flex-col gap-2 text-sm font-medium">
+                      Reasoning label
+                      <Input
+                        value={form.reasoningLabel}
+                        onChange={(event) =>
+                          setForm((current) => ({
+                            ...current,
+                            reasoningLabel: event.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="flex flex-col gap-2 text-sm font-medium">
+                      Timeout seconds
+                      <Input
+                        min={1}
+                        type="number"
+                        value={form.timeoutSeconds}
+                        onChange={(event) =>
+                          setForm((current) => ({
+                            ...current,
+                            timeoutSeconds: Number(event.target.value),
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="flex flex-col gap-2 text-sm font-medium">
+                      Version args
+                      <Input
+                        placeholder="--version"
+                        value={form.versionArgsText}
+                        onChange={(event) =>
+                          setForm((current) => ({
+                            ...current,
+                            versionArgsText: event.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="col-span-2 flex flex-col gap-2 text-sm font-medium">
+                      Environment allowlist
+                      <Input
+                        placeholder="OPENAI_API_KEY, GEMINI_API_KEY"
+                        value={form.envAllowlistText}
+                        onChange={(event) =>
+                          setForm((current) => ({
+                            ...current,
+                            envAllowlistText: event.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="col-span-2 flex flex-col gap-2 text-sm font-medium">
+                      Credential refs
+                      <InputGroup className="min-h-20 items-stretch">
+                        <InputGroupTextarea
+                          className="min-h-16 font-mono text-xs"
+                          placeholder={"OPENAI_API_KEY=credential:openai"}
+                          value={form.credentialRefsText}
+                          onChange={(event) =>
+                            setForm((current) => ({
+                              ...current,
+                              credentialRefsText: event.target.value,
+                            }))
+                          }
+                        />
+                      </InputGroup>
+                      <span className="text-muted-foreground text-xs font-normal">
+                        References only. Secret values stay in desktop safe
+                        storage or each CLI provider's own auth store.
+                      </span>
+                    </label>
+
+                    <div className="col-span-2 grid grid-cols-2 gap-3">
+                      <AgentSettingSwitch
+                        checked={form.skipVersion}
+                        label="Skip version"
+                        onCheckedChange={(checked) =>
+                          setForm((current) => ({
+                            ...current,
+                            skipVersion: checked,
+                          }))
+                        }
+                      />
+                      <AgentSettingSwitch
+                        checked={form.allowRiskyCommand}
+                        label="Risky command"
+                        onCheckedChange={(checked) =>
+                          setForm((current) => ({
+                            ...current,
+                            allowRiskyCommand: checked,
+                          }))
+                        }
+                      />
+                    </div>
+                  </>
+                )}
 
                 <div className="col-span-2 rounded-md border p-3">
                   <div className="mb-3 flex items-center justify-between gap-3">
@@ -2425,6 +2323,77 @@ function AgentSettingsScreen({
               </div>
             </section>
           </div>
+
+          <section className="bg-surface-raised rounded-lg border">
+            <button
+              className="hover:bg-surface/70 flex w-full items-center justify-between gap-3 rounded-t-lg px-4 py-3 text-left"
+              type="button"
+              onClick={() => setShowProjectSettings((current) => !current)}
+            >
+              <span className="min-w-0">
+                <span className="block text-sm font-medium">
+                  Project settings
+                </span>
+                <span className="text-muted-foreground mt-1 block truncate text-xs">
+                  GitHub credentials, remembered review rules, and portable JSON
+                  export.
+                </span>
+              </span>
+              <span className="flex shrink-0 items-center gap-2">
+                <Badge variant="secondary">
+                  {enabledConfigCount} CLI
+                  {enabledConfigCount === 1 ? "" : "s"} enabled
+                </Badge>
+                <ChevronDownIcon
+                  className={cn(
+                    "size-4 transition-transform",
+                    showProjectSettings && "rotate-180",
+                  )}
+                />
+              </span>
+            </button>
+            {showProjectSettings && (
+              <div className="flex flex-col gap-4 border-t p-4">
+                <GitHubCredentialPanel
+                  deleteState={githubDeleteState}
+                  displayName={githubDisplayName}
+                  saveState={githubSaveState}
+                  status={githubCredential}
+                  token={githubToken}
+                  onDelete={() => void deleteGitHubToken()}
+                  onDisplayNameChange={setGitHubDisplayName}
+                  onSave={() => void saveGitHubToken()}
+                  onTokenChange={setGitHubToken}
+                />
+
+                <ReviewRuleMemoryPanel
+                  actionState={reviewRuleAction}
+                  draft={reviewRuleDraft}
+                  rules={reviewRules}
+                  workspace={activeWorkspace}
+                  onCreate={() => void createReviewRule()}
+                  onDelete={(rule) => void deleteReviewRule(rule)}
+                  onDraftChange={setReviewRuleDraft}
+                  onReload={() => void reloadReviewRules()}
+                  onToggle={(rule, enabled) =>
+                    void toggleReviewRule(rule, enabled)
+                  }
+                />
+
+                <SettingsPortabilityPanel
+                  collisionPolicy={settingsCollisionPolicy}
+                  exportText={settingsExportText}
+                  importText={settingsImportText}
+                  state={settingsPortabilityState}
+                  workspace={activeWorkspace}
+                  onCollisionPolicyChange={setSettingsCollisionPolicy}
+                  onExport={() => void exportWorkspaceSettings()}
+                  onImport={() => void importWorkspaceSettings()}
+                  onImportTextChange={setSettingsImportText}
+                />
+              </div>
+            )}
+          </section>
         </div>
       </ScrollArea>
     </section>
@@ -2645,8 +2614,8 @@ function ReviewRuleMemoryPanel({
         <div className="p-4">
           <EmptyState
             className="border-0 p-0"
-            title="No workspace selected"
-            description="Open a repository before managing local review guidance."
+            title="No project selected"
+            description="Open a project before managing local review guidance."
             icon={BookOpenIcon}
           />
         </div>
@@ -2664,7 +2633,7 @@ function ReviewRuleMemoryPanel({
                   }
                 >
                   <NativeSelectOption value="workspace">
-                    workspace
+                    project
                   </NativeSelectOption>
                   <NativeSelectOption value="repository">
                     repository
@@ -2779,7 +2748,9 @@ function ReviewRuleMemoryPanel({
                   />
                   <div className="min-w-0 flex-1">
                     <div className="mb-2 flex flex-wrap items-center gap-1">
-                      <Badge variant="outline">{rule.scope}</Badge>
+                      <Badge variant="outline">
+                        {formatReviewRuleScope(rule.scope)}
+                      </Badge>
                       <Badge variant="secondary">{rule.rule_type}</Badge>
                       {!rule.enabled && <Badge variant="outline">off</Badge>}
                     </div>
@@ -2853,7 +2824,7 @@ function SettingsPortabilityPanel({
           </div>
         </div>
         <Badge variant={workspace ? "secondary" : "outline"}>
-          {workspace?.name ?? "no workspace"}
+          {workspace?.name ?? "no project"}
         </Badge>
       </div>
 
@@ -2929,7 +2900,7 @@ function SettingsPortabilityPanel({
           {importResult && (
             <div className="grid gap-2 sm:grid-cols-3">
               <SettingsImportReportChip
-                label="Workspace"
+                label="Project"
                 report={importResult.workspace_settings}
               />
               <SettingsImportReportChip
@@ -3031,6 +3002,10 @@ function defaultReviewRuleDraft(): ReviewRuleDraftState {
     content: "",
     enabled: true,
   };
+}
+
+function formatReviewRuleScope(scope: string) {
+  return scope === "workspace" ? "project" : scope;
 }
 
 function upsertReviewRuleState(
@@ -3374,7 +3349,7 @@ function Sidebar({
         <div className="min-w-0">
           <p className="truncate text-base leading-5 font-semibold">cocode</p>
           <p className="text-sidebar-muted truncate text-xs">
-            AI code review workspace
+            AI code review project
           </p>
         </div>
       </div>
@@ -3389,8 +3364,8 @@ function Sidebar({
           icon={FolderOpenIcon}
           label={
             repositoryOpenState.status === "loading"
-              ? "Opening repo..."
-              : "Open repo"
+              ? "Opening project..."
+              : "Open project"
           }
           onClick={onOpenRepository}
         />
@@ -3399,47 +3374,12 @@ function Sidebar({
           label="Search"
           onClick={onOpenSearch}
         />
-        <SidebarNavButton icon={SparklesIcon} label="Plugins" />
-        <SidebarNavButton icon={ClockIcon} label="Automations" />
       </nav>
 
-      <SidebarSection
-        title="Threads"
-        action={<SquareIcon className="size-3.5 opacity-55" />}
-      >
-        {reviewSessions.status === "loading" && (
-          <div className="text-sidebar-muted px-2 py-1 text-xs">
-            Loading threads...
-          </div>
-        )}
-        {reviewSessions.status === "error" && (
-          <div className="text-destructive px-2 py-1 text-xs">
-            {reviewSessions.error.message}
-          </div>
-        )}
-        {reviewSessions.status === "success" && sessionList.length === 0 && (
-          <div className="text-sidebar-muted px-2 py-1 text-xs">
-            No review threads yet
-          </div>
-        )}
-        {sessionList.map((session) => (
-          <SidebarNavButton
-            key={session.id}
-            label={session.title}
-            meta={formatRelativeAge(session.updated_at)}
-            active={session.id === activeSessionId}
-            onClick={() => onSelectReviewSession(session)}
-          />
-        ))}
-      </SidebarSection>
-
-      <SidebarSection
-        title="Workspaces"
-        action={<SquareIcon className="size-3.5 opacity-55" />}
-      >
+      <SidebarSection title="Projects">
         {workspaces.status === "loading" && (
           <div className="text-sidebar-muted px-2 py-1 text-xs">
-            Loading workspaces...
+            Loading projects...
           </div>
         )}
         {workspaces.status === "error" && (
@@ -3450,20 +3390,55 @@ function Sidebar({
         {workspaces.status === "success" && workspaceList.length === 0 && (
           <SidebarNavButton
             icon={FolderOpenIcon}
-            label="Open local repo"
+            label="Open local project"
             onClick={onOpenRepository}
           />
         )}
-        {workspaceList.map((workspace) => (
-          <SidebarNavButton
-            key={workspace.id}
-            active={workspace.id === activeWorkspaceId}
-            icon={GitBranchIcon}
-            label={workspace.name}
-            meta={workspace.default_repo_id ? "active" : undefined}
-            onClick={() => onSelectWorkspace(workspace.id)}
-          />
-        ))}
+        {workspaceList.map((workspace) => {
+          const isActiveProject = workspace.id === activeWorkspaceId;
+
+          return (
+            <div key={workspace.id} className="flex min-w-0 flex-col gap-1">
+              <SidebarNavButton
+                active={isActiveProject}
+                icon={GitBranchIcon}
+                label={workspace.name}
+                meta={workspace.default_repo_id ? "active" : undefined}
+                onClick={() => onSelectWorkspace(workspace.id)}
+              />
+              {isActiveProject && (
+                <div className="border-sidebar-muted/20 ml-4 border-l pl-2">
+                  {reviewSessions.status === "loading" && (
+                    <div className="text-sidebar-muted px-2 py-1 text-xs">
+                      Loading threads...
+                    </div>
+                  )}
+                  {reviewSessions.status === "error" && (
+                    <div className="text-destructive px-2 py-1 text-xs">
+                      {reviewSessions.error.message}
+                    </div>
+                  )}
+                  {reviewSessions.status === "success" &&
+                    sessionList.length === 0 && (
+                      <div className="text-sidebar-muted px-2 py-1 text-xs">
+                        No threads yet
+                      </div>
+                    )}
+                  {sessionList.map((session) => (
+                    <SidebarNavButton
+                      key={session.id}
+                      active={session.id === activeSessionId}
+                      className="h-auto min-h-8 py-1.5 text-[0.82rem]"
+                      label={session.title}
+                      meta={formatRelativeAge(session.updated_at)}
+                      onClick={() => onSelectReviewSession(session)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </SidebarSection>
 
       {repositoryOpenState.status === "error" && (
@@ -3500,6 +3475,7 @@ function TopNav({
   activeSession,
   activeWorkspace,
   isOpeningRepository,
+  onOpenNewThread,
   onOpenRepository,
   onOpenSearch,
 }: {
@@ -3507,6 +3483,7 @@ function TopNav({
   activeSession?: ReviewSession;
   activeWorkspace?: Workspace;
   isOpeningRepository: boolean;
+  onOpenNewThread: () => void;
   onOpenRepository: () => void;
   onOpenSearch: () => void;
 }) {
@@ -3514,7 +3491,7 @@ function TopNav({
     activeSession?.title ??
     activeRepository?.name ??
     activeWorkspace?.name ??
-    "Open a repository";
+    "Open a project";
   const description =
     activeRepository?.remote_url ??
     activeRepository?.local_path ??
@@ -3533,7 +3510,7 @@ function TopNav({
         >
           <GitPullRequestIcon data-icon="inline-start" />
           <span className="truncate">
-            {activeRepository?.name ?? activeWorkspace?.name ?? "Open repo"}
+            {activeRepository?.name ?? activeWorkspace?.name ?? "Open project"}
           </span>
           <ChevronDownIcon data-icon="inline-end" />
         </Button>
@@ -3558,51 +3535,14 @@ function TopNav({
           onClick={onOpenRepository}
         >
           <FolderOpenIcon data-icon="inline-start" />
-          {activeRepository ? "Open repo" : "Select repo"}
+          {activeRepository ? "Switch project" : "Open project"}
         </Button>
-        <Button size="sm" variant="outline">
-          <PanelRightIcon data-icon="inline-start" />
-          Ask all agents
+        <Button size="sm" onClick={onOpenNewThread}>
+          <PlusIcon data-icon="inline-start" />
+          New thread
         </Button>
-        <CommitDropdown />
-        <Badge
-          className="border-border/70 bg-background/70 gap-1"
-          variant="outline"
-        >
-          <span className="text-success">+938</span>
-          <span className="text-destructive">-664</span>
-        </Badge>
-        <TooltipIconButton label="Notifications" size="icon-sm" variant="ghost">
-          <BellIcon />
-        </TooltipIconButton>
-        <TooltipIconButton label="More actions" size="icon-sm" variant="ghost">
-          <MoreHorizontalIcon />
-        </TooltipIconButton>
       </div>
     </div>
-  );
-}
-
-function CommitDropdown() {
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button size="sm" variant="outline">
-          Commit
-          <ChevronDownIcon data-icon="inline-end" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-56">
-        <DropdownMenuLabel>Review actions</DropdownMenuLabel>
-        <DropdownMenuGroup>
-          <DropdownMenuItem>Copy selected packet</DropdownMenuItem>
-          <DropdownMenuItem>Create draft review</DropdownMenuItem>
-          <DropdownMenuItem>Open GitHub preview</DropdownMenuItem>
-        </DropdownMenuGroup>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem variant="destructive">Cancel review</DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
   );
 }
 
@@ -6666,7 +6606,7 @@ function EvidenceMapScreen({
         />
       )}
       {map && (
-        <div className="cocode-panel grid min-h-[560px] overflow-hidden lg:grid-cols-[230px_minmax(0,1fr)] 2xl:grid-cols-[260px_minmax(0,1fr)_360px]">
+        <div className="cocode-panel grid min-h-[560px] overflow-hidden lg:grid-cols-[230px_minmax(0,1fr)] xl:grid-cols-[240px_minmax(0,1fr)_340px]">
           <EvidenceMapHierarchyPane
             hierarchy={map.hierarchy}
             selection={selection}
@@ -6756,7 +6696,7 @@ function EvidenceMapHierarchyPane({
           {hierarchy.length} locations
         </div>
       </div>
-      <ScrollArea className="h-48 lg:h-[430px] 2xl:h-[590px]">
+      <ScrollArea className="h-48 lg:h-[430px] xl:h-[590px]">
         <div className="flex flex-col gap-1 p-2">
           {hierarchy.map((item) => {
             const targetNodeId = item.node_ids[0];
@@ -6833,13 +6773,15 @@ export function EvidenceMapGraphCanvas({
   }
 
   return (
-    <div className="evidence-map-canvas min-h-[360px] min-w-0 flex-1 overflow-auto">
+    <div className="evidence-map-canvas min-h-[360px] min-w-0 flex-1 overflow-hidden">
       <svg
         aria-label="Evidence Map graph"
         className="min-h-[360px]"
         height={layout.height}
+        preserveAspectRatio="xMidYMid meet"
         role="img"
-        width={layout.width}
+        viewBox={`0 0 ${layout.width} ${layout.height}`}
+        width="100%"
       >
         <defs>
           <filter
@@ -7080,8 +7022,8 @@ function EvidenceMapRightPanel({
   );
 
   return (
-    <aside className="bg-surface/60 min-w-0 border-t lg:col-span-2 2xl:col-span-1 2xl:border-t-0 2xl:border-l">
-      <ScrollArea className="h-96 2xl:h-[650px]">
+    <aside className="bg-surface/60 min-w-0 border-t lg:col-span-2 xl:col-span-1 xl:border-t-0 xl:border-l">
+      <ScrollArea className="h-96 xl:h-[650px]">
         <div className="flex flex-col gap-4 p-4">
           <div className="bg-background rounded-md border p-3">
             <div className="mb-2 flex flex-wrap items-center gap-2">

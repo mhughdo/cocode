@@ -12,14 +12,17 @@ test("opens a local repository and configures a branch comparison", async ({
   });
 
   try {
-    await page.getByRole("button", { name: "Open local repo" }).last().click();
+    await page
+      .getByRole("button", { name: "Open local project" })
+      .last()
+      .click();
 
     await expect(
-      page.getByRole("heading", { name: "New review thread" }),
+      page.getByRole("heading", { name: "What should we review?" }),
     ).toBeVisible();
     await expect(page.getByText(repoPath).first()).toBeVisible();
 
-    await page.getByRole("button", { name: /Branch compare/ }).click();
+    await page.getByRole("button", { name: /Compare branches/ }).click();
     await page.getByLabel("Base ref").fill("main");
     await page.getByLabel("Head ref").fill("feature/review-auth");
     await page.getByRole("button", { name: "Continue to configure" }).click();

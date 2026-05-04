@@ -22,8 +22,11 @@ test("starts a fake review and renders findings", async ({
   await createFakeAgentConfig(backendInfo, fakeAgentPath);
 
   try {
-    await page.getByRole("button", { name: "Open local repo" }).last().click();
-    await page.getByRole("button", { name: /Branch compare/ }).click();
+    await page
+      .getByRole("button", { name: "Open local project" })
+      .last()
+      .click();
+    await page.getByRole("button", { name: /Compare branches/ }).click();
     await page.getByLabel("Base ref").fill("main");
     await page.getByLabel("Head ref").fill("feature/review-auth");
     await page.getByRole("button", { name: "Continue to configure" }).click();

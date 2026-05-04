@@ -2,7 +2,7 @@
 
 cocode is a local-first desktop cockpit for evidence-backed multi-agent code review.
 
-The MVP is scoped to non-interactive CLI agents, a Go/Gin local backend, SQLite persistence, an Electron + React + TypeScript desktop shell, and shadcn/ui for the renderer.
+The MVP is scoped to local review agents, a Go/Gin local backend, SQLite persistence, an Electron + React + TypeScript desktop shell, and shadcn/ui for the renderer. Agent execution supports non-interactive CLIs plus first stdio protocol connectors for Codex App Server and ACP-compatible agents.
 
 ## Workspace layout
 

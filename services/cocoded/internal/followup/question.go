@@ -426,7 +426,7 @@ func (s Service) followupAgentConfig(ctx context.Context, agentConfigID string) 
 
 func supportedFollowupAdapter(kind string) bool {
 	switch agents.AdapterKind(kind) {
-	case agents.AdapterCLINonInteractive, agents.AdapterLocalVerifier:
+	case agents.AdapterCLINonInteractive, agents.AdapterJSONRPCStdio, agents.AdapterACPStdio, agents.AdapterLocalVerifier:
 		return true
 	default:
 		return false
@@ -480,7 +480,9 @@ func (s Service) connectionConfig(config dbgen.AgentConfig, repository dbgen.Rep
 			WorkingDirectory: workingDirectory,
 			Env:              env,
 			Metadata: map[string]any{
-				"output_mode": config.OutputMode,
+				"output_mode":     config.OutputMode,
+				"model_label":     nullableSQLStringValue(config.ModelLabel),
+				"reasoning_label": nullableSQLStringValue(config.ReasoningLabel),
 			},
 		}, agents.TaskLimits{
 			TimeoutSeconds: settings.TimeoutSeconds,

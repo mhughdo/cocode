@@ -1331,7 +1331,9 @@ func (s *Service) connectionConfig(item runContext) (agents.ConnectionConfig, ag
 			WorkingDirectory: workingDirectory,
 			Env:              env,
 			Metadata: map[string]any{
-				"output_mode": string(item.AgentConfig.OutputMode),
+				"output_mode":     string(item.AgentConfig.OutputMode),
+				"model_label":     nullableValue(item.AgentConfig.ModelLabel),
+				"reasoning_label": nullableValue(item.AgentConfig.ReasoningLabel),
 			},
 		}, agents.TaskLimits{
 			TimeoutSeconds: settings.TimeoutSeconds,

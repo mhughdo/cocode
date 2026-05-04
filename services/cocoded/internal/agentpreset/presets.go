@@ -27,7 +27,7 @@ type Preset struct {
 }
 
 func List() []Preset {
-	return []Preset{CodexCLI(), ClaudeCodeCLI(), GeminiCLI(), OpenCodeCLI(), CustomCLI()}
+	return []Preset{CodexCLI(), CodexAppServer(), ClaudeCodeCLI(), GeminiCLI(), GeminiACP(), OpenCodeCLI(), OpenCodeACP(), CustomCLI()}
 }
 
 func CodexCLI() Preset {
@@ -52,6 +52,35 @@ func CodexCLI() Preset {
 			CanCancel:         true,
 			OutputModes:       []agents.OutputMode{agents.OutputJSONL, agents.OutputNDJSON, agents.OutputText},
 			Metadata:          map[string]any{"provider": "openai", "egress": string(agents.AgentEgressExternal)},
+		},
+		Settings: settings,
+		Enabled:  true,
+	}
+}
+
+func CodexAppServer() Preset {
+	settings := json.RawMessage(`{"prompt_delivery":"stdin","timeout_seconds":1800,"version_args":["app-server","--help"],"smoke_prompt_enabled":false,"protocol":"codex_app_server"}`)
+	return Preset{
+		ID:             "codex-app-server",
+		Name:           "Codex App Server",
+		Description:    "Runs the Codex app-server JSON-RPC stdio protocol with streaming review output.",
+		Role:           "primary_reviewer",
+		AdapterKind:    agents.AdapterJSONRPCStdio,
+		Command:        "codex",
+		Args:           []string{"app-server", "--listen", "stdio://"},
+		CWDMode:        "repo_root",
+		EnvAllowlist:   pathEnvAllowlist,
+		OutputMode:     agents.OutputJSON,
+		ModelLabel:     "gpt-5.3-codex",
+		ReasoningLabel: "high",
+		Capabilities: agents.AgentCapabilities{
+			SupportsJSON:      true,
+			SupportsStreaming: true,
+			SupportsSessions:  true,
+			CanRead:           true,
+			CanCancel:         true,
+			OutputModes:       []agents.OutputMode{agents.OutputJSON, agents.OutputJSONL, agents.OutputNDJSON, agents.OutputText},
+			Metadata:          map[string]any{"provider": "openai", "egress": string(agents.AgentEgressExternal), "protocol": "codex_app_server"},
 		},
 		Settings: settings,
 		Enabled:  true,
@@ -112,6 +141,35 @@ func GeminiCLI() Preset {
 	}
 }
 
+func GeminiACP() Preset {
+	settings := json.RawMessage(`{"prompt_delivery":"stdin","timeout_seconds":1800,"version_args":["--help"],"smoke_prompt_enabled":false,"protocol":"acp"}`)
+	return Preset{
+		ID:             "gemini-acp",
+		Name:           "Gemini ACP",
+		Description:    "Runs Gemini through the Agent Client Protocol stdio flow with streaming review output.",
+		Role:           "primary_reviewer",
+		AdapterKind:    agents.AdapterACPStdio,
+		Command:        "gemini",
+		Args:           []string{"--acp"},
+		CWDMode:        "repo_root",
+		EnvAllowlist:   append(pathEnvAllowlist, "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"),
+		OutputMode:     agents.OutputJSON,
+		ModelLabel:     "gemini-acp",
+		ReasoningLabel: "",
+		Capabilities: agents.AgentCapabilities{
+			SupportsJSON:      true,
+			SupportsStreaming: true,
+			SupportsSessions:  true,
+			CanRead:           true,
+			CanCancel:         true,
+			OutputModes:       []agents.OutputMode{agents.OutputJSON, agents.OutputJSONL, agents.OutputNDJSON, agents.OutputText},
+			Metadata:          map[string]any{"provider": "google", "egress": string(agents.AgentEgressExternal), "protocol": "acp"},
+		},
+		Settings: settings,
+		Enabled:  true,
+	}
+}
+
 func OpenCodeCLI() Preset {
 	settings := json.RawMessage(`{"prompt_delivery":"arg","timeout_seconds":1800,"version_args":["--version"],"smoke_prompt_enabled":false}`)
 	return Preset{
@@ -123,7 +181,7 @@ func OpenCodeCLI() Preset {
 		Command:        "opencode",
 		Args:           []string{"run", "--format", "json", agents.PromptArgPlaceholder},
 		CWDMode:        "repo_root",
-		EnvAllowlist:   append(pathEnvAllowlist, "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"),
+		EnvAllowlist:   append(pathEnvAllowlist, "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY", "XAI_API_KEY"),
 		OutputMode:     agents.OutputJSONL,
 		ModelLabel:     "opencode",
 		ReasoningLabel: "",
@@ -134,6 +192,35 @@ func OpenCodeCLI() Preset {
 			CanCancel:         true,
 			OutputModes:       []agents.OutputMode{agents.OutputJSONL, agents.OutputNDJSON, agents.OutputJSON, agents.OutputText},
 			Metadata:          map[string]any{"provider": "opencode", "egress": string(agents.AgentEgressExternal)},
+		},
+		Settings: settings,
+		Enabled:  true,
+	}
+}
+
+func OpenCodeACP() Preset {
+	settings := json.RawMessage(`{"prompt_delivery":"stdin","timeout_seconds":1800,"version_args":["acp","--help"],"smoke_prompt_enabled":false,"protocol":"acp"}`)
+	return Preset{
+		ID:             "opencode-acp",
+		Name:           "OpenCode ACP",
+		Description:    "Runs OpenCode through the Agent Client Protocol stdio flow for model-backed review agents.",
+		Role:           "primary_reviewer",
+		AdapterKind:    agents.AdapterACPStdio,
+		Command:        "opencode",
+		Args:           []string{"acp"},
+		CWDMode:        "repo_root",
+		EnvAllowlist:   append(pathEnvAllowlist, "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY", "XAI_API_KEY"),
+		OutputMode:     agents.OutputJSON,
+		ModelLabel:     "opencode-acp",
+		ReasoningLabel: "",
+		Capabilities: agents.AgentCapabilities{
+			SupportsJSON:      true,
+			SupportsStreaming: true,
+			SupportsSessions:  true,
+			CanRead:           true,
+			CanCancel:         true,
+			OutputModes:       []agents.OutputMode{agents.OutputJSON, agents.OutputJSONL, agents.OutputNDJSON, agents.OutputText},
+			Metadata:          map[string]any{"provider": "opencode", "egress": string(agents.AgentEgressExternal), "protocol": "acp"},
 		},
 		Settings: settings,
 		Enabled:  true,

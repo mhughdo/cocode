@@ -182,7 +182,7 @@ func testAgentConfigHandler(queries *dbgen.Queries) gin.HandlerFunc {
 		if row.Enabled == 0 {
 			health.Status = agents.HealthDegraded
 			health.Message = "agent config is disabled"
-		} else if kind == agents.AdapterCLINonInteractive {
+		} else if commandBackedAdapter(kind) {
 			args, err := decodeStringArray(row.ArgsJson)
 			if err != nil {
 				respondError(c, apperror.Internal("stored agent args are invalid"))
@@ -421,8 +421,8 @@ func normalizeAgentConfigInput(input agentConfigInput) (normalizedAgentConfigInp
 		return normalizedAgentConfigInput{}, apperror.InvalidRequest("agent role is required")
 	}
 	command := strings.TrimSpace(input.Command)
-	if kind == agents.AdapterCLINonInteractive && command == "" {
-		return normalizedAgentConfigInput{}, apperror.InvalidRequest("command is required for CLI agents")
+	if commandBackedAdapter(kind) && command == "" {
+		return normalizedAgentConfigInput{}, apperror.InvalidRequest("command is required for command-backed agents")
 	}
 	cwdMode := strings.TrimSpace(input.CWDMode)
 	if cwdMode == "" {
@@ -477,6 +477,15 @@ func normalizeAgentConfigInput(input agentConfigInput) (normalizedAgentConfigInp
 		SettingsJSON:     settingsJSON,
 		Enabled:          input.Enabled,
 	}, nil
+}
+
+func commandBackedAdapter(kind agents.AdapterKind) bool {
+	switch kind {
+	case agents.AdapterCLINonInteractive, agents.AdapterJSONRPCStdio, agents.AdapterACPStdio:
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeStringArrayJSON(values []string, existingJSON string, field string) (string, *apperror.Error) {

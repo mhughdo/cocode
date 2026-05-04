@@ -6004,7 +6004,9 @@ function FindingFollowUpScreen({
       agent.enabled &&
       (agent.adapter_kind === "local_verifier" ||
         agent.adapter_kind === "cli_noninteractive" ||
-        agent.adapter_kind === "cli_non_interactive"),
+        agent.adapter_kind === "cli_non_interactive" ||
+        agent.adapter_kind === "jsonrpc_stdio" ||
+        agent.adapter_kind === "acp_stdio"),
   );
   const evidenceItems =
     detailState.status === "success"

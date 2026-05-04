@@ -10,7 +10,7 @@
 
 ## 0. Executive Summary
 
-cocode is a local-first desktop app that orchestrates multiple coding agents for PR/code review. The MVP runs CLI agents in non-interactive mode, normalizes their outputs into evidence-backed findings, verifies those findings against the local codebase, displays each finding through text and visual Evidence Map views, and lets the user copy accepted findings into an external coding agent or publish selected comments to GitHub.
+cocode is a local-first desktop app that orchestrates multiple coding agents for PR/code review. The MVP runs non-interactive CLI agents plus first stdio protocol agents, normalizes their outputs into evidence-backed findings, verifies those findings against the local codebase, displays each finding through text and visual Evidence Map views, and lets the user copy accepted findings into an external coding agent or publish selected comments to GitHub.
 
 The core technical bet is a stable internal domain model:
 
@@ -135,10 +135,10 @@ Claude Code and similar CLIs support programmatic non-interactive use. Claude Co
 | Renderer -> Go backend | Command/query | REST | All data operations and review control. |
 | Go backend -> Renderer | Progress/events | SSE | Review timeline, agent events, findings updates. |
 | Renderer -> Electron main | OS actions | Secure IPC through preload | Clipboard, file picker, open external editor. |
-| Go backend -> CLI agents | Process execution | stdin/stdout/stderr | MVP adapter path. |
+| Go backend -> CLI agents | Process execution | stdin/stdout/stderr | Non-interactive adapter path. |
 | Go backend -> GitHub | External API | HTTPS REST | Only after user approval. |
-| Future Go backend -> Codex App Server | Long-running child process | JSON-RPC over stdio JSONL | Designed but not implemented in MVP. |
-| Future Go backend -> ACP agent | Long-running child process | JSON-RPC over stdio | Designed but not implemented in MVP. |
+| Go backend -> Codex App Server | Long-running child process | JSON-RPC over stdio JSONL | Initializes app-server, creates an ephemeral thread, starts a turn, and streams agent message deltas. |
+| Go backend -> ACP agent | Long-running child process | JSON-RPC over stdio | Initializes an ACP session, sends a prompt, and streams agent message chunks. |
 
 The renderer talks to the local backend through a typed REST client in `apps/desktop/src/renderer/src/lib/api.ts`. The client receives the per-launch backend URL/token from the preload bridge, injects bearer auth, decodes the backend `Envelope` shape, preserves request IDs on typed errors, supports query/body helpers and `AbortSignal`, and exposes small loading/success/error state helpers for UI screens.
 

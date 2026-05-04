@@ -64,6 +64,61 @@ func TestRunnerPersistsSuccessfulCommandRun(t *testing.T) {
 	})
 }
 
+func TestRunnerUsesProtocolDriverForJSONRPCAdapters(t *testing.T) {
+	t.Parallel()
+
+	env := setupOutputRecorder(t)
+	task := runnerTask(env, "agent_run_jsonrpc")
+	command := writeFakeAgent(t, `#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"id":1,"result":{"userAgent":"fake-codex","codexHome":"/tmp/cocode","platformFamily":"unix","platformOs":"macos"}}'
+      ;;
+    *'"method":"initialized"'*)
+      ;;
+    *'"method":"thread/start"'*)
+      printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread_1"}}}'
+      ;;
+    *'"method":"turn/start"'*)
+      printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn_1","status":"inProgress"}}}'
+      printf '%s\n' '{"method":"item/agentMessage/delta","params":{"threadId":"thread_1","turnId":"turn_1","itemId":"item_1","delta":"{\"findings\":[]}"}}'
+      printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread_1","turn":{"id":"turn_1","status":"completed"}}}'
+      ;;
+  esac
+done
+`)
+	config := runnerConfig(command)
+	config.Kind = agents.AdapterJSONRPCStdio
+	config.WorkingDirectory = t.TempDir()
+	config.Metadata = map[string]any{
+		"model_label":     "fake-model",
+		"reasoning_label": "high",
+	}
+
+	result, err := runnerWithClock(env).Execute(context.Background(), RunParams{
+		WorkspaceID: env.WorkspaceID,
+		Config:      config,
+		Task:        task,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if result.Run.Status != RunStatusSucceeded ||
+		!result.Run.ExitCode.Valid ||
+		result.Run.ExitCode.Int64 != 0 ||
+		!result.Run.StdoutArtifactID.Valid {
+		t.Fatalf("run = %+v", result.Run)
+	}
+	stdout, _, err := env.Artifacts.Read(context.Background(), result.Run.StdoutArtifactID.String)
+	if err != nil {
+		t.Fatalf("Read(stdout) error = %v", err)
+	}
+	if string(stdout) != `{"findings":[]}` {
+		t.Fatalf("stdout = %q", string(stdout))
+	}
+}
+
 func TestRunnerPersistsFailedCommandRun(t *testing.T) {
 	t.Parallel()
 

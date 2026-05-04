@@ -1,6 +1,6 @@
 # cocode Adapter Extension Guide
 
-This guide describes how to add a new CLI or protocol adapter without coupling review workflows to one vendor runtime. The MVP supports non-interactive CLI agents first; JSON-RPC/App Server/ACP adapters are intentionally present as disabled future stubs.
+This guide describes how to add a new CLI or protocol adapter without coupling review workflows to one vendor runtime. The initial runtime supports non-interactive CLI agents plus stdio JSON-RPC protocol connectors for Codex App Server and ACP-compatible agents.
 
 ## Core Interfaces
 
@@ -55,6 +55,9 @@ Current examples:
 | Claude Code CLI | arg | JSON | `claude -p {{prompt}} --output-format json` |
 | Gemini CLI | stdin | JSON | `gemini --model pro --output-format json` |
 | OpenCode CLI | arg | JSONL | `opencode run --format json {{prompt}}` |
+| Codex App Server | JSON-RPC stdio | JSON | `codex app-server --listen stdio://` |
+| Gemini ACP | ACP stdio | JSON | `gemini --acp` |
+| OpenCode ACP | ACP stdio | JSON | `opencode acp` |
 | Custom CLI | stdin | text | disabled template for user-defined commands |
 
 ## Implementing CLI Execution
@@ -96,7 +99,7 @@ For `cli_noninteractive` configs, the backend checks:
 - version args when configured,
 - optional smoke prompt when enabled.
 
-For non-CLI adapter kinds, the MVP returns `unknown` unless the config is disabled. Protocol stubs such as Codex App Server and ACP should return a clear disabled or not-implemented error until a real transport exists.
+For non-CLI adapter kinds, `/api/agents/configs/:id/test` still reports protocol health conservatively unless a lightweight version command is configured. Runtime execution is handled by the stdio protocol driver once the agent config is enabled.
 
 Recommended preset settings:
 
@@ -115,22 +118,22 @@ Use `"skip_version": true` only for custom templates or commands without stable 
 
 Use a protocol adapter when the agent has a long-lived session, JSON-RPC/stdout notifications, or resumable thread semantics.
 
-Current future stubs:
+Current stdio protocol connectors:
 
 - `CodexAppServerAdapter` uses `AdapterJSONRPCStdio`.
 - `ACPAdapter` uses `AdapterACPStdio`.
-- `JSONRPCStdioDriver` validates config but stays disabled for MVP runtime use.
+- `JSONRPCStdioDriver` launches the configured command, reads newline-delimited JSON-RPC frames, maps streaming notifications to `AgentEvent`, and rejects unsupported server-initiated requests.
 
-When implementing a real protocol adapter:
+When extending a protocol adapter:
 
 1. Keep byte transport in `JSONRPCStdioConnection`.
 2. Keep protocol-specific event/method mapping in the adapter layer.
 3. Add an event mapper that converts every protocol notification to `AgentEvent`.
 4. Persist foreign session/thread IDs in run metadata, not in workflow-only memory.
 5. Preserve raw protocol outputs as artifacts when they influence findings.
-6. Map approval/tool requests into cocode permission UI before allowing side effects.
+6. Map approval/tool requests into cocode permission UI before allowing side effects. The current review flow rejects client-side file, terminal, and permission callbacks so agents stay read-only from cocode's perspective.
 7. Make unknown protocol notifications progress events, not failures.
-8. Add tests for disabled, not implemented, happy path event mapping, malformed payloads, cancellation, and close behavior.
+8. Add tests for disabled/config validation, happy path event mapping, malformed payloads, cancellation, and close behavior.
 
 Protocol adapters must still produce the same finding candidates and evidence artifacts as CLI adapters.
 
@@ -159,7 +162,7 @@ For every new adapter or preset:
 - Test timeout/cancellation with a fake slow command for CLI runtimes.
 - Test output limits and stderr preservation.
 - Test env allowlist behavior; empty env names must be rejected and duplicates deduped.
-- Test unsupported protocol/runtime paths return clear errors.
+- Test unsupported protocol/runtime paths and server-initiated requests return clear errors.
 - Run `go test ./...` from `services/cocoded`.
 - Run `git diff --check` before committing.
 

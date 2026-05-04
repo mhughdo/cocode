@@ -3,12 +3,12 @@
 **Product name:** cocode  
 **Product type:** Local-first desktop multi-agent code review cockpit  
 **MVP focus:** PR/code review with evidence-backed findings, Evidence Map, follow-up Q&A, copy fix packets, and GitHub publishing  
-**Primary agent integration for Phase 1:** Non-interactive CLI agents only  
-**Future agent integration readiness:** Codex App Server, ACP, MCP, A2A, provider SDKs  
-**Backend:** Go + Gin local service  
-**Desktop shell:** Electron + React + TypeScript + shadcn/ui  
-**Status:** Updated after latest UI mockups and scope decisions  
-**Last updated:** 2026-05-02
+**Primary agent integration for Phase 1:** Non-interactive CLI agents plus first Codex App Server and ACP stdio connectors
+**Future agent integration readiness:** MCP, A2A, provider SDKs, richer protocol permissions/tooling
+**Backend:** Go + Gin local service
+**Desktop shell:** Electron + React + TypeScript + shadcn/ui
+**Status:** Updated after latest UI mockups and scope decisions
+**Last updated:** 2026-05-04
 
 ---
 
@@ -16,7 +16,7 @@
 
 cocode helps developers run a deep multi-agent code review without manually copying prompts into multiple CLIs, cross-checking every finding by hand, and rewriting useful findings for GitHub or a separate coding agent.
 
-The MVP is intentionally narrow: it is a code-review cockpit, not a code-fixing IDE. It coordinates CLI agents in non-interactive mode, normalizes their outputs into evidence-backed findings, helps the user verify those findings through a Finding Detail screen and Evidence Map, then lets the user accept, dismiss, copy, or publish selected findings.
+The MVP is intentionally narrow: it is a code-review cockpit, not a code-fixing IDE. It coordinates local CLI and stdio protocol agents, normalizes their outputs into evidence-backed findings, helps the user verify those findings through a Finding Detail screen and Evidence Map, then lets the user accept, dismiss, copy, or publish selected findings.
 
 The most important UX object is the **finding**, not the raw agent transcript. The user should feel that cocode turns noisy agent outputs into a clean, trustworthy review queue.
 
@@ -125,8 +125,8 @@ multiple CLI agents
 | In-app code editing/fixing | The MVP should focus on review quality and handoff first. |
 | Fully autonomous agent-to-agent chat | Too hard to debug and not necessary for code review MVP. |
 | Cloud team runner | Adds infra, security, and tenant complexity too early. |
-| Support every CLI/provider | Start with a generic CLI adapter and a few curated presets. |
-| ACP/Codex App Server implementation | Design for it now, implement after non-interactive CLI flow works. |
+| Support every CLI/provider | Start with a generic CLI adapter, first stdio protocol connectors, and a few curated presets. |
+| Protocol tool/permission callbacks | Keep agent protocol runs read-only until a permission UI exists. |
 | Auto-publish GitHub comments | User trust requires explicit review before external side effects. |
 
 ---
@@ -607,8 +607,8 @@ router/setup.go L34 -> routes/billing.go L132 -> handlers/payouts.go L210
 | SQLite local DB | Embedded durable storage for sessions, findings, artifacts, and decisions. |
 | REST + SSE | REST for commands; SSE for review progress/events. |
 | Finding-first domain model | Findings are user-facing objects; raw transcripts are provenance. |
-| CLI-only first phase | Fastest path to real user value and simplest adapter surface. |
-| Extensible connection abstraction | Future Codex App Server, ACP, MCP, A2A, and SDKs should not require UI rewrite. |
+| CLI-first phase | Fastest path to real user value and simplest adapter surface. |
+| Extensible connection abstraction | Codex App Server, ACP, MCP, A2A, and SDKs should not require UI rewrite. |
 | Evidence Map as MVP | Directly addresses the pain point of manually scouting the codebase. |
 | Copy Fix Packet as MVP | Directly supports the user's current workflow of fixing in a separate main coding agent. |
 
@@ -637,9 +637,9 @@ MVP implementation must define interfaces that can later support these connectio
 |---|---:|---:|
 | One-shot non-interactive CLI | Yes | Yes |
 | Streaming CLI JSON/JSONL | Partial | Yes |
-| Persistent JSON-RPC stdio | Interface only | Yes |
-| Codex App Server | Interface only | Yes |
-| ACP stdio agent | Interface only | Yes |
+| Persistent JSON-RPC stdio | First stdio connector | Yes |
+| Codex App Server | Ephemeral thread + streaming turns | Resume + richer client callbacks |
+| ACP stdio agent | Session prompt + streaming chunks | Richer client callbacks |
 | MCP tool/context server | Interface only | Yes |
 | A2A remote agent | No | Later |
 | Provider SDK/API | No | Later |
@@ -751,8 +751,8 @@ The following are out of scope for MVP:
 - Team/org administration.
 - Full A2A remote-agent integration.
 - Full MCP tool marketplace.
-- Full ACP implementation, though interfaces should prepare for it.
-- Full Codex App Server implementation, though connection abstractions should prepare for it.
+- Full ACP client-side permission/tool/file callback implementation.
+- Full Codex App Server thread resume and client-side permission/tool callback implementation.
 - Real-time peer-to-peer conversations among CLI agents.
 - GitLab, Bitbucket, Azure DevOps, Gerrit.
 - Fine-tuning models.
@@ -765,10 +765,10 @@ The following are out of scope for MVP:
 The MVP should deliberately choose reliability over autonomy. The attached book emphasizes using the simplest architecture that satisfies the problem and choosing workflow patterns when reliability and debuggability matter. cocode should therefore start with a deterministic review workflow:
 
 ```text
-ingest -> context -> parallel CLI review -> normalize -> dedupe -> verify -> evidence map -> human triage -> copy/publish
+ingest -> context -> parallel agent review -> normalize -> dedupe -> verify -> evidence map -> human triage -> copy/publish
 ```
 
-The future can add richer agent protocols, but the MVP should prove the workflow with the simplest working adapter: non-interactive CLI execution.
+The initial protocol support should stay read-only and review-focused: CLI execution remains the simplest adapter, while Codex App Server and ACP stdio add streaming/session coverage without granting tools or write permissions.
 
 The Evidence Map is a major product differentiator. It directly addresses the pain point: “I have to scout the codebase myself to see if the finding is true.” If Evidence Map works well, cocode becomes more than a prompt runner; it becomes a trust and verification layer.
 

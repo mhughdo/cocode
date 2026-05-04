@@ -39,6 +39,39 @@ func TestCodexCLIPreset(t *testing.T) {
 	}
 }
 
+func TestCodexAppServerPreset(t *testing.T) {
+	t.Parallel()
+
+	preset := CodexAppServer()
+	if preset.ID != "codex-app-server" ||
+		preset.Command != "codex" ||
+		preset.AdapterKind != agents.AdapterJSONRPCStdio ||
+		preset.OutputMode != agents.OutputJSON ||
+		preset.ModelLabel != "gpt-5.3-codex" ||
+		!preset.Capabilities.SupportsStreaming ||
+		!preset.Capabilities.SupportsSessions ||
+		!preset.Capabilities.CanCancel ||
+		!preset.Capabilities.SupportsOutputMode(agents.OutputJSON) {
+		t.Fatalf("preset = %+v", preset)
+	}
+	if len(preset.Args) != 3 ||
+		preset.Args[0] != "app-server" ||
+		preset.Args[1] != "--listen" ||
+		preset.Args[2] != "stdio://" {
+		t.Fatalf("preset args = %+v", preset.Args)
+	}
+	settings := decodePresetSettings(t, preset)
+	if settings.PromptDelivery != agents.PromptViaStdin ||
+		settings.TimeoutSeconds != 1800 ||
+		len(settings.VersionArgs) != 2 ||
+		settings.VersionArgs[0] != "app-server" ||
+		settings.VersionArgs[1] != "--help" ||
+		settings.Protocol != "codex_app_server" ||
+		settings.SmokePromptEnabled {
+		t.Fatalf("settings = %+v", settings)
+	}
+}
+
 func TestClaudeCodeCLIPreset(t *testing.T) {
 	t.Parallel()
 
@@ -107,6 +140,40 @@ func TestGeminiCLIPreset(t *testing.T) {
 	}
 }
 
+func TestGeminiACPPreset(t *testing.T) {
+	t.Parallel()
+
+	preset := GeminiACP()
+	if preset.ID != "gemini-acp" ||
+		preset.Command != "gemini" ||
+		preset.AdapterKind != agents.AdapterACPStdio ||
+		preset.OutputMode != agents.OutputJSON ||
+		preset.ModelLabel != "gemini-acp" ||
+		!preset.Capabilities.SupportsStreaming ||
+		!preset.Capabilities.SupportsSessions ||
+		!preset.Capabilities.CanCancel ||
+		!preset.Capabilities.SupportsOutputMode(agents.OutputJSON) {
+		t.Fatalf("preset = %+v", preset)
+	}
+	if len(preset.Args) != 1 || preset.Args[0] != "--acp" {
+		t.Fatalf("preset args = %+v", preset.Args)
+	}
+	settings := decodePresetSettings(t, preset)
+	if settings.PromptDelivery != agents.PromptViaStdin ||
+		settings.TimeoutSeconds != 1800 ||
+		len(settings.VersionArgs) != 1 ||
+		settings.VersionArgs[0] != "--help" ||
+		settings.Protocol != "acp" ||
+		settings.SmokePromptEnabled {
+		t.Fatalf("settings = %+v", settings)
+	}
+	if !containsString(preset.EnvAllowlist, "PATH") ||
+		!containsString(preset.EnvAllowlist, "GEMINI_API_KEY") ||
+		!containsString(preset.EnvAllowlist, "GOOGLE_APPLICATION_CREDENTIALS") {
+		t.Fatalf("env allowlist = %+v", preset.EnvAllowlist)
+	}
+}
+
 func TestOpenCodeCLIPreset(t *testing.T) {
 	t.Parallel()
 
@@ -138,7 +205,44 @@ func TestOpenCodeCLIPreset(t *testing.T) {
 	}
 	if !containsString(preset.EnvAllowlist, "PATH") ||
 		!containsString(preset.EnvAllowlist, "OPENAI_API_KEY") ||
-		!containsString(preset.EnvAllowlist, "ANTHROPIC_API_KEY") {
+		!containsString(preset.EnvAllowlist, "ANTHROPIC_API_KEY") ||
+		!containsString(preset.EnvAllowlist, "XAI_API_KEY") {
+		t.Fatalf("env allowlist = %+v", preset.EnvAllowlist)
+	}
+}
+
+func TestOpenCodeACPPreset(t *testing.T) {
+	t.Parallel()
+
+	preset := OpenCodeACP()
+	if preset.ID != "opencode-acp" ||
+		preset.Command != "opencode" ||
+		preset.AdapterKind != agents.AdapterACPStdio ||
+		preset.OutputMode != agents.OutputJSON ||
+		preset.ModelLabel != "opencode-acp" ||
+		!preset.Capabilities.SupportsStreaming ||
+		!preset.Capabilities.SupportsSessions ||
+		!preset.Capabilities.CanCancel ||
+		!preset.Capabilities.SupportsOutputMode(agents.OutputJSON) {
+		t.Fatalf("preset = %+v", preset)
+	}
+	if len(preset.Args) != 1 || preset.Args[0] != "acp" {
+		t.Fatalf("preset args = %+v", preset.Args)
+	}
+	settings := decodePresetSettings(t, preset)
+	if settings.PromptDelivery != agents.PromptViaStdin ||
+		settings.TimeoutSeconds != 1800 ||
+		len(settings.VersionArgs) != 2 ||
+		settings.VersionArgs[0] != "acp" ||
+		settings.VersionArgs[1] != "--help" ||
+		settings.Protocol != "acp" ||
+		settings.SmokePromptEnabled {
+		t.Fatalf("settings = %+v", settings)
+	}
+	if !containsString(preset.EnvAllowlist, "PATH") ||
+		!containsString(preset.EnvAllowlist, "OPENAI_API_KEY") ||
+		!containsString(preset.EnvAllowlist, "OPENROUTER_API_KEY") ||
+		!containsString(preset.EnvAllowlist, "XAI_API_KEY") {
 		t.Fatalf("env allowlist = %+v", preset.EnvAllowlist)
 	}
 }
@@ -178,7 +282,7 @@ func TestListIncludesKnownPresets(t *testing.T) {
 	for _, preset := range presets {
 		ids[preset.ID] = struct{}{}
 	}
-	for _, id := range []string{"codex-cli", "claude-code-cli", "gemini-cli", "opencode-cli", "custom-cli"} {
+	for _, id := range []string{"codex-cli", "codex-app-server", "claude-code-cli", "gemini-cli", "gemini-acp", "opencode-cli", "opencode-acp", "custom-cli"} {
 		if _, ok := ids[id]; !ok {
 			t.Fatalf("preset %q missing from %+v", id, presets)
 		}
@@ -191,6 +295,7 @@ type presetSettings struct {
 	VersionArgs        []string              `json:"version_args"`
 	SkipVersion        bool                  `json:"skip_version"`
 	SmokePromptEnabled bool                  `json:"smoke_prompt_enabled"`
+	Protocol           string                `json:"protocol"`
 }
 
 func decodePresetSettings(t *testing.T, preset Preset) presetSettings {

@@ -7,7 +7,7 @@ Use this checklist before tagging an MVP release candidate. A release is ready o
 - [ ] User can open a local Git repository through the desktop app.
 - [ ] User can create a PR snapshot from GitHub URL, local branch compare, or local changes.
 - [ ] User can configure review agents, context policy, and runtime limits.
-- [ ] Review workflow runs with fake agents and at least one real local CLI preset.
+- [ ] Review workflow runs with fake agents and at least one real local CLI or stdio protocol preset.
 - [ ] Findings are normalized, deduped, ranked, verified, and persisted.
 - [ ] Finding detail shows evidence, draft comment, suggested fix, and decision actions.
 - [ ] Evidence Map loads for complete and partial graph states.

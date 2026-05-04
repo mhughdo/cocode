@@ -18,22 +18,25 @@ Use this guide after installing or launching cocode for the first time.
 
 cocode stores the token through Electron safe storage. The backend stores only a credential reference and metadata, not the raw token.
 
-## 3. Configure CLI Agents
+## 3. Configure Review Agents
 
 1. Open Settings and review agent presets.
-2. Enable the local CLIs you want cocode to run.
+2. Enable the local CLIs or stdio protocol agents you want cocode to run.
 3. Use read-only review mode for MVP dogfood.
 4. Run health checks before the first real review.
 
 Available local presets:
 
 - Codex CLI.
+- Codex App Server.
 - Gemini CLI.
+- Gemini ACP.
 - OpenCode CLI.
+- OpenCode ACP.
 - Claude Code preset can remain disabled until the CLI is installed locally.
 - Custom CLI for deterministic local tools or internal agents.
 
-Each CLI should already be installed and authenticated in your shell before cocode runs it.
+Each CLI or protocol server command should already be installed and authenticated in your shell before cocode runs it.
 
 ## 4. Run A First Review
 

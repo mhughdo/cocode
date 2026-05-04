@@ -38,8 +38,8 @@ func CheckCommandHealth(ctx context.Context, config ConnectionConfig, settings C
 	if err := config.Validate(); err != nil {
 		return commandHealth(HealthUnavailable, "agent command config is invalid", checkedAt, metadata, err)
 	}
-	if config.Kind != AdapterCLINonInteractive {
-		return commandHealth(HealthUnknown, "runtime health checks are only implemented for CLI agents", checkedAt, metadata, nil)
+	if !supportsCommandHealth(config.Kind) {
+		return commandHealth(HealthUnknown, "runtime health checks are not implemented for this adapter kind", checkedAt, metadata, nil)
 	}
 	if strings.TrimSpace(config.Command) == "" {
 		return commandHealth(HealthUnavailable, "command is not configured", checkedAt, metadata, nil)
@@ -84,6 +84,9 @@ func CheckCommandHealth(ctx context.Context, config ConnectionConfig, settings C
 	}
 
 	if settings.SmokePromptEnabled {
+		if config.Kind != AdapterCLINonInteractive {
+			return commandHealth(HealthDegraded, "protocol adapter smoke prompts are not supported", checkedAt, metadata, nil)
+		}
 		prompt := settings.SmokePrompt
 		if strings.TrimSpace(prompt) == "" {
 			prompt = "health check"
@@ -98,6 +101,15 @@ func CheckCommandHealth(ctx context.Context, config ConnectionConfig, settings C
 	}
 
 	return commandHealth(status, message, checkedAt, metadata, nil)
+}
+
+func supportsCommandHealth(kind AdapterKind) bool {
+	switch kind {
+	case AdapterCLINonInteractive, AdapterJSONRPCStdio, AdapterACPStdio:
+		return true
+	default:
+		return false
+	}
 }
 
 func commandHealth(status HealthStatus, message string, checkedAt time.Time, metadata map[string]any, err error) AgentHealth {

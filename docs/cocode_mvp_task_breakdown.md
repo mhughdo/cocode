@@ -2,7 +2,7 @@
 
 **Product:** cocode  
 **Document type:** Implementation task breakdown  
-**Scope:** MVP implementation with non-interactive CLI agents, Evidence Map, copy fix packets, GitHub publishing, Electron + Go/Gin + SQLite  
+**Scope:** MVP implementation with local CLI/protocol review agents, Evidence Map, copy fix packets, GitHub publishing, Electron + Go/Gin + SQLite
 **Status baseline:** Tasks are planned unless explicitly marked done  
 **Last updated:** 2026-05-04
 
@@ -213,12 +213,12 @@ Large parallel workstreams:
 | T103 | Implement fake malformed agent | Test fixture CLI that emits malformed output. | Done | T093 | T178, T360 | Fixture used for repair/error tests. |
 | T104 | Add Codex CLI preset | Add configurable preset for Codex CLI non-interactive usage. | Done | T092, T093 | T105-T107 | Preset appears in UI; health check can validate command if installed. |
 | T105 | Add Claude Code CLI preset | Add configurable preset for Claude `-p`/JSON mode. | Done | T092, T093 | T104,T106 | Preset appears in UI; docs explain required local auth. |
-| T106 | Add Gemini CLI preset | Add configurable generic CLI preset for Gemini non-interactive mode; note future ACP. | Done | T092, T093 | T104,T105 | Preset appears; no ACP assumption in MVP. |
+| T106 | Add Gemini CLI preset | Add configurable generic CLI preset for Gemini non-interactive mode. | Done | T092, T093 | T104,T105 | Preset appears; ACP support is tracked separately below. |
 | T107 | Add custom CLI preset | User can create arbitrary CLI adapter config. | Done | T092 | T248 | Custom command can be saved, health checked, and used in review. |
 | T107A | Add OpenCode CLI preset | Add configurable preset for OpenCode `run --format json` non-interactive usage. | Done | T092, T093 | T248 | Preset appears in UI; health check can validate local `opencode` if installed. |
-| T108 | Add JSON-RPC stdio skeleton | Create disabled/future connection driver skeleton for Codex App Server/ACP. | Done | T090 | T109 | Interfaces compile; no MVP feature depends on it; documented as future. |
-| T109 | Add Codex App Server adapter stub | Add feature-flagged stub mapping future Codex app-server events to AgentEvents. | Done | T108 | T110 | Stub is disabled; tests verify unsupported feature returns clear error. |
-| T110 | Add ACP adapter stub | Add feature-flagged stub for future ACP agent integration. | Done | T108 | T111 | Stub is disabled; code structure is clear. |
+| T108 | Add JSON-RPC stdio skeleton | Create connection driver boundary for Codex App Server/ACP. | Done | T090 | T109 | Interfaces compile; runtime implementation progress is tracked in F001/F002. |
+| T109 | Add Codex App Server adapter stub | Add Codex app-server event mapping boundary. | Done | T108 | T110 | Adapter identity/capabilities are present; runtime implementation progress is tracked in F001. |
+| T110 | Add ACP adapter stub | Add ACP agent integration boundary. | Done | T108 | T111 | Adapter identity/capabilities are present; runtime implementation progress is tracked in F002. |
 | T111 | Document adapter extension guide | Write developer docs for adding new CLI or protocol adapter. | Done | T090-T110 | T006 | Guide includes config, parser, health check, tests, and security rules. |
 
 ---
@@ -425,8 +425,8 @@ Large parallel workstreams:
 | T380 | Configure electron-builder | Build dev/prod app package for macOS first, then Windows/Linux if possible. | Done | T014, T031 | T381 | electron-builder 26.8.1 packages the built Electron app and bundled `cocoded` backend; `pnpm desktop:dist:dir` builds an unpacked macOS app that smoke-launched with backend `/api/health` ready. |
 | T381 | Add app signing/notarization notes | Document signing steps even if not fully automated in MVP. | Done | T380 | T382 | `docs/release_packaging.md` documents ad-hoc local smoke, Developer ID signing, hardened runtime, entitlements, notarization credential options, and release validation evidence. |
 | T382 | Add update strategy note | Decide no auto-update vs future auto-update. | Done | T380 | T390 | `docs/release_packaging.md` documents MVP manual updates with `--publish never`, GitHub Release attachment, and no background updater. |
-| T383 | Add first-run setup guide | UI/docs for connecting GitHub token and CLI agents. | Done | T248, T328 | T390 | `docs/first_run_setup.md` covers opening a repo, saving a GitHub token, enabling Codex/Gemini/OpenCode/custom CLI presets, running a first review, triage, export, and logs. |
-| T384 | Add troubleshooting guide | Missing CLI, auth errors, invalid output, timeouts, GitHub anchor failures. | Done | T044, T092, T297 | T390 | `docs/troubleshooting.md` covers packaged backend issues, GitHub auth, missing CLI, invalid agent output, timeouts, anchor warnings, partial Evidence Maps, and large-PR slowness. |
+| T383 | Add first-run setup guide | UI/docs for connecting GitHub token and review agents. | Done | T248, T328 | T390 | `docs/first_run_setup.md` covers opening a repo, saving a GitHub token, enabling Codex/Gemini/OpenCode/custom CLI and protocol presets, running a first review, triage, export, and logs. |
+| T384 | Add troubleshooting guide | Missing agent commands, auth errors, invalid output, timeouts, GitHub anchor failures. | Done | T044, T092, T297 | T390 | `docs/troubleshooting.md` covers packaged backend issues, GitHub auth, missing CLI/protocol commands, invalid agent output, timeouts, anchor warnings, partial Evidence Maps, and large-PR slowness. |
 | T390 | MVP release candidate review | Verify all P0 tasks, tests, security, packaging, and docs. | Done | All P0 tasks | None | `docs/mvp_release_candidate_review.md` records passed automated gates, packaged-app smoke, golden-repo eval metrics, side-effect checks, and known release issues; renderer still exposes preview/copy only, not automatic GitHub publish. |
 
 ---
@@ -444,6 +444,11 @@ Large parallel workstreams:
 | F007 | GitLab/Bitbucket support | GitHub first. | Publisher abstraction | Similar preview/publish UX works for another provider. |
 | F008 | Real cost accounting | CLI cost visibility varies by provider. | Agent metadata | Cost shown accurately for supported agents. |
 
+Post-MVP connector progress:
+
+- F001 has a first functional Codex App Server stdio path: cocode can initialize `codex app-server`, create an ephemeral thread, start a turn, and stream agent message deltas into the normal review output path. Thread resume and permission/tool callback UI remain outside this slice.
+- F002 has a first functional ACP stdio path: cocode can initialize an ACP agent, create a session, send a prompt, and stream `agent_message_chunk` updates into the normal review output path. Client file/terminal/permission callbacks are rejected until the permission UI is implemented.
+
 ---
 
 ## 20. MVP Completion Criteria
@@ -451,8 +456,8 @@ Large parallel workstreams:
 The MVP is complete when:
 
 1. A user can open a local repo and create a PR/local snapshot.
-2. A user can configure and run at least two fake/real CLI agents plus Local Verifier.
-3. The review workflow produces canonical findings from CLI output.
+2. A user can configure and run at least two fake/real local review agents plus Local Verifier.
+3. The review workflow produces canonical findings from agent output.
 4. Findings can be verified and shown with evidence.
 5. Evidence Map shows hierarchy, graph, and call path for at least one golden repo finding.
 6. User can ask a finding-scoped follow-up.

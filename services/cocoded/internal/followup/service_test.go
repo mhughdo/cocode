@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hughdo/cocode/services/cocoded/internal/agents"
 	"github.com/hughdo/cocode/services/cocoded/internal/contextbundle"
 	"github.com/hughdo/cocode/services/cocoded/internal/db"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
@@ -165,6 +166,50 @@ func TestServiceFollowupAgentConfigRejectsWriteCapability(t *testing.T) {
 	_, err := service.followupAgentConfig(context.Background(), "agent_config_writer")
 	if !errors.Is(err, ErrInvalidAgentConfig) {
 		t.Fatalf("followupAgentConfig() error = %v, want ErrInvalidAgentConfig", err)
+	}
+}
+
+func TestServiceFollowupAgentConfigAcceptsProtocolAdapters(t *testing.T) {
+	t.Parallel()
+
+	queries := setupFollowupDB(t)
+	service := testFollowupService(queries)
+	for _, tc := range []struct {
+		id   string
+		kind agents.AdapterKind
+	}{
+		{id: "agent_config_jsonrpc", kind: agents.AdapterJSONRPCStdio},
+		{id: "agent_config_acp", kind: agents.AdapterACPStdio},
+	} {
+		capabilities, err := agents.DefaultCapabilities(tc.kind).EncodeJSON()
+		if err != nil {
+			t.Fatalf("EncodeJSON(%s) error = %v", tc.kind, err)
+		}
+		if _, err := queries.CreateAgentConfig(context.Background(), dbgen.CreateAgentConfigParams{
+			ID:               tc.id,
+			Name:             "Protocol follow-up agent",
+			Role:             "verifier",
+			AdapterKind:      string(tc.kind),
+			Command:          sql.NullString{String: "fake-agent", Valid: true},
+			ArgsJson:         "[]",
+			CwdMode:          "repo_root",
+			EnvAllowlistJson: "[]",
+			OutputMode:       "json",
+			CapabilitiesJson: capabilities,
+			SettingsJson:     "{}",
+			Enabled:          1,
+			CreatedAt:        "2026-05-03T00:08:00Z",
+			UpdatedAt:        "2026-05-03T00:08:00Z",
+		}); err != nil {
+			t.Fatalf("CreateAgentConfig(%s) error = %v", tc.id, err)
+		}
+		config, err := service.followupAgentConfig(context.Background(), tc.id)
+		if err != nil {
+			t.Fatalf("followupAgentConfig(%s) error = %v", tc.kind, err)
+		}
+		if config.AdapterKind != string(tc.kind) {
+			t.Fatalf("adapter kind = %s, want %s", config.AdapterKind, tc.kind)
+		}
 	}
 }
 

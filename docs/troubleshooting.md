@@ -23,13 +23,15 @@
 - Delete and re-save the token if safe storage was reset.
 - Check backend logs for `/api/credentials/github` validation errors.
 
-## Missing CLI Agent
+## Missing Agent Command
 
-- Run the CLI directly in a normal shell first.
+- Run the CLI or protocol server command directly in a normal shell first.
 - Confirm the command is on the app process `PATH`.
 - Use the agent health check in Settings.
 - For custom CLIs, avoid shell wrappers unless the command policy explicitly allows them.
 - Confirm the agent is read-only for review mode.
+- For Codex App Server, confirm `codex app-server --help` works.
+- For ACP agents, confirm `gemini --acp` or `opencode acp --help` works.
 
 ## Invalid Agent Output
 

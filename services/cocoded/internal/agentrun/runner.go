@@ -145,7 +145,7 @@ func (r Runner) Execute(ctx context.Context, params RunParams) (RunResult, error
 		return r.finishWithError(persistCtx, result, run, startedAt, "permission_denied", permissionDeniedError(denied))
 	}
 
-	connection, err := r.driver().Open(ctx, config)
+	connection, err := r.driver(config.Kind).Open(ctx, config)
 	if err != nil {
 		return r.finishWithError(persistCtx, result, run, startedAt, "open_error", err)
 	}
@@ -372,9 +372,13 @@ func mergeRunMetadata(base map[string]any, extra map[string]any) map[string]any 
 	return merged
 }
 
-func (r Runner) driver() agents.ConnectionDriver {
+func (r Runner) driver(kind agents.AdapterKind) agents.ConnectionDriver {
 	if r.Driver != nil {
 		return r.Driver
+	}
+	switch kind {
+	case agents.AdapterJSONRPCStdio, agents.AdapterACPStdio:
+		return agents.JSONRPCStdioDriver{Enabled: true}
 	}
 	return agents.CommandOnceDriver{}
 }

@@ -18,7 +18,7 @@ if [ "$1" = "--version" ]; then
 fi
 exit 0
 `)
-	health := CheckCommandHealth(context.Background(), healthConfig(command), CommandHealthSettings{})
+	health := CheckCommandHealth(context.Background(), healthConfig(command), CommandHealthSettings{VersionTimeoutSeconds: 15})
 	if health.Status != HealthAvailable ||
 		!strings.Contains(health.Message, "fake-agent 1.2.3") ||
 		health.Metadata["version"] != "fake-agent 1.2.3" ||
@@ -55,7 +55,8 @@ func TestCheckCommandHealthAllowsExplicitRiskyCommand(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 	health := CheckCommandHealth(context.Background(), healthConfig(path), CommandHealthSettings{
-		AllowRiskyCommand: true,
+		AllowRiskyCommand:     true,
+		VersionTimeoutSeconds: 15,
 	})
 	if health.Status != HealthAvailable ||
 		health.Metadata["version"] != "safe shell wrapper 1.0" {
@@ -76,7 +77,7 @@ exit 1
 	config := healthConfig(command)
 	config.Env = map[string]string{"COCODE_HEALTH_TOKEN": "visible"}
 
-	health := CheckCommandHealth(context.Background(), config, CommandHealthSettings{})
+	health := CheckCommandHealth(context.Background(), config, CommandHealthSettings{VersionTimeoutSeconds: 15})
 	if health.Status != HealthAvailable ||
 		health.Metadata["version"] != "token=visible secret=unset" {
 		t.Fatalf("health = %+v", health)

@@ -187,8 +187,9 @@ exit 0
 			"output_modes":  []string{"json", "text"},
 		},
 		"settings": map[string]any{
-			"prompt_delivery": "stdin",
-			"timeout_seconds": 600,
+			"prompt_delivery":         "stdin",
+			"timeout_seconds":         600,
+			"version_timeout_seconds": 15,
 		},
 		"enabled": true,
 	})
@@ -333,6 +334,21 @@ func TestAgentPresetsEndpointIncludesBuiltInCLIs(t *testing.T) {
 		!json.Valid(codex.Settings) {
 		t.Fatalf("codex preset = %+v", codex)
 	}
+	codexApp := findAgentPreset(t, presets, "codex-app-server")
+	if codexApp.Command != "codex" ||
+		len(codexApp.Args) != 3 ||
+		codexApp.Args[0] != "app-server" ||
+		codexApp.Args[1] != "--listen" ||
+		codexApp.Args[2] != "stdio://" ||
+		codexApp.AdapterKind != agents.AdapterJSONRPCStdio ||
+		codexApp.OutputMode != agents.OutputJSON ||
+		codexApp.ModelLabel != "gpt-5.3-codex" ||
+		!codexApp.Capabilities.SupportsStreaming ||
+		!codexApp.Capabilities.SupportsSessions ||
+		!codexApp.Capabilities.SupportsOutputMode(agents.OutputJSON) ||
+		!json.Valid(codexApp.Settings) {
+		t.Fatalf("codex app-server preset = %+v", codexApp)
+	}
 	claude := findAgentPreset(t, presets, "claude-code-cli")
 	if claude.Command != "claude" ||
 		len(claude.Args) != 4 ||
@@ -359,6 +375,19 @@ func TestAgentPresetsEndpointIncludesBuiltInCLIs(t *testing.T) {
 		!json.Valid(gemini.Settings) {
 		t.Fatalf("gemini preset = %+v", gemini)
 	}
+	geminiACP := findAgentPreset(t, presets, "gemini-acp")
+	if geminiACP.Command != "gemini" ||
+		len(geminiACP.Args) != 1 ||
+		geminiACP.Args[0] != "--acp" ||
+		geminiACP.AdapterKind != agents.AdapterACPStdio ||
+		geminiACP.OutputMode != agents.OutputJSON ||
+		geminiACP.ModelLabel != "gemini-acp" ||
+		!geminiACP.Capabilities.SupportsStreaming ||
+		!geminiACP.Capabilities.SupportsSessions ||
+		!geminiACP.Capabilities.SupportsOutputMode(agents.OutputJSON) ||
+		!json.Valid(geminiACP.Settings) {
+		t.Fatalf("gemini acp preset = %+v", geminiACP)
+	}
 	opencode := findAgentPreset(t, presets, "opencode-cli")
 	if opencode.Command != "opencode" ||
 		len(opencode.Args) != 4 ||
@@ -371,6 +400,19 @@ func TestAgentPresetsEndpointIncludesBuiltInCLIs(t *testing.T) {
 		!opencode.Capabilities.SupportsOutputMode(agents.OutputJSONL) ||
 		!json.Valid(opencode.Settings) {
 		t.Fatalf("opencode preset = %+v", opencode)
+	}
+	opencodeACP := findAgentPreset(t, presets, "opencode-acp")
+	if opencodeACP.Command != "opencode" ||
+		len(opencodeACP.Args) != 1 ||
+		opencodeACP.Args[0] != "acp" ||
+		opencodeACP.AdapterKind != agents.AdapterACPStdio ||
+		opencodeACP.OutputMode != agents.OutputJSON ||
+		opencodeACP.ModelLabel != "opencode-acp" ||
+		!opencodeACP.Capabilities.SupportsStreaming ||
+		!opencodeACP.Capabilities.SupportsSessions ||
+		!opencodeACP.Capabilities.SupportsOutputMode(agents.OutputJSON) ||
+		!json.Valid(opencodeACP.Settings) {
+		t.Fatalf("opencode acp preset = %+v", opencodeACP)
 	}
 	custom := findAgentPreset(t, presets, "custom-cli")
 	if custom.Command != "" ||
@@ -410,8 +452,9 @@ exit 2
 			"output_modes":  []string{"text"},
 		},
 		"settings": map[string]any{
-			"prompt_delivery": "arg",
-			"version_args":    []string{"--ping"},
+			"prompt_delivery":         "arg",
+			"version_args":            []string{"--ping"},
+			"version_timeout_seconds": 15,
 		},
 	})
 	createResponse := httptest.NewRecorder()
@@ -443,6 +486,66 @@ exit 2
 	}
 }
 
+func TestProtocolAgentConfigCanBeSavedAndHealthChecked(t *testing.T) {
+	router, _ := testRouterWithQueries(t)
+	command := writeFakeAgentConfigCommand(t, `#!/bin/sh
+if [ "$1" = "app-server" ] && [ "$2" = "--help" ]; then
+  printf 'codex app-server ok\n'
+  exit 0
+fi
+printf 'unexpected args: %s\n' "$*" >&2
+exit 2
+`)
+
+	createRequest := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/agents/configs", map[string]any{
+		"name":         "Codex App Server",
+		"role":         "primary_reviewer",
+		"adapter_kind": "jsonrpc_stdio",
+		"command":      command,
+		"args":         []string{"app-server", "--listen", "stdio://"},
+		"cwd_mode":     "repo_root",
+		"output_mode":  "json",
+		"capabilities": map[string]any{
+			"supports_json":      true,
+			"supports_streaming": true,
+			"supports_sessions":  true,
+			"can_read":           true,
+			"can_cancel":         true,
+			"output_modes":       []string{"json", "jsonl"},
+		},
+		"settings": map[string]any{
+			"version_args":            []string{"app-server", "--help"},
+			"version_timeout_seconds": 15,
+			"smoke_prompt_enabled":    false,
+		},
+	})
+	createResponse := httptest.NewRecorder()
+	router.ServeHTTP(createResponse, createRequest)
+	if createResponse.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createResponse.Code, createResponse.Body.String())
+	}
+	created := decodeAgentConfigResponse(t, createResponse.Body.Bytes())
+	if created.AdapterKind != agents.AdapterJSONRPCStdio ||
+		created.Command != command ||
+		created.OutputMode != agents.OutputJSON ||
+		!created.Capabilities.SupportsSessions {
+		t.Fatalf("created protocol config = %+v", created)
+	}
+
+	healthRequest := httptest.NewRequest(http.MethodPost, "/api/agents/configs/"+created.ID+"/test", nil)
+	healthRequest.Header.Set("X-Cocode-Token", "test-token")
+	healthResponse := httptest.NewRecorder()
+	router.ServeHTTP(healthResponse, healthRequest)
+	if healthResponse.Code != http.StatusOK {
+		t.Fatalf("health status = %d, body = %s", healthResponse.Code, healthResponse.Body.String())
+	}
+	health := decodeAgentConfigHealthResponse(t, healthResponse.Body.Bytes())
+	if health.Status != agents.HealthAvailable ||
+		health.Metadata["version"] != "codex app-server ok" {
+		t.Fatalf("health = %+v", health)
+	}
+}
+
 func TestAgentConfigHealthUsesEnvAllowlist(t *testing.T) {
 	t.Setenv("COCODE_HEALTH_TOKEN", "visible")
 	t.Setenv("COCODE_PARENT_SECRET", "hidden")
@@ -466,7 +569,8 @@ exit 2
 		"output_mode":   "text",
 		"env_allowlist": []string{"COCODE_HEALTH_TOKEN"},
 		"settings": map[string]any{
-			"version_args": []string{"--check-env"},
+			"version_args":            []string{"--check-env"},
+			"version_timeout_seconds": 15,
 		},
 	})
 	createResponse := httptest.NewRecorder()
@@ -538,6 +642,15 @@ func TestAgentConfigEndpointRejectsInvalidInputs(t *testing.T) {
 				"role":         "reviewer",
 				"adapter_kind": "cli_noninteractive",
 				"output_mode":  "text",
+			},
+		},
+		{
+			name: "missing protocol command",
+			body: map[string]any{
+				"name":         "ACP reviewer",
+				"role":         "reviewer",
+				"adapter_kind": "acp_stdio",
+				"output_mode":  "json",
 			},
 		},
 		{

@@ -18,6 +18,7 @@ type CommandHealthSettings struct {
 	SkipVersion           bool           `json:"skip_version,omitempty"`
 	SmokePromptEnabled    bool           `json:"smoke_prompt_enabled,omitempty"`
 	SmokePrompt           string         `json:"smoke_prompt,omitempty"`
+	SmokePromptExpected   string         `json:"smoke_prompt_expected,omitempty"`
 	TimeoutSeconds        int64          `json:"timeout_seconds,omitempty"`
 	VersionTimeoutSeconds int64          `json:"version_timeout_seconds,omitempty"`
 	SmokeTimeoutSeconds   int64          `json:"smoke_timeout_seconds,omitempty"`
@@ -91,9 +92,22 @@ func CheckCommandHealth(ctx context.Context, config ConnectionConfig, settings C
 		if strings.TrimSpace(prompt) == "" {
 			prompt = "health check"
 		}
-		_, stderr, err := runHealthCommand(ctx, config, config.Args, prompt, settings.smokeTimeout())
+		expected := strings.TrimSpace(settings.SmokePromptExpected)
+		if expected != "" && strings.Contains(prompt, expected) {
+			metadata["smoke_expected"] = expected
+			return commandHealth(HealthUnavailable, "smoke prompt includes expected output marker", checkedAt, metadata, nil)
+		}
+		stdout, stderr, err := runHealthCommand(ctx, config, config.Args, prompt, settings.smokeTimeout())
 		if err != nil {
 			return commandHealth(HealthUnavailable, "command smoke check failed", checkedAt, metadata, errors.New(commandErrorMessage(err, stderr)))
+		}
+		if expected != "" &&
+			!strings.Contains(stdout, expected) &&
+			!strings.Contains(stderr, expected) {
+			metadata["smoke_expected"] = expected
+			metadata["smoke_stdout"] = truncateMessage(stdout)
+			metadata["smoke_stderr"] = truncateMessage(stderr)
+			return commandHealth(HealthUnavailable, "command smoke check did not include expected output", checkedAt, metadata, nil)
 		}
 		status = HealthAvailable
 		message = "command smoke check succeeded"

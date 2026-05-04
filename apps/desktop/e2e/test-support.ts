@@ -32,6 +32,14 @@ type ApiEnvelope<T> = {
 
 type AgentConfig = {
   id: string;
+  name: string;
+};
+
+type AgentHealth = {
+  agent_config_id: string;
+  status: "unknown" | "available" | "unavailable" | "degraded";
+  message?: string;
+  metadata?: Record<string, unknown>;
 };
 
 export type CocodeApp = {
@@ -283,7 +291,18 @@ export async function createFakeAgentConfig(
   });
 }
 
-async function apiRequest<T>(
+export async function testAgentConfig(
+  backendInfo: BackendInfo,
+  agentConfigId: string,
+): Promise<AgentHealth> {
+  return apiRequest<AgentHealth>(
+    backendInfo,
+    `/api/agents/configs/${encodeURIComponent(agentConfigId)}/test`,
+    { method: "POST" },
+  );
+}
+
+export async function apiRequest<T>(
   backendInfo: BackendInfo,
   path: string,
   options: { method?: "GET" | "POST"; body?: unknown } = {},

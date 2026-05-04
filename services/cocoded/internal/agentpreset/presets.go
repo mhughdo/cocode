@@ -6,7 +6,7 @@ import (
 	"github.com/hughdo/cocode/services/cocoded/internal/agents"
 )
 
-var pathEnvAllowlist = []string{"PATH"}
+var baseCLIEnvAllowlist = []string{"PATH", "HOME", "TERM", "LANG", "NO_COLOR", "FORCE_COLOR"}
 
 type Preset struct {
 	ID             string                   `json:"id"`
@@ -39,11 +39,11 @@ func CodexCLI() Preset {
 		Role:           "primary_reviewer",
 		AdapterKind:    agents.AdapterCLINonInteractive,
 		Command:        "codex",
-		Args:           []string{"exec", "--json", "-"},
+		Args:           []string{"exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", "--color", "never", "-"},
 		CWDMode:        "repo_root",
-		EnvAllowlist:   pathEnvAllowlist,
+		EnvAllowlist:   append([]string{}, baseCLIEnvAllowlist...),
 		OutputMode:     agents.OutputJSONL,
-		ModelLabel:     "gpt-5.3-codex",
+		ModelLabel:     "default",
 		ReasoningLabel: "high",
 		Capabilities: agents.AgentCapabilities{
 			SupportsJSON:      true,
@@ -69,9 +69,9 @@ func CodexAppServer() Preset {
 		Command:        "codex",
 		Args:           []string{"app-server", "--listen", "stdio://"},
 		CWDMode:        "repo_root",
-		EnvAllowlist:   pathEnvAllowlist,
+		EnvAllowlist:   append([]string{}, baseCLIEnvAllowlist...),
 		OutputMode:     agents.OutputJSON,
-		ModelLabel:     "gpt-5.3-codex",
+		ModelLabel:     "default",
 		ReasoningLabel: "high",
 		Capabilities: agents.AgentCapabilities{
 			SupportsJSON:      true,
@@ -96,9 +96,9 @@ func ClaudeCodeCLI() Preset {
 		Role:           "primary_reviewer",
 		AdapterKind:    agents.AdapterCLINonInteractive,
 		Command:        "claude",
-		Args:           []string{"-p", agents.PromptArgPlaceholder, "--output-format", "json"},
+		Args:           []string{"-p", agents.PromptArgPlaceholder, "--output-format", "json", "--permission-mode", "plan", "--no-session-persistence", "--tools", ""},
 		CWDMode:        "repo_root",
-		EnvAllowlist:   append(pathEnvAllowlist, "ANTHROPIC_API_KEY"),
+		EnvAllowlist:   append(baseCLIEnvAllowlist, "ANTHROPIC_API_KEY"),
 		OutputMode:     agents.OutputJSON,
 		ModelLabel:     "claude",
 		ReasoningLabel: "",
@@ -115,7 +115,7 @@ func ClaudeCodeCLI() Preset {
 }
 
 func GeminiCLI() Preset {
-	settings := json.RawMessage(`{"prompt_delivery":"stdin","timeout_seconds":1800,"version_args":["--version"],"smoke_prompt_enabled":false}`)
+	settings := json.RawMessage(`{"prompt_delivery":"arg","timeout_seconds":1800,"version_args":["--version"],"smoke_prompt_enabled":false}`)
 	return Preset{
 		ID:             "gemini-cli",
 		Name:           "Gemini CLI",
@@ -123,11 +123,11 @@ func GeminiCLI() Preset {
 		Role:           "primary_reviewer",
 		AdapterKind:    agents.AdapterCLINonInteractive,
 		Command:        "gemini",
-		Args:           []string{"--model", "pro", "--output-format", "json"},
+		Args:           []string{"-p", agents.PromptArgPlaceholder, "--output-format", "json", "--approval-mode", "plan", "--skip-trust"},
 		CWDMode:        "repo_root",
-		EnvAllowlist:   append(pathEnvAllowlist, "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"),
+		EnvAllowlist:   append(baseCLIEnvAllowlist, "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"),
 		OutputMode:     agents.OutputJSON,
-		ModelLabel:     "pro",
+		ModelLabel:     "default",
 		ReasoningLabel: "",
 		Capabilities: agents.AgentCapabilities{
 			SupportsJSON: true,
@@ -152,7 +152,7 @@ func GeminiACP() Preset {
 		Command:        "gemini",
 		Args:           []string{"--acp"},
 		CWDMode:        "repo_root",
-		EnvAllowlist:   append(pathEnvAllowlist, "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"),
+		EnvAllowlist:   append(baseCLIEnvAllowlist, "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"),
 		OutputMode:     agents.OutputJSON,
 		ModelLabel:     "gemini-acp",
 		ReasoningLabel: "",
@@ -181,7 +181,7 @@ func OpenCodeCLI() Preset {
 		Command:        "opencode",
 		Args:           []string{"run", "--format", "json", agents.PromptArgPlaceholder},
 		CWDMode:        "repo_root",
-		EnvAllowlist:   append(pathEnvAllowlist, "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY", "XAI_API_KEY"),
+		EnvAllowlist:   append(baseCLIEnvAllowlist, "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY", "XAI_API_KEY"),
 		OutputMode:     agents.OutputJSONL,
 		ModelLabel:     "opencode",
 		ReasoningLabel: "",
@@ -209,7 +209,7 @@ func OpenCodeACP() Preset {
 		Command:        "opencode",
 		Args:           []string{"acp"},
 		CWDMode:        "repo_root",
-		EnvAllowlist:   append(pathEnvAllowlist, "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY", "XAI_API_KEY"),
+		EnvAllowlist:   append(baseCLIEnvAllowlist, "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY", "XAI_API_KEY"),
 		OutputMode:     agents.OutputJSON,
 		ModelLabel:     "opencode-acp",
 		ReasoningLabel: "",
@@ -238,7 +238,7 @@ func CustomCLI() Preset {
 		Command:        "",
 		Args:           []string{},
 		CWDMode:        "repo_root",
-		EnvAllowlist:   pathEnvAllowlist,
+		EnvAllowlist:   append([]string{}, baseCLIEnvAllowlist...),
 		OutputMode:     agents.OutputText,
 		ModelLabel:     "custom",
 		ReasoningLabel: "",

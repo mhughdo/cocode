@@ -282,6 +282,10 @@ type structuredDocument struct {
 	Findings   json.RawMessage `json:"findings"`
 	Finding    json.RawMessage `json:"finding"`
 	Candidate  json.RawMessage `json:"candidate"`
+	Response   json.RawMessage `json:"response"`
+	Result     json.RawMessage `json:"result"`
+	Item       json.RawMessage `json:"item"`
+	Part       json.RawMessage `json:"part"`
 	Type       string          `json:"type"`
 	Event      string          `json:"event"`
 	SchemaName string          `json:"schema_version"`
@@ -302,9 +306,55 @@ func candidatesFromDocument(document json.RawMessage, documentIndex int) ([]Cand
 		return candidateFromRaw(envelope.Candidate, documentIndex, 1)
 	case looksLikeCandidate(envelope):
 		return candidateFromRaw(document, documentIndex, 1)
+	case len(envelope.Response) > 0:
+		return candidatesFromWrappedText(envelope.Response, documentIndex, "response")
+	case len(envelope.Result) > 0:
+		return candidatesFromWrappedText(envelope.Result, documentIndex, "result")
+	case len(envelope.Item) > 0:
+		return candidatesFromWrappedObjectText(envelope.Item, documentIndex, "item")
+	case len(envelope.Part) > 0:
+		return candidatesFromWrappedObjectText(envelope.Part, documentIndex, "part")
 	default:
 		return nil, nil
 	}
+}
+
+func candidatesFromWrappedObjectText(raw json.RawMessage, documentIndex int, field string) ([]Candidate, []Diagnostic) {
+	var wrapper struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		return nil, []Diagnostic{documentDiagnostic(documentIndex, "invalid_"+field+"_wrapper", err.Error())}
+	}
+	if strings.TrimSpace(wrapper.Text) == "" {
+		return nil, nil
+	}
+	return extractCandidatesFromWrappedText(wrapper.Text)
+}
+
+func candidatesFromWrappedText(raw json.RawMessage, documentIndex int, field string) ([]Candidate, []Diagnostic) {
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil {
+		return nil, []Diagnostic{documentDiagnostic(documentIndex, "invalid_"+field+"_text", err.Error())}
+	}
+	if strings.TrimSpace(text) == "" {
+		return nil, nil
+	}
+	return extractCandidatesFromWrappedText(text)
+}
+
+func extractCandidatesFromWrappedText(text string) ([]Candidate, []Diagnostic) {
+	parsed := ParseAuto([]byte(text))
+	if parsed.Structured {
+		extracted := ExtractCandidates(parsed)
+		return extracted.Candidates, extracted.Diagnostics
+	}
+	if repaired, diagnostics := repairMalformedStructuredOutput(text); repaired.Structured {
+		extracted := ExtractCandidates(repaired)
+		return extracted.Candidates, append(diagnostics, extracted.Diagnostics...)
+	}
+	return nil, nil
 }
 
 func candidatesFromFindings(raw json.RawMessage, documentIndex int) ([]Candidate, []Diagnostic) {

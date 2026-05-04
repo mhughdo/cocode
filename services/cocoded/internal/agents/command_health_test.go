@@ -108,6 +108,7 @@ func TestCheckCommandHealthRunsSmokePromptWhenEnabled(t *testing.T) {
 	command := writeFakeHealthCommand(t, `#!/bin/sh
 input=$(/bin/cat)
 if [ "$1" = "smoke" ] && [ "$input" = "hello health" ]; then
+  printf 'COCODE_HEALTH_OK\n'
   exit 0
 fi
 printf 'bad smoke: arg=%s input=%s\n' "$1" "$input" >&2
@@ -116,13 +117,52 @@ exit 8
 	config := healthConfig(command)
 	config.Args = []string{"smoke"}
 	health := CheckCommandHealth(context.Background(), config, CommandHealthSettings{
-		SkipVersion:        true,
-		SmokePromptEnabled: true,
-		SmokePrompt:        "hello health",
+		SkipVersion:         true,
+		SmokePromptEnabled:  true,
+		SmokePrompt:         "hello health",
+		SmokePromptExpected: "COCODE_HEALTH_OK",
 	})
 	if health.Status != HealthAvailable ||
 		health.Message != "command smoke check succeeded" ||
 		health.Metadata["smoke_prompt"] != true {
+		t.Fatalf("health = %+v", health)
+	}
+}
+
+func TestCheckCommandHealthRequiresExpectedSmokePromptOutput(t *testing.T) {
+	t.Parallel()
+
+	command := writeFakeHealthCommand(t, `#!/bin/sh
+printf 'wrong marker\n'
+`)
+	health := CheckCommandHealth(context.Background(), healthConfig(command), CommandHealthSettings{
+		SkipVersion:         true,
+		SmokePromptEnabled:  true,
+		SmokePrompt:         "hello health",
+		SmokePromptExpected: "COCODE_HEALTH_OK",
+	})
+	if health.Status != HealthUnavailable ||
+		health.Message != "command smoke check did not include expected output" ||
+		health.Metadata["smoke_expected"] != "COCODE_HEALTH_OK" {
+		t.Fatalf("health = %+v", health)
+	}
+}
+
+func TestCheckCommandHealthRejectsEchoProneSmokePrompt(t *testing.T) {
+	t.Parallel()
+
+	command := writeFakeHealthCommand(t, `#!/bin/sh
+	/bin/cat
+	`)
+	health := CheckCommandHealth(context.Background(), healthConfig(command), CommandHealthSettings{
+		SkipVersion:         true,
+		SmokePromptEnabled:  true,
+		SmokePrompt:         "Reply exactly: COCODE_HEALTH_OK",
+		SmokePromptExpected: "COCODE_HEALTH_OK",
+	})
+	if health.Status != HealthUnavailable ||
+		health.Message != "smoke prompt includes expected output marker" ||
+		health.Metadata["smoke_expected"] != "COCODE_HEALTH_OK" {
 		t.Fatalf("health = %+v", health)
 	}
 }

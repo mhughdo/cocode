@@ -57,6 +57,55 @@ func TestExtractCandidatesFromDelimitedJSONOutput(t *testing.T) {
 	}
 }
 
+func TestExtractCandidatesFromRealCLIWrappers(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`{"type":"item.completed","item":{"type":"agent_message","text":"{\"findings\":[{\"claim\":\"codex wrapper finding\",\"category\":\"security\",\"severity\":\"high\",\"confidence\":0.8,\"locations\":[{\"path\":\"src/auth.ts\",\"start_line\":2,\"end_line\":2,\"side\":\"RIGHT\"}],\"evidence\":[{\"title\":\"codex text wrapper\",\"summary\":\"codex wrapped final response\"}]}]}"}}
+{"type":"text","part":{"type":"text","text":"{\"findings\":[{\"claim\":\"opencode wrapper finding\",\"category\":\"correctness\",\"severity\":\"medium\",\"confidence\":0.7,\"locations\":[{\"path\":\"src/auth.ts\",\"start_line\":3,\"end_line\":3,\"side\":\"RIGHT\"}],\"evidence\":[{\"title\":\"opencode text wrapper\",\"summary\":\"opencode wrapped text event\"}]}]}"}}
+{"response":"{\"findings\":[{\"claim\":\"gemini wrapper finding\",\"category\":\"reliability\",\"severity\":\"low\",\"confidence\":0.6,\"locations\":[{\"path\":\"src/auth.ts\",\"start_line\":4,\"end_line\":4,\"side\":\"RIGHT\"}],\"evidence\":[{\"title\":\"gemini response wrapper\",\"summary\":\"gemini wrapped response field\"}]}]}"}
+{"result":"{\"findings\":[{\"claim\":\"claude wrapper finding\",\"category\":\"maintainability\",\"severity\":\"nit\",\"confidence\":0.5,\"locations\":[{\"path\":\"src/auth.ts\",\"start_line\":5,\"end_line\":5,\"side\":\"RIGHT\"}],\"evidence\":[{\"title\":\"claude result wrapper\",\"summary\":\"claude wrapped result field\"}]}]}"}
+`)
+	parsed := Parse(raw, agents.OutputJSONL)
+	result := ExtractCandidates(parsed)
+	if len(result.Diagnostics) != 0 {
+		t.Fatalf("Diagnostics = %+v", result.Diagnostics)
+	}
+	if len(result.Candidates) != 4 {
+		t.Fatalf("Candidates = %+v", result.Candidates)
+	}
+	claims := []string{
+		result.Candidates[0].Claim,
+		result.Candidates[1].Claim,
+		result.Candidates[2].Claim,
+		result.Candidates[3].Claim,
+	}
+	for _, want := range []string{
+		"codex wrapper finding",
+		"opencode wrapper finding",
+		"gemini wrapper finding",
+		"claude wrapper finding",
+	} {
+		if !containsString(claims, want) {
+			t.Fatalf("claims = %+v, missing %q", claims, want)
+		}
+	}
+}
+
+func TestExtractCandidatesIgnoresPlainTextRealCLIWrappers(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`{"type":"item.completed","item":{"type":"agent_message","text":"No findings."}}
+{"type":"text","part":{"type":"text","text":"No findings."}}
+{"response":"No findings."}
+{"result":"No findings."}
+`)
+	parsed := Parse(raw, agents.OutputJSONL)
+	result := ExtractCandidates(parsed)
+	if len(result.Candidates) != 0 || len(result.Diagnostics) != 0 {
+		t.Fatalf("Candidates = %+v Diagnostics = %+v", result.Candidates, result.Diagnostics)
+	}
+}
+
 func TestExtractCandidatesSkipsInvalidFinding(t *testing.T) {
 	t.Parallel()
 
@@ -216,4 +265,13 @@ func assertDiagnosticCode(t *testing.T, diagnostics []Diagnostic, code string) {
 		}
 	}
 	t.Fatalf("diagnostic %q not found in %+v", code, diagnostics)
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

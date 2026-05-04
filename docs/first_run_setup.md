@@ -38,6 +38,14 @@ Available local presets:
 
 Each CLI or protocol server command should already be installed and authenticated in your shell before cocode runs it.
 
+For dogfood verification, run the opt-in real CLI smoke suite from `apps/desktop`:
+
+```sh
+COCODE_E2E_REAL_CLIS=codex,gemini,opencode,claude pnpm e2e:real-cli
+```
+
+The suite creates temporary saved connections, runs each selected CLI through the same Settings health-check path as the app, and expects the smoke response marker back from the command.
+
 ## 4. Run A First Review
 
 1. Choose a source: GitHub PR URL, local branch compare, or local changes.

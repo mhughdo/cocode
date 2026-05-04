@@ -323,12 +323,19 @@ func TestAgentPresetsEndpointIncludesBuiltInCLIs(t *testing.T) {
 	codex := findAgentPreset(t, presets, "codex-cli")
 	if codex.ID == "" ||
 		codex.Command != "codex" ||
-		len(codex.Args) != 3 ||
+		len(codex.Args) != 10 ||
 		codex.Args[0] != "exec" ||
 		codex.Args[1] != "--json" ||
-		codex.Args[2] != "-" ||
+		codex.Args[2] != "--sandbox" ||
+		codex.Args[3] != "read-only" ||
+		codex.Args[4] != "--skip-git-repo-check" ||
+		codex.Args[5] != "--ephemeral" ||
+		codex.Args[6] != "--ignore-rules" ||
+		codex.Args[7] != "--color" ||
+		codex.Args[8] != "never" ||
+		codex.Args[9] != "-" ||
 		codex.OutputMode != agents.OutputJSONL ||
-		codex.ModelLabel != "gpt-5.3-codex" ||
+		codex.ModelLabel != "default" ||
 		!codex.Capabilities.CanCancel ||
 		!codex.Capabilities.SupportsOutputMode(agents.OutputJSONL) ||
 		!json.Valid(codex.Settings) {
@@ -342,7 +349,7 @@ func TestAgentPresetsEndpointIncludesBuiltInCLIs(t *testing.T) {
 		codexApp.Args[2] != "stdio://" ||
 		codexApp.AdapterKind != agents.AdapterJSONRPCStdio ||
 		codexApp.OutputMode != agents.OutputJSON ||
-		codexApp.ModelLabel != "gpt-5.3-codex" ||
+		codexApp.ModelLabel != "default" ||
 		!codexApp.Capabilities.SupportsStreaming ||
 		!codexApp.Capabilities.SupportsSessions ||
 		!codexApp.Capabilities.SupportsOutputMode(agents.OutputJSON) ||
@@ -351,11 +358,16 @@ func TestAgentPresetsEndpointIncludesBuiltInCLIs(t *testing.T) {
 	}
 	claude := findAgentPreset(t, presets, "claude-code-cli")
 	if claude.Command != "claude" ||
-		len(claude.Args) != 4 ||
+		len(claude.Args) != 9 ||
 		claude.Args[0] != "-p" ||
 		claude.Args[1] != agents.PromptArgPlaceholder ||
 		claude.Args[2] != "--output-format" ||
 		claude.Args[3] != "json" ||
+		claude.Args[4] != "--permission-mode" ||
+		claude.Args[5] != "plan" ||
+		claude.Args[6] != "--no-session-persistence" ||
+		claude.Args[7] != "--tools" ||
+		claude.Args[8] != "" ||
 		claude.OutputMode != agents.OutputJSON ||
 		claude.ModelLabel != "claude" ||
 		!claude.Capabilities.SupportsOutputMode(agents.OutputJSON) ||
@@ -364,13 +376,16 @@ func TestAgentPresetsEndpointIncludesBuiltInCLIs(t *testing.T) {
 	}
 	gemini := findAgentPreset(t, presets, "gemini-cli")
 	if gemini.Command != "gemini" ||
-		len(gemini.Args) != 4 ||
-		gemini.Args[0] != "--model" ||
-		gemini.Args[1] != "pro" ||
+		len(gemini.Args) != 7 ||
+		gemini.Args[0] != "-p" ||
+		gemini.Args[1] != agents.PromptArgPlaceholder ||
 		gemini.Args[2] != "--output-format" ||
 		gemini.Args[3] != "json" ||
+		gemini.Args[4] != "--approval-mode" ||
+		gemini.Args[5] != "plan" ||
+		gemini.Args[6] != "--skip-trust" ||
 		gemini.OutputMode != agents.OutputJSON ||
-		gemini.ModelLabel != "pro" ||
+		gemini.ModelLabel != "default" ||
 		!gemini.Capabilities.SupportsOutputMode(agents.OutputJSON) ||
 		!json.Valid(gemini.Settings) {
 		t.Fatalf("gemini preset = %+v", gemini)

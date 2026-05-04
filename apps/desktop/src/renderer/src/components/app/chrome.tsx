@@ -54,8 +54,8 @@ export function AppShell({
 }: AppShellProps) {
   return (
     <TooltipProvider>
-      <main className="bg-background text-foreground flex min-h-screen">
-        <aside className="bg-sidebar text-sidebar-foreground flex w-[244px] shrink-0 flex-col">
+      <main className="bg-background text-foreground flex min-h-screen overflow-hidden">
+        <aside className="bg-sidebar text-sidebar-foreground flex w-[286px] shrink-0 flex-col border-r shadow-[inset_-1px_0_0_oklch(0.82_0.015_252/0.42)]">
           {sidebar}
         </aside>
         <section className="bg-background flex min-w-0 flex-1 flex-col">
@@ -65,7 +65,7 @@ export function AppShell({
             className={cn(
               "grid min-h-0 flex-1",
               detailPane
-                ? "grid-cols-[minmax(0,1fr)_minmax(430px,42vw)]"
+                ? "grid-cols-[minmax(0,1fr)_minmax(420px,37vw)]"
                 : "grid-cols-1",
             )}
           >
@@ -90,8 +90,8 @@ export function SidebarSection({
   children,
 }: SidebarSectionProps) {
   return (
-    <section className="mt-5 flex flex-col gap-1 px-2">
-      <div className="text-sidebar-muted flex h-7 items-center justify-between gap-2 px-2 text-xs">
+    <section className="mt-6 flex flex-col gap-1 px-3">
+      <div className="text-sidebar-muted flex h-7 items-center justify-between gap-2 px-2 text-[0.72rem] font-medium tracking-[0.04em] uppercase">
         <span className="truncate">{title}</span>
         {action}
       </div>
@@ -118,8 +118,9 @@ export function SidebarNavButton({
   return (
     <button
       className={cn(
-        "text-sidebar-foreground/85 hover:bg-background/45 flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition-colors",
-        active && "bg-background/60 text-sidebar-foreground",
+        "text-sidebar-foreground/86 hover:bg-background/55 flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[0.86rem] transition-colors [&_svg]:size-4 [&_svg]:shrink-0",
+        active &&
+          "bg-background/72 text-sidebar-foreground shadow-[0_1px_2px_oklch(0.2_0.02_255/0.045)]",
         className,
       )}
       type="button"
@@ -152,16 +153,16 @@ export function PaneHeader({
   return (
     <div
       className={cn(
-        "bg-surface-raised flex h-12 shrink-0 items-center justify-between gap-3 border-b px-4",
+        "bg-surface-raised/96 flex h-16 shrink-0 items-center justify-between gap-4 border-b px-5 backdrop-blur",
         className,
       )}
     >
-      <div className="flex min-w-0 items-center gap-2 text-sm">
+      <div className="flex min-w-0 items-center gap-3 text-sm">
         {Icon && <Icon />}
         <div className="min-w-0">
-          <div className="truncate font-medium">{title}</div>
+          <div className="truncate text-[0.92rem] font-semibold">{title}</div>
           {description && (
-            <div className="text-muted-foreground truncate text-xs">
+            <div className="text-muted-foreground mt-0.5 truncate text-xs">
               {description}
             </div>
           )}

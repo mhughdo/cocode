@@ -1,5 +1,6 @@
 import {
   type FormEvent,
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -144,10 +145,10 @@ const MAX_REVIEW_EVENTS_RENDERED = 120;
 const MAX_AUDIT_ENTRIES_RENDERED = 120;
 const MAX_FINDINGS_RENDERED = 150;
 const MAX_CODE_LINES_RENDERED = 80;
-const EVIDENCE_MAP_NODE_WIDTH = 190;
-const EVIDENCE_MAP_NODE_HEIGHT = 68;
-const EVIDENCE_MAP_COLUMN_GAP = 250;
-const EVIDENCE_MAP_ROW_GAP = 104;
+const EVIDENCE_MAP_NODE_WIDTH = 204;
+const EVIDENCE_MAP_NODE_HEIGHT = 76;
+const EVIDENCE_MAP_COLUMN_GAP = 252;
+const EVIDENCE_MAP_ROW_GAP = 112;
 
 const COMPOSER_RUNTIME_POLICIES = {
   quick: { max_tokens: 4_000, max_items: 40 },
@@ -607,11 +608,6 @@ export function App() {
           />
         }
         statusBanner={<AppConnectionNotice apiSession={apiSession} />}
-        detailPane={
-          mainView === "new-thread" || mainView === "configure" ? (
-            <ReviewPane />
-          ) : undefined
-        }
       >
         {mainView === "new-thread" && (
           <NewThreadScreen
@@ -746,14 +742,21 @@ function NewThreadScreen({
   }
 
   return (
-    <section className="flex min-w-0 flex-col">
-      <ScrollArea className="flex-1 px-6 py-5">
-        <div className="mx-auto flex max-w-4xl flex-col gap-5">
+    <section className="bg-background flex min-w-0 flex-col">
+      <ScrollArea className="flex-1">
+        <div className="cocode-page-wide flex flex-col gap-6 px-6 py-6">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
-              <h1 className="text-xl font-semibold">New review thread</h1>
+              <div className="text-muted-foreground mb-3 flex items-center gap-2 text-xs">
+                <span>Threads</span>
+                <ChevronDownIcon className="size-3 -rotate-90" />
+                <span className="text-foreground">New thread</span>
+              </div>
+              <h1 className="text-2xl leading-8 font-semibold">
+                What should we review?
+              </h1>
               <p className="text-muted-foreground mt-1 text-sm">
-                Start from a PR URL, local changes, or a branch comparison.
+                Choose a source and setup to get expert agents working for you.
               </p>
             </div>
             <Button variant="outline" onClick={onOpenRepository}>
@@ -762,24 +765,27 @@ function NewThreadScreen({
             </Button>
           </div>
 
-          {!canCreate && (
-            <EmptyState
-              title="Open a repository first"
-              description="cocode needs a local git repository so snapshots, branch comparisons, and local-only context stay grounded on your machine."
-              action={
-                <Button onClick={onOpenRepository}>
-                  <FolderOpenIcon data-icon="inline-start" />
-                  Open local repo
-                </Button>
-              }
-              icon={FolderOpenIcon}
-            />
-          )}
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+            <section className="cocode-panel p-4">
+              {!canCreate && (
+                <div className="border-primary/20 bg-primary/5 mb-4 flex items-start gap-3 rounded-md border p-3">
+                  <div className="bg-primary text-primary-foreground flex size-8 shrink-0 items-center justify-center rounded-md">
+                    <FolderOpenIcon className="size-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium">
+                      Open a repository first
+                    </div>
+                    <p className="text-muted-foreground mt-1 text-sm">
+                      cocode keeps snapshots and local-only context grounded in
+                      a selected git repository.
+                    </p>
+                  </div>
+                </div>
+              )}
 
-          {canCreate && (
-            <>
-              <section className="bg-surface-raised rounded-lg border p-4">
-                <div className="flex items-center justify-between gap-3">
+              {canCreate && (
+                <div className="bg-surface/45 mb-4 flex items-center justify-between gap-3 rounded-md border px-3 py-2">
                   <div className="min-w-0">
                     <div className="text-sm font-medium">
                       {activeRepository?.name ?? "Repository"}
@@ -789,96 +795,72 @@ function NewThreadScreen({
                         activeWorkspace?.root_path}
                     </div>
                   </div>
-                  <Badge variant="secondary">
+                  <Badge variant="outline">
                     {activeRepository?.default_branch ?? "git repo"}
                   </Badge>
                 </div>
-              </section>
+              )}
 
-              <div className="grid grid-cols-3 gap-3">
-                <SourceButton
-                  active={source === "local-changes"}
-                  description="Review staged, unstaged, and untracked local changes."
-                  icon={Code2Icon}
-                  label="Local changes"
-                  onClick={() => setSource("local-changes")}
-                />
-                <SourceButton
-                  active={source === "branch-compare"}
-                  description="Compare two refs in the selected local repository."
-                  icon={GitBranchIcon}
-                  label="Branch compare"
-                  onClick={() => setSource("branch-compare")}
-                />
+              <div className="flex flex-col gap-3">
                 <SourceButton
                   active={source === "github"}
                   description="Fetch PR metadata and diff from GitHub."
                   icon={GitPullRequestIcon}
-                  label="GitHub PR"
+                  label="Paste GitHub PR URL"
                   onClick={() => setSource("github")}
-                />
-              </div>
-
-              <section className="bg-surface-raised rounded-lg border p-4">
-                {source === "github" && (
-                  <div className="flex flex-col gap-2">
-                    <label className="text-sm font-medium" htmlFor="github-url">
-                      Pull request URL
-                    </label>
+                >
+                  {source === "github" && (
                     <Input
+                      disabled={!canCreate}
                       id="github-url"
                       placeholder="https://github.com/owner/repo/pull/123"
                       value={githubUrl}
                       onChange={(event) => setGitHubUrl(event.target.value)}
                     />
-                  </div>
-                )}
-
-                {source === "branch-compare" && (
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="flex flex-col gap-2">
-                      <label className="text-sm font-medium" htmlFor="base-ref">
-                        Base ref
+                  )}
+                </SourceButton>
+                <SourceButton
+                  active={source === "local-changes"}
+                  description="Analyze uncommitted changes in your local workspace."
+                  icon={Code2Icon}
+                  label="Review local changes"
+                  onClick={() => setSource("local-changes")}
+                />
+                <SourceButton
+                  active={source === "branch-compare"}
+                  description="Compare changes between two branches in this repository."
+                  icon={GitBranchIcon}
+                  label="Compare branches"
+                  onClick={() => setSource("branch-compare")}
+                >
+                  {source === "branch-compare" && (
+                    <div className="grid grid-cols-2 gap-3">
+                      <label className="flex flex-col gap-2 text-xs font-medium">
+                        Base branch
+                        <Input
+                          disabled={!canCreate}
+                          id="base-ref"
+                          value={baseRef}
+                          onChange={(event) => setBaseRef(event.target.value)}
+                        />
                       </label>
-                      <Input
-                        id="base-ref"
-                        value={baseRef}
-                        onChange={(event) => setBaseRef(event.target.value)}
-                      />
-                    </div>
-                    <div className="flex flex-col gap-2">
-                      <label className="text-sm font-medium" htmlFor="head-ref">
-                        Head ref
+                      <label className="flex flex-col gap-2 text-xs font-medium">
+                        Compare branch
+                        <Input
+                          disabled={!canCreate}
+                          id="head-ref"
+                          value={headRef}
+                          onChange={(event) => setHeadRef(event.target.value)}
+                        />
                       </label>
-                      <Input
-                        id="head-ref"
-                        value={headRef}
-                        onChange={(event) => setHeadRef(event.target.value)}
-                      />
                     </div>
-                  </div>
-                )}
-
-                {source === "local-changes" && (
-                  <div className="flex items-start gap-3">
-                    <div className="bg-muted flex size-8 shrink-0 items-center justify-center rounded-lg">
-                      <Code2Icon />
-                    </div>
-                    <div className="min-w-0">
-                      <div className="text-sm font-medium">
-                        Snapshot current working tree
-                      </div>
-                      <p className="text-muted-foreground mt-1 text-sm">
-                        Captures tracked and untracked local changes through the
-                        backend git collector with existing output limits.
-                      </p>
-                    </div>
-                  </div>
-                )}
-              </section>
+                  )}
+                </SourceButton>
+              </div>
 
               {(localError || snapshot.status === "error") && (
                 <ErrorState
+                  className="mt-4"
                   title="Could not create snapshot"
                   description={
                     localError ||
@@ -889,19 +871,98 @@ function NewThreadScreen({
                 />
               )}
 
-              <div className="flex justify-end">
+              <div className="mt-5 flex flex-wrap justify-end gap-3">
+                <Button variant="outline" onClick={() => setSource("github")}>
+                  <SettingsIcon data-icon="inline-start" />
+                  Customize review
+                </Button>
                 <Button
                   disabled={snapshot.status === "loading"}
-                  onClick={submit}
+                  onClick={canCreate ? submit : onOpenRepository}
                 >
-                  {snapshot.status === "loading"
-                    ? "Creating snapshot..."
-                    : "Continue to configure"}
+                  {canCreate
+                    ? snapshot.status === "loading"
+                      ? "Creating snapshot..."
+                      : "Continue to configure review"
+                    : "Open local repo"}
                   <ArrowUpIcon data-icon="inline-end" />
                 </Button>
               </div>
-            </>
-          )}
+            </section>
+
+            <section className="cocode-panel flex flex-col gap-5 p-4">
+              <div>
+                <h2 className="text-base font-semibold">Suggested setup</h2>
+                <p className="text-muted-foreground mt-1 text-sm">
+                  Review-safe defaults for the first pass.
+                </p>
+              </div>
+              <div className="flex flex-col gap-3">
+                <SuggestedSetupRow
+                  icon={BotIcon}
+                  label="Codex"
+                  value="Code analysis"
+                />
+                <SuggestedSetupRow
+                  icon={SparklesIcon}
+                  label="OpenCode"
+                  value="Deep reasoning"
+                />
+                <SuggestedSetupRow
+                  icon={TerminalIcon}
+                  label="Gemini"
+                  value="Architecture"
+                />
+                <SuggestedSetupRow
+                  icon={ShieldCheckIcon}
+                  label="Local Verifier"
+                  value="Security & tests"
+                />
+              </div>
+              <div className="bg-primary/5 mt-auto rounded-md border p-3">
+                <div className="flex items-start gap-2 text-sm">
+                  <ShieldCheckIcon className="text-primary mt-0.5 size-4 shrink-0" />
+                  <span>
+                    Local-only and redaction controls are configured before
+                    agents receive context.
+                  </span>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <section className="cocode-panel p-4">
+            <InputGroup className="bg-background min-h-36 items-stretch rounded-md border">
+              <InputGroupTextarea
+                className="min-h-24"
+                disabled={!canCreate}
+                placeholder="Describe what you want the agents to review..."
+              />
+            </InputGroup>
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <Badge className="h-8 rounded-md px-3" variant="secondary">
+                  Review
+                </Badge>
+                <Badge className="h-8 rounded-md px-3" variant="outline">
+                  Codex CLI
+                </Badge>
+                <Badge className="h-8 rounded-md px-3" variant="outline">
+                  Low
+                </Badge>
+                <Badge className="h-8 rounded-md px-3" variant="outline">
+                  Permissions · Default
+                </Badge>
+              </div>
+              <Button
+                aria-label="Submit review prompt"
+                disabled={!canCreate}
+                size="icon"
+              >
+                <SendIcon />
+              </Button>
+            </div>
+          </section>
         </div>
       </ScrollArea>
     </section>
@@ -910,32 +971,70 @@ function NewThreadScreen({
 
 function SourceButton({
   active,
+  children,
   description,
   icon: Icon,
   label,
   onClick,
 }: {
   active: boolean;
+  children?: ReactNode;
   description: string;
   icon: LucideIcon;
   label: string;
   onClick: () => void;
 }) {
   return (
-    <button
+    <section
       className={cn(
-        "bg-surface-raised hover:bg-surface flex min-h-28 flex-col gap-2 rounded-lg border p-4 text-left transition-colors",
-        active && "border-foreground ring-foreground/10 ring-2",
+        "group bg-background hover:bg-surface/60 flex min-h-20 flex-col gap-3 rounded-md border p-4 transition-colors",
+        active && "border-primary bg-primary/[0.03] ring-primary/15 ring-2",
       )}
-      type="button"
-      onClick={onClick}
     >
-      <Icon />
-      <span className="text-sm font-medium">{label}</span>
-      <span className="text-muted-foreground text-xs leading-5">
-        {description}
-      </span>
-    </button>
+      <button
+        className="flex w-full items-start gap-3 text-left"
+        type="button"
+        onClick={onClick}
+      >
+        <span
+          className={cn(
+            "mt-0.5 size-4 rounded-full border",
+            active &&
+              "border-primary bg-primary shadow-[inset_0_0_0_4px_white]",
+          )}
+        />
+        <Icon className="mt-0.5 size-5 shrink-0" />
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-semibold">{label}</span>
+          <span className="text-muted-foreground mt-1 block text-sm">
+            {description}
+          </span>
+        </span>
+      </button>
+      {children && <div className="pl-16">{children}</div>}
+    </section>
+  );
+}
+
+function SuggestedSetupRow({
+  icon: Icon,
+  label,
+  value,
+}: {
+  icon: LucideIcon;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="flex items-center gap-3">
+      <div className="bg-primary/10 text-primary flex size-8 shrink-0 items-center justify-center rounded-md">
+        <Icon className="size-4" />
+      </div>
+      <div className="min-w-0 flex-1 truncate text-sm font-medium">{label}</div>
+      <div className="text-muted-foreground max-w-32 truncate text-xs">
+        {value}
+      </div>
+    </div>
   );
 }
 
@@ -1058,12 +1157,21 @@ function ConfigureReviewScreen({
   }
 
   return (
-    <section className="flex min-w-0 flex-col">
-      <ScrollArea className="flex-1 px-6 py-5">
-        <div className="mx-auto flex max-w-5xl flex-col gap-5">
+    <section className="bg-background flex min-w-0 flex-col">
+      <ScrollArea className="flex-1">
+        <div className="cocode-page-wide flex flex-col gap-6 px-6 py-6">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
-              <h1 className="text-xl font-semibold">Configure review</h1>
+              <div className="text-muted-foreground mb-3 flex items-center gap-2 text-xs">
+                <span>Threads</span>
+                <ChevronDownIcon className="size-3 -rotate-90" />
+                <span>New thread</span>
+                <ChevronDownIcon className="size-3 -rotate-90" />
+                <span className="text-foreground">Configure review</span>
+              </div>
+              <h1 className="text-2xl leading-8 font-semibold">
+                Configure review
+              </h1>
               <p className="text-muted-foreground mt-1 truncate text-sm">
                 {snapshot.status === "success"
                   ? snapshotTitle(snapshot.data, activeRepository)
@@ -1084,13 +1192,13 @@ function ConfigureReviewScreen({
             />
           )}
           {snapshot.status === "loading" && (
-            <LoadingRows rows={2} className="rounded-lg border p-4" />
+            <LoadingRows rows={2} className="cocode-panel p-4" />
           )}
 
-          <div className="grid grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)] gap-4">
-            <section className="bg-surface-raised rounded-lg border">
-              <div className="flex items-center justify-between border-b px-3 py-2">
-                <span className="text-sm font-medium">Changed files</span>
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(380px,0.72fr)]">
+            <section className="cocode-panel overflow-hidden">
+              <div className="flex items-center justify-between border-b px-4 py-3">
+                <span className="text-base font-semibold">Changed files</span>
                 {changedFiles.status === "success" && (
                   <Badge variant="secondary">
                     {changedFiles.data.length} total
@@ -1132,8 +1240,8 @@ function ConfigureReviewScreen({
             </section>
 
             <div className="flex min-w-0 flex-col gap-4">
-              <section className="bg-surface-raised rounded-lg border p-4">
-                <div className="mb-3 text-sm font-medium">Agents</div>
+              <section className="cocode-panel p-4">
+                <div className="mb-3 text-base font-semibold">Agents</div>
                 {agentConfigs.status === "loading" && <LoadingRows rows={3} />}
                 {agentConfigs.status === "error" && (
                   <ErrorState
@@ -1154,7 +1262,7 @@ function ConfigureReviewScreen({
                   {safeAgents.map((agent) => (
                     <label
                       key={agent.id}
-                      className="hover:bg-surface flex items-center gap-3 rounded-md px-2 py-2 text-sm"
+                      className="hover:bg-surface hover:border-border flex items-center gap-3 rounded-md border border-transparent px-3 py-2.5 text-sm transition-colors"
                     >
                       <Checkbox
                         checked={effectiveSelectedAgentIds.has(agent.id)}
@@ -1196,8 +1304,8 @@ function ConfigureReviewScreen({
                 </div>
               </section>
 
-              <section className="bg-surface-raised rounded-lg border p-4">
-                <div className="mb-3 text-sm font-medium">Runtime</div>
+              <section className="cocode-panel p-4">
+                <div className="mb-3 text-base font-semibold">Runtime</div>
                 <div className="grid grid-cols-3 gap-2">
                   {(["quick", "standard", "deep"] as const).map((depth) => (
                     <Button
@@ -1223,10 +1331,12 @@ function ConfigureReviewScreen({
                 </label>
               </section>
 
-              <section className="bg-surface-raised rounded-lg border p-4">
+              <section className="cocode-panel p-4">
                 <div className="mb-3 flex items-center justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="text-sm font-medium">Context policy</div>
+                    <div className="text-base font-semibold">
+                      Policies & context
+                    </div>
                     <div className="text-muted-foreground mt-1 text-xs">
                       Explicitly maps to the backend review context schema.
                     </div>
@@ -1364,7 +1474,7 @@ function ConfigureReviewScreen({
             </div>
           </div>
 
-          <section className="bg-surface-raised rounded-lg border p-4">
+          <section className="cocode-panel p-4">
             <label className="flex flex-col gap-2 text-sm font-medium">
               Focus prompt
               <InputGroup className="min-h-24 items-stretch">
@@ -1385,7 +1495,7 @@ function ConfigureReviewScreen({
             />
           )}
 
-          <div className="flex justify-end">
+          <div className="flex justify-end pb-2">
             <Button
               disabled={startState.status === "loading"}
               onClick={startReview}
@@ -3251,25 +3361,25 @@ function Sidebar({
 
   return (
     <>
-      <div className="flex h-12 items-center gap-2 px-4">
+      <div className="flex h-11 items-center gap-2 px-5">
         <div className="bg-destructive/80 size-3 rounded-full" />
         <div className="bg-warning/80 size-3 rounded-full" />
         <div className="bg-success/80 size-3 rounded-full" />
       </div>
 
-      <div className="flex items-center gap-2 px-4 pb-4">
-        <div className="bg-primary text-primary-foreground flex size-8 items-center justify-center rounded-lg">
+      <div className="flex items-center gap-3 px-5 pb-5">
+        <div className="bg-primary text-primary-foreground flex size-9 items-center justify-center rounded-lg shadow-[0_8px_22px_oklch(0.55_0.22_260/0.18)]">
           <BotIcon />
         </div>
         <div className="min-w-0">
-          <p className="truncate text-sm font-semibold">cocode</p>
+          <p className="truncate text-base leading-5 font-semibold">cocode</p>
           <p className="text-sidebar-muted truncate text-xs">
-            Local review cockpit
+            AI code review workspace
           </p>
         </div>
       </div>
 
-      <nav className="flex flex-col gap-1 px-2">
+      <nav className="flex flex-col gap-1 px-3">
         <SidebarNavButton
           icon={PlusIcon}
           label="New thread"
@@ -3295,7 +3405,7 @@ function Sidebar({
 
       <SidebarSection
         title="Threads"
-        action={<SquareIcon className="opacity-70" />}
+        action={<SquareIcon className="size-3.5 opacity-55" />}
       >
         {reviewSessions.status === "loading" && (
           <div className="text-sidebar-muted px-2 py-1 text-xs">
@@ -3325,7 +3435,7 @@ function Sidebar({
 
       <SidebarSection
         title="Workspaces"
-        action={<SquareIcon className="opacity-70" />}
+        action={<SquareIcon className="size-3.5 opacity-55" />}
       >
         {workspaces.status === "loading" && (
           <div className="text-sidebar-muted px-2 py-1 text-xs">
@@ -3362,15 +3472,23 @@ function Sidebar({
         </div>
       )}
 
-      <div className="mt-auto flex flex-col gap-1 p-2">
-        <Separator className="-mx-2 mb-1" />
+      <div className="mt-auto flex flex-col gap-1 p-3">
+        <Separator className="-mx-3 mb-2 opacity-70" />
         <SidebarNavButton
           icon={SettingsIcon}
           label="Settings"
           onClick={onOpenAgentSettings}
         />
-        <div className="text-sidebar-muted px-2 pt-1 pb-2 text-xs">
-          Backend {backendStatus}
+        <div className="text-sidebar-muted flex items-center justify-between px-2 pt-1 pb-2 text-xs">
+          <span className="inline-flex items-center gap-1.5">
+            <span
+              className={cn(
+                "size-1.5 rounded-full",
+                backendStatus === "ready" ? "bg-success" : "bg-warning",
+              )}
+            />
+            Backend {backendStatus}
+          </span>
         </div>
       </div>
     </>
@@ -3404,48 +3522,64 @@ function TopNav({
     "Select a local git repository to begin";
 
   return (
-    <PaneHeader
-      icon={GitPullRequestIcon}
-      title={title}
-      description={description}
-      actions={
-        <>
-          <Button size="sm" variant="outline" onClick={onOpenSearch}>
-            <SearchIcon data-icon="inline-start" />
-            Search
-          </Button>
-          <Button
-            disabled={isOpeningRepository}
-            size="sm"
-            variant="outline"
-            onClick={onOpenRepository}
-          >
-            <FolderOpenIcon data-icon="inline-start" />
-            {activeRepository ? "Open repo" : "Select repo"}
-          </Button>
-          <Button size="sm" variant="outline">
-            <PanelRightIcon data-icon="inline-start" />
-            Ask all agents
-          </Button>
-          <CommitDropdown />
-          <Badge variant="secondary">+938 -664</Badge>
-          <TooltipIconButton
-            label="Notifications"
-            size="icon-sm"
-            variant="ghost"
-          >
-            <BellIcon />
-          </TooltipIconButton>
-          <TooltipIconButton
-            label="More actions"
-            size="icon-sm"
-            variant="ghost"
-          >
-            <MoreHorizontalIcon />
-          </TooltipIconButton>
-        </>
-      }
-    />
+    <div className="bg-surface-raised/96 flex h-16 shrink-0 items-center justify-between gap-4 border-b px-5 backdrop-blur">
+      <div className="flex min-w-0 items-center gap-4">
+        <Button
+          className="border-border/80 bg-background/70 max-w-[300px] min-w-0 justify-start rounded-lg px-3 shadow-xs"
+          disabled={isOpeningRepository}
+          size="sm"
+          variant="outline"
+          onClick={onOpenRepository}
+        >
+          <GitPullRequestIcon data-icon="inline-start" />
+          <span className="truncate">
+            {activeRepository?.name ?? activeWorkspace?.name ?? "Open repo"}
+          </span>
+          <ChevronDownIcon data-icon="inline-end" />
+        </Button>
+        <div className="bg-border hidden h-7 w-px lg:block" />
+        <div className="min-w-0">
+          <div className="truncate text-[0.95rem] font-semibold">{title}</div>
+          <div className="text-muted-foreground mt-0.5 max-w-[38vw] truncate text-xs">
+            {description}
+          </div>
+        </div>
+      </div>
+
+      <div className="flex shrink-0 items-center gap-2">
+        <Button size="sm" variant="outline" onClick={onOpenSearch}>
+          <SearchIcon data-icon="inline-start" />
+          Search
+        </Button>
+        <Button
+          disabled={isOpeningRepository}
+          size="sm"
+          variant="outline"
+          onClick={onOpenRepository}
+        >
+          <FolderOpenIcon data-icon="inline-start" />
+          {activeRepository ? "Open repo" : "Select repo"}
+        </Button>
+        <Button size="sm" variant="outline">
+          <PanelRightIcon data-icon="inline-start" />
+          Ask all agents
+        </Button>
+        <CommitDropdown />
+        <Badge
+          className="border-border/70 bg-background/70 gap-1"
+          variant="outline"
+        >
+          <span className="text-success">+938</span>
+          <span className="text-destructive">-664</span>
+        </Badge>
+        <TooltipIconButton label="Notifications" size="icon-sm" variant="ghost">
+          <BellIcon />
+        </TooltipIconButton>
+        <TooltipIconButton label="More actions" size="icon-sm" variant="ghost">
+          <MoreHorizontalIcon />
+        </TooltipIconButton>
+      </div>
+    </div>
   );
 }
 
@@ -6493,30 +6627,37 @@ function EvidenceMapScreen({
 
   return (
     <div className="flex flex-col gap-4">
-      <PaneHeader
-        title="Evidence Map"
-        description={finding.canonical_claim}
-        actions={
-          <div className="flex items-center gap-2">
-            <Button size="sm" variant="outline" onClick={onBack}>
-              <ArrowLeftIcon data-icon="inline-start" />
-              Findings
-            </Button>
-            <Button
-              disabled={mapState.status !== "success" || isRebuilding}
-              size="sm"
-              variant="outline"
-              onClick={() => void rebuildMap()}
-            >
-              <RefreshCwIcon data-icon="inline-start" />
-              Rebuild
-            </Button>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-muted-foreground mb-2 flex items-center gap-2 text-xs">
+            <span>Findings</span>
+            <ChevronDownIcon className="size-3 -rotate-90" />
+            <span className="text-foreground">Evidence Map</span>
           </div>
-        }
-      />
+          <h2 className="text-2xl leading-8 font-semibold">Evidence Map</h2>
+          <p className="text-muted-foreground mt-1 max-w-3xl truncate text-sm">
+            {finding.canonical_claim}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={onBack}>
+            <ArrowLeftIcon data-icon="inline-start" />
+            Findings
+          </Button>
+          <Button
+            disabled={mapState.status !== "success" || isRebuilding}
+            size="sm"
+            variant="outline"
+            onClick={() => void rebuildMap()}
+          >
+            <RefreshCwIcon data-icon="inline-start" />
+            Rebuild
+          </Button>
+        </div>
+      </div>
 
       {mapState.status === "loading" && (
-        <LoadingRows rows={8} className="rounded-lg border p-4" />
+        <LoadingRows rows={8} className="cocode-panel p-4" />
       )}
       {mapState.status === "error" && (
         <ErrorState
@@ -6525,7 +6666,7 @@ function EvidenceMapScreen({
         />
       )}
       {map && (
-        <div className="grid min-h-[650px] overflow-hidden rounded-lg border 2xl:grid-cols-[230px_minmax(0,1fr)_330px]">
+        <div className="cocode-panel grid min-h-[560px] overflow-hidden lg:grid-cols-[230px_minmax(0,1fr)] 2xl:grid-cols-[260px_minmax(0,1fr)_360px]">
           <EvidenceMapHierarchyPane
             hierarchy={map.hierarchy}
             selection={selection}
@@ -6608,14 +6749,14 @@ function EvidenceMapHierarchyPane({
   selection: EvidenceMapSelection | null;
 }) {
   return (
-    <aside className="bg-surface/40 min-w-0 border-b 2xl:border-r 2xl:border-b-0">
+    <aside className="bg-surface/60 min-w-0 border-b lg:border-r lg:border-b-0">
       <div className="border-b px-4 py-3">
-        <div className="text-sm font-medium">Code hierarchy</div>
+        <div className="text-base font-semibold">Code hierarchy</div>
         <div className="text-muted-foreground mt-1 text-xs">
           {hierarchy.length} locations
         </div>
       </div>
-      <ScrollArea className="h-48 2xl:h-[590px]">
+      <ScrollArea className="h-48 lg:h-[430px] 2xl:h-[590px]">
         <div className="flex flex-col gap-1 p-2">
           {hierarchy.map((item) => {
             const targetNodeId = item.node_ids[0];
@@ -6627,8 +6768,9 @@ function EvidenceMapHierarchyPane({
               <button
                 key={`${item.path}:${item.start_line ?? 0}:${item.kind}`}
                 className={cn(
-                  "hover:bg-surface-raised flex min-w-0 flex-col items-start rounded-md px-3 py-2 text-left text-sm",
-                  selected && "bg-surface-raised ring-border ring-1",
+                  "hover:bg-surface-raised flex min-w-0 flex-col items-start rounded-md border border-transparent px-3 py-2 text-left text-sm transition-colors",
+                  selected &&
+                    "border-primary/30 bg-surface-raised shadow-[0_1px_2px_oklch(0.2_0.02_255/0.04)]",
                 )}
                 disabled={!targetNodeId}
                 type="button"
@@ -6679,7 +6821,7 @@ export function EvidenceMapGraphCanvas({
 
   if (map.nodes.length === 0) {
     return (
-      <div className="bg-surface/20 flex min-h-[420px] min-w-0 flex-1 items-center justify-center">
+      <div className="bg-surface/30 flex min-h-[360px] min-w-0 flex-1 items-center justify-center">
         <EmptyState
           className="border-0"
           title="No graph nodes"
@@ -6691,15 +6833,30 @@ export function EvidenceMapGraphCanvas({
   }
 
   return (
-    <div className="bg-surface/20 min-h-[420px] min-w-0 flex-1 overflow-auto">
+    <div className="evidence-map-canvas min-h-[360px] min-w-0 flex-1 overflow-auto">
       <svg
         aria-label="Evidence Map graph"
-        className="min-h-[420px]"
+        className="min-h-[360px]"
         height={layout.height}
         role="img"
         width={layout.width}
       >
         <defs>
+          <filter
+            id="evidence-map-node-shadow"
+            x="-12%"
+            y="-24%"
+            width="124%"
+            height="148%"
+          >
+            <feDropShadow
+              dx="0"
+              dy="8"
+              floodColor="oklch(0.2 0.02 255)"
+              floodOpacity="0.08"
+              stdDeviation="7"
+            />
+          </filter>
           <marker
             id="evidence-map-arrow"
             markerHeight="7"
@@ -6748,7 +6905,7 @@ export function EvidenceMapGraphCanvas({
                 } ${targetY}, ${targetX} ${targetY}`}
                 markerEnd="url(#evidence-map-arrow)"
                 strokeDasharray={edge.status === "missing" ? "7 5" : undefined}
-                strokeWidth={selected ? 2.8 : 1.8}
+                strokeWidth={selected ? 2.6 : 1.6}
               />
               {edge.label && (
                 <text
@@ -6789,22 +6946,35 @@ export function EvidenceMapGraphCanvas({
                   node.kind === "counter_evidence" && "fill-warning/10",
                 )}
                 height={EVIDENCE_MAP_NODE_HEIGHT}
+                filter="url(#evidence-map-node-shadow)"
                 rx="8"
                 strokeWidth={selected ? 2.4 : 1.2}
                 width={EVIDENCE_MAP_NODE_WIDTH}
               />
-              <text className="fill-foreground text-[12px] font-medium">
+              <rect
+                className={cn(
+                  "fill-primary/80",
+                  node.kind === "missing_guard" && "fill-destructive/80",
+                  node.kind === "counter_evidence" && "fill-warning/80",
+                )}
+                height="3"
+                rx="1.5"
+                width={EVIDENCE_MAP_NODE_WIDTH - 22}
+                x="11"
+                y="9"
+              />
+              <text className="fill-foreground text-[12px] font-semibold">
                 {labelLines.map((line, index) => (
-                  <tspan key={`${node.id}:${index}`} x="12" y={20 + index * 15}>
+                  <tspan key={`${node.id}:${index}`} x="12" y={30 + index * 15}>
                     {line}
                   </tspan>
                 ))}
               </text>
               <text className="fill-muted-foreground text-[10px]">
-                <tspan x="12" y="57">
+                <tspan x="12" y="67">
                   {truncate(node.kind.replaceAll("_", " "), 18)}
                 </tspan>
-                <tspan x="142" y="57">
+                <tspan x="154" y="67">
                   {Math.round(node.confidence * 100)}%
                 </tspan>
               </text>
@@ -6826,9 +6996,9 @@ function EvidenceMapCallPathPanel({
   selection: EvidenceMapSelection | null;
 }) {
   return (
-    <div className="border-t px-4 py-3">
+    <div className="bg-surface/35 border-t px-4 py-3">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <div className="text-sm font-medium">Call path</div>
+        <div className="text-sm font-semibold">Call path</div>
         <Badge variant="outline">{map.call_paths.length} paths</Badge>
       </div>
       {map.call_paths.length > 0 ? (
@@ -6837,10 +7007,10 @@ function EvidenceMapCallPathPanel({
             <button
               key={path.id}
               className={cn(
-                "hover:bg-surface-raised flex min-w-[220px] flex-col items-start rounded-md border px-3 py-2 text-left",
+                "hover:bg-surface-raised bg-background flex min-w-[240px] flex-col items-start rounded-md border px-3 py-2.5 text-left transition-colors",
                 selection?.kind === "call_path" &&
                   selection.id === path.id &&
-                  "border-primary bg-surface-raised",
+                  "border-primary bg-primary/[0.03]",
               )}
               type="button"
               onClick={() => onSelect({ kind: "call_path", id: path.id })}
@@ -6910,10 +7080,10 @@ function EvidenceMapRightPanel({
   );
 
   return (
-    <aside className="bg-surface/40 min-w-0 border-t 2xl:border-t-0 2xl:border-l">
+    <aside className="bg-surface/60 min-w-0 border-t lg:col-span-2 2xl:col-span-1 2xl:border-t-0 2xl:border-l">
       <ScrollArea className="h-96 2xl:h-[650px]">
         <div className="flex flex-col gap-4 p-4">
-          <div>
+          <div className="bg-background rounded-md border p-3">
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <Badge>{map.panel.severity}</Badge>
               <Badge variant="outline">{map.panel.verification_status}</Badge>
@@ -6929,10 +7099,8 @@ function EvidenceMapRightPanel({
             )}
           </div>
 
-          <Separator />
-
-          <div>
-            <div className="mb-2 text-sm font-medium">Selected context</div>
+          <div className="bg-background rounded-md border p-3">
+            <div className="mb-2 text-sm font-semibold">Selected context</div>
             <SelectedEvidenceMapDetail
               edge={selectedEdge}
               node={selectedNode}
@@ -6951,11 +7119,9 @@ function EvidenceMapRightPanel({
             </Button>
           </div>
 
-          <Separator />
-
-          <div>
+          <div className="bg-background rounded-md border p-3">
             <div className="mb-2 flex items-center justify-between gap-2">
-              <div className="text-sm font-medium">Ask verifier</div>
+              <div className="text-sm font-semibold">Ask verifier</div>
               <Badge variant="outline">
                 {verifierAgent?.name ?? "auto-select"}
               </Badge>
@@ -6982,7 +7148,7 @@ function EvidenceMapRightPanel({
               </p>
             )}
             {askState.status === "success" && (
-              <div className="bg-background mt-3 rounded-md border p-3">
+              <div className="bg-surface/55 mt-3 rounded-md border p-3">
                 <div className="text-xs font-medium">Verifier response</div>
                 <p className="text-muted-foreground mt-2 text-sm leading-6">
                   {askState.data.assistant_message.content}
@@ -6991,37 +7157,37 @@ function EvidenceMapRightPanel({
             )}
           </div>
 
-          <Separator />
-
-          <EvidenceMapLegend map={map} />
+          <div className="bg-background rounded-md border p-3">
+            <EvidenceMapLegend map={map} />
+          </div>
 
           {map.panel.evidence.length > 0 && (
-            <>
-              <Separator />
-              <div>
-                <div className="mb-2 text-sm font-medium">Evidence bundle</div>
-                <div className="flex flex-col gap-2">
-                  {map.panel.evidence.slice(0, 8).map((item) => (
-                    <div key={item.id} className="rounded-md border p-3">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="truncate text-sm font-medium">
-                          {item.title}
-                        </span>
-                        <Badge variant={evidenceBadgeVariant(item.kind)}>
-                          {item.kind}
-                        </Badge>
-                      </div>
-                      <div className="text-muted-foreground mt-1 text-xs">
-                        {formatEvidenceRefLocation(item)}
-                      </div>
-                      <p className="text-muted-foreground mt-2 line-clamp-3 text-sm leading-6">
-                        {item.summary}
-                      </p>
+            <div className="bg-background rounded-md border p-3">
+              <div className="mb-2 text-sm font-semibold">Evidence bundle</div>
+              <div className="flex flex-col gap-2">
+                {map.panel.evidence.slice(0, 8).map((item) => (
+                  <div
+                    key={item.id}
+                    className="bg-surface/35 rounded-md border p-3"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate text-sm font-medium">
+                        {item.title}
+                      </span>
+                      <Badge variant={evidenceBadgeVariant(item.kind)}>
+                        {item.kind}
+                      </Badge>
                     </div>
-                  ))}
-                </div>
+                    <div className="text-muted-foreground mt-1 text-xs">
+                      {formatEvidenceRefLocation(item)}
+                    </div>
+                    <p className="text-muted-foreground mt-2 line-clamp-3 text-sm leading-6">
+                      {item.summary}
+                    </p>
+                  </div>
+                ))}
               </div>
-            </>
+            </div>
           )}
         </div>
       </ScrollArea>
@@ -7042,7 +7208,7 @@ function SelectedEvidenceMapDetail({
 }) {
   if (node) {
     return (
-      <div className="rounded-md border p-3">
+      <div className="bg-surface/35 rounded-md border p-3">
         <div className="flex items-center justify-between gap-2">
           <span className="truncate text-sm font-medium">{node.label}</span>
           <Badge variant="outline">{node.kind.replaceAll("_", " ")}</Badge>
@@ -7064,7 +7230,7 @@ function SelectedEvidenceMapDetail({
 
   if (edge) {
     return (
-      <div className="rounded-md border p-3">
+      <div className="bg-surface/35 rounded-md border p-3">
         <div className="flex items-center justify-between gap-2">
           <span className="truncate text-sm font-medium">
             {edge.label || edge.kind.replaceAll("_", " ")}
@@ -7087,7 +7253,7 @@ function SelectedEvidenceMapDetail({
 
   if (callPath) {
     return (
-      <div className="rounded-md border p-3">
+      <div className="bg-surface/35 rounded-md border p-3">
         <div className="text-sm font-medium">
           {callPath.label || "Evidence path"}
         </div>
@@ -7114,7 +7280,7 @@ function SelectedEvidenceMapDetail({
   }
 
   return (
-    <div className="text-muted-foreground rounded-md border p-3 text-sm">
+    <div className="text-muted-foreground bg-surface/35 rounded-md border p-3 text-sm">
       {selection
         ? "The selected graph item is no longer available."
         : "Select a node, edge, or call path to inspect it."}
@@ -7125,10 +7291,10 @@ function SelectedEvidenceMapDetail({
 function EvidenceMapLegend({ map }: { map: EvidenceMapResponse }) {
   return (
     <div>
-      <div className="mb-2 text-sm font-medium">Legend</div>
+      <div className="mb-2 text-sm font-semibold">Legend</div>
       <div className="flex flex-col gap-2">
         {map.legend.map((item) => (
-          <div key={item.kind} className="rounded-md border p-3">
+          <div key={item.kind} className="bg-surface/35 rounded-md border p-3">
             <div className="text-sm font-medium">{item.label}</div>
             <p className="text-muted-foreground mt-1 text-xs leading-5">
               {item.description}
@@ -7627,9 +7793,9 @@ export function MessageComposer({
   }
 
   return (
-    <div className="bg-surface-raised border-t p-4">
+    <div className="bg-surface-raised/95 border-t p-4">
       <form
-        className="bg-background mx-auto max-w-5xl rounded-2xl border shadow-sm"
+        className="cocode-panel mx-auto max-w-5xl overflow-hidden"
         onSubmit={(event) => void submitComposer(event)}
       >
         <InputGroup className="min-h-24 items-stretch border-0">
@@ -7751,148 +7917,6 @@ function formatComposerAgentLabel(agent: AgentConfig) {
   return modelLabel ? `${agent.name} - ${modelLabel}` : agent.name;
 }
 
-function ReviewPane() {
-  return (
-    <aside className="bg-surface-raised min-w-0 border-l">
-      <div className="flex h-full flex-col">
-        <PaneHeader
-          icon={Code2Icon}
-          title="Review"
-          actions={
-            <TooltipIconButton
-              label="Pause review"
-              size="icon-sm"
-              variant="ghost"
-            >
-              <PauseIcon />
-            </TooltipIconButton>
-          }
-        />
-
-        <Tabs defaultValue="diff" className="min-h-0 flex-1 gap-0">
-          <div className="flex items-center justify-between gap-2 border-b px-4 py-2">
-            <TabsList variant="line">
-              <TabsTrigger value="diff">Diff</TabsTrigger>
-              <TabsTrigger value="evidence">Evidence</TabsTrigger>
-              <TabsTrigger value="publish">Publish</TabsTrigger>
-            </TabsList>
-            <div className="flex min-w-0 items-center gap-2 text-xs">
-              <Badge variant="outline">Unstaged</Badge>
-              <Badge variant="secondary">4</Badge>
-              <span className="text-muted-foreground truncate">billing.go</span>
-            </div>
-          </div>
-
-          <TabsContent value="diff" className="min-h-0">
-            <ScrollArea className="h-full font-mono text-xs">
-              <CodeLine
-                num={2}
-                text="@@ RegisterBillingRoutes @@"
-                tone="context"
-              />
-              <CodeLine
-                num={3}
-                text="func RegisterBillingRoutes(r *mux.Router) {"
-              />
-              <CodeLine
-                num={4}
-                text={'  r.HandleFunc("/billing/invoices", listInvoices)'}
-                tone="removed"
-              />
-              <CodeLine
-                num={5}
-                text={'  protected := r.PathPrefix("/api").Subrouter()'}
-                tone="added"
-              />
-              <CodeLine
-                num={6}
-                text="  protected.Use(middleware.RequireAuth())"
-                tone="added"
-              />
-              <CodeLine
-                num={7}
-                text={
-                  '  protected.HandleFunc("/billing/invoices", listInvoices)'
-                }
-                tone="added"
-              />
-              <CodeLine
-                num={8}
-                text={
-                  '  protected.HandleFunc("/billing/payouts", createPayout)'
-                }
-                tone="added"
-              />
-              <CodeLine num={9} text="}" />
-              <CodeLine num={10} text="" />
-              <CodeLine
-                num={11}
-                text="@@ handlers/payouts.go @@"
-                tone="context"
-              />
-              <CodeLine
-                num={12}
-                text="func createPayout(w http.ResponseWriter, r *http.Request) {"
-              />
-              <CodeLine
-                num={13}
-                text={'  user := r.Context().Value("user").(*User)'}
-              />
-              <CodeLine num={14} text="  // payout logic..." />
-              <CodeLine num={15} text="}" />
-            </ScrollArea>
-          </TabsContent>
-
-          <TabsContent value="evidence" className="min-h-0">
-            <div className="p-4">
-              <ErrorState
-                title="Counter-evidence incomplete"
-                description="The verifier found route and middleware evidence, but no matching regression test yet."
-              />
-            </div>
-          </TabsContent>
-
-          <TabsContent value="publish" className="min-h-0">
-            <div className="p-4">
-              <EmptyState
-                title="Nothing accepted yet"
-                description="Accepted findings will appear here for copy packets and GitHub preview."
-                icon={CopyIcon}
-              />
-            </div>
-          </TabsContent>
-        </Tabs>
-
-        <div className="border-t p-4">
-          <div className="bg-background rounded-lg border p-3">
-            <div className="mb-3 flex items-center gap-2">
-              <Badge variant="destructive">High</Badge>
-              <Badge variant="secondary">Verified</Badge>
-            </div>
-            <p className="text-sm font-medium">
-              Auth middleware skipped on billing route
-            </p>
-            <p className="text-muted-foreground mt-2 text-sm">
-              Billing endpoints are reachable without RequireAuth on the route
-              group.
-            </p>
-            <div className="mt-3 flex gap-2">
-              <Button size="sm">
-                <CheckIcon data-icon="inline-start" />
-                Accept
-              </Button>
-              <Button size="sm" variant="outline">
-                <CopyIcon data-icon="inline-start" />
-                Copy
-              </Button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </aside>
-  );
-}
-
 function FindingRow({
   finding,
 }: {
@@ -7926,32 +7950,6 @@ function FindingRow({
         <Badge variant="outline">{finding.status}</Badge>
       </div>
     </button>
-  );
-}
-
-function CodeLine({
-  num,
-  text,
-  tone = "default",
-}: {
-  num: number;
-  text: string;
-  tone?: "default" | "added" | "removed" | "context";
-}) {
-  return (
-    <div
-      className={cn(
-        "grid grid-cols-[48px_minmax(0,1fr)] border-b border-transparent leading-6",
-        tone === "added" && "bg-code-added",
-        tone === "removed" && "bg-code-removed",
-        tone === "context" && "bg-surface",
-      )}
-    >
-      <span className="text-muted-foreground pr-3 text-right select-none">
-        {num}
-      </span>
-      <span className="truncate px-3 whitespace-pre">{text || " "}</span>
-    </div>
   );
 }
 
@@ -8159,7 +8157,7 @@ function buildEvidenceMapLayout(map: EvidenceMapResponse): EvidenceMapLayout {
     80 + (maxLevel + 1) * EVIDENCE_MAP_COLUMN_GAP + EVIDENCE_MAP_NODE_WIDTH,
   );
   const height = Math.max(
-    420,
+    360,
     80 + maxRows * EVIDENCE_MAP_ROW_GAP + EVIDENCE_MAP_NODE_HEIGHT,
   );
   const nodeById = new Map(positioned.map((node) => [node.node.id, node]));

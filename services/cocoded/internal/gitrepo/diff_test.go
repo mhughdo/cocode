@@ -1,6 +1,7 @@
 package gitrepo
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -114,6 +115,34 @@ func TestCollectorLocalChangesIncludesTrackedAndUntrackedFiles(t *testing.T) {
 	}
 }
 
+func TestCollectorLocalChangesSkipsBinaryPatchPayload(t *testing.T) {
+	t.Parallel()
+
+	repoPath := initGitRepo(t)
+	configureTestGitIdentity(t, repoPath)
+	runTestGit(t, repoPath, "checkout", "-B", "main")
+	writeRepoBytes(t, repoPath, "assets/logo.bin", bytes.Repeat([]byte{0x00, 0x01, 0x02, 0x03}, 96*1024))
+	runTestGit(t, repoPath, "add", ".")
+	runTestGit(t, repoPath, "commit", "-m", "initial binary")
+
+	writeRepoBytes(t, repoPath, "assets/logo.bin", bytes.Repeat([]byte{0x00, 0x09, 0x08, 0x07}, 96*1024))
+
+	snapshot, err := NewCollector(Runner{OutputLimit: 64 << 10}).LocalChanges(context.Background(), repoPath)
+	if err != nil {
+		t.Fatalf("LocalChanges(binary) error = %v", err)
+	}
+	if len(snapshot.Diff) >= 64<<10 {
+		t.Fatalf("Diff size = %d, want below output limit without binary payload", len(snapshot.Diff))
+	}
+	file := diffFileByPath(t, snapshot.Files, "assets/logo.bin")
+	if !file.IsBinary || !strings.Contains(file.Patch, "Binary files") {
+		t.Fatalf("binary file = %+v", file)
+	}
+	if strings.Contains(file.Patch, "GIT binary patch") || strings.Contains(string(snapshot.Diff), "GIT binary patch") {
+		t.Fatalf("binary payload should not be included:\n%s", file.Patch)
+	}
+}
+
 func TestCollectorLocalChangesRejectsUntrackedSymlinkEscape(t *testing.T) {
 	t.Parallel()
 
@@ -138,6 +167,34 @@ func TestCollectorLocalChangesRejectsUntrackedSymlinkEscape(t *testing.T) {
 	_, err := NewCollector(DefaultRunner()).LocalChanges(context.Background(), repoPath)
 	if err == nil || !strings.Contains(err.Error(), "escapes repository root") {
 		t.Fatalf("LocalChanges() error = %v, want symlink escape error", err)
+	}
+}
+
+func TestCollectorListBranchesReturnsSearchableRefs(t *testing.T) {
+	t.Parallel()
+
+	repoPath := initGitRepo(t)
+	configureTestGitIdentity(t, repoPath)
+	runTestGit(t, repoPath, "checkout", "-B", "main")
+	writeRepoFile(t, repoPath, "app/main.go", "package main\n")
+	runTestGit(t, repoPath, "add", ".")
+	runTestGit(t, repoPath, "commit", "-m", "initial")
+	runTestGit(t, repoPath, "checkout", "-b", "feature/review")
+
+	branches, err := NewCollector(DefaultRunner()).ListBranches(context.Background(), repoPath)
+	if err != nil {
+		t.Fatalf("ListBranches() error = %v", err)
+	}
+	feature := branchByName(t, branches, "feature/review")
+	if !feature.Current || feature.Remote || feature.CommitSHA == "" {
+		t.Fatalf("feature branch = %+v", feature)
+	}
+	main := branchByName(t, branches, "main")
+	if main.Current || main.Remote || main.CommitSHA == "" {
+		t.Fatalf("main branch = %+v", main)
+	}
+	if branches[0].Name != "feature/review" {
+		t.Fatalf("first branch = %+v, want current branch first", branches[0])
 	}
 }
 
@@ -184,4 +241,16 @@ func diffFileByPath(t *testing.T, files []DiffFile, path string) DiffFile {
 	}
 	t.Fatalf("diff file %q not found in %+v", path, files)
 	return DiffFile{}
+}
+
+func branchByName(t *testing.T, branches []Branch, name string) Branch {
+	t.Helper()
+
+	for _, branch := range branches {
+		if branch.Name == name {
+			return branch
+		}
+	}
+	t.Fatalf("branch %q not found in %+v", name, branches)
+	return Branch{}
 }

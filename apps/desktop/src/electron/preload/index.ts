@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 
 contextBridge.exposeInMainWorld("cocode", {
-  appName: "cocode",
+  appName: "Cocode",
   version: "0.1.0-dev",
   getBackendInfo: () => ipcRenderer.invoke("cocode:get-backend-info"),
   writeClipboard: (text: string) =>

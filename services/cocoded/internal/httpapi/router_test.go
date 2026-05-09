@@ -885,6 +885,87 @@ func TestChangedFilesEndpointRejectsMissingSnapshot(t *testing.T) {
 	}
 }
 
+func TestChangedFilePatchEndpointReturnsPatchArtifact(t *testing.T) {
+	artifactDir := filepath.Join(t.TempDir(), "artifacts")
+	router, queries := testRouterWithConfigAndQueries(t, app.Config{
+		ArtifactDir: artifactDir,
+	})
+	createHTTPAPISnapshot(t, queries)
+	store, err := artifact.New(artifactDir, queries)
+	if err != nil {
+		t.Fatalf("artifact.New() error = %v", err)
+	}
+	if _, err := store.Save(context.Background(), artifact.SaveParams{
+		ID:           "artifact_patch",
+		WorkspaceID:  "workspace_1",
+		Kind:         "patch",
+		RelativePath: "snapshots/snapshot_1/patches/src-new.patch",
+		ContentType:  "text/x-diff",
+		MetadataJSON: `{"path":"src/new.go"}`,
+		CreatedAt:    "2026-05-03T00:05:00Z",
+	}, []byte("diff --git a/src/old.go b/src/new.go\n@@ -1,2 +1,3 @@\n-old\n+new\n+added\n")); err != nil {
+		t.Fatalf("Save(patch) error = %v", err)
+	}
+
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/api/pr-snapshots/snapshot_1/changed-files/file_2/patch",
+		nil,
+	)
+	request.Header.Set("X-Cocode-Token", "test-token")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, response.Code, response.Body.String())
+	}
+
+	var envelope struct {
+		Data  ChangedFilePatchResponse `json:"data"`
+		Error any                      `json:"error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	if envelope.Data.ChangedFileID != "file_2" ||
+		envelope.Data.ArtifactID != "artifact_patch" ||
+		envelope.Data.ContentType != "text/x-diff" ||
+		!strings.Contains(envelope.Data.Content, "+added") ||
+		envelope.Data.ContentTruncated {
+		t.Fatalf("patch response = %+v", envelope.Data)
+	}
+}
+
+func TestChangedFilePatchEndpointRejectsFileFromOtherSnapshot(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPISnapshot(t, queries)
+	if _, err := queries.CreatePullRequestSnapshot(context.Background(), dbgen.CreatePullRequestSnapshotParams{
+		ID:           "snapshot_2",
+		RepositoryID: "repo_1",
+		SourceType:   "branch_compare",
+		MetadataJson: "{}",
+		CreatedAt:    "2026-05-03T00:06:00Z",
+	}); err != nil {
+		t.Fatalf("CreatePullRequestSnapshot(snapshot_2) error = %v", err)
+	}
+
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/api/pr-snapshots/snapshot_2/changed-files/file_2/patch",
+		nil,
+	)
+	request.Header.Set("X-Cocode-Token", "test-token")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusNotFound, response.Code, response.Body.String())
+	}
+}
+
 func TestSnapshotEndpointReturnsSnapshot(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
 	createHTTPAPISnapshot(t, queries)
@@ -1279,13 +1360,31 @@ func TestReviewSessionEndpointCreateGetList(t *testing.T) {
 	createHTTPAPIAgentConfig(t, queries, "agent_config_verifier", "verifier", 1)
 
 	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/review-sessions", map[string]any{
-		"workspace_id":          "workspace_1",
-		"snapshot_id":           "snapshot_1",
-		"title":                 "Review auth changes",
-		"review_depth":          "deep",
-		"preset":                "security_sensitive",
-		"focus_prompt":          "Focus auth guard behavior.",
-		"agent_config_ids":      []string{"agent_config_codex", "agent_config_verifier"},
+		"workspace_id":     "workspace_1",
+		"snapshot_id":      "snapshot_1",
+		"title":            "Review auth changes",
+		"review_depth":     "deep",
+		"preset":           "security_sensitive",
+		"focus_prompt":     "Focus auth guard behavior.",
+		"agent_config_ids": []string{"agent_config_codex", "agent_config_codex", "agent_config_verifier"},
+		"agent_selections": []map[string]any{
+			{
+				"agent_config_id": "agent_config_codex",
+				"role":            "Security Reviewer",
+				"model_label":     "gpt-5.5",
+				"reasoning_label": "high",
+			},
+			{
+				"agent_config_id": "agent_config_codex",
+				"role":            "Performance Reviewer",
+				"model_label":     "gpt-5.4",
+				"reasoning_label": "medium",
+			},
+			{
+				"agent_config_id": "agent_config_verifier",
+				"role":            "Evidence Verifier",
+			},
+		},
 		"runtime_limit_seconds": 900,
 		"context_policy": map[string]any{
 			"include_related_tests": false,
@@ -1305,12 +1404,29 @@ func TestReviewSessionEndpointCreateGetList(t *testing.T) {
 		created.Preset != "security_sensitive" ||
 		created.FocusPrompt != "Focus auth guard behavior." ||
 		created.RuntimeLimitSeconds != 900 ||
-		len(created.Agents) != 2 ||
+		len(created.Agents) != 3 ||
 		created.Agents[0].AgentConfigID != "agent_config_codex" ||
+		created.Agents[0].Role != "Security Reviewer" ||
 		created.Agents[0].RunOrder != 1 ||
-		created.Agents[1].AgentConfigID != "agent_config_verifier" ||
-		created.Agents[1].Role != "verifier" {
+		created.Agents[1].AgentConfigID != "agent_config_codex" ||
+		created.Agents[1].Role != "Performance Reviewer" ||
+		created.Agents[1].RunOrder != 2 ||
+		created.Agents[2].AgentConfigID != "agent_config_verifier" ||
+		created.Agents[2].Role != "Evidence Verifier" {
 		t.Fatalf("created session = %+v", created)
+	}
+	var override reviewSessionAgentSettingsOverride
+	if err := json.Unmarshal(created.Agents[0].SettingsOverride, &override); err != nil {
+		t.Fatalf("decode agent settings override: %v", err)
+	}
+	if override.ModelLabel != "gpt-5.5" || override.ReasoningLabel != "high" {
+		t.Fatalf("agent settings override = %+v", override)
+	}
+	if err := json.Unmarshal(created.Agents[1].SettingsOverride, &override); err != nil {
+		t.Fatalf("decode duplicate agent settings override: %v", err)
+	}
+	if override.ModelLabel != "gpt-5.4" || override.ReasoningLabel != "medium" {
+		t.Fatalf("duplicate agent settings override = %+v", override)
 	}
 	var policy struct {
 		IncludeRelatedTests bool  `json:"include_related_tests"`
@@ -1331,7 +1447,7 @@ func TestReviewSessionEndpointCreateGetList(t *testing.T) {
 		t.Fatalf("get status = %d, body = %s", getResponse.Code, getResponse.Body.String())
 	}
 	got := decodeReviewSessionResponse(t, getResponse.Body.Bytes())
-	if got.ID != created.ID || len(got.Agents) != 2 {
+	if got.ID != created.ID || len(got.Agents) != 3 {
 		t.Fatalf("got session = %+v", got)
 	}
 

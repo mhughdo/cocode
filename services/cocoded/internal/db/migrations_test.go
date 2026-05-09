@@ -63,8 +63,71 @@ func TestApplyRunsSchemaV1Idempotently(t *testing.T) {
 	if err := database.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("schema_migrations count = %d, want 1", count)
+	if count != len(Migrations) {
+		t.Fatalf("schema_migrations count = %d, want %d", count, len(Migrations))
+	}
+}
+
+func TestApplyDropsReviewSessionAgentConfigUniqueness(t *testing.T) {
+	t.Parallel()
+
+	database, err := Open(context.Background(), MemoryDatabase)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer database.Close()
+
+	const oldReviewSessionAgentsSQL = `
+CREATE TABLE review_sessions (
+  id TEXT PRIMARY KEY
+);
+
+CREATE TABLE agent_configs (
+  id TEXT PRIMARY KEY
+);
+
+CREATE TABLE review_session_agents (
+  id TEXT PRIMARY KEY,
+  review_session_id TEXT NOT NULL REFERENCES review_sessions(id) ON DELETE CASCADE,
+  agent_config_id TEXT NOT NULL REFERENCES agent_configs(id) ON DELETE RESTRICT,
+  role TEXT NOT NULL,
+  run_order INTEGER NOT NULL DEFAULT 0,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  settings_override_json TEXT NOT NULL DEFAULT '{}',
+  UNIQUE(review_session_id, agent_config_id)
+)`
+	if err := Apply(context.Background(), database, []Migration{{
+		Version: 1,
+		Name:    "schema_v1",
+		SQL:     oldReviewSessionAgentsSQL,
+	}}); err != nil {
+		t.Fatalf("Apply(old schema) error = %v", err)
+	}
+	if err := Apply(context.Background(), database, Migrations); err != nil {
+		t.Fatalf("Apply(current migrations) error = %v", err)
+	}
+
+	rows, err := database.QueryContext(context.Background(), "PRAGMA index_list(review_session_agents)")
+	if err != nil {
+		t.Fatalf("index_list(review_session_agents) error = %v", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var seq int
+		var name string
+		var unique int
+		var origin string
+		var partial int
+		if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			t.Fatalf("scan index_list row: %v", err)
+		}
+		if unique == 1 && origin != "pk" {
+			t.Fatalf("review_session_agents still has non-pk unique index %q", name)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate index_list rows: %v", err)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/gin-gonic/gin"
 	"github.com/hughdo/cocode/services/cocoded/internal/agents"
@@ -20,15 +21,23 @@ import (
 const defaultReviewRuntimeLimitSeconds int64 = 1800
 
 type CreateReviewSessionRequest struct {
-	WorkspaceID         string          `json:"workspace_id"`
-	SnapshotID          string          `json:"snapshot_id"`
-	Title               string          `json:"title"`
-	ReviewDepth         string          `json:"review_depth"`
-	Preset              string          `json:"preset"`
-	FocusPrompt         string          `json:"focus_prompt"`
-	AgentConfigIDs      []string        `json:"agent_config_ids"`
-	RuntimeLimitSeconds int64           `json:"runtime_limit_seconds"`
-	ContextPolicy       json.RawMessage `json:"context_policy"`
+	WorkspaceID         string                               `json:"workspace_id"`
+	SnapshotID          string                               `json:"snapshot_id"`
+	Title               string                               `json:"title"`
+	ReviewDepth         string                               `json:"review_depth"`
+	Preset              string                               `json:"preset"`
+	FocusPrompt         string                               `json:"focus_prompt"`
+	AgentConfigIDs      []string                             `json:"agent_config_ids"`
+	AgentSelections     []ReviewSessionAgentSelectionRequest `json:"agent_selections"`
+	RuntimeLimitSeconds int64                                `json:"runtime_limit_seconds"`
+	ContextPolicy       json.RawMessage                      `json:"context_policy"`
+}
+
+type ReviewSessionAgentSelectionRequest struct {
+	AgentConfigID  string `json:"agent_config_id"`
+	Role           string `json:"role,omitempty"`
+	ModelLabel     string `json:"model_label,omitempty"`
+	ReasoningLabel string `json:"reasoning_label,omitempty"`
 }
 
 type ReviewSessionResponse struct {
@@ -69,7 +78,18 @@ type normalizedReviewSessionCreate struct {
 	FocusPrompt         string
 	RuntimeLimitSeconds int64
 	ContextPolicyJSON   string
-	AgentConfigs        []dbgen.AgentConfig
+	AgentSelections     []normalizedReviewSessionAgentSelection
+}
+
+type normalizedReviewSessionAgentSelection struct {
+	Config               dbgen.AgentConfig
+	Role                 string
+	SettingsOverrideJSON string
+}
+
+type reviewSessionAgentSettingsOverride struct {
+	ModelLabel     string `json:"model_label,omitempty"`
+	ReasoningLabel string `json:"reasoning_label,omitempty"`
 }
 
 func createReviewSessionHandler(queries *dbgen.Queries) gin.HandlerFunc {
@@ -111,15 +131,16 @@ func createReviewSessionHandler(queries *dbgen.Queries) gin.HandlerFunc {
 			}
 		}()
 
-		for index, agent := range normalized.AgentConfigs {
+		for index, selection := range normalized.AgentSelections {
+			agent := selection.Config
 			if _, err := queries.CreateReviewSessionAgent(c.Request.Context(), dbgen.CreateReviewSessionAgentParams{
 				ID:                   "review_session_agent_" + newRequestID(),
 				ReviewSessionID:      sessionID,
 				AgentConfigID:        agent.ID,
-				Role:                 agent.Role,
+				Role:                 selection.Role,
 				RunOrder:             int64(index + 1),
 				Enabled:              1,
-				SettingsOverrideJson: "{}",
+				SettingsOverrideJson: selection.SettingsOverrideJSON,
 			}); err != nil {
 				respondAppError(c, err)
 				return
@@ -351,7 +372,24 @@ func normalizeReviewSessionCreate(ctx context.Context, queries *dbgen.Queries, r
 	if err != nil {
 		return normalizedReviewSessionCreate{}, apperror.InvalidRequest("context_policy is invalid: " + err.Error())
 	}
-	agentConfigs, appErr := selectedAgentConfigs(ctx, queries, request.AgentConfigIDs)
+	var agentSelections []normalizedReviewSessionAgentSelection
+	var appErr *apperror.Error
+	if len(request.AgentSelections) > 0 {
+		agentSelections, appErr = selectedAgentSelections(ctx, queries, request.AgentSelections)
+	} else {
+		agentConfigs, configErr := selectedAgentConfigs(ctx, queries, request.AgentConfigIDs)
+		if configErr != nil {
+			return normalizedReviewSessionCreate{}, configErr
+		}
+		agentSelections = make([]normalizedReviewSessionAgentSelection, 0, len(agentConfigs))
+		for _, config := range agentConfigs {
+			agentSelections = append(agentSelections, normalizedReviewSessionAgentSelection{
+				Config:               config,
+				Role:                 strings.TrimSpace(config.Role),
+				SettingsOverrideJSON: "{}",
+			})
+		}
+	}
 	if appErr != nil {
 		return normalizedReviewSessionCreate{}, appErr
 	}
@@ -369,25 +407,36 @@ func normalizeReviewSessionCreate(ctx context.Context, queries *dbgen.Queries, r
 		FocusPrompt:         strings.TrimSpace(request.FocusPrompt),
 		RuntimeLimitSeconds: runtimeLimit,
 		ContextPolicyJSON:   string(policy.JSON()),
-		AgentConfigs:        agentConfigs,
+		AgentSelections:     agentSelections,
 	}, nil
 }
 
 func selectedAgentConfigs(ctx context.Context, queries *dbgen.Queries, ids []string) ([]dbgen.AgentConfig, *apperror.Error) {
-	if len(ids) == 0 {
+	selections := make([]ReviewSessionAgentSelectionRequest, 0, len(ids))
+	for _, id := range ids {
+		selections = append(selections, ReviewSessionAgentSelectionRequest{AgentConfigID: id})
+	}
+	normalized, appErr := selectedAgentSelections(ctx, queries, selections)
+	if appErr != nil {
+		return nil, appErr
+	}
+	configs := make([]dbgen.AgentConfig, 0, len(normalized))
+	for _, selection := range normalized {
+		configs = append(configs, selection.Config)
+	}
+	return configs, nil
+}
+
+func selectedAgentSelections(ctx context.Context, queries *dbgen.Queries, selections []ReviewSessionAgentSelectionRequest) ([]normalizedReviewSessionAgentSelection, *apperror.Error) {
+	if len(selections) == 0 {
 		return nil, apperror.InvalidRequest("at least one agent_config_id is required")
 	}
-	seen := map[string]struct{}{}
-	configs := make([]dbgen.AgentConfig, 0, len(ids))
-	for _, id := range ids {
-		id = strings.TrimSpace(id)
+	normalized := make([]normalizedReviewSessionAgentSelection, 0, len(selections))
+	for _, selection := range selections {
+		id := strings.TrimSpace(selection.AgentConfigID)
 		if id == "" {
 			return nil, apperror.InvalidRequest("agent_config_ids cannot contain empty ids")
 		}
-		if _, ok := seen[id]; ok {
-			return nil, apperror.InvalidRequest(fmt.Sprintf("agent_config_id %s is duplicated", id))
-		}
-		seen[id] = struct{}{}
 		agent, err := queries.GetAgentConfig(ctx, id)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -405,9 +454,51 @@ func selectedAgentConfigs(ctx context.Context, queries *dbgen.Queries, ids []str
 		if err := agents.ValidateReviewModePermissions(agents.ConnectionConfig{Kind: agents.AdapterKind(agent.AdapterKind)}, capabilities); err != nil {
 			return nil, apperror.InvalidRequest(fmt.Sprintf("agent config %s cannot be used for review mode: %v", id, err))
 		}
-		configs = append(configs, agent)
+		modelLabel, appErr := cleanAgentSelectionOverride("model_label", selection.ModelLabel)
+		if appErr != nil {
+			return nil, appErr
+		}
+		reasoningLabel, appErr := cleanAgentSelectionOverride("reasoning_label", selection.ReasoningLabel)
+		if appErr != nil {
+			return nil, appErr
+		}
+		role, appErr := cleanAgentSelectionOverride("role", selection.Role)
+		if appErr != nil {
+			return nil, appErr
+		}
+		if role == "" {
+			role = strings.TrimSpace(agent.Role)
+		}
+		override, err := json.Marshal(reviewSessionAgentSettingsOverride{
+			ModelLabel:     modelLabel,
+			ReasoningLabel: reasoningLabel,
+		})
+		if err != nil {
+			return nil, apperror.Internal("failed to encode agent selection settings")
+		}
+		normalized = append(normalized, normalizedReviewSessionAgentSelection{
+			Config:               agent,
+			Role:                 role,
+			SettingsOverrideJSON: string(override),
+		})
 	}
-	return configs, nil
+	return normalized, nil
+}
+
+func cleanAgentSelectionOverride(name string, value string) (string, *apperror.Error) {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.EqualFold(value, "default") {
+		return "", nil
+	}
+	if len(value) > 180 {
+		return "", apperror.InvalidRequest(name + " is too long")
+	}
+	for _, char := range value {
+		if unicode.IsControl(char) {
+			return "", apperror.InvalidRequest(name + " cannot contain control characters")
+		}
+	}
+	return value, nil
 }
 
 func defaultReviewSessionTitle(snapshot dbgen.PullRequestSnapshot) string {

@@ -2,43 +2,51 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
 
 @custom-variant dark (&:is(.dark *));
 
 :root {
   --radius: 0.5rem;
-  --background: oklch(0.985 0.004 255);
-  --foreground: oklch(0.19 0.022 255);
-  --surface: oklch(0.962 0.006 255);
-  --surface-raised: oklch(1 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.19 0.022 255);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.19 0.022 255);
-  --primary: oklch(0.55 0.22 260);
-  --primary-foreground: oklch(0.99 0.004 250);
-  --secondary: oklch(0.951 0.014 255);
-  --secondary-foreground: oklch(0.29 0.034 255);
-  --muted: oklch(0.955 0.01 255);
-  --muted-foreground: oklch(0.47 0.032 255);
-  --accent: oklch(0.94 0.024 258);
-  --accent-foreground: oklch(0.27 0.06 258);
-  --destructive: oklch(0.62 0.23 25);
-  --border: oklch(0.895 0.012 255);
-  --input: oklch(0.895 0.012 255);
-  --ring: oklch(0.58 0.18 260);
-  --success: oklch(0.62 0.16 150);
-  --warning: oklch(0.72 0.15 70);
-  --sidebar: oklch(0.944 0.022 252);
-  --sidebar-foreground: oklch(0.25 0.028 255);
-  --sidebar-muted: oklch(0.52 0.03 255);
-  --code-added: oklch(0.95 0.05 150);
-  --code-removed: oklch(0.95 0.045 20);
+  --background: #fbfbfa;
+  --foreground: #111214;
+  --surface: #f7f7f5;
+  --surface-muted: #f4f4f2;
+  --surface-subtle: #eeeeeb;
+  --surface-raised: #ffffff;
+  --card: #ffffff;
+  --card-foreground: #111214;
+  --popover: #ffffff;
+  --popover-foreground: #111214;
+  --primary: #111214;
+  --primary-foreground: #ffffff;
+  --secondary: #f1f1ef;
+  --secondary-foreground: #2e3033;
+  --muted: #f4f4f2;
+  --muted-foreground: #74746f;
+  --accent: #e8f3fc;
+  --accent-foreground: #2f6c9e;
+  --destructive: #b64232;
+  --border: #e7e6e2;
+  --input: #e2e1dc;
+  --ring: #9b9b95;
+  --success: #2d7d46;
+  --warning: #a86600;
+  --sidebar: #f8f8f6;
+  --sidebar-foreground: #111214;
+  --sidebar-muted: #74746f;
+  --code-added: #edf7ef;
+  --code-removed: #fff0ee;
 }
 
 @theme inline {
   --font-heading: var(--font-sans);
-  --font-sans: "Geist Variable", sans-serif;
+  --font-sans:
+    "Geist Variable", -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
+  --font-mono:
+    "Geist Mono Variable", "SF Mono", ui-monospace, SFMono-Regular, Menlo,
+    Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -46,6 +54,8 @@
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-surface-subtle: var(--surface-subtle);
   --color-surface-raised: var(--surface-raised);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
@@ -74,6 +84,13 @@
 
 * {
   border-color: var(--border);
+  scrollbar-width: none;
+}
+
+*::-webkit-scrollbar {
+  display: none;
+  height: 0;
+  width: 0;
 }
 
 html,
@@ -82,16 +99,37 @@ body,
   height: 100%;
 }
 
+html {
+  font-size: 15px;
+}
+
 body {
   margin: 0;
-  min-width: 960px;
+  min-width: 760px;
   min-height: 760px;
   background: var(--background);
   font-family: var(--font-sans);
-  font-size: 14px;
-  line-height: 1.45;
+  font-size: 13px;
+  line-height: 1.42;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+
+button:not(:disabled),
+a[href],
+[role="button"]:not([aria-disabled="true"]),
+label:has(input:not(:disabled)),
+summary {
+  cursor: pointer;
+}
+
+button:disabled,
+[aria-disabled="true"],
+input:disabled,
+select:disabled,
+textarea:disabled {
+  cursor: default;
 }
 
 button,
@@ -101,12 +139,34 @@ textarea {
   font: inherit;
 }
 
+code,
+kbd,
+pre,
+.font-mono {
+  font-family: var(--font-mono);
+}
+
 @layer components {
+  .app-drag {
+    app-region: drag;
+    -webkit-app-region: drag;
+  }
+
+  .app-no-drag,
+  button,
+  input,
+  select,
+  textarea,
+  [role="button"] {
+    app-region: no-drag;
+    -webkit-app-region: no-drag;
+  }
+
   .cocode-panel {
     background: var(--surface-raised);
     border: 1px solid var(--border);
-    border-radius: var(--radius);
-    box-shadow: 0 1px 2px oklch(0.2 0.02 255 / 0.035);
+    border-radius: 12px;
+    box-shadow: 0 1px 2px rgb(17 18 20 / 0.025);
   }
 
   .cocode-page {

@@ -83,7 +83,7 @@ func (c Collector) CompareBranches(ctx context.Context, selectedPath string, bas
 		return DiffSnapshot{}, err
 	}
 
-	diffResult, err := runner.RunRaw(ctx, info.RootPath, "diff", "--binary", "--full-index", "--find-renames", mergeBaseSHA, headSHA, "--")
+	diffResult, err := runner.RunRaw(ctx, info.RootPath, "diff", "--full-index", "--find-renames", mergeBaseSHA, headSHA, "--")
 	if err != nil {
 		return DiffSnapshot{}, err
 	}
@@ -124,7 +124,7 @@ func (c Collector) LocalChanges(ctx context.Context, selectedPath string) (DiffS
 		return DiffSnapshot{}, err
 	}
 
-	diffResult, err := runner.RunRaw(ctx, info.RootPath, "diff", "--binary", "--full-index", "--find-renames", "HEAD", "--")
+	diffResult, err := runner.RunRaw(ctx, info.RootPath, "diff", "--full-index", "--find-renames", "HEAD", "--")
 	if err != nil {
 		return DiffSnapshot{}, err
 	}

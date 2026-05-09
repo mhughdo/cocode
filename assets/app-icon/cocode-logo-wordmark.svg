@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="220" viewBox="0 0 820 220" fill="none">
+  <rect width="220" height="220" rx="54" fill="#111214"/>
+  <path d="M71 82L101 52H153V82H114L88 108L114 134H153V164H101L71 134C56.6 119.6 56.6 96.4 71 82Z" fill="#FBFBFA"/>
+  <path d="M129 105H168V134H129V105Z" fill="#FBFBFA"/>
+  <text x="264" y="138" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Geist', 'Helvetica Neue', Arial, sans-serif" font-size="78" font-weight="680" letter-spacing="-3" fill="#111214">cocode</text>
+</svg>

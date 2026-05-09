@@ -68,6 +68,15 @@ type ChangedFileResponse struct {
 	PatchArtifactID string          `json:"patch_artifact_id,omitempty"`
 }
 
+type ChangedFilePatchResponse struct {
+	ChangedFileID    string `json:"changed_file_id"`
+	ArtifactID       string `json:"artifact_id"`
+	Content          string `json:"content"`
+	ContentType      string `json:"content_type"`
+	SizeBytes        int64  `json:"size_bytes"`
+	ContentTruncated bool   `json:"content_truncated"`
+}
+
 type SnapshotResponse struct {
 	ID                         string          `json:"id"`
 	RepositoryID               string          `json:"repository_id"`
@@ -285,6 +294,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.GET("/workspaces", listWorkspacesHandler(services))
 	api.POST("/workspaces/open-repository", openRepositoryHandler(services))
 	api.GET("/workspaces/:id/repositories", listWorkspaceRepositoriesHandler(services))
+	api.GET("/repositories/:id/branches", listRepositoryBranchesHandler(services))
 	api.GET("/workspaces/:id/review-rules", listReviewRulesHandler(queries))
 	api.POST("/workspaces/:id/review-rules", createReviewRuleHandler(queries))
 	api.GET("/workspaces/:id/settings-export", exportWorkspaceSettingsHandler(services))
@@ -299,6 +309,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.DELETE("/credentials/github", deleteGitHubCredentialHandler(services))
 	api.GET("/pr-snapshots/:id", snapshotHandler(services))
 	api.GET("/pr-snapshots/:id/changed-files", changedFilesHandler(queries))
+	api.GET("/pr-snapshots/:id/changed-files/:file_id/patch", changedFilePatchHandler(services))
 	api.POST("/review-sessions", createReviewSessionHandler(queries))
 	api.GET("/review-sessions", listReviewSessionsHandler(queries))
 	api.GET("/review-sessions/:id", getReviewSessionHandler(queries))
@@ -341,6 +352,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.PATCH("/findings/:finding_id/draft-comment", updateDraftCommentHandler(services))
 	api.POST("/findings/:finding_id/export/copy-packet", createCopyPacketHandler(services))
 	api.GET("/agents/presets", listAgentPresetsHandler())
+	api.GET("/agents/model-catalog", listAgentModelCatalogHandler())
 	api.GET("/agents/configs", listAgentConfigsHandler(queries))
 	api.POST("/agents/configs", createAgentConfigHandler(queries))
 	api.PATCH("/agents/configs/:id", updateAgentConfigHandler(queries))
@@ -537,6 +549,60 @@ func changedFilesHandler(queries *dbgen.Queries) gin.HandlerFunc {
 			response = append(response, item)
 		}
 		respondOK(c, response)
+	}
+}
+
+func changedFilePatchHandler(services routerServices) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		snapshotID := strings.TrimSpace(c.Param("id"))
+		fileID := strings.TrimSpace(c.Param("file_id"))
+		if snapshotID == "" || fileID == "" {
+			respondError(c, apperror.InvalidRequest("snapshot id and changed file id are required"))
+			return
+		}
+		if services.artifacts == nil {
+			respondError(c, apperror.Internal("artifact store is not configured"))
+			return
+		}
+		if _, err := services.queries.GetPullRequestSnapshot(c.Request.Context(), snapshotID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				respondError(c, apperror.NotFound("snapshot was not found"))
+				return
+			}
+			respondError(c, apperror.Internal("failed to read snapshot"))
+			return
+		}
+		file, err := services.queries.GetChangedFile(c.Request.Context(), fileID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				respondError(c, apperror.NotFound("changed file was not found"))
+				return
+			}
+			respondError(c, apperror.Internal("failed to read changed file"))
+			return
+		}
+		if file.SnapshotID != snapshotID {
+			respondError(c, apperror.NotFound("changed file was not found"))
+			return
+		}
+		artifactID := strings.TrimSpace(nullableResponseString(file.PatchArtifactID))
+		if artifactID == "" {
+			respondError(c, apperror.NotFound("changed file patch was not found"))
+			return
+		}
+		artifactResponse, _, err := artifactDebugResponse(c.Request.Context(), services.artifacts, artifactID)
+		if err != nil {
+			respondError(c, apperror.NotFound("changed file patch was not found"))
+			return
+		}
+		respondOK(c, ChangedFilePatchResponse{
+			ChangedFileID:    file.ID,
+			ArtifactID:       artifactResponse.ID,
+			Content:          artifactResponse.Content,
+			ContentType:      artifactResponse.ContentType,
+			SizeBytes:        artifactResponse.SizeBytes,
+			ContentTruncated: artifactResponse.ContentTruncated,
+		})
 	}
 }
 

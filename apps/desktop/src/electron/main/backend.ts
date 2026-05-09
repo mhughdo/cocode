@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { createServer } from "node:net";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 
 import { app } from "electron";
 import { is } from "@electron-toolkit/utils";
@@ -74,12 +74,7 @@ export class BackendController {
     authToken: string,
     logPath: string,
   ): ChildProcessWithoutNullStreams {
-    const env = {
-      ...process.env,
-      COCODED_ADDR: `127.0.0.1:${port}`,
-      COCODED_AUTH_TOKEN: authToken,
-      COCODED_LOG_PATH: logPath,
-    };
+    const env = backendEnvironment(port, authToken, logPath);
 
     if (is.dev) {
       return spawn("go", ["run", "./cmd/cocoded"], {
@@ -95,6 +90,60 @@ export class BackendController {
     }
     return spawn(binaryPath, [], { env });
   }
+}
+
+function backendEnvironment(
+  port: number,
+  authToken: string,
+  logPath: string,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    COCODED_ADDR: `127.0.0.1:${port}`,
+    COCODED_AUTH_TOKEN: authToken,
+    COCODED_LOG_PATH: logPath,
+  };
+  const pathKey =
+    process.platform === "win32"
+      ? (Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "Path")
+      : "PATH";
+  env[pathKey] = extendedBackendPath(env[pathKey]);
+  return env;
+}
+
+function extendedBackendPath(currentPath: string | undefined): string {
+  const home = app.getPath("home");
+  const desktopCliPaths = [
+    process.env.PNPM_HOME,
+    join(home, "Library", "pnpm"),
+    join(home, ".local", "bin"),
+    join(home, ".bun", "bin"),
+    join(home, ".cargo", "bin"),
+    join(home, ".foundry", "bin"),
+    join(home, "go", "bin"),
+    "/opt/homebrew/bin",
+    "/opt/homebrew/sbin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+    "/Applications/Codex.app/Contents/Resources",
+  ];
+  const seen = new Set<string>();
+  const paths: string[] = [];
+  for (const entry of [
+    ...desktopCliPaths,
+    ...(currentPath ?? "").split(delimiter),
+  ]) {
+    const normalized = entry?.trim();
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    paths.push(normalized);
+  }
+  return paths.join(delimiter);
 }
 
 function workspaceRoot(): string {

@@ -6,6 +6,11 @@ var Migrations = []Migration{
 		Name:    "schema_v1",
 		SQL:     schemaV1SQL,
 	},
+	{
+		Version: 2,
+		Name:    "allow_duplicate_review_agent_assignments",
+		SQL:     allowDuplicateReviewAgentAssignmentsSQL,
+	},
 }
 
 const schemaV1SQL = `
@@ -111,8 +116,7 @@ CREATE TABLE review_session_agents (
   role TEXT NOT NULL,
   run_order INTEGER NOT NULL DEFAULT 0,
   enabled INTEGER NOT NULL DEFAULT 1,
-  settings_override_json TEXT NOT NULL DEFAULT '{}',
-  UNIQUE(review_session_id, agent_config_id)
+  settings_override_json TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE artifacts (
@@ -431,4 +435,38 @@ CREATE VIRTUAL TABLE evidence_search USING fts5(
   summary,
   path
 );
+`
+
+const allowDuplicateReviewAgentAssignmentsSQL = `
+CREATE TABLE review_session_agents_new (
+  id TEXT PRIMARY KEY,
+  review_session_id TEXT NOT NULL REFERENCES review_sessions(id) ON DELETE CASCADE,
+  agent_config_id TEXT NOT NULL REFERENCES agent_configs(id) ON DELETE RESTRICT,
+  role TEXT NOT NULL,
+  run_order INTEGER NOT NULL DEFAULT 0,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  settings_override_json TEXT NOT NULL DEFAULT '{}'
+);
+
+INSERT INTO review_session_agents_new (
+  id,
+  review_session_id,
+  agent_config_id,
+  role,
+  run_order,
+  enabled,
+  settings_override_json
+)
+SELECT
+  id,
+  review_session_id,
+  agent_config_id,
+  role,
+  run_order,
+  enabled,
+  settings_override_json
+FROM review_session_agents;
+
+DROP TABLE review_session_agents;
+ALTER TABLE review_session_agents_new RENAME TO review_session_agents;
 `

@@ -22,21 +22,24 @@ test("starts a fake review and renders findings", async ({
   await createFakeAgentConfig(backendInfo, fakeAgentPath);
 
   try {
-    await page
-      .getByRole("button", { name: "Open local project" })
-      .last()
-      .click();
+    await page.getByRole("button", { name: "Open project" }).last().click();
     await page.getByRole("button", { name: /Compare branches/ }).click();
     await page.getByLabel("Base ref").fill("main");
     await page.getByLabel("Head ref").fill("feature/review-auth");
-    await page.getByRole("button", { name: "Continue to configure" }).click();
 
     await expect(
-      page.getByRole("heading", { name: "Configure review" }),
+      page.getByRole("heading", { name: "Set up review" }),
     ).toBeVisible();
-    await expect(page.getByText("E2E Fake Reviewer")).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "E2E Fake Reviewer" }).first(),
+    ).toBeVisible();
     await page.getByRole("button", { name: "Start review" }).click();
 
+    await expect(
+      page.getByRole("heading", {
+        name: "branch-repo main..feature/review-auth",
+      }),
+    ).toBeVisible();
     await expect(page.getByRole("tab", { name: "Findings" })).toBeVisible();
     await page.getByRole("tab", { name: "Findings" }).click();
     await expect(

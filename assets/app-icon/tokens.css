@@ -1,0 +1,30 @@
+:root {
+  --cocode-page: #eef0f3;
+  --cocode-app: #fbfbfa;
+  --cocode-sidebar: #eaf1fb;
+  --cocode-sidebar-active: #dfe8f7;
+  --cocode-surface: #ffffff;
+  --cocode-surface-muted: #f6f6f4;
+  --cocode-surface-subtle: #f1f1ef;
+  --cocode-ink: #111214;
+  --cocode-ink-secondary: #2e3033;
+  --cocode-muted: #74746f;
+  --cocode-muted-soft: #9b9b95;
+  --cocode-border: #e5e5e1;
+  --cocode-border-soft: #eeeeeb;
+  --cocode-button: #111214;
+  --cocode-button-hover: #2f3033;
+  --cocode-green: #2d7d46;
+  --cocode-green-bg: #edf7ef;
+  --cocode-red: #b64232;
+  --cocode-red-bg: #fff0ee;
+  --cocode-amber: #a86600;
+  --cocode-amber-bg: #fbf3dc;
+  --cocode-blue: #2f6c9e;
+  --cocode-blue-bg: #e8f3fc;
+  --cocode-radius-window: 16px;
+  --cocode-radius-panel: 12px;
+  --cocode-radius-input: 8px;
+  --cocode-topbar-height: 62px;
+  --cocode-sidebar-width: 248px;
+}

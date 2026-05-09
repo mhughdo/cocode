@@ -59,7 +59,7 @@ describe("MessageComposer", () => {
     );
 
     expect(html).toContain("Tool: finding follow-up");
-    expect(html).toContain("Codex Reviewer - gpt-5.5");
+    expect(html).toContain("Codex Reviewer GPT 5.5");
     expect(html).toContain("Context: standard");
     expect(html).toContain("Reasoning: high");
     expect(html).toContain("Permission: review-mode");

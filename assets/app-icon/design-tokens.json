@@ -1,0 +1,49 @@
+{
+  "color": {
+    "page": "#eef0f3",
+    "app": "#fbfbfa",
+    "sidebar": "#eaf1fb",
+    "sidebarActive": "#dfe8f7",
+    "surface": "#ffffff",
+    "surfaceMuted": "#f6f6f4",
+    "surfaceSubtle": "#f1f1ef",
+    "ink": "#111214",
+    "inkSecondary": "#2e3033",
+    "muted": "#74746f",
+    "mutedSoft": "#9b9b95",
+    "border": "#e5e5e1",
+    "borderSoft": "#eeeeeb",
+    "green": "#2d7d46",
+    "greenBg": "#edf7ef",
+    "red": "#b64232",
+    "redBg": "#fff0ee",
+    "amber": "#a86600",
+    "amberBg": "#fbf3dc",
+    "blue": "#2f6c9e",
+    "blueBg": "#e8f3fc"
+  },
+  "radius": {
+    "window": 16,
+    "panel": 12,
+    "input": 8,
+    "button": 8,
+    "icon": 6
+  },
+  "typography": {
+    "fontSans": "-apple-system, BlinkMacSystemFont, SF Pro Text, SF Pro Display, Geist, Helvetica Neue, Arial, sans-serif",
+    "fontMono": "SF Mono, Geist Mono, Menlo, Consolas, monospace",
+    "body": 13,
+    "label": 11,
+    "table": 12,
+    "screenTitle": 17,
+    "setupHeading": 24
+  },
+  "size": {
+    "sidebarWidth": 248,
+    "topbarHeight": 62,
+    "buttonSmallHeight": 28,
+    "buttonHeight": 32,
+    "inputHeight": 36,
+    "composerHeight": 118
+  }
+}

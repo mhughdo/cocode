@@ -89,26 +89,21 @@ if (selectedTargets.length === 0) {
         );
       }
 
-      await page
-        .getByRole("button", { name: "Open local project" })
-        .last()
-        .click();
+      await page.getByRole("button", { name: "Open project" }).last().click();
       const workspace = await waitForWorkspace(backendInfo, repoPath);
 
       await page.getByRole("button", { name: /Compare branches/ }).click();
       await page.getByLabel("Base ref").fill("main");
       await page.getByLabel("Head ref").fill("feature/review-auth");
-      await page.getByRole("button", { name: "Continue to configure" }).click();
 
       await expect(
-        page.getByRole("heading", { name: "Configure review" }),
+        page.getByRole("heading", { name: "Set up review" }),
       ).toBeVisible();
       for (const config of configs) {
-        await expect(page.getByText(config.name)).toBeVisible();
+        await expect(
+          page.getByRole("button", { name: config.name }).first(),
+        ).toBeVisible();
       }
-      await page
-        .getByLabel("Runtime limit seconds")
-        .fill(String(Math.max(600, selectedTargets.length * 240)));
       await page.getByLabel("Focus prompt").fill(reviewFocus);
       await page.getByRole("button", { name: "Start review" }).click();
 

@@ -59,6 +59,24 @@ export type FakeGitHubServer = {
   close: () => Promise<void>;
 };
 
+export async function closeCocode(
+  app: Pick<CocodeApp, "dataDir" | "electronApp">,
+): Promise<void> {
+  const closePromise = app.electronApp.close().catch(() => undefined);
+  const didClose = await Promise.race([
+    closePromise.then(() => true),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5_000)),
+  ]);
+  if (!didClose) {
+    app.electronApp.process()?.kill("SIGKILL");
+    await Promise.race([
+      closePromise,
+      new Promise<void>((resolve) => setTimeout(resolve, 1_000)),
+    ]);
+  }
+  terminateBackendProcesses(app.dataDir);
+}
+
 export async function launchCocode(
   testInfo: TestInfo,
   env: Record<string, string> = {},
@@ -119,6 +137,46 @@ export function seedCocodeData(testInfo: TestInfo): SeededCocodeData {
     },
   );
   return { dataDir, workspaceRoot };
+}
+
+function terminateBackendProcesses(dataDir: string) {
+  let pids: string[];
+  try {
+    pids = execFileSync("pgrep", ["-x", "cocoded"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+  } catch {
+    return;
+  }
+
+  const dataDirMarker = `COCODED_DATA_DIR=${dataDir}`;
+  const dbPathMarker = `COCODED_DB_PATH=${join(dataDir, "cocoded.sqlite")}`;
+  for (const pid of pids) {
+    let processEnv: string;
+    try {
+      processEnv = execFileSync("ps", ["eww", "-p", pid], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+    } catch {
+      continue;
+    }
+    if (
+      !processEnv.includes(dataDirMarker) &&
+      !processEnv.includes(dbPathMarker)
+    ) {
+      continue;
+    }
+    try {
+      execFileSync("kill", [pid], { stdio: "ignore" });
+    } catch {
+      // The backend may exit naturally between discovery and termination.
+    }
+  }
 }
 
 export async function getBackendInfo(page: Page): Promise<BackendInfo> {
@@ -188,12 +246,25 @@ export function createBranchReviewRepo(repoPath: string): string {
   runGit(repoPath, "commit", "-m", "initial auth guard");
 
   runGit(repoPath, "checkout", "-B", "feature/review-auth");
+  const expandedAuthMatrix = Array.from(
+    { length: 72 },
+    (_, index) =>
+      `  { route: "/settings/repositories/${index}", role: "member", allowed: ${index % 2 === 0}, note: "auth-review-scope-auth-review-scope-auth-review-scope-${index}" },`,
+  );
   writeFileSync(
     join(sourceDir, "auth.ts"),
     [
       "export function canUpdateRepository(role: string): boolean {",
       '  return role === "admin" || role === "member";',
       "}",
+      "",
+      "export function canReadRepository(role: string): boolean {",
+      '  return role === "admin" || role === "member" || role === "viewer";',
+      "}",
+      "",
+      "export const permissionMatrix = [",
+      ...expandedAuthMatrix,
+      "] as const;",
       "",
     ].join("\n"),
   );

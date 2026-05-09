@@ -156,6 +156,11 @@ type runtimeSettings struct {
 	ReviewTimeoutSecs int64                 `json:"review_timeout_seconds"`
 }
 
+type sessionAgentSettingsOverride struct {
+	ModelLabel     string `json:"model_label"`
+	ReasoningLabel string `json:"reasoning_label"`
+}
+
 type runContext struct {
 	Session      dbgen.ReviewSession
 	Repository   dbgen.Repository
@@ -1317,30 +1322,41 @@ func (s *Service) connectionConfig(item runContext) (agents.ConnectionConfig, ag
 	if err != nil {
 		return agents.ConnectionConfig{}, agents.TaskLimits{}, err
 	}
+	selection, err := decodeSessionAgentSettingsOverride(item.SessionAgent.SettingsOverrideJson)
+	if err != nil {
+		return agents.ConnectionConfig{}, agents.TaskLimits{}, err
+	}
 	workingDirectory, err := workingDirectoryForAgent(item.AgentConfig.CwdMode, item.Repository, item.Workspace)
 	if err != nil {
 		return agents.ConnectionConfig{}, agents.TaskLimits{}, err
 	}
-	return agents.ConnectionConfig{
-			AdapterID:        item.AgentConfig.ID,
-			Kind:             agents.AdapterKind(item.AgentConfig.AdapterKind),
-			Command:          nullableValue(item.AgentConfig.Command),
-			Args:             args,
-			PromptDelivery:   settings.PromptDelivery,
-			CommandSafety:    agents.CommandSafetyOptions{AllowRiskyCommand: settings.AllowRiskyCommand},
-			WorkingDirectory: workingDirectory,
-			Env:              env,
-			Metadata: map[string]any{
-				"output_mode":     string(item.AgentConfig.OutputMode),
-				"model_label":     nullableValue(item.AgentConfig.ModelLabel),
-				"reasoning_label": nullableValue(item.AgentConfig.ReasoningLabel),
-			},
-		}, agents.TaskLimits{
-			TimeoutSeconds: settings.TimeoutSeconds,
-			MaxStdoutBytes: settings.MaxStdoutBytes,
-			MaxStderrBytes: settings.MaxStderrBytes,
-			MaxPromptBytes: settings.MaxPromptBytes,
-		}, nil
+	modelLabel := selectedAgentModelLabel(item, selection)
+	reasoningLabel := selectedAgentReasoningLabel(item, selection)
+	command := nullableValue(item.AgentConfig.Command)
+	kind := agents.AdapterKind(item.AgentConfig.AdapterKind)
+	args = commandArgsWithModelSelection(kind, command, args, modelLabel, reasoningLabel)
+	config := agents.ConnectionConfig{
+		AdapterID:        item.AgentConfig.ID,
+		Kind:             kind,
+		Command:          command,
+		Args:             args,
+		PromptDelivery:   settings.PromptDelivery,
+		CommandSafety:    agents.CommandSafetyOptions{AllowRiskyCommand: settings.AllowRiskyCommand},
+		WorkingDirectory: workingDirectory,
+		Env:              env,
+		Metadata: map[string]any{
+			"output_mode":     string(item.AgentConfig.OutputMode),
+			"model_label":     modelLabel,
+			"reasoning_label": reasoningLabel,
+		},
+	}
+	limits := agents.TaskLimits{
+		TimeoutSeconds: settings.TimeoutSeconds,
+		MaxStdoutBytes: settings.MaxStdoutBytes,
+		MaxStderrBytes: settings.MaxStderrBytes,
+		MaxPromptBytes: settings.MaxPromptBytes,
+	}
+	return config, limits, nil
 }
 
 func agentCapabilities(config dbgen.AgentConfig) (agents.AgentCapabilities, error) {
@@ -1610,6 +1626,124 @@ func decodeRuntimeSettings(raw string) (runtimeSettings, error) {
 		return runtimeSettings{}, fmt.Errorf("%w: runtime limits cannot be negative", ErrInvalidAgentConfiguration)
 	}
 	return settings, nil
+}
+
+func decodeSessionAgentSettingsOverride(raw string) (sessionAgentSettingsOverride, error) {
+	if strings.TrimSpace(raw) == "" {
+		raw = "{}"
+	}
+	var settings sessionAgentSettingsOverride
+	if err := json.Unmarshal([]byte(raw), &settings); err != nil {
+		return sessionAgentSettingsOverride{}, fmt.Errorf("%w: session agent settings must be a JSON object", ErrInvalidAgentConfiguration)
+	}
+	settings.ModelLabel = strings.TrimSpace(settings.ModelLabel)
+	settings.ReasoningLabel = strings.TrimSpace(settings.ReasoningLabel)
+	return settings, nil
+}
+
+func selectedAgentModelLabel(item runContext, override sessionAgentSettingsOverride) string {
+	if override.ModelLabel != "" {
+		return override.ModelLabel
+	}
+	return strings.TrimSpace(nullableValue(item.AgentConfig.ModelLabel))
+}
+
+func selectedAgentReasoningLabel(item runContext, override sessionAgentSettingsOverride) string {
+	if override.ReasoningLabel != "" {
+		return override.ReasoningLabel
+	}
+	return strings.TrimSpace(nullableValue(item.AgentConfig.ReasoningLabel))
+}
+
+func commandArgsWithModelSelection(kind agents.AdapterKind, command string, args []string, modelLabel string, reasoningLabel string) []string {
+	out := append([]string(nil), args...)
+	if kind != agents.AdapterCLINonInteractive {
+		return out
+	}
+	commandName := commandBaseName(command)
+	modelLabel = strings.TrimSpace(modelLabel)
+	reasoningLabel = strings.TrimSpace(reasoningLabel)
+	if shouldSkipCLIModelArgument(commandName, modelLabel) && reasoningLabel == "" {
+		return out
+	}
+	switch commandName {
+	case "codex":
+		injected := make([]string, 0, 4)
+		if !shouldSkipCLIModelArgument(commandName, modelLabel) {
+			injected = append(injected, "--model", modelLabel)
+		}
+		if reasoningLabel != "" {
+			injected = append(injected, "-c", fmt.Sprintf("model_reasoning_effort=%q", reasoningLabel))
+		}
+		return injectArgsAfterSubcommand(out, "exec", injected)
+	case "opencode":
+		injected := make([]string, 0, 4)
+		if !shouldSkipCLIModelArgument(commandName, modelLabel) {
+			injected = append(injected, "--model", modelLabel)
+		}
+		if reasoningLabel != "" {
+			injected = append(injected, "--variant", reasoningLabel)
+		}
+		return injectArgsAfterSubcommand(out, "run", injected)
+	case "claude":
+		injected := make([]string, 0, 4)
+		if !shouldSkipCLIModelArgument(commandName, modelLabel) {
+			injected = append(injected, "--model", modelLabel)
+		}
+		if reasoningLabel != "" {
+			injected = append(injected, "--effort", reasoningLabel)
+		}
+		return append(injected, out...)
+	case "gemini":
+		if shouldSkipCLIModelArgument(commandName, modelLabel) {
+			return out
+		}
+		return append([]string{"--model", modelLabel}, out...)
+	default:
+		return out
+	}
+}
+
+func injectArgsAfterSubcommand(args []string, subcommand string, injected []string) []string {
+	if len(injected) == 0 {
+		return append([]string(nil), args...)
+	}
+	out := make([]string, 0, len(args)+len(injected))
+	inserted := false
+	for _, arg := range args {
+		out = append(out, arg)
+		if !inserted && arg == subcommand {
+			out = append(out, injected...)
+			inserted = true
+		}
+	}
+	if inserted {
+		return out
+	}
+	return append(append([]string{}, injected...), args...)
+}
+
+func shouldSkipCLIModelArgument(command string, modelLabel string) bool {
+	modelLabel = strings.TrimSpace(modelLabel)
+	if modelLabel == "" || strings.EqualFold(modelLabel, "default") {
+		return true
+	}
+	switch strings.ToLower(modelLabel) {
+	case "codex", "claude", "gemini", "opencode", "gemini-acp", "opencode-acp":
+		return true
+	}
+	return strings.EqualFold(command, modelLabel)
+}
+
+func commandBaseName(command string) string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return ""
+	}
+	if index := strings.LastIndexAny(command, `/\`); index >= 0 && index+1 < len(command) {
+		command = command[index+1:]
+	}
+	return strings.ToLower(command)
 }
 
 func decodeStringArray(raw string, field string) ([]string, error) {

@@ -104,6 +104,44 @@ func TestWorkspaceEndpointsOpenAndListRepository(t *testing.T) {
 	}
 }
 
+func TestListRepositoryBranches(t *testing.T) {
+	router, _ := testRouterWithQueries(t)
+	repoPath := initHTTPAPIGitRepo(t)
+	runHTTPAPIGit(t, repoPath, "checkout", "-B", "main")
+	writeHTTPAPIRepoFile(t, repoPath, "app/main.go", "package main\n")
+	runHTTPAPIGit(t, repoPath, "add", ".")
+	runHTTPAPIGit(t, repoPath, "commit", "-m", "initial")
+	runHTTPAPIGit(t, repoPath, "checkout", "-b", "feature/review")
+
+	openRequest := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/workspaces/open-repository", map[string]any{
+		"path": repoPath,
+	})
+	openResponse := httptest.NewRecorder()
+	router.ServeHTTP(openResponse, openRequest)
+	if openResponse.Code != http.StatusOK {
+		t.Fatalf("open status = %d, body = %s", openResponse.Code, openResponse.Body.String())
+	}
+	opened := decodeHTTPAPIData[OpenRepositoryResponse](t, openResponse.Body.Bytes())
+
+	branchesRequest := httptest.NewRequest(http.MethodGet, "/api/repositories/"+opened.Repository.ID+"/branches?workspace_id="+opened.Workspace.ID, nil)
+	branchesRequest.Header.Set("X-Cocode-Token", "test-token")
+	branchesResponse := httptest.NewRecorder()
+	router.ServeHTTP(branchesResponse, branchesRequest)
+	if branchesResponse.Code != http.StatusOK {
+		t.Fatalf("branches status = %d, body = %s", branchesResponse.Code, branchesResponse.Body.String())
+	}
+	branches := decodeHTTPAPIData[[]RepositoryBranchResponse](t, branchesResponse.Body.Bytes())
+	if len(branches) < 2 {
+		t.Fatalf("branches = %+v, want at least main and feature/review", branches)
+	}
+	if branches[0].Name != "feature/review" || !branches[0].Current {
+		t.Fatalf("current branch = %+v, want feature/review first", branches[0])
+	}
+	if !repositoryBranchNames(branches)["main"] {
+		t.Fatalf("branches = %+v, want main", branches)
+	}
+}
+
 func TestOpenRepositoryRejectsNonGitPathWithoutPersistence(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
 
@@ -139,6 +177,14 @@ func TestListWorkspaceRepositoriesReturnsNotFoundForMissingWorkspace(t *testing.
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
+}
+
+func repositoryBranchNames(branches []RepositoryBranchResponse) map[string]bool {
+	names := make(map[string]bool, len(branches))
+	for _, branch := range branches {
+		names[branch.Name] = true
+	}
+	return names
 }
 
 func decodeHTTPAPIData[T any](t *testing.T, content []byte) T {

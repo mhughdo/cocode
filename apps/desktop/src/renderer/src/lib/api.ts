@@ -70,6 +70,14 @@ export interface Repository {
   updated_at: string;
 }
 
+export interface RepositoryBranch {
+  name: string;
+  commit_sha: string;
+  upstream?: string;
+  current: boolean;
+  remote: boolean;
+}
+
 export interface OpenRepositoryResponse {
   workspace: Workspace;
   repository: Repository;
@@ -109,6 +117,15 @@ export interface ChangedFile {
   is_excluded: boolean;
   line_ranges: unknown;
   patch_artifact_id?: string;
+}
+
+export interface ChangedFilePatch {
+  changed_file_id: string;
+  artifact_id: string;
+  content: string;
+  content_type: string;
+  size_bytes: number;
+  content_truncated: boolean;
 }
 
 export interface AgentCapabilities {
@@ -177,6 +194,36 @@ export interface AgentConfigHealth {
   checked_at: string;
   capabilities: AgentCapabilities;
   metadata: Record<string, unknown>;
+}
+
+export interface AgentModelOption {
+  id: string;
+  label: string;
+  provider: string;
+  provider_label: string;
+  source: "cli" | "cli-default" | "unavailable" | string;
+  default: boolean;
+  reasoning_efforts?: AgentReasoningOption[];
+}
+
+export interface AgentReasoningOption {
+  id: string;
+  label: string;
+  default: boolean;
+}
+
+export interface AgentModelCatalog {
+  provider: string;
+  provider_label: string;
+  command: string;
+  available: boolean;
+  source: "cli" | "cli-default" | "unavailable" | string;
+  models: AgentModelOption[];
+  cached_at?: string;
+  expires_at?: string;
+  stale?: boolean;
+  refreshing?: boolean;
+  error?: string;
 }
 
 export interface CredentialRef {
@@ -338,8 +385,16 @@ export interface CreateReviewSessionRequest {
   preset?: string;
   focus_prompt?: string;
   agent_config_ids: string[];
+  agent_selections?: ReviewSessionAgentSelectionInput[];
   runtime_limit_seconds?: number;
   context_policy?: ReviewContextPolicy;
+}
+
+export interface ReviewSessionAgentSelectionInput {
+  agent_config_id: string;
+  role?: string;
+  model_label?: string;
+  reasoning_label?: string;
 }
 
 export interface ReviewSessionAgent {
@@ -918,6 +973,25 @@ export class ApiClient {
     );
   }
 
+  listRepositoryBranches(
+    repositoryId: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> & {
+      workspaceId?: string;
+    } = {},
+  ) {
+    const { workspaceId, ...requestOptions } = options;
+    return this.get<RepositoryBranch[]>(
+      `/api/repositories/${encodeURIComponent(repositoryId)}/branches`,
+      {
+        ...requestOptions,
+        query: {
+          ...requestOptions.query,
+          workspace_id: workspaceId,
+        },
+      },
+    );
+  }
+
   createGitHubSnapshot(
     body: {
       workspace_id: string;
@@ -974,8 +1048,31 @@ export class ApiClient {
     );
   }
 
+  getChangedFilePatch(
+    snapshotId: string,
+    changedFileId: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.get<ChangedFilePatch>(
+      `/api/pr-snapshots/${encodeURIComponent(snapshotId)}/changed-files/${encodeURIComponent(changedFileId)}/patch`,
+      options,
+    );
+  }
+
   listAgentPresets(options: Omit<ApiRequestOptions, "method" | "body"> = {}) {
     return this.get<AgentPreset[]>("/api/agents/presets", options);
+  }
+
+  listAgentModelCatalog(
+    options: Omit<ApiRequestOptions, "method" | "body"> & {
+      refresh?: boolean;
+    } = {},
+  ) {
+    const { refresh, ...requestOptions } = options;
+    return this.get<AgentModelCatalog[]>("/api/agents/model-catalog", {
+      ...requestOptions,
+      query: { ...requestOptions.query, refresh: refresh ? 1 : undefined },
+    });
   }
 
   listAgentConfigs(options: Omit<ApiRequestOptions, "method" | "body"> = {}) {

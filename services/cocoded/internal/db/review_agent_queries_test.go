@@ -211,12 +211,29 @@ func TestAgentQueriesLifecycle(t *testing.T) {
 	if sessionAgent.ReviewSessionID != "review_session_1" {
 		t.Fatalf("CreateReviewSessionAgent() = %+v", sessionAgent)
 	}
+	duplicateSessionAgent, err := queries.CreateReviewSessionAgent(context.Background(), dbgen.CreateReviewSessionAgentParams{
+		ID:                   "review_session_agent_2",
+		ReviewSessionID:      "review_session_1",
+		AgentConfigID:        "agent_config_1",
+		Role:                 "performance reviewer",
+		RunOrder:             11,
+		Enabled:              1,
+		SettingsOverrideJson: `{"model_label":"gpt-5.4"}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateReviewSessionAgent(duplicate config) error = %v", err)
+	}
+	if duplicateSessionAgent.AgentConfigID != "agent_config_1" {
+		t.Fatalf("CreateReviewSessionAgent(duplicate config) = %+v", duplicateSessionAgent)
+	}
 
 	sessionAgents, err := queries.ListReviewSessionAgents(context.Background(), "review_session_1")
 	if err != nil {
 		t.Fatalf("ListReviewSessionAgents() error = %v", err)
 	}
-	if len(sessionAgents) != 1 || sessionAgents[0].ID != "review_session_agent_1" {
+	if len(sessionAgents) != 2 ||
+		sessionAgents[0].ID != "review_session_agent_1" ||
+		sessionAgents[1].ID != "review_session_agent_2" {
 		t.Fatalf("ListReviewSessionAgents() = %+v", sessionAgents)
 	}
 

@@ -1,5 +1,5 @@
 appId: dev.cocode.desktop
-productName: cocode
+productName: Cocode
 asar: true
 npmRebuild: false
 
@@ -16,9 +16,12 @@ extraResources:
     to: .
     filter:
       - cocoded*
+  - from: ../../assets/app-icon
+    to: assets/app-icon
 
 mac:
   category: public.app-category.developer-tools
+  icon: build/icon.icns
   hardenedRuntime: true
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist

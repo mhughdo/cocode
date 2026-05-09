@@ -102,8 +102,7 @@ CREATE TABLE review_session_agents (
   role TEXT NOT NULL,
   run_order INTEGER NOT NULL DEFAULT 0,
   enabled INTEGER NOT NULL DEFAULT 1,
-  settings_override_json TEXT NOT NULL DEFAULT '{}',
-  UNIQUE(review_session_id, agent_config_id)
+  settings_override_json TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE artifacts (

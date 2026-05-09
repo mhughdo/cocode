@@ -773,6 +773,75 @@ export interface FindingQuickActionResponse {
   context_bundle_id?: string;
 }
 
+export interface ChatThread {
+  id: string;
+  review_session_id: string;
+  title: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  thread_id: string;
+  parent_message_id?: string;
+  author_type:
+    | "user"
+    | "cocode"
+    | "orchestrator"
+    | "agent"
+    | "system"
+    | "verifier"
+    | string;
+  author_display_name: string;
+  agent_config_id?: string;
+  agent_run_id?: string;
+  context_bundle_id?: string;
+  artifact_id?: string;
+  body: string;
+  status: "completed" | "failed" | string;
+  metadata: unknown;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChatTurn {
+  id: string;
+  thread_id: string;
+  user_message_id: string;
+  mode: string;
+  audience: "orchestrator" | "all_agents" | "selected_agent" | string;
+  responder_agent_config_id?: string;
+  status: string;
+  error_code?: string;
+  error_message?: string;
+  started_at?: string;
+  completed_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChatThreadView {
+  thread: ChatThread;
+  messages: ChatMessage[];
+}
+
+export interface CreateChatTurnRequest {
+  body: string;
+  mode?: string;
+  audience?: "orchestrator" | "all_agents" | "selected_agent";
+  responder_agent_config_id?: string;
+  context_refs?: unknown[];
+  include_evidence?: boolean;
+  include_recent_messages?: boolean;
+}
+
+export interface CreateChatTurnResponse extends ChatThreadView {
+  turn: ChatTurn;
+  agent_run_ids?: string[];
+}
+
 export interface CreateCopyPacketRequest {
   format?: string;
   finding_ids?: string[];
@@ -1476,6 +1545,38 @@ export class ApiClient {
     return this.post<AskFindingQuestionResponse>(
       `/api/findings/${encodeURIComponent(findingId)}/evidence-map/question`,
       body,
+      options,
+    );
+  }
+
+  getReviewSessionChatThread(
+    reviewSessionId: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.get<ChatThreadView>(
+      `/api/review-sessions/${encodeURIComponent(reviewSessionId)}/chat-thread`,
+      options,
+    );
+  }
+
+  createReviewSessionChatTurn(
+    reviewSessionId: string,
+    body: CreateChatTurnRequest,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.post<CreateChatTurnResponse>(
+      `/api/review-sessions/${encodeURIComponent(reviewSessionId)}/chat-turns`,
+      body,
+      options,
+    );
+  }
+
+  getChatThread(
+    threadId: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.get<ChatThreadView>(
+      `/api/chat-threads/${encodeURIComponent(threadId)}`,
       options,
     );
   }

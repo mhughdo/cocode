@@ -34,7 +34,6 @@ import {
   SendIcon,
   SettingsIcon,
   ShieldCheckIcon,
-  SquareIcon,
   TerminalIcon,
   Trash2Icon,
 } from "lucide-react";
@@ -71,7 +70,6 @@ import {
   NativeSelect,
   NativeSelectOption,
 } from "@/components/ui/native-select";
-import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
@@ -83,7 +81,6 @@ import {
   type AgentConfigInput,
   type AgentModelCatalog,
   type AgentPreset,
-  type AgentRunSummary,
   type ApiClient,
   type ContextBundlePreview,
   createCocodeClient,
@@ -137,6 +134,7 @@ import {
   BUILTIN_REVIEW_AGENT_PRESET_IDS,
   formatSetupAgentLabel,
 } from "./agent-utils";
+import { CentralizedChatScreen } from "./centralized-chat-screen";
 import { NewThreadScreen } from "./new-thread-screen";
 
 const MAX_SIDEBAR_SESSIONS = 12;
@@ -311,7 +309,6 @@ export function App() {
   const [client, setClient] = useState<ApiClient | null>(null);
   const [mainView, setMainView] = useState<MainView>("new-thread");
   const [backendStatus, setBackendStatus] = useState("loading");
-  const [backendUrl, setBackendUrl] = useState("");
   const [apiSession, setApiSession] =
     useState<Loadable<ApiSessionResponse>>(loadingApiState);
   const [workspaces, setWorkspaces] =
@@ -460,7 +457,6 @@ export function App() {
           return;
         }
         setBackendStatus(info.status);
-        setBackendUrl(info.baseUrl);
 
         const nextClient = createCocodeClient(info);
         setClient(nextClient);
@@ -657,10 +653,6 @@ export function App() {
     setMainView("review");
   }, []);
 
-  const backendDetail =
-    apiSession.status === "error"
-      ? apiSession.error.message
-      : backendUrl || "Waiting for backend info";
   const searchGroups = useMemo<SearchCommandGroup[]>(() => {
     const reviewCommands =
       sessionList.length > 0
@@ -780,7 +772,6 @@ export function App() {
           <ReviewThread
             activeRepository={activeRepository}
             agentConfigs={agentConfigs}
-            backendDetail={backendDetail}
             client={client}
             session={displayedSession}
           />
@@ -2907,13 +2898,11 @@ function TopNav({
 function ReviewThread({
   activeRepository,
   agentConfigs,
-  backendDetail,
   client,
   session,
 }: {
   activeRepository?: Repository;
   agentConfigs: Loadable<AgentConfig[]>;
-  backendDetail: string;
   client: ApiClient | null;
   session?: ReviewSession;
 }) {
@@ -2947,21 +2936,15 @@ function ReviewThread({
     setActiveTab("follow-up");
   }, []);
 
-  const agentList = agentConfigs.status === "success" ? agentConfigs.data : [];
-  const selectedAgents =
-    session?.agents
-      .map((sessionAgent) =>
-        agentList.find((agent) => agent.id === sessionAgent.agent_config_id),
-      )
-      .filter((agent): agent is AgentConfig => Boolean(agent)) ?? [];
-
   return (
     <section className="flex min-w-0 flex-col">
       <ScrollArea className="flex-1 px-6 py-5">
         <div
           className={cn(
             "mx-auto flex flex-col gap-5",
-            activeTab === "evidence-map" ? "max-w-7xl" : "max-w-5xl",
+            activeTab === "chat" || activeTab === "evidence-map"
+              ? "max-w-7xl"
+              : "max-w-5xl",
           )}
         >
           <div className="flex items-start justify-between gap-4">
@@ -3000,28 +2983,20 @@ function ReviewThread({
           <Tabs value={activeTab} onValueChange={setActiveTab}>
             <TabsList variant="line">
               <TabsTrigger value="chat">Chat</TabsTrigger>
-              <TabsTrigger value="details">Review details</TabsTrigger>
               <TabsTrigger value="findings">Findings</TabsTrigger>
-              <TabsTrigger value="evidence-map" disabled={!evidenceMapFinding}>
-                Evidence Map
-              </TabsTrigger>
-              <TabsTrigger value="follow-up" disabled={!followUpFinding}>
-                Follow-up
-              </TabsTrigger>
               <TabsTrigger value="publish">Publish</TabsTrigger>
             </TabsList>
 
             <TabsContent value="chat" className="mt-4 flex flex-col gap-4">
               {session ? (
-                <>
-                  <ReviewRunningPanel
-                    agents={selectedAgents}
-                    client={client}
-                    summary={live.summary}
-                    session={live.session ?? session}
-                  />
-                  <EarlyFindingsPanel findings={live.findings} />
-                </>
+                <CentralizedChatScreen
+                  agentConfigs={agentConfigs}
+                  client={client}
+                  events={live.events}
+                  findings={live.findings}
+                  session={live.session ?? session}
+                  summary={live.summary}
+                />
               ) : (
                 <>
                   <div className="bg-surface self-end rounded-full px-4 py-2 text-sm">
@@ -3117,17 +3092,6 @@ function ReviewThread({
           </Tabs>
         </div>
       </ScrollArea>
-
-      <MessageComposer
-        agentConfigs={agentConfigs}
-        backendDetail={backendDetail}
-        disabled
-        disabledReason={
-          session
-            ? "Open Follow-up from a selected finding to ask scoped questions."
-            : "Start a review before asking follow-up questions."
-        }
-      />
     </section>
   );
 }
@@ -3885,201 +3849,6 @@ function ReviewControlButtons({
   );
 }
 
-function ReviewRunningPanel({
-  agents,
-  client,
-  session,
-  summary,
-}: {
-  agents: AgentConfig[];
-  client: ApiClient | null;
-  session: ReviewSession;
-  summary: Loadable<ReviewSessionSummary>;
-}) {
-  const [cancelingRunId, setCancelingRunId] = useState<string | null>(null);
-  const [cancelError, setCancelError] = useState("");
-  const data = summary.status === "success" ? summary.data : undefined;
-  const progress = data?.progress_percent ?? statusProgress(session.status);
-  const activeAgents = data?.active_agents ?? 0;
-  const agentCounts = data?.agent_status_counts ?? {};
-  const runs = data?.agent_runs ?? [];
-  const agentCards: { id: string; name: string; run?: AgentRunSummary }[] =
-    runs.length > 0
-      ? runs.map((run) => ({
-          id: run.id,
-          name:
-            agents.find((agent) => agent.id === run.agent_config_id)?.name ??
-            run.agent_config_id,
-          run,
-          status: run.status,
-        }))
-      : agents.length > 0
-        ? agents.map((agent) => ({ id: agent.id, name: agent.name }))
-        : session.agents.map((agent) => ({
-            id: agent.id,
-            name: agent.agent_config_id,
-          }));
-
-  async function cancelAgentRun(run: AgentRunSummary) {
-    if (!client) {
-      setCancelError("Backend client is unavailable");
-      return;
-    }
-    setCancelError("");
-    setCancelingRunId(run.id);
-    const state = await loadApiResource(() =>
-      client.cancelAgentRun(session.id, run.id),
-    );
-    setCancelingRunId(null);
-    if (state.status === "error") {
-      setCancelError(state.error.message);
-    }
-  }
-
-  function fallbackStatus(index: number) {
-    return agentCounts.succeeded && index < Number(agentCounts.succeeded)
-      ? "succeeded"
-      : activeAgents > index
-        ? "running"
-        : "queued";
-  }
-
-  function canCancelRun(run?: AgentRunSummary) {
-    return Boolean(
-      run && (run.status === "queued" || run.status === "running"),
-    );
-  }
-
-  return (
-    <section className="bg-surface-raised rounded-lg border">
-      <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
-        <div className="min-w-0">
-          <div className="text-sm font-medium">Review running</div>
-          <div className="text-muted-foreground mt-1 truncate text-xs">
-            {data?.phase ?? "workflow"} • {data?.phase_status ?? session.status}
-          </div>
-        </div>
-        <Badge variant="secondary">{session.status}</Badge>
-      </div>
-      <div className="flex flex-col gap-4 p-4">
-        {summary.status === "error" && (
-          <ErrorState
-            title="Summary unavailable"
-            description={summary.error.message}
-          />
-        )}
-        {cancelError && (
-          <ErrorState
-            title="Could not cancel agent"
-            description={cancelError}
-          />
-        )}
-        <div className="flex items-center gap-3">
-          <Progress value={progress} />
-          <span className="w-12 text-right text-xs">{progress}%</span>
-        </div>
-        <div className="grid grid-cols-4 gap-3">
-          <RunMetric label="Files" value={formatFileScan(data)} />
-          <RunMetric
-            label="Runs"
-            value={String(data?.agent_runs_total ?? agents.length)}
-          />
-          <RunMetric label="Active" value={String(activeAgents)} />
-          <RunMetric label="Findings" value={formatFindingCount(data)} />
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          {agentCards.map((agent, index) => {
-            const status = agent.run ? agent.run.status : fallbackStatus(index);
-            return (
-              <div
-                key={agent.id}
-                className="bg-background flex items-center gap-3 rounded-md border px-3 py-2"
-              >
-                <BotIcon />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium">
-                    {agent.name}
-                  </div>
-                  <div className="text-muted-foreground text-xs">{status}</div>
-                </div>
-                <Badge variant="outline">{status}</Badge>
-                {canCancelRun(agent.run) && (
-                  <TooltipIconButton
-                    disabled={cancelingRunId === agent.run?.id}
-                    label={`Cancel ${agent.name}`}
-                    size="icon-sm"
-                    variant="ghost"
-                    onClick={() => {
-                      if (agent.run) {
-                        void cancelAgentRun(agent.run);
-                      }
-                    }}
-                  >
-                    <SquareIcon />
-                  </TooltipIconButton>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function RunMetric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="bg-background rounded-md border px-3 py-2">
-      <div className="text-muted-foreground text-xs">{label}</div>
-      <div className="mt-1 truncate text-sm font-medium">{value}</div>
-    </div>
-  );
-}
-
-function EarlyFindingsPanel({
-  findings,
-}: {
-  findings: Loadable<FindingListResponse>;
-}) {
-  const visibleFindings =
-    findings.status === "success" ? findings.data.items.slice(0, 5) : [];
-
-  return (
-    <section className="bg-surface-raised rounded-lg border">
-      <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
-        <div className="flex items-center gap-2">
-          <ShieldCheckIcon />
-          <span className="text-sm font-medium">Early findings</span>
-        </div>
-        {findings.status === "success" && (
-          <Badge variant="secondary">{findings.data.stats.total} total</Badge>
-        )}
-      </div>
-      {findings.status === "loading" && (
-        <LoadingRows rows={3} className="p-4" />
-      )}
-      {findings.status === "error" && (
-        <ErrorState
-          className="m-3"
-          title="Findings unavailable"
-          description={findings.error.message}
-        />
-      )}
-      {findings.status === "success" && visibleFindings.length === 0 && (
-        <EmptyState
-          className="border-0 p-6"
-          title="No findings yet"
-          description="Findings will appear here as agents and the verifier emit evidence."
-          icon={FileSearchIcon}
-        />
-      )}
-      {visibleFindings.map((finding) => (
-        <LiveFindingRow key={finding.id} finding={finding} />
-      ))}
-    </section>
-  );
-}
-
 function ReviewEventTimeline({
   events,
   streamState,
@@ -4169,6 +3938,15 @@ function ReviewEventTimeline({
         </>
       )}
     </section>
+  );
+}
+
+function RunMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="bg-background rounded-md border px-3 py-2">
+      <div className="text-muted-foreground text-xs">{label}</div>
+      <div className="mt-1 truncate text-sm font-medium">{value}</div>
+    </div>
   );
 }
 
@@ -6892,50 +6670,6 @@ export function EvidenceCardList({
   );
 }
 
-function LiveFindingRow({ finding }: { finding: Finding }) {
-  return (
-    <button
-      className="hover:bg-surface flex w-full items-start gap-3 border-b px-4 py-3 text-left last:border-b-0"
-      type="button"
-    >
-      <CircleIcon
-        className={cn(
-          "mt-1",
-          finding.severity === "high"
-            ? "text-destructive"
-            : "text-muted-foreground",
-        )}
-      />
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-sm font-medium">
-          {finding.canonical_claim}
-        </div>
-        <div className="text-muted-foreground mt-1 flex min-w-0 items-center gap-2 text-xs">
-          <span className="truncate font-mono">
-            {finding.primary_path || "no location"}
-          </span>
-          {finding.primary_start_line ? (
-            <span>L{finding.primary_start_line}</span>
-          ) : null}
-        </div>
-        {finding.evidence_summary && (
-          <div className="text-muted-foreground mt-2 line-clamp-2 text-xs">
-            {finding.evidence_summary}
-          </div>
-        )}
-      </div>
-      <div className="flex shrink-0 gap-1">
-        <Badge
-          variant={finding.severity === "high" ? "destructive" : "secondary"}
-        >
-          {finding.severity}
-        </Badge>
-        <Badge variant="outline">{finding.verification_status}</Badge>
-      </div>
-    </button>
-  );
-}
-
 function ChangedFilesPanel() {
   if (changedFiles.length === 0) {
     return (
@@ -7263,43 +6997,6 @@ function appendBoundedEvent(events: ReviewEvent[], event: ReviewEvent) {
   return [...events, event]
     .sort((left, right) => left.sequence - right.sequence)
     .slice(-MAX_REVIEW_EVENTS_RENDERED);
-}
-
-function statusProgress(status: string) {
-  switch (status) {
-    case "draft":
-      return 0;
-    case "queued":
-      return 8;
-    case "running":
-      return 45;
-    case "paused":
-      return 45;
-    case "canceling":
-      return 70;
-    case "completed":
-      return 100;
-    case "failed":
-    case "canceled":
-      return 100;
-    default:
-      return 0;
-  }
-}
-
-function formatFileScan(summary?: ReviewSessionSummary) {
-  if (!summary) {
-    return "0/0";
-  }
-  return `${summary.changed_files_scanned}/${summary.changed_files_total}`;
-}
-
-function formatFindingCount(summary?: ReviewSessionSummary) {
-  if (!summary?.finding_counts) {
-    return "0";
-  }
-  const total = summary.finding_counts.total;
-  return typeof total === "number" ? String(total) : "0";
 }
 
 function toErrorMessage(error: unknown) {

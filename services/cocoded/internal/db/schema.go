@@ -11,6 +11,11 @@ var Migrations = []Migration{
 		Name:    "allow_duplicate_review_agent_assignments",
 		SQL:     allowDuplicateReviewAgentAssignmentsSQL,
 	},
+	{
+		Version: 3,
+		Name:    "centralized_chat",
+		SQL:     centralizedChatSQL,
+	},
 }
 
 const schemaV1SQL = `
@@ -469,4 +474,71 @@ FROM review_session_agents;
 
 DROP TABLE review_session_agents;
 ALTER TABLE review_session_agents_new RENAME TO review_session_agents;
+`
+
+const centralizedChatSQL = `
+CREATE TABLE chat_threads (
+  id TEXT PRIMARY KEY,
+  review_session_id TEXT NOT NULL REFERENCES review_sessions(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('active','archived')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(review_session_id)
+);
+
+CREATE TABLE chat_messages (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+  parent_message_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
+  author_type TEXT NOT NULL CHECK(author_type IN ('user','cocode','orchestrator','agent','system','verifier')),
+  author_display_name TEXT NOT NULL,
+  agent_config_id TEXT REFERENCES agent_configs(id) ON DELETE SET NULL,
+  agent_run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+  context_bundle_id TEXT REFERENCES context_bundles(id) ON DELETE SET NULL,
+  artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+  body TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending','streaming','completed','failed','canceled')),
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE chat_message_context_refs (
+  id TEXT PRIMARY KEY,
+  message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+  ref_type TEXT NOT NULL CHECK(ref_type IN ('review_session','finding','evidence_map','artifact','file','publish_draft','copy_packet','agent_run','context_bundle')),
+  ref_id TEXT NOT NULL,
+  label TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE chat_turns (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+  user_message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+  mode TEXT NOT NULL,
+  audience TEXT NOT NULL,
+  responder_agent_config_id TEXT REFERENCES agent_configs(id) ON DELETE SET NULL,
+  status TEXT NOT NULL CHECK(status IN ('created','routing','context_building','running','synthesizing','completed','failed','cancel_requested','canceled')),
+  error_code TEXT,
+  error_message TEXT,
+  started_at TEXT,
+  completed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE chat_turn_agent_runs (
+  chat_turn_id TEXT NOT NULL REFERENCES chat_turns(id) ON DELETE CASCADE,
+  agent_run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+  role TEXT NOT NULL,
+  PRIMARY KEY(chat_turn_id, agent_run_id)
+);
+
+CREATE INDEX idx_chat_threads_session ON chat_threads(review_session_id, updated_at DESC);
+CREATE INDEX idx_chat_messages_thread_created ON chat_messages(thread_id, created_at, id);
+CREATE INDEX idx_chat_message_context_refs_message ON chat_message_context_refs(message_id);
+CREATE INDEX idx_chat_message_context_refs_ref ON chat_message_context_refs(ref_type, ref_id);
+CREATE INDEX idx_chat_turns_thread_created ON chat_turns(thread_id, created_at);
 `

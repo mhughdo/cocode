@@ -21,6 +21,7 @@ import (
 	"github.com/hughdo/cocode/services/cocoded/internal/app"
 	"github.com/hughdo/cocode/services/cocoded/internal/apperror"
 	"github.com/hughdo/cocode/services/cocoded/internal/artifact"
+	"github.com/hughdo/cocode/services/cocoded/internal/chat"
 	"github.com/hughdo/cocode/services/cocoded/internal/contextbundle"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
 	"github.com/hughdo/cocode/services/cocoded/internal/eventbus"
@@ -168,6 +169,7 @@ type routerServices struct {
 	artifacts           *artifact.Store
 	copyPackets         *exports.Service
 	followups           *followup.Service
+	chat                *chat.Service
 	reviewWorkflow      *orchestrator.Service
 	reviewWorkflowErr   error
 	eventBus            *eventbus.Bus
@@ -244,6 +246,14 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 			ContextBuilder: contextBuilder,
 			Artifacts:      artifactStore,
 			AgentManager:   agentManager,
+		},
+		chat: &chat.Service{
+			Database:       database,
+			Queries:        queries,
+			ContextBuilder: contextBuilder,
+			Artifacts:      artifactStore,
+			AgentManager:   agentManager,
+			Events:         bus,
 		},
 		reviewWorkflow:     reviewWorkflow,
 		reviewWorkflowErr:  workflowErr,
@@ -323,9 +333,12 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.GET("/review-sessions/:id/audit-log", reviewSessionAuditLogHandler(services))
 	api.GET("/review-sessions/:id/events", reviewSessionEventsHandler(services))
 	api.GET("/review-sessions/:id/findings", listFindingsHandler(queries))
+	api.GET("/review-sessions/:id/chat-thread", reviewSessionChatThreadHandler(services))
+	api.POST("/review-sessions/:id/chat-turns", createReviewSessionChatTurnHandler(services))
 	api.POST("/review-sessions/:id/export/copy-packet", createCopyPacketHandler(services))
 	api.POST("/review-sessions/:id/github/preview", createGitHubPreviewHandler(services))
 	api.POST("/copy-packets/:copy_packet_id/copied", markCopyPacketCopiedHandler(services))
+	api.GET("/chat-threads/:thread_id", chatThreadHandler(services))
 	api.GET("/review-sessions/:id/findings/:finding_id", findingDetailHandler(queries))
 	api.GET("/review-sessions/:id/findings/:finding_id/evidence", findingEvidenceHandler(queries))
 	api.GET("/review-sessions/:id/findings/:finding_id/evidence-map", findingEvidenceMapHandler(services, false))

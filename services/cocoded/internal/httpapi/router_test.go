@@ -1464,6 +1464,52 @@ func TestReviewSessionEndpointCreateGetList(t *testing.T) {
 	}
 }
 
+func TestReviewSessionChatThreadEndpointSeedsAndAnswers(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPISnapshot(t, queries)
+	createHTTPAPIAgentConfig(t, queries, "agent_config_chat", "primary_reviewer", 1)
+	session := createHTTPAPIReviewSessionRow(t, queries, "review_session_chat", []string{"agent_config_chat"})
+
+	getRequest := httptest.NewRequest(http.MethodGet, "/api/review-sessions/"+session.ID+"/chat-thread", nil)
+	getRequest.Header.Set("X-Cocode-Token", "test-token")
+	getResponse := httptest.NewRecorder()
+	router.ServeHTTP(getResponse, getRequest)
+	if getResponse.Code != http.StatusOK {
+		t.Fatalf("chat thread status = %d, body = %s", getResponse.Code, getResponse.Body.String())
+	}
+	seeded := decodeChatThreadViewResponse(t, getResponse.Body.Bytes())
+	if seeded.Thread.ReviewSessionID != session.ID || seeded.Thread.ID == "" {
+		t.Fatalf("seeded thread = %+v", seeded.Thread)
+	}
+	if len(seeded.Messages) != 3 {
+		t.Fatalf("seeded message count = %d, messages = %+v", len(seeded.Messages), seeded.Messages)
+	}
+	if seeded.Messages[1].AuthorType != "orchestrator" || !strings.Contains(seeded.Messages[1].Body, "coordinate") {
+		t.Fatalf("orchestrator seed message = %+v", seeded.Messages[1])
+	}
+
+	askRequest := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/review-sessions/"+session.ID+"/chat-turns", map[string]any{
+		"body":     "What is the current review status?",
+		"audience": "orchestrator",
+	})
+	askResponse := httptest.NewRecorder()
+	router.ServeHTTP(askResponse, askRequest)
+	if askResponse.Code != http.StatusOK {
+		t.Fatalf("chat turn status = %d, body = %s", askResponse.Code, askResponse.Body.String())
+	}
+	answered := decodeChatTurnResponse(t, askResponse.Body.Bytes())
+	if answered.Turn.Status != "completed" || answered.Turn.Audience != "orchestrator" {
+		t.Fatalf("chat turn = %+v", answered.Turn)
+	}
+	if len(answered.Messages) < 5 {
+		t.Fatalf("answered message count = %d, messages = %+v", len(answered.Messages), answered.Messages)
+	}
+	last := answered.Messages[len(answered.Messages)-1]
+	if last.AuthorType != "cocode" || !strings.Contains(last.Body, "Current review status: draft.") {
+		t.Fatalf("local answer = %+v", last)
+	}
+}
+
 func TestReviewSessionCreateRejectsInvalidInputs(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
 	createHTTPAPISnapshot(t, queries)
@@ -3939,6 +3985,65 @@ func decodeReviewSessionListResponse(t *testing.T, content []byte) []ReviewSessi
 	var envelope struct {
 		Data  []ReviewSessionResponse `json:"data"`
 		Error any                     `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+type chatThreadViewTestResponse struct {
+	Thread struct {
+		ID              string `json:"id"`
+		ReviewSessionID string `json:"review_session_id"`
+	} `json:"thread"`
+	Messages []chatMessageTestResponse `json:"messages"`
+}
+
+type chatTurnTestResponse struct {
+	Status   string `json:"status"`
+	Audience string `json:"audience"`
+}
+
+type chatTurnEnvelopeTestResponse struct {
+	Thread struct {
+		ID              string `json:"id"`
+		ReviewSessionID string `json:"review_session_id"`
+	} `json:"thread"`
+	Messages []chatMessageTestResponse `json:"messages"`
+	Turn     chatTurnTestResponse      `json:"turn"`
+}
+
+type chatMessageTestResponse struct {
+	AuthorType string `json:"author_type"`
+	Body       string `json:"body"`
+}
+
+func decodeChatThreadViewResponse(t *testing.T, content []byte) chatThreadViewTestResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  chatThreadViewTestResponse `json:"data"`
+		Error any                        `json:"error"`
+	}
+	if err := json.Unmarshal(content, &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Error != nil {
+		t.Fatalf("response error = %+v", envelope.Error)
+	}
+	return envelope.Data
+}
+
+func decodeChatTurnResponse(t *testing.T, content []byte) chatTurnEnvelopeTestResponse {
+	t.Helper()
+
+	var envelope struct {
+		Data  chatTurnEnvelopeTestResponse `json:"data"`
+		Error any                          `json:"error"`
 	}
 	if err := json.Unmarshal(content, &envelope); err != nil {
 		t.Fatalf("decode response: %v", err)

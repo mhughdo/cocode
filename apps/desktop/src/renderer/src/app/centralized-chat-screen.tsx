@@ -1,13 +1,24 @@
-import { type FormEvent, useEffect, useMemo, useState } from "react";
 import {
+  type FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import {
+  AlertTriangleIcon,
   BotIcon,
   CheckIcon,
   ChevronDownIcon,
+  CircleSlashIcon,
   ClockIcon,
   Loader2Icon,
   MessageSquareIcon,
   SendIcon,
+  ShieldCheckIcon,
   SparklesIcon,
+  UserIcon,
   UsersIcon,
 } from "lucide-react";
 
@@ -26,14 +37,15 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import {
   type AgentConfig,
+  type AgentRunSummary,
   type ApiClient,
   type ChatMessage,
   type ChatThreadView,
-  type Finding,
   type FindingListResponse,
   type Loadable,
   type ReviewEvent,
   type ReviewSession,
+  type ReviewSessionAgent,
   type ReviewSessionSummary,
   errorApiState,
   loadApiResource,
@@ -41,7 +53,15 @@ import {
   successApiState,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import {
+  AgentRuntimeTrace,
+  summarizeRuntimeTraceEvents,
+  type RuntimeTraceSummary,
+} from "./agent-runtime-trace";
 import { agentLogoUrl, formatSetupAgentLabel } from "./agent-utils";
+import { MarkdownMessage } from "./markdown-message";
+
+import cocodeMarkUrl from "../../../../../../assets/app-icon/cocode-logo-mark.svg";
 
 type ChatAudience = "orchestrator" | "all_agents" | "selected_agent";
 
@@ -49,8 +69,14 @@ type ChatResponderOption = {
   id: string;
   label: string;
   description: string;
-  audience: ChatAudience;
   agentConfigId?: string;
+  icon: "orchestrator" | "agent";
+};
+
+type ChatAskTargetOption = {
+  id: ChatAudience;
+  label: string;
+  description: string;
   icon: "orchestrator" | "all" | "agent";
 };
 
@@ -59,6 +85,7 @@ export function CentralizedChatScreen({
   client,
   events,
   findings,
+  onOpenFindings,
   session,
   summary,
 }: {
@@ -66,60 +93,118 @@ export function CentralizedChatScreen({
   client: ApiClient | null;
   events: ReviewEvent[];
   findings: Loadable<FindingListResponse>;
+  onOpenFindings: () => void;
   session: ReviewSession;
   summary: Loadable<ReviewSessionSummary>;
 }) {
   const [thread, setThread] =
     useState<Loadable<ChatThreadView>>(loadingApiState());
   const [message, setMessage] = useState("");
+  const [askTargetID, setAskTargetID] = useState<ChatAudience>("all_agents");
   const [responderID, setResponderID] = useState("orchestrator");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [pendingAgentMessages, setPendingAgentMessages] = useState<
+    ChatMessage[]
+  >([]);
+  const messageListRef = useRef<HTMLDivElement | null>(null);
+  const shouldStickToBottomRef = useRef(true);
 
-  const agents = useMemo(() => {
+  const sessionAgentEntries = useMemo(() => {
     if (agentConfigs.status !== "success") {
       return [];
     }
     const byID = new Map(agentConfigs.data.map((agent) => [agent.id, agent]));
     return session.agents
       .filter((assignment) => assignment.enabled)
-      .map((assignment) => byID.get(assignment.agent_config_id))
-      .filter((agent): agent is AgentConfig => Boolean(agent));
+      .map((assignment) => {
+        const agent = byID.get(assignment.agent_config_id);
+        return agent ? { agent, assignment } : null;
+      })
+      .filter(
+        (
+          entry,
+        ): entry is { agent: AgentConfig; assignment: ReviewSessionAgent } =>
+          Boolean(entry),
+      );
   }, [agentConfigs, session.agents]);
-  const findingItems = findings.status === "success" ? findings.data.items : [];
+  const orchestratorAgent = useMemo(() => {
+    return (
+      sessionAgentEntries.find((entry) => isOrchestratorEntry(entry))?.agent ??
+      sessionAgentEntries[0]?.agent
+    );
+  }, [sessionAgentEntries]);
+  const agents = useMemo(
+    () =>
+      sessionAgentEntries
+        .filter((entry) => !isOrchestratorEntry(entry))
+        .map((entry) => entry.agent),
+    [sessionAgentEntries],
+  );
+  const askTargetOptions = useMemo<ChatAskTargetOption[]>(
+    () => [
+      {
+        id: "all_agents",
+        label: "All review agents",
+        description: `Fan out to ${agents.length || "all"} reviewer${
+          agents.length === 1 ? "" : "s"
+        } and synthesize.`,
+        icon: "all",
+      },
+      {
+        id: "orchestrator",
+        label: "Orchestrator",
+        description: "Ask cocode to answer from review state.",
+        icon: "orchestrator",
+      },
+      {
+        id: "selected_agent",
+        label: "Selected reviewer",
+        description: "Route to one configured CLI reviewer.",
+        icon: "agent",
+      },
+    ],
+    [agents.length],
+  );
 
   const responderOptions = useMemo<ChatResponderOption[]>(
     () => [
       {
         id: "orchestrator",
         label: "Orchestrator",
-        description: "Ask cocode to synthesize current review state.",
-        audience: "orchestrator",
+        description: "cocode synthesizer",
         icon: "orchestrator",
-      },
-      {
-        id: "all_agents",
-        label: "All review agents",
-        description: `Ask ${agents.length || "all"} configured reviewer${
-          agents.length === 1 ? "" : "s"
-        }.`,
-        audience: "all_agents",
-        icon: "all",
+        agentConfigId: orchestratorAgent?.id,
       },
       ...agents.map((agent) => ({
         id: `agent:${agent.id}`,
         label: compactAgentLabel(agent),
         description: agent.role || "Reviewer",
-        audience: "selected_agent" as const,
         agentConfigId: agent.id,
         icon: "agent" as const,
       })),
     ],
-    [agents],
+    [agents, orchestratorAgent?.id],
   );
   const selectedResponder =
     responderOptions.find((option) => option.id === responderID) ??
     responderOptions[0];
+  const effectiveAskTargetID =
+    agents.length === 0 && askTargetID === "all_agents"
+      ? "orchestrator"
+      : askTargetID;
+  const selectedAskTarget =
+    askTargetOptions.find((option) => option.id === effectiveAskTargetID) ??
+    askTargetOptions[0];
+
+  const refreshThread = useCallback(async () => {
+    const next = await loadApiResource(() =>
+      client
+        ? client.getReviewSessionChatThread(session.id)
+        : Promise.reject(new Error("Backend client is unavailable")),
+    );
+    setThread(next);
+  }, [client, session.id]);
 
   useEffect(() => {
     let canceled = false;
@@ -136,6 +221,63 @@ export function CentralizedChatScreen({
       canceled = true;
     };
   }, [client, session.id]);
+
+  useEffect(() => {
+    if (events.length === 0 && session.status !== "queued") {
+      return;
+    }
+    queueMicrotask(() => void refreshThread());
+  }, [events.length, refreshThread, session.status]);
+
+  useEffect(() => {
+    if (!["queued", "running", "canceling"].includes(session.status)) {
+      return;
+    }
+    const interval = window.setInterval(() => void refreshThread(), 2000);
+    return () => window.clearInterval(interval);
+  }, [refreshThread, session.status]);
+
+  const liveMessages = useMemo(
+    () =>
+      thread.status === "success"
+        ? withLiveAgentRunMessages({
+            agentConfigs,
+            events,
+            messages: thread.data.messages,
+            session,
+            summary,
+            threadID: thread.data.thread.id,
+          })
+        : [],
+    [agentConfigs, events, session, summary, thread],
+  );
+  const displayedMessages = useMemo(
+    () =>
+      [...liveMessages, ...pendingAgentMessages].filter(
+        (item) => item.author_type !== "system",
+      ),
+    [liveMessages, pendingAgentMessages],
+  );
+  const eventsByRunID = useMemo(() => {
+    const next = new Map<string, ReviewEvent[]>();
+    for (const event of events) {
+      if (!event.agent_run_id || !event.type.startsWith("AgentRun")) {
+        continue;
+      }
+      const runEvents = next.get(event.agent_run_id) ?? [];
+      runEvents.push(event);
+      next.set(event.agent_run_id, runEvents);
+    }
+    return next;
+  }, [events]);
+  const messageCount = displayedMessages.length;
+  useEffect(() => {
+    const node = messageListRef.current;
+    if (!node || !shouldStickToBottomRef.current) {
+      return;
+    }
+    node.scrollTop = node.scrollHeight;
+  }, [messageCount]);
 
   async function submitMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -165,15 +307,31 @@ export function CentralizedChatScreen({
       );
     }
     setMessage("");
-    const next = await loadApiResource(() =>
-      client.createReviewSessionChatTurn(session.id, {
-        body,
-        mode: "follow_up",
-        audience: selectedResponder.audience,
-        responder_agent_config_id: selectedResponder.agentConfigId,
-        include_evidence: true,
-        include_recent_messages: true,
+    const audience =
+      effectiveAskTargetID === "selected_agent" &&
+      !selectedResponder.agentConfigId
+        ? "orchestrator"
+        : effectiveAskTargetID;
+    setPendingAgentMessages(
+      pendingChatMessages({
+        agents,
+        audience,
+        responder: selectedResponder,
+        threadID: thread.status === "success" ? thread.data.thread.id : "",
       }),
+    );
+    const request = {
+      body,
+      mode: "follow_up",
+      audience,
+      include_evidence: true,
+      include_recent_messages: true,
+      ...(selectedResponder.agentConfigId
+        ? { responder_agent_config_id: selectedResponder.agentConfigId }
+        : {}),
+    };
+    const next = await loadApiResource(() =>
+      client.createReviewSessionChatTurn(session.id, request),
     );
     if (next.status === "success") {
       setThread(
@@ -197,116 +355,125 @@ export function CentralizedChatScreen({
           : errorApiState(next.error),
       );
     }
+    setPendingAgentMessages([]);
     setSubmitting(false);
   }
 
   return (
-    <div className="grid min-h-[620px] grid-cols-[minmax(0,1fr)_300px] gap-5 max-xl:grid-cols-1">
-      <div className="flex min-w-0 flex-col gap-4">
-        <div className="border-border/75 bg-surface-raised flex min-h-[500px] flex-col rounded-xl border shadow-[0_1px_2px_rgba(17,18,20,0.04)]">
-          <div className="border-border/70 flex items-center justify-between border-b px-4 py-3">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 text-sm font-semibold">
-                <MessageSquareIcon className="size-4" />
-                Review chat
-              </div>
-              <p className="text-muted-foreground mt-0.5 truncate text-xs">
-                Ask cocode, one reviewer, or every configured reviewer from one
-                thread.
-              </p>
-            </div>
-            <Badge variant="outline" className="hidden sm:inline-flex">
-              {agents.length} reviewer{agents.length === 1 ? "" : "s"}
-            </Badge>
-          </div>
-
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            {thread.status === "loading" && <LoadingRows rows={5} />}
-            {thread.status === "error" && (
-              <EmptyState
-                title="Central chat is unavailable"
-                description={thread.error.message}
-                icon={MessageSquareIcon}
-              />
-            )}
-            {thread.status === "success" &&
-              thread.data.messages.length === 0 && (
-                <EmptyState
-                  title="No chat messages yet"
-                  description="Start with a question for the orchestrator or a reviewer."
-                  icon={MessageSquareIcon}
-                />
-              )}
-            {thread.status === "success" && thread.data.messages.length > 0 && (
-              <div className="flex flex-col gap-3">
-                {thread.data.messages.map((item) => (
-                  <ChatMessageCard
-                    agent={agentByID(agents, item.agent_config_id)}
-                    key={item.id}
-                    message={item}
-                  />
-                ))}
-                {submitting && (
-                  <div className="text-muted-foreground flex items-center gap-2 px-2 py-1 text-xs">
-                    <Loader2Icon className="size-3.5 animate-spin" />
-                    Waiting for {selectedResponder.label}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          <form
-            className="border-border/75 bg-background/80 border-t p-3 backdrop-blur"
-            onSubmit={submitMessage}
-          >
-            <div className="border-border/80 bg-surface-raised focus-within:border-ring/60 rounded-xl border shadow-[0_1px_8px_rgba(17,18,20,0.04)]">
-              <Textarea
-                aria-label="Centralized review message"
-                className="max-h-36 min-h-18 resize-none border-0 bg-transparent px-3 py-3 text-[13px] shadow-none focus-visible:ring-0"
-                disabled={!client || submitting}
-                onChange={(event) => setMessage(event.target.value)}
-                onKeyDown={(event) => {
-                  if (
-                    (event.metaKey || event.ctrlKey) &&
-                    event.key === "Enter"
-                  ) {
-                    event.currentTarget.form?.requestSubmit();
+    <div className="grid h-full min-h-0 grid-cols-[minmax(0,1fr)_280px] gap-6 overflow-hidden max-xl:grid-cols-1">
+      <div className="flex min-h-0 min-w-0 flex-col gap-3">
+        <div
+          aria-label="Centralized chat messages"
+          className="min-h-0 flex-1 overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          onScroll={(event) => {
+            const node = event.currentTarget;
+            shouldStickToBottomRef.current =
+              node.scrollHeight - node.scrollTop - node.clientHeight < 80;
+          }}
+          ref={messageListRef}
+        >
+          {thread.status === "loading" && <LoadingRows rows={5} />}
+          {thread.status === "error" && (
+            <EmptyState
+              title="Central chat is unavailable"
+              description={thread.error.message}
+              icon={MessageSquareIcon}
+            />
+          )}
+          {thread.status === "success" && displayedMessages.length === 0 && (
+            <EmptyState
+              title="No chat messages yet"
+              description="Start with a question for the orchestrator or a reviewer."
+              icon={MessageSquareIcon}
+            />
+          )}
+          {thread.status === "success" && displayedMessages.length > 0 && (
+            <div className="flex flex-col gap-3">
+              {displayedMessages.map((item) => (
+                <ChatMessageCard
+                  agent={agentByID(agents, item.agent_config_id)}
+                  events={
+                    item.agent_run_id
+                      ? (eventsByRunID.get(item.agent_run_id) ?? [])
+                      : []
                   }
-                }}
-                placeholder="Ask for a follow-up, challenge a finding, or request another pass..."
-                value={message}
-              />
-              <div className="flex flex-wrap items-center justify-between gap-2 px-2.5 pb-2">
+                  key={item.id}
+                  message={item}
+                />
+              ))}
+              {submitting && pendingAgentMessages.length === 0 && (
+                <div className="text-muted-foreground flex items-center gap-2 rounded-xl border bg-white px-4 py-3 text-xs">
+                  <Loader2Icon className="size-3.5 animate-spin" />
+                  Waiting for {selectedResponder.label}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <form className="shrink-0" onSubmit={submitMessage}>
+          <div className="border-border bg-surface-raised focus-within:border-foreground/35 rounded-xl border shadow-[0_1px_2px_rgba(17,18,20,0.04)]">
+            <Textarea
+              aria-label="Centralized review message"
+              className="max-h-36 min-h-18 resize-none border-0 bg-transparent px-4 py-3 text-[13px] shadow-none focus-visible:ring-0"
+              disabled={!client || submitting}
+              onChange={(event) => setMessage(event.target.value)}
+              onKeyDown={(event) => {
+                if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                  event.currentTarget.form?.requestSubmit();
+                }
+              }}
+              placeholder="Ask cocode anything about this review..."
+              value={message}
+            />
+            <div className="flex flex-wrap items-center justify-between gap-2 px-3 pb-3">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <AskTargetDropdown
+                  options={askTargetOptions}
+                  selected={selectedAskTarget}
+                  onSelect={(id) => {
+                    setAskTargetID(id);
+                    if (id !== "selected_agent") {
+                      setResponderID("orchestrator");
+                    }
+                  }}
+                />
                 <ResponderDropdown
                   options={responderOptions}
                   selected={selectedResponder}
-                  onSelect={setResponderID}
+                  onSelect={(id) => {
+                    setResponderID(id);
+                    if (id !== "orchestrator") {
+                      setAskTargetID("selected_agent");
+                    }
+                  }}
                 />
-                <Button
-                  aria-label="Send centralized chat message"
-                  disabled={!message.trim() || submitting || !client}
-                  size="icon"
-                  type="submit"
-                >
-                  {submitting ? (
-                    <Loader2Icon className="size-4 animate-spin" />
-                  ) : (
-                    <SendIcon className="size-4" />
-                  )}
-                </Button>
               </div>
+              <Button
+                aria-label="Send centralized chat message"
+                className="rounded-lg bg-[#141414] text-white hover:bg-[#2a2a2a]"
+                disabled={!message.trim() || submitting || !client}
+                size="icon"
+                type="submit"
+              >
+                {submitting ? (
+                  <Loader2Icon className="size-4 animate-spin" />
+                ) : (
+                  <SendIcon className="size-4" />
+                )}
+              </Button>
             </div>
-            {submitError && (
-              <p className="text-destructive mt-2 text-xs">{submitError}</p>
-            )}
-          </form>
-        </div>
+          </div>
+          {submitError && (
+            <p className="text-destructive mt-2 text-xs">{submitError}</p>
+          )}
+        </form>
       </div>
 
       <CentralizedChatRail
         events={events}
-        findings={findingItems}
+        findings={findings}
+        onOpenFindings={onOpenFindings}
         session={session}
         summary={summary}
       />
@@ -314,71 +481,438 @@ export function CentralizedChatScreen({
   );
 }
 
+function withLiveAgentRunMessages({
+  agentConfigs,
+  events,
+  messages,
+  session,
+  summary,
+  threadID,
+}: {
+  agentConfigs: Loadable<AgentConfig[]>;
+  events: ReviewEvent[];
+  messages: ChatMessage[];
+  session: ReviewSession;
+  summary: Loadable<ReviewSessionSummary>;
+  threadID: string;
+}) {
+  if (summary.status !== "success") {
+    return messages;
+  }
+  const existingRunIDs = new Set(
+    messages
+      .map((message) => message.agent_run_id)
+      .filter((id): id is string => Boolean(id)),
+  );
+  const agentByConfigID =
+    agentConfigs.status === "success"
+      ? new Map(agentConfigs.data.map((agent) => [agent.id, agent]))
+      : new Map<string, AgentConfig>();
+  const eventsByRunID = new Map<string, ReviewEvent[]>();
+  for (const event of events) {
+    if (!event.agent_run_id || !event.type.startsWith("AgentRun")) {
+      continue;
+    }
+    const runEvents = eventsByRunID.get(event.agent_run_id) ?? [];
+    runEvents.push(event);
+    eventsByRunID.set(event.agent_run_id, runEvents);
+  }
+  const liveMessages: ChatMessage[] = [];
+  for (const run of summary.data.agent_runs ?? []) {
+    if (existingRunIDs.has(run.id) || !isLiveAgentRun(run)) {
+      continue;
+    }
+    const agent = agentByConfigID.get(run.agent_config_id);
+    const runEvents = eventsByRunID.get(run.id) ?? [];
+    const runtimeSummary = summarizeRuntimeTraceEvents(runEvents);
+    const latestEvent = runEvents.at(-1);
+    const timestamp =
+      latestEvent?.created_at ?? run.started_at ?? session.updated_at;
+    liveMessages.push({
+      id: `live-${run.id}`,
+      thread_id: threadID,
+      author_type: "agent",
+      author_display_name: agent ? compactAgentLabel(agent) : "Reviewer",
+      agent_config_id: run.agent_config_id,
+      agent_run_id: run.id,
+      body: liveAgentRunBody(run, latestEvent, runtimeSummary, agent),
+      status: "streaming",
+      metadata: {
+        live: true,
+        agent_run_status: run.status,
+        reasoning_events: runtimeSummary.reasoning.length,
+        tool_call_events: runtimeSummary.toolCalls.length,
+        output_events: runtimeSummary.output.length,
+      },
+      created_at: timestamp,
+      updated_at: timestamp,
+    });
+  }
+  return [...messages, ...liveMessages];
+}
+
+function pendingChatMessages({
+  agents,
+  audience,
+  responder,
+  threadID,
+}: {
+  agents: AgentConfig[];
+  audience: ChatAudience;
+  responder: ChatResponderOption;
+  threadID: string;
+}): ChatMessage[] {
+  const now = new Date().toISOString();
+  if (audience === "all_agents" && agents.length > 0) {
+    return agents.map((agent) => ({
+      id: `pending-${agent.id}-${now}`,
+      thread_id: threadID,
+      author_type: "agent",
+      author_display_name: compactAgentLabel(agent),
+      agent_config_id: agent.id,
+      body: `${compactAgentLabel(agent)} is reading the review context and preparing an answer.`,
+      status: "streaming",
+      metadata: { local: true, pending: true },
+      created_at: now,
+      updated_at: now,
+    }));
+  }
+  if (audience === "selected_agent" && responder.agentConfigId) {
+    return [
+      {
+        id: `pending-${responder.agentConfigId}-${now}`,
+        thread_id: threadID,
+        author_type: "agent",
+        author_display_name: responder.label,
+        agent_config_id: responder.agentConfigId,
+        body: `${responder.label} is reading the review context and preparing an answer.`,
+        status: "streaming",
+        metadata: { local: true, pending: true },
+        created_at: now,
+        updated_at: now,
+      },
+    ];
+  }
+  return [
+    {
+      id: `pending-orchestrator-${now}`,
+      thread_id: threadID,
+      author_type: "orchestrator",
+      author_display_name: "Orchestrator",
+      body: "cocode is synthesizing the latest review state and agent evidence.",
+      status: "streaming",
+      metadata: { local: true, pending: true },
+      created_at: now,
+      updated_at: now,
+    },
+  ];
+}
+
+function isLiveAgentRun(run: AgentRunSummary) {
+  return run.status === "queued" || run.status === "running";
+}
+
+function liveAgentRunBody(
+  run: AgentRunSummary,
+  latestEvent: ReviewEvent | undefined,
+  runtimeSummary: RuntimeTraceSummary,
+  agent: AgentConfig | undefined,
+) {
+  const label = agent ? compactAgentLabel(agent) : "Reviewer";
+  const reasoning = lastNonEmpty(runtimeSummary.reasoning);
+  if (reasoning) {
+    return `**Visible reasoning**\n\n${reasoning.trim()}`;
+  }
+  const modelOutput = lastNonEmpty(runtimeSummary.output);
+  if (modelOutput) {
+    return modelOutput.trim();
+  }
+  const toolCall = lastNonEmpty(runtimeSummary.toolCalls);
+  if (toolCall) {
+    return `**Tool call**\n\n\`\`\`text\n${toolCall.trim()}\n\`\`\``;
+  }
+  if (run.status === "queued") {
+    return `${label} is queued and waiting for an execution slot.`;
+  }
+  if (latestEvent?.type === "AgentRunOutput") {
+    const stream = payloadString(latestEvent.payload.stream);
+    return `${label} is streaming ${stream || "output"} back to cocode.`;
+  }
+  return `${label} is ${liveAgentRunWork(run)}.`;
+}
+
+function lastNonEmpty(items: string[]) {
+  for (let index = items.length - 1; index >= 0; index--) {
+    const value = items[index]?.trim();
+    if (value) {
+      return value;
+    }
+  }
+  return "";
+}
+
+function liveAgentRunWork(run: AgentRunSummary) {
+  const role = run.role.toLowerCase();
+  if (role.includes("chat")) {
+    return "answering your follow-up";
+  }
+  if (role.includes("verifier")) {
+    return "checking evidence";
+  }
+  if (role.includes("context")) {
+    return "building review context";
+  }
+  return "reviewing changed files";
+}
+
+function payloadString(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function metadataString(metadata: unknown, key: string, fallback = ""): string {
+  if (!isPlainRecord(metadata)) {
+    return fallback;
+  }
+  const value = metadata[key];
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
 function ChatMessageCard({
   agent,
+  events,
   message,
 }: {
   agent?: AgentConfig;
+  events: ReviewEvent[];
   message: ChatMessage;
 }) {
   const isUser = message.author_type === "user";
   const isSystem = message.author_type === "system";
   const failed = message.status === "failed";
+  const streaming = message.status !== "completed" && !failed;
   const logo = agent ? agentLogoUrl(agent) : "";
+  const runtimeSummary = useMemo(
+    () => summarizeRuntimeTraceEvents(events),
+    [events],
+  );
   return (
     <article
       className={cn(
-        "flex gap-3",
-        isUser && "justify-end",
-        isSystem && "justify-center",
+        "border-border/80 flex gap-3 rounded-xl border bg-white px-4 py-3 shadow-[0_1px_2px_rgba(17,18,20,0.03)]",
+        isSystem && "bg-[#fbfbfa]",
+        streaming && "border-dashed bg-[#fbfbfa]",
+        failed && "border-destructive/30 bg-destructive/5",
       )}
     >
-      {!isUser && !isSystem && (
-        <AgentAvatar authorType={message.author_type} logo={logo} />
-      )}
-      <div
-        className={cn(
-          "min-w-0 rounded-xl px-3 py-2.5 text-sm leading-6",
-          isUser
-            ? "bg-primary text-primary-foreground max-w-[78%]"
-            : "border-border/75 text-foreground max-w-[84%] border bg-white",
-          isSystem &&
-            "bg-surface text-muted-foreground max-w-[92%] border-0 text-xs",
-          failed && "border-destructive/30 bg-destructive/5",
+      <AgentAvatar
+        authorType={message.author_type}
+        isUser={isUser}
+        logo={logo}
+      />
+      <div className="min-w-0 flex-1">
+        <div className="mb-1 flex min-w-0 flex-wrap items-center gap-2 text-[13px]">
+          <span className="font-semibold">
+            {message.author_display_name ||
+              displayNameForAuthor(message.author_type)}
+          </span>
+          <span className="text-muted-foreground text-xs">
+            {formatClockTime(message.created_at)}
+          </span>
+          {message.agent_run_id && (
+            <AgentRunBadges
+              agent={agent}
+              failed={failed}
+              runtimeSummary={runtimeSummary}
+              streaming={streaming}
+            />
+          )}
+          {!message.agent_run_id && streaming && (
+            <Badge variant="outline" className="h-4 gap-1 px-1.5 text-[10px]">
+              <Loader2Icon className="size-3 animate-spin" />
+              streaming
+            </Badge>
+          )}
+          {!message.agent_run_id && failed && (
+            <Badge variant="destructive" className="h-4 px-1.5 text-[10px]">
+              failed
+            </Badge>
+          )}
+        </div>
+        <ExpandableMarkdownMessage
+          content={message.body}
+          muted={isSystem || streaming}
+        />
+        <ReasoningSummary metadata={message.metadata} />
+        {message.agent_run_id && events.length > 0 && (
+          <AgentRuntimeTrace
+            className="mt-3"
+            compact
+            events={events}
+            failed={failed}
+          />
         )}
-      >
-        {!isUser && !isSystem && (
-          <div className="mb-1.5 flex items-center gap-2">
-            <span className="font-medium">{message.author_display_name}</span>
-            {message.agent_run_id && (
-              <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
-                agent run
-              </Badge>
-            )}
-            {failed && (
-              <Badge variant="destructive" className="h-4 px-1.5 text-[10px]">
-                failed
-              </Badge>
-            )}
-          </div>
-        )}
-        <p className="break-words whitespace-pre-wrap">{message.body}</p>
       </div>
     </article>
   );
 }
 
+function ExpandableMarkdownMessage({
+  content,
+  muted,
+}: {
+  content: string;
+  muted?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const normalizedContent = content
+    .replace(/\n{0,2}\.\.\.\[truncated\]\s*$/i, "")
+    .trim();
+  const lineCount = normalizedContent.split("\n").length;
+  const needsExpansion = normalizedContent.length > 900 || lineCount > 14;
+
+  return (
+    <div className="min-w-0">
+      <div
+        className={cn(
+          "relative min-w-0",
+          needsExpansion && !expanded && "max-h-56 overflow-hidden",
+        )}
+      >
+        <MarkdownMessage content={normalizedContent || content} muted={muted} />
+        {needsExpansion && !expanded && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-white to-transparent" />
+        )}
+      </div>
+      {needsExpansion && (
+        <Button
+          className="mt-2 h-7 px-2 text-xs"
+          size="sm"
+          type="button"
+          variant="outline"
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {expanded ? "Show less" : "See more"}
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function AgentRunBadges({
+  agent,
+  failed,
+  runtimeSummary,
+  streaming,
+}: {
+  agent?: AgentConfig;
+  failed: boolean;
+  runtimeSummary: RuntimeTraceSummary;
+  streaming: boolean;
+}) {
+  const modelBits = [
+    agent?.model_label?.trim(),
+    agent?.reasoning_label?.trim(),
+  ].filter(Boolean);
+  return (
+    <>
+      <Badge
+        variant={failed ? "destructive" : streaming ? "outline" : "secondary"}
+        className="h-4 gap-1 px-1.5 text-[10px]"
+      >
+        {streaming && <Loader2Icon className="size-3 animate-spin" />}
+        {failed ? "failed" : streaming ? "running" : "completed"}
+      </Badge>
+      {modelBits.length > 0 && (
+        <Badge variant="outline" className="h-4 max-w-44 px-1.5 text-[10px]">
+          <span className="truncate">{modelBits.join(" · ")}</span>
+        </Badge>
+      )}
+      {runtimeSummary.reasoning.length > 0 && (
+        <Badge
+          variant="outline"
+          className="h-4 border-amber-200 bg-amber-50 px-1.5 text-[10px] text-amber-800"
+        >
+          reasoning {runtimeSummary.reasoning.length}
+        </Badge>
+      )}
+      {runtimeSummary.toolCalls.length > 0 && (
+        <Badge
+          variant="outline"
+          className="h-4 border-blue-200 bg-blue-50 px-1.5 text-[10px] text-blue-800"
+        >
+          tools {runtimeSummary.toolCalls.length}
+        </Badge>
+      )}
+      {runtimeSummary.output.length > 0 && (
+        <Badge
+          variant="outline"
+          className="h-4 border-emerald-200 bg-emerald-50 px-1.5 text-[10px] text-emerald-800"
+        >
+          output {runtimeSummary.output.length}
+        </Badge>
+      )}
+      {runtimeSummary.errors.length > 0 && (
+        <Badge variant="destructive" className="h-4 px-1.5 text-[10px]">
+          errors {runtimeSummary.errors.length}
+        </Badge>
+      )}
+    </>
+  );
+}
+
+function ReasoningSummary({ metadata }: { metadata: unknown }) {
+  const reasoning = metadataString(metadata, "reasoning_summary");
+  if (!reasoning) {
+    return null;
+  }
+  return (
+    <details className="border-border/70 bg-surface/50 mt-3 rounded-lg border px-3 py-2 text-xs">
+      <summary className="text-muted-foreground flex cursor-pointer list-none items-center justify-between gap-3 font-medium [&::-webkit-details-marker]:hidden">
+        <span>Reasoning summary</span>
+        <span>model-visible</span>
+      </summary>
+      <div className="mt-2 text-[11px] leading-5">
+        <p className="text-muted-foreground mb-2">
+          Provider-returned reasoning or thinking summary, not private hidden
+          chain-of-thought.
+        </p>
+        <MarkdownMessage content={reasoning} />
+      </div>
+    </details>
+  );
+}
+
 function AgentAvatar({
   authorType,
+  isUser,
   logo,
 }: {
   authorType: string;
+  isUser: boolean;
   logo: string;
 }) {
+  if (isUser) {
+    return (
+      <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-[#e8e5df] text-[11px] font-semibold text-[#3a3834]">
+        <UserIcon className="size-4" />
+      </span>
+    );
+  }
   if (logo) {
     return (
       <span className="bg-surface mt-1 flex size-8 shrink-0 items-center justify-center rounded-lg border">
         <img alt="" className="size-4.5" src={logo} />
+      </span>
+    );
+  }
+  if (authorType === "cocode" || authorType === "orchestrator") {
+    return (
+      <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-[#0f0f0f]">
+        <img alt="" className="size-4.5" src={cocodeMarkUrl} />
       </span>
     );
   }
@@ -392,6 +926,54 @@ function AgentAvatar({
     <span className="bg-primary text-primary-foreground mt-1 flex size-8 shrink-0 items-center justify-center rounded-lg">
       <Icon className="size-4" />
     </span>
+  );
+}
+
+function AskTargetDropdown({
+  onSelect,
+  options,
+  selected,
+}: {
+  onSelect: (id: ChatAudience) => void;
+  options: ChatAskTargetOption[];
+  selected: ChatAskTargetOption;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          aria-label="Choose centralized chat ask target"
+          className="h-9 max-w-[230px] justify-start gap-2 rounded-lg bg-white px-3"
+          size="sm"
+          type="button"
+          variant="outline"
+        >
+          <AskTargetIcon option={selected} />
+          <span className="truncate">Ask: {selected.label}</span>
+          <ChevronDownIcon className="size-3.5" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-72">
+        <DropdownMenuLabel>Ask</DropdownMenuLabel>
+        <DropdownMenuGroup>
+          {options.map((option) => (
+            <DropdownMenuItem
+              key={option.id}
+              onSelect={() => onSelect(option.id)}
+            >
+              <AskTargetIcon option={option} />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate">{option.label}</span>
+                <span className="text-muted-foreground block truncate text-xs">
+                  {option.description}
+                </span>
+              </span>
+              {selected.id === option.id && <CheckIcon className="size-4" />}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -409,18 +991,18 @@ function ResponderDropdown({
       <DropdownMenuTrigger asChild>
         <Button
           aria-label="Choose centralized chat responder"
-          className="max-w-full justify-start"
+          className="h-9 max-w-[280px] justify-start gap-2 rounded-lg bg-white px-3"
           size="sm"
           type="button"
-          variant="ghost"
+          variant="outline"
         >
           <ResponderIcon option={selected} />
-          <span className="truncate">Ask: {selected.label}</span>
+          <span className="truncate">Responder: {selected.label}</span>
           <ChevronDownIcon className="size-3.5" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-72">
-        <DropdownMenuLabel>Route question to</DropdownMenuLabel>
+        <DropdownMenuLabel>Responder</DropdownMenuLabel>
         <DropdownMenuGroup>
           {options.map((option) => (
             <DropdownMenuItem
@@ -447,7 +1029,7 @@ function ResponderDropdown({
   );
 }
 
-function ResponderIcon({ option }: { option: ChatResponderOption }) {
+function AskTargetIcon({ option }: { option: ChatAskTargetOption }) {
   if (option.icon === "all") {
     return <UsersIcon className="size-4 shrink-0" />;
   }
@@ -457,96 +1039,120 @@ function ResponderIcon({ option }: { option: ChatResponderOption }) {
   return <BotIcon className="size-4 shrink-0" />;
 }
 
+function ResponderIcon({ option }: { option: ChatResponderOption }) {
+  if (option.icon === "orchestrator") {
+    return <SparklesIcon className="size-4 shrink-0" />;
+  }
+  return <BotIcon className="size-4 shrink-0" />;
+}
+
 function CentralizedChatRail({
   events,
   findings,
+  onOpenFindings,
   session,
   summary,
 }: {
   events: ReviewEvent[];
-  findings: Finding[];
+  findings: Loadable<FindingListResponse>;
+  onOpenFindings: () => void;
   session: ReviewSession;
   summary: Loadable<ReviewSessionSummary>;
 }) {
+  const findingItems = findings.status === "success" ? findings.data.items : [];
+  const stats = findings.status === "success" ? findings.data.stats : undefined;
   const topFinding =
-    findings.find((finding) => finding.severity === "critical") ??
-    findings.find((finding) => finding.severity === "high") ??
-    findings[0];
+    findingItems.find((finding) => finding.severity === "critical") ??
+    findingItems.find((finding) => finding.severity === "high") ??
+    findingItems[0];
   const latestEvents = events.slice(-6).reverse();
   const agentCount =
     summary.status === "success"
       ? summary.data.agent_runs_total || session.agents.length
       : session.agents.length;
   return (
-    <aside className="border-border/75 bg-surface-raised flex min-h-0 flex-col gap-5 rounded-xl border p-4 shadow-[0_1px_2px_rgba(17,18,20,0.04)] max-xl:grid max-xl:grid-cols-3 max-lg:grid-cols-1">
-      <section className="space-y-3">
-        <h2 className="text-sm font-semibold">Review summary</h2>
+    <aside className="flex min-h-0 flex-col gap-4 overflow-y-auto pr-1 [scrollbar-width:none] max-xl:grid max-xl:grid-cols-3 max-lg:grid-cols-1 [&::-webkit-scrollbar]:hidden">
+      <section className="border-border/80 space-y-3 rounded-xl border bg-white p-4 shadow-[0_1px_2px_rgba(17,18,20,0.03)]">
+        <h2 className="text-[15px] font-semibold">Review summary</h2>
         <RailStatus
-          detail={session.status}
-          label="Review thread active"
+          detail={`${stats?.by_verification.verified ?? 0}`}
+          icon="verified"
+          label="Verified"
           ok={session.status !== "failed"}
         />
         <RailStatus
-          detail={`${agentCount} configured`}
-          label="Review agents"
-          ok={agentCount > 0}
+          detail={`${stats?.needs_triage ?? 0}`}
+          icon="triage"
+          label="Needs triage"
+          ok={(stats?.needs_triage ?? 0) === 0}
         />
         <RailStatus
-          detail={`${findings.length} finding${findings.length === 1 ? "" : "s"}`}
-          label="Findings available"
-          ok={findings.length > 0}
+          detail={`${stats?.by_decision.accepted ?? 0}`}
+          icon="accepted"
+          label="Accepted"
+          ok
         />
+        <RailStatus
+          detail={`${stats?.by_decision.dismissed ?? 0}`}
+          icon="dismissed"
+          label="Dismissed"
+          ok
+        />
+        <div className="text-muted-foreground border-border/70 border-t pt-3 text-xs">
+          {agentCount} reviewer{agentCount === 1 ? "" : "s"} configured •{" "}
+          {session.status}
+        </div>
       </section>
 
-      <section className="space-y-3">
-        <h2 className="text-sm font-semibold">Top finding</h2>
+      <section className="border-border/80 space-y-3 rounded-xl border bg-white p-4 shadow-[0_1px_2px_rgba(17,18,20,0.03)]">
+        <h2 className="text-[15px] font-semibold">Top finding</h2>
         {topFinding ? (
-          <div className="border-border/75 rounded-lg border bg-white p-3">
-            <div className="mb-2 flex items-center gap-2">
-              <Badge variant="secondary">{topFinding.severity}</Badge>
-              <span className="text-muted-foreground text-xs">
-                {topFinding.verification_status}
-              </span>
+          <div className="space-y-3">
+            <div className="flex items-start gap-2">
+              <AlertTriangleIcon className="text-destructive mt-0.5 size-4 shrink-0" />
+              <p className="line-clamp-4 text-[13px] leading-5 font-semibold">
+                {topFinding.canonical_claim}
+              </p>
             </div>
-            <p className="line-clamp-4 text-sm leading-5 font-medium">
-              {topFinding.canonical_claim}
-            </p>
-            {topFinding.primary_path && (
-              <p className="text-muted-foreground mt-2 truncate font-mono text-xs">
-                {topFinding.primary_path}
+            {topFinding.evidence_summary && (
+              <p className="text-muted-foreground line-clamp-4 text-xs leading-5">
+                {topFinding.evidence_summary}
               </p>
             )}
+            <Button size="sm" variant="outline" onClick={onOpenFindings}>
+              View in Findings
+            </Button>
           </div>
         ) : (
-          <div className="text-muted-foreground border-border/75 rounded-lg border bg-white p-3 text-sm">
+          <p className="text-muted-foreground text-[13px] leading-5">
             Findings will appear here as reviewers report structured evidence.
-          </div>
+          </p>
         )}
       </section>
 
-      <section className="min-h-0 space-y-3">
-        <h2 className="text-sm font-semibold">Activity</h2>
+      <section className="border-border/80 min-h-0 space-y-3 rounded-xl border bg-white p-4 shadow-[0_1px_2px_rgba(17,18,20,0.03)]">
+        <h2 className="text-[15px] font-semibold">Activity</h2>
         {latestEvents.length > 0 ? (
-          <div className="max-h-60 space-y-2 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div className="max-h-60 space-y-3 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {latestEvents.map((event) => (
               <div
-                className="border-border/60 rounded-lg border bg-white px-3 py-2"
+                className="grid grid-cols-[18px_minmax(0,1fr)_auto] items-start gap-2 text-[12px]"
                 key={event.id}
               >
-                <div className="flex items-center gap-2 text-sm font-medium">
-                  <ClockIcon className="text-muted-foreground size-3.5" />
-                  <span className="truncate">{event.type}</span>
-                </div>
-                <p className="text-muted-foreground mt-1 text-xs">
+                <ClockIcon className="text-muted-foreground mt-0.5 size-3.5" />
+                <span className="truncate font-medium">
+                  {formatEventLabel(event.type)}
+                </span>
+                <span className="text-muted-foreground whitespace-nowrap">
                   {formatRelativeTime(event.created_at)}
-                </p>
+                </span>
               </div>
             ))}
           </div>
         ) : (
-          <div className="text-muted-foreground border-border/75 rounded-lg border bg-white p-3 text-sm">
+          <p className="text-muted-foreground text-[13px] leading-5">
             Activity will stream here after the review starts.
-          </div>
+          </p>
         )}
       </section>
     </aside>
@@ -555,35 +1161,75 @@ function CentralizedChatRail({
 
 function RailStatus({
   detail,
+  icon,
   label,
   ok,
 }: {
   detail: string;
+  icon: "verified" | "triage" | "accepted" | "dismissed";
   label: string;
   ok: boolean;
 }) {
+  const Icon =
+    icon === "triage"
+      ? AlertTriangleIcon
+      : icon === "dismissed"
+        ? CircleSlashIcon
+        : icon === "verified"
+          ? ShieldCheckIcon
+          : CheckIcon;
   return (
-    <div className="flex items-start gap-2">
-      <span
+    <div className="grid grid-cols-[20px_minmax(0,1fr)_auto] items-center gap-3">
+      <Icon
         className={cn(
-          "mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full",
-          ok ? "bg-success/10 text-success" : "bg-muted text-muted-foreground",
+          "size-4",
+          icon === "triage"
+            ? "text-amber-500"
+            : icon === "dismissed"
+              ? "text-muted-foreground"
+              : ok
+                ? "text-success"
+                : "text-muted-foreground",
         )}
-      >
-        {ok ? (
-          <CheckIcon className="size-3.5" />
-        ) : (
-          <ClockIcon className="size-3.5" />
-        )}
-      </span>
-      <span className="min-w-0">
-        <span className="block text-sm font-medium">{label}</span>
-        <span className="text-muted-foreground block truncate text-xs">
-          {detail}
-        </span>
-      </span>
+      />
+      <span className="truncate text-[13px] font-medium">{label}</span>
+      <span className="font-mono text-[13px]">{detail}</span>
     </div>
   );
+}
+
+function formatEventLabel(type: string) {
+  return type
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/^Review Session/, "Review")
+    .replace(/^Workflow Phase/, "Phase")
+    .replace(/^Agent Run/, "Agent");
+}
+
+function displayNameForAuthor(authorType: string) {
+  switch (authorType) {
+    case "user":
+      return "You";
+    case "orchestrator":
+      return "Orchestrator";
+    case "system":
+      return "System";
+    case "cocode":
+      return "cocode";
+    default:
+      return "Reviewer";
+  }
+}
+
+function formatClockTime(value: string) {
+  const time = Date.parse(value);
+  if (!Number.isFinite(time)) {
+    return "";
+  }
+  return new Date(time).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 function compactAgentLabel(agent: AgentConfig) {
@@ -591,6 +1237,18 @@ function compactAgentLabel(agent: AgentConfig) {
     .replace(/\bCLI\b/g, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function isOrchestratorEntry({
+  agent,
+  assignment,
+}: {
+  agent: AgentConfig;
+  assignment: ReviewSessionAgent;
+}) {
+  const role = `${assignment.role} ${agent.role}`.toLowerCase();
+  const name = agent.name.toLowerCase();
+  return role.includes("orchestrator") || name.includes("orchestrator");
 }
 
 function agentByID(agents: AgentConfig[], id?: string) {

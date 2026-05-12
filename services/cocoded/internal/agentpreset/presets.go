@@ -6,7 +6,18 @@ import (
 	"github.com/hughdo/cocode/services/cocoded/internal/agents"
 )
 
-var baseCLIEnvAllowlist = []string{"PATH", "HOME", "TERM", "LANG", "NO_COLOR", "FORCE_COLOR"}
+var baseCLIEnvAllowlist = []string{
+	"PATH",
+	"HOME",
+	"USER",
+	"LOGNAME",
+	"SHELL",
+	"TMPDIR",
+	"TERM",
+	"COLORTERM",
+	"LANG",
+	"NO_COLOR",
+}
 
 type Preset struct {
 	ID             string                   `json:"id"`
@@ -39,7 +50,7 @@ func CodexCLI() Preset {
 		Role:           "primary_reviewer",
 		AdapterKind:    agents.AdapterCLINonInteractive,
 		Command:        "codex",
-		Args:           []string{"exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", "--color", "never", "-"},
+		Args:           []string{"-a", "never", "exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", "--color", "never", "-"},
 		CWDMode:        "repo_root",
 		EnvAllowlist:   append([]string{}, baseCLIEnvAllowlist...),
 		OutputMode:     agents.OutputJSONL,
@@ -92,22 +103,23 @@ func ClaudeCodeCLI() Preset {
 	return Preset{
 		ID:             "claude-code-cli",
 		Name:           "Claude Code CLI",
-		Description:    "Runs Claude Code in non-interactive print mode and captures a JSON result payload.",
+		Description:    "Runs Claude Code in non-interactive print mode and captures stream JSON, including visible thinking deltas when the model returns them.",
 		Role:           "primary_reviewer",
 		AdapterKind:    agents.AdapterCLINonInteractive,
 		Command:        "claude",
-		Args:           []string{"-p", agents.PromptArgPlaceholder, "--output-format", "json", "--permission-mode", "plan", "--no-session-persistence", "--tools", ""},
+		Args:           []string{"-p", agents.PromptArgPlaceholder, "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-mode", "plan", "--no-session-persistence"},
 		CWDMode:        "repo_root",
 		EnvAllowlist:   append(baseCLIEnvAllowlist, "ANTHROPIC_API_KEY"),
-		OutputMode:     agents.OutputJSON,
+		OutputMode:     agents.OutputJSONL,
 		ModelLabel:     "claude",
 		ReasoningLabel: "",
 		Capabilities: agents.AgentCapabilities{
-			SupportsJSON: true,
-			CanRead:      true,
-			CanCancel:    true,
-			OutputModes:  []agents.OutputMode{agents.OutputJSON, agents.OutputJSONL, agents.OutputText},
-			Metadata:     map[string]any{"provider": "anthropic", "egress": string(agents.AgentEgressExternal)},
+			SupportsJSON:      true,
+			SupportsStreaming: true,
+			CanRead:           true,
+			CanCancel:         true,
+			OutputModes:       []agents.OutputMode{agents.OutputJSON, agents.OutputJSONL, agents.OutputText},
+			Metadata:          map[string]any{"provider": "anthropic", "egress": string(agents.AgentEgressExternal)},
 		},
 		Settings: settings,
 		Enabled:  true,
@@ -119,15 +131,15 @@ func GeminiCLI() Preset {
 	return Preset{
 		ID:             "gemini-cli",
 		Name:           "Gemini CLI",
-		Description:    "Runs Gemini CLI in headless mode with JSON output using the Pro model alias.",
+		Description:    "Runs Gemini CLI in headless mode with JSON output using Gemini 3.1 Pro Preview unless a model is selected.",
 		Role:           "primary_reviewer",
 		AdapterKind:    agents.AdapterCLINonInteractive,
 		Command:        "gemini",
-		Args:           []string{"-p", agents.PromptArgPlaceholder, "--output-format", "json", "--approval-mode", "plan", "--skip-trust"},
+		Args:           []string{"-p", agents.PromptArgPlaceholder, "--output-format", "json", "--approval-mode", "default", "--skip-trust"},
 		CWDMode:        "repo_root",
 		EnvAllowlist:   append(baseCLIEnvAllowlist, "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"),
 		OutputMode:     agents.OutputJSON,
-		ModelLabel:     "default",
+		ModelLabel:     "gemini-3.1-pro-preview",
 		ReasoningLabel: "",
 		Capabilities: agents.AgentCapabilities{
 			SupportsJSON: true,
@@ -175,16 +187,16 @@ func OpenCodeCLI() Preset {
 	return Preset{
 		ID:             "opencode-cli",
 		Name:           "OpenCode CLI",
-		Description:    "Runs OpenCode in non-interactive run mode and captures raw JSON event output.",
+		Description:    "Runs OpenCode in non-interactive run mode with opencode-go/kimi-k2.6 and captures JSON event output, including provider-returned thinking blocks when available.",
 		Role:           "primary_reviewer",
 		AdapterKind:    agents.AdapterCLINonInteractive,
 		Command:        "opencode",
-		Args:           []string{"run", "--format", "json", agents.PromptArgPlaceholder},
+		Args:           []string{"run", "--pure", "--format", "json", "--thinking", agents.PromptArgPlaceholder},
 		CWDMode:        "repo_root",
 		EnvAllowlist:   append(baseCLIEnvAllowlist, "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY", "XAI_API_KEY"),
 		OutputMode:     agents.OutputJSONL,
-		ModelLabel:     "opencode",
-		ReasoningLabel: "",
+		ModelLabel:     "opencode-go/kimi-k2.6",
+		ReasoningLabel: "high",
 		Capabilities: agents.AgentCapabilities{
 			SupportsJSON:      true,
 			SupportsStreaming: true,

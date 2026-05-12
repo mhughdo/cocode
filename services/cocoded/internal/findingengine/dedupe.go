@@ -169,9 +169,26 @@ func overlappingCandidate(a dbgen.FindingCandidate, b dbgen.FindingCandidate) bo
 			if Overlap(left.StartLine, left.EndLine, right.StartLine, right.EndLine) {
 				return true
 			}
+			if nearbyLineMatch(left.StartLine, right.StartLine) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+func nearbyLineMatch(a int64, b int64) bool {
+	if a < 1 || b < 1 {
+		return false
+	}
+	return lineBucket(a) == lineBucket(b) && absInt64(a-b) <= 2
+}
+
+func absInt64(value int64) int64 {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func sameNormalizedLocation(a agentoutput.CandidateLocation, b agentoutput.CandidateLocation) bool {

@@ -61,6 +61,7 @@ func (d CommandOnceDriver) Open(ctx context.Context, config ConnectionConfig) (C
 	if err := validateEnv(config.Env); err != nil {
 		return nil, err
 	}
+	config.Env = NormalizeCLIEnvironment(config.Command, config.Env)
 	config.PromptDelivery = config.PromptDelivery.Normalize()
 	return &CommandOnceConnection{config: config}, nil
 }
@@ -86,7 +87,7 @@ func (c *CommandOnceConnection) SendTask(ctx context.Context, task AgentTask) (<
 		return nil, err
 	}
 
-	events := make(chan AgentEvent, 8)
+	events := make(chan AgentEvent, 32)
 	go c.runTask(ctx, task, events)
 	return events, nil
 }
@@ -123,20 +124,32 @@ func (c *CommandOnceConnection) runTask(ctx context.Context, task AgentTask, eve
 
 	stdoutLimit := outputLimit(task.Limits.MaxStdoutBytes, defaultCommandStdoutLimit)
 	stderrLimit := outputLimit(task.Limits.MaxStderrBytes, defaultCommandStderrLimit)
-	stdout := &limitedOutput{limit: stdoutLimit}
-	stderr := &limitedOutput{limit: stderrLimit}
+	stdout := newStreamingOutput(runCtx, task.RunID, "stdout", stdoutLimit, events)
+	stderr := newStreamingOutput(runCtx, task.RunID, "stderr", stderrLimit, events)
+	env, cleanupEnv, err := PrepareCommandRuntimeEnvironment(c.config.Command, c.config.Env)
+	if err != nil {
+		events <- failedEvent(task.RunID, err, "")
+		return
+	}
+	defer cleanupEnv()
 
-	cmd := exec.CommandContext(runCtx, c.config.Command, delivery.args...)
+	command, err := ResolveCommandExecutableWithEnv(c.config.Command, env)
+	if err != nil {
+		events <- failedEvent(task.RunID, err, "")
+		return
+	}
+	cmd := exec.CommandContext(runCtx, command, delivery.args...)
 	if c.config.WorkingDirectory != "" {
 		cmd.Dir = c.config.WorkingDirectory
 	}
-	cmd.Env = envList(c.config.Env)
+	cmd.Env = envList(env)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.Stdin = delivery.stdin
 
 	err = cmd.Run()
-	emitCommandOutput(events, task.RunID, stdout, stderr)
+	stdout.Flush()
+	stderr.Flush()
 	if err != nil {
 		if runCtx.Err() != nil {
 			events <- canceledEvent(task.RunID, runCtx.Err())
@@ -242,31 +255,6 @@ func commandContext(parent context.Context, limits TaskLimits) (context.Context,
 	return context.WithCancel(parent)
 }
 
-func emitCommandOutput(events chan<- AgentEvent, runID string, stdout *limitedOutput, stderr *limitedOutput) {
-	if text := stdout.String(); text != "" || stdout.Truncated() {
-		events <- AgentEvent{
-			Type:      EventOutput,
-			RunID:     runID,
-			At:        time.Now().UTC(),
-			Stream:    "stdout",
-			Text:      text,
-			Truncated: stdout.Truncated(),
-			Metadata:  outputEventMetadata(text, stdout),
-		}
-	}
-	if text := stderr.String(); text != "" || stderr.Truncated() {
-		events <- AgentEvent{
-			Type:      EventOutput,
-			RunID:     runID,
-			At:        time.Now().UTC(),
-			Stream:    "stderr",
-			Text:      text,
-			Truncated: stderr.Truncated(),
-			Metadata:  outputEventMetadata(text, stderr),
-		}
-	}
-}
-
 func outputEventMetadata(text string, output *limitedOutput) map[string]any {
 	return map[string]any{
 		"captured_bytes": int64(len([]byte(text))),
@@ -289,7 +277,7 @@ func failedEvent(runID string, err error, stderr string) AgentEvent {
 		code := exitErr.ExitCode()
 		event.ExitCode = &code
 		if strings.TrimSpace(stderr) != "" {
-			event.Error = truncateMessage(stderr)
+			event.Error = strings.TrimSpace(stderr)
 		}
 	}
 	return event
@@ -331,25 +319,33 @@ type limitedOutput struct {
 }
 
 func (o *limitedOutput) Write(p []byte) (int, error) {
+	o.append(p)
+	return len(p), nil
+}
+
+func (o *limitedOutput) append(p []byte) ([]byte, bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
+	wasTruncated := o.truncated
 	if o.limit <= 0 {
 		o.truncated = true
-		return len(p), nil
+		return nil, !wasTruncated
 	}
 	remaining := o.limit - int64(o.buf.Len())
 	if remaining <= 0 {
 		o.truncated = true
-		return len(p), nil
+		return nil, !wasTruncated
 	}
 	if int64(len(p)) > remaining {
-		_, _ = o.buf.Write(p[:int(remaining)])
+		stored := append([]byte(nil), p[:int(remaining)]...)
+		_, _ = o.buf.Write(stored)
 		o.truncated = true
-		return len(p), nil
+		return stored, !wasTruncated
 	}
-	_, _ = o.buf.Write(p)
-	return len(p), nil
+	stored := append([]byte(nil), p...)
+	_, _ = o.buf.Write(stored)
+	return stored, false
 }
 
 func (o *limitedOutput) String() string {
@@ -370,6 +366,90 @@ func (o *limitedOutput) Limit() int64 {
 	return o.limit
 }
 
+type streamingOutput struct {
+	ctx     context.Context
+	runID   string
+	stream  string
+	output  *limitedOutput
+	events  chan<- AgentEvent
+	mu      sync.Mutex
+	pending []byte
+}
+
+func newStreamingOutput(ctx context.Context, runID string, stream string, limit int64, events chan<- AgentEvent) *streamingOutput {
+	return &streamingOutput{
+		ctx:    ctx,
+		runID:  runID,
+		stream: stream,
+		output: &limitedOutput{limit: limit},
+		events: events,
+	}
+}
+
+func (o *streamingOutput) Write(p []byte) (int, error) {
+	stored, truncated := o.output.append(p)
+	o.emitStored(stored, truncated, false)
+	return len(p), nil
+}
+
+func (o *streamingOutput) String() string {
+	return o.output.String()
+}
+
+func (o *streamingOutput) Flush() {
+	o.emitStored(nil, false, true)
+}
+
+func (o *streamingOutput) emitStored(stored []byte, truncated bool, flush bool) {
+	events := o.drainEvents(stored, truncated, flush)
+	for _, event := range events {
+		select {
+		case o.events <- event:
+		case <-o.ctx.Done():
+			return
+		}
+	}
+}
+
+func (o *streamingOutput) drainEvents(stored []byte, truncated bool, flush bool) []AgentEvent {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	if len(stored) > 0 {
+		o.pending = append(o.pending, stored...)
+	}
+	events := []AgentEvent{}
+	for {
+		index := bytes.IndexByte(o.pending, '\n')
+		if index < 0 {
+			break
+		}
+		text := string(o.pending[:index+1])
+		o.pending = append([]byte(nil), o.pending[index+1:]...)
+		events = append(events, o.outputEvent(text, false))
+	}
+	if truncated || (flush && len(o.pending) > 0) {
+		text := string(o.pending)
+		o.pending = nil
+		events = append(events, o.outputEvent(text, truncated))
+	} else if truncated {
+		events = append(events, o.outputEvent("", true))
+	}
+	return events
+}
+
+func (o *streamingOutput) outputEvent(text string, truncated bool) AgentEvent {
+	return AgentEvent{
+		Type:      EventOutput,
+		RunID:     o.runID,
+		At:        time.Now().UTC(),
+		Stream:    o.stream,
+		Text:      text,
+		Truncated: truncated,
+		Metadata:  outputEventMetadata(text, o.output),
+	}
+}
+
 func outputLimit(value int64, fallback int64) int64 {
 	if value > 0 {
 		return value
@@ -379,7 +459,7 @@ func outputLimit(value int64, fallback int64) int64 {
 
 func truncateMessage(value string) string {
 	value = strings.TrimSpace(value)
-	const limit = 300
+	const limit = 4096
 	if len(value) > limit {
 		return value[:limit] + "..."
 	}

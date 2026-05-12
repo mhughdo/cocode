@@ -59,6 +59,13 @@ type ReviewSessionResponse struct {
 	Agents              []ReviewSessionAgentResponse `json:"agents"`
 }
 
+type DeleteReviewSessionResponse struct {
+	ID              string `json:"id"`
+	Deleted         bool   `json:"deleted"`
+	SnapshotID      string `json:"snapshot_id"`
+	SnapshotDeleted bool   `json:"snapshot_deleted"`
+}
+
 type ReviewSessionAgentResponse struct {
 	ID               string          `json:"id"`
 	ReviewSessionID  string          `json:"review_session_id"`
@@ -206,6 +213,68 @@ func getReviewSessionHandler(queries *dbgen.Queries) gin.HandlerFunc {
 	}
 }
 
+func deleteReviewSessionHandler(services routerServices) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if services.database == nil || services.queries == nil {
+			respondError(c, apperror.Internal("review session storage is not configured"))
+			return
+		}
+		session, appErr := getReviewSession(c.Request.Context(), services.queries, c.Param("id"))
+		if appErr != nil {
+			respondError(c, appErr)
+			return
+		}
+
+		snapshotID := session.SnapshotID
+		tx, err := services.database.BeginTx(c.Request.Context(), nil)
+		if err != nil {
+			respondError(c, apperror.Internal("failed to start review session delete"))
+			return
+		}
+		committed := false
+		defer func() {
+			if !committed {
+				_ = tx.Rollback()
+			}
+		}()
+
+		txQueries := services.queries.WithTx(tx)
+		if err := txQueries.DeleteReviewSession(c.Request.Context(), session.ID); err != nil {
+			respondAppError(c, err)
+			return
+		}
+		snapshotResult, err := tx.ExecContext(
+			c.Request.Context(),
+			`DELETE FROM pull_request_snapshots
+WHERE id = ?
+  AND NOT EXISTS (SELECT 1 FROM review_sessions WHERE snapshot_id = ?)`,
+			snapshotID,
+			snapshotID,
+		)
+		if err != nil {
+			respondAppError(c, err)
+			return
+		}
+		snapshotRows, err := snapshotResult.RowsAffected()
+		if err != nil {
+			respondError(c, apperror.Internal("failed to inspect snapshot delete"))
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			respondError(c, apperror.Internal("failed to delete review session"))
+			return
+		}
+		committed = true
+
+		respondOK(c, DeleteReviewSessionResponse{
+			ID:              session.ID,
+			Deleted:         true,
+			SnapshotID:      snapshotID,
+			SnapshotDeleted: snapshotRows > 0,
+		})
+	}
+}
+
 func startReviewSessionHandler(services routerServices) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if services.reviewWorkflowErr != nil || services.reviewWorkflow == nil {
@@ -216,6 +285,9 @@ func startReviewSessionHandler(services routerServices) gin.HandlerFunc {
 		if err != nil {
 			respondReviewWorkflowError(c, err)
 			return
+		}
+		if services.chat != nil {
+			_, _ = services.chat.EnsureSessionThread(c.Request.Context(), result.Session.ID)
 		}
 		response, appErr := reviewSessionResponse(c.Request.Context(), services.queries, result.Session)
 		if appErr != nil {

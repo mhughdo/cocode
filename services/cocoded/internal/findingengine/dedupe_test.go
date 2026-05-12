@@ -42,6 +42,23 @@ func TestDeduplicateMergesOverlappingSimilarClaims(t *testing.T) {
 	}
 }
 
+func TestDeduplicateMergesNearbySamePathClaims(t *testing.T) {
+	t.Parallel()
+
+	candidates := []dbgen.FindingCandidate{
+		candidate("c1", "security", "high", 0.9, "Missing admin authorization in cancelSubscription", "src/server.js", 10, 10, "changed_file_1", "fp_one"),
+		candidate("c2", "security", "blocker", 0.8, "Admin authorization is missing from cancelSubscription", "src/server.js", 11, 11, "changed_file_1", "fp_two"),
+		candidate("c3", "security", "high", 0.8, "Invoice export is missing admin authorization", "src/server.js", 18, 18, "changed_file_1", "fp_three"),
+	}
+	clusters := Deduplicate(candidates)
+	if len(clusters) != 2 {
+		t.Fatalf("clusters = %+v", clusters)
+	}
+	if len(clusters[0].Candidates) != 2 || len(clusters[1].Candidates) != 1 {
+		t.Fatalf("clusters = %+v", clusters)
+	}
+}
+
 func TestDeduplicateDoesNotMergeDissimilarOverlap(t *testing.T) {
 	t.Parallel()
 

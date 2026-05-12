@@ -180,10 +180,6 @@ func (s *Service) attachPrimaryLocationEvidence(ctx context.Context, repoRoot st
 			evidenceSummary: item.Summary,
 		}, err
 	}
-	if !finding.PrimaryStartLine.Valid || finding.PrimaryStartLine.Int64 <= 0 {
-		item, err := s.createMissingPrimaryEvidence(ctx, finding.ID, finding.PrimaryPath.String, "missing_line", "The finding has a file path but no primary line number.")
-		return findingEvidenceResult{created: 1, missing: 1, evidenceSummary: item.Summary}, err
-	}
 	changedFile, ok := index.byPath[cleanPathKey(finding.PrimaryPath.String)]
 	if !ok {
 		item, err := s.createMissingPrimaryEvidence(ctx, finding.ID, finding.PrimaryPath.String, "not_changed_file", "The primary location does not map to this review snapshot's changed files.")
@@ -193,11 +189,20 @@ func (s *Service) attachPrimaryLocationEvidence(ctx context.Context, repoRoot st
 		item, err := s.createMissingPrimaryEvidence(ctx, finding.ID, changedFile.Path, "unreadable_changed_file", "The primary changed file is binary or excluded from review context.")
 		return findingEvidenceResult{created: 1, missing: 1, evidenceSummary: item.Summary}, err
 	}
-	endLine := finding.PrimaryStartLine.Int64
-	if finding.PrimaryEndLine.Valid && finding.PrimaryEndLine.Int64 >= finding.PrimaryStartLine.Int64 {
+	startLine := nullableInt64Value(finding.PrimaryStartLine)
+	endLine := startLine
+	if startLine <= 0 {
+		var ok bool
+		startLine, endLine, ok = firstChangedLineRange(changedFile.LineRangesJson)
+		if !ok {
+			item, err := s.createMissingPrimaryEvidence(ctx, finding.ID, finding.PrimaryPath.String, "missing_line", "The finding has a file path but no primary line number.")
+			return findingEvidenceResult{created: 1, missing: 1, evidenceSummary: item.Summary}, err
+		}
+	}
+	if finding.PrimaryEndLine.Valid && finding.PrimaryEndLine.Int64 >= startLine {
 		endLine = finding.PrimaryEndLine.Int64
 	}
-	snippet, windowStart, windowEnd, truncated, err := readSnippet(repoRoot, changedFile.Path, finding.PrimaryStartLine.Int64, endLine, s.contextLines(), s.maxSnippetBytes())
+	snippet, windowStart, windowEnd, truncated, err := readSnippet(repoRoot, changedFile.Path, startLine, endLine, s.contextLines(), s.maxSnippetBytes())
 	if err != nil {
 		item, createErr := s.createMissingPrimaryEvidence(ctx, finding.ID, changedFile.Path, "read_failed", "Primary changed code could not be read: "+err.Error())
 		if createErr != nil {
@@ -205,17 +210,17 @@ func (s *Service) attachPrimaryLocationEvidence(ctx context.Context, repoRoot st
 		}
 		return findingEvidenceResult{created: 1, missing: 1, evidenceSummary: item.Summary}, nil
 	}
-	title := fmt.Sprintf("Changed code at %s:%d", changedFile.Path, finding.PrimaryStartLine.Int64)
-	if endLine != finding.PrimaryStartLine.Int64 {
-		title = fmt.Sprintf("Changed code at %s:%d-%d", changedFile.Path, finding.PrimaryStartLine.Int64, endLine)
+	title := fmt.Sprintf("Changed code at %s:%d", changedFile.Path, startLine)
+	if endLine != startLine {
+		title = fmt.Sprintf("Changed code at %s:%d-%d", changedFile.Path, startLine, endLine)
 	}
-	summary := fmt.Sprintf("Primary changed code was found at %s:%d-%d.", changedFile.Path, finding.PrimaryStartLine.Int64, endLine)
+	summary := fmt.Sprintf("Primary changed code was found at %s:%d-%d.", changedFile.Path, startLine, endLine)
 	item, err := s.createEvidenceItem(ctx, finding.ID, Item{
 		Kind:       KindSupporting,
 		Title:      title,
 		Summary:    summary,
 		Path:       changedFile.Path,
-		StartLine:  finding.PrimaryStartLine.Int64,
+		StartLine:  startLine,
 		EndLine:    endLine,
 		Confidence: clampConfidence(finding.Confidence),
 		Metadata: mustMetadata(map[string]any{
@@ -236,10 +241,35 @@ func (s *Service) attachPrimaryLocationEvidence(ctx context.Context, repoRoot st
 	return findingEvidenceResult{created: 1, supporting: 1, evidenceSummary: item.Summary}, nil
 }
 
+func firstChangedLineRange(raw string) (int64, int64, bool) {
+	var ranges [][]int64
+	if err := json.Unmarshal([]byte(raw), &ranges); err != nil {
+		return 0, 0, false
+	}
+	for _, item := range ranges {
+		if len(item) != 2 || item[0] < 1 || item[1] < item[0] {
+			continue
+		}
+		return item[0], item[1], true
+	}
+	return 0, 0, false
+}
+
 func (s *Service) createMissingPrimaryEvidence(ctx context.Context, findingID string, path string, reason string, summary string) (dbgen.EvidenceItem, error) {
+	title := "Primary changed code unavailable"
+	switch reason {
+	case "missing_line":
+		title = "Changed file needs a line anchor"
+	case "not_changed_file":
+		title = "Location is outside the reviewed diff"
+	case "unreadable_changed_file":
+		title = "Changed file cannot be previewed"
+	case "read_failed":
+		title = "Changed code could not be read"
+	}
 	return s.createEvidenceItem(ctx, findingID, Item{
 		Kind:       KindMissing,
-		Title:      "Primary changed code unavailable",
+		Title:      title,
 		Summary:    summary,
 		Path:       path,
 		Confidence: 1,
@@ -545,6 +575,9 @@ func claimTokens(claim string) []string {
 func looksLikeCounterEvidence(match SearchMatch) bool {
 	path := strings.ToLower(filepath.ToSlash(match.Path))
 	text := strings.ToLower(match.Text)
+	if isProjectMetadataPath(path) {
+		return false
+	}
 	if isLikelyTestPath(path) || strings.Contains(path, "auth") || strings.Contains(path, "guard") ||
 		strings.Contains(path, "middleware") || strings.Contains(path, "permission") || strings.Contains(path, "config") {
 		return true
@@ -564,6 +597,19 @@ func isLikelyTestPath(path string) bool {
 		strings.Contains(path, ".spec.") ||
 		strings.Contains(path, "/test/") ||
 		strings.Contains(path, "/tests/")
+}
+
+func isProjectMetadataPath(path string) bool {
+	path = strings.ToLower(filepath.ToSlash(path))
+	base := filepath.Base(path)
+	switch base {
+	case "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
+		"go.mod", "go.sum", "cargo.toml", "cargo.lock", "poetry.lock",
+		"pyproject.toml", "requirements.txt":
+		return true
+	default:
+		return false
+	}
 }
 
 func primaryExcludePath(finding dbgen.Finding) []string {

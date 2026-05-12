@@ -52,7 +52,8 @@ func CheckCommandHealth(ctx context.Context, config ConnectionConfig, settings C
 		return commandHealth(HealthUnavailable, "agent command environment is invalid", checkedAt, metadata, err)
 	}
 
-	resolvedPath, err := exec.LookPath(config.Command)
+	normalizedEnv := NormalizeCLIEnvironment(config.Command, config.Env)
+	resolvedPath, err := ResolveCommandExecutableWithEnv(config.Command, normalizedEnv)
 	if err != nil {
 		return commandHealth(HealthUnavailable, "command is not installed or not on PATH", checkedAt, metadata, err)
 	}
@@ -144,6 +145,12 @@ func commandHealth(status HealthStatus, message string, checkedAt time.Time, met
 func runHealthCommand(ctx context.Context, config ConnectionConfig, args []string, prompt string, timeout time.Duration) (string, string, error) {
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	env, cleanupEnv, err := PrepareCommandRuntimeEnvironment(config.Command, config.Env)
+	if err != nil {
+		return "", "", err
+	}
+	defer cleanupEnv()
+	config.Env = env
 
 	stdinArgs := append([]string(nil), args...)
 	delivery := commandPromptDelivery{args: stdinArgs, cleanup: func() {}}
@@ -160,7 +167,11 @@ func runHealthCommand(ctx context.Context, config ConnectionConfig, args []strin
 
 	stdout := &limitedOutput{limit: defaultCommandHealthOutputLimit}
 	stderr := &limitedOutput{limit: defaultCommandHealthOutputLimit}
-	cmd := exec.CommandContext(runCtx, config.Command, delivery.args...)
+	command, err := ResolveCommandExecutableWithEnv(config.Command, config.Env)
+	if err != nil {
+		return stdout.String(), stderr.String(), err
+	}
+	cmd := exec.CommandContext(runCtx, command, delivery.args...)
 	if config.WorkingDirectory != "" {
 		cmd.Dir = config.WorkingDirectory
 	}
@@ -169,7 +180,7 @@ func runHealthCommand(ctx context.Context, config ConnectionConfig, args []strin
 	cmd.Stderr = stderr
 	cmd.Stdin = delivery.stdin
 
-	err := cmd.Run()
+	err = cmd.Run()
 	if runCtx.Err() != nil {
 		return stdout.String(), stderr.String(), runCtx.Err()
 	}

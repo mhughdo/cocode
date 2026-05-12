@@ -323,17 +323,19 @@ func TestAgentPresetsEndpointIncludesBuiltInCLIs(t *testing.T) {
 	codex := findAgentPreset(t, presets, "codex-cli")
 	if codex.ID == "" ||
 		codex.Command != "codex" ||
-		len(codex.Args) != 10 ||
-		codex.Args[0] != "exec" ||
-		codex.Args[1] != "--json" ||
-		codex.Args[2] != "--sandbox" ||
-		codex.Args[3] != "read-only" ||
-		codex.Args[4] != "--skip-git-repo-check" ||
-		codex.Args[5] != "--ephemeral" ||
-		codex.Args[6] != "--ignore-rules" ||
-		codex.Args[7] != "--color" ||
-		codex.Args[8] != "never" ||
-		codex.Args[9] != "-" ||
+		len(codex.Args) != 12 ||
+		codex.Args[0] != "-a" ||
+		codex.Args[1] != "never" ||
+		codex.Args[2] != "exec" ||
+		codex.Args[3] != "--json" ||
+		codex.Args[4] != "--sandbox" ||
+		codex.Args[5] != "read-only" ||
+		codex.Args[6] != "--skip-git-repo-check" ||
+		codex.Args[7] != "--ephemeral" ||
+		codex.Args[8] != "--ignore-rules" ||
+		codex.Args[9] != "--color" ||
+		codex.Args[10] != "never" ||
+		codex.Args[11] != "-" ||
 		codex.OutputMode != agents.OutputJSONL ||
 		codex.ModelLabel != "default" ||
 		!codex.Capabilities.CanCancel ||
@@ -362,15 +364,16 @@ func TestAgentPresetsEndpointIncludesBuiltInCLIs(t *testing.T) {
 		claude.Args[0] != "-p" ||
 		claude.Args[1] != agents.PromptArgPlaceholder ||
 		claude.Args[2] != "--output-format" ||
-		claude.Args[3] != "json" ||
-		claude.Args[4] != "--permission-mode" ||
-		claude.Args[5] != "plan" ||
-		claude.Args[6] != "--no-session-persistence" ||
-		claude.Args[7] != "--tools" ||
-		claude.Args[8] != "" ||
-		claude.OutputMode != agents.OutputJSON ||
+		claude.Args[3] != "stream-json" ||
+		claude.Args[4] != "--verbose" ||
+		claude.Args[5] != "--include-partial-messages" ||
+		claude.Args[6] != "--permission-mode" ||
+		claude.Args[7] != "plan" ||
+		claude.Args[8] != "--no-session-persistence" ||
+		claude.OutputMode != agents.OutputJSONL ||
 		claude.ModelLabel != "claude" ||
-		!claude.Capabilities.SupportsOutputMode(agents.OutputJSON) ||
+		!claude.Capabilities.SupportsStreaming ||
+		!claude.Capabilities.SupportsOutputMode(agents.OutputJSONL) ||
 		!json.Valid(claude.Settings) {
 		t.Fatalf("claude preset = %+v", claude)
 	}
@@ -382,10 +385,10 @@ func TestAgentPresetsEndpointIncludesBuiltInCLIs(t *testing.T) {
 		gemini.Args[2] != "--output-format" ||
 		gemini.Args[3] != "json" ||
 		gemini.Args[4] != "--approval-mode" ||
-		gemini.Args[5] != "plan" ||
+		gemini.Args[5] != "default" ||
 		gemini.Args[6] != "--skip-trust" ||
 		gemini.OutputMode != agents.OutputJSON ||
-		gemini.ModelLabel != "default" ||
+		gemini.ModelLabel != "gemini-3.1-pro-preview" ||
 		!gemini.Capabilities.SupportsOutputMode(agents.OutputJSON) ||
 		!json.Valid(gemini.Settings) {
 		t.Fatalf("gemini preset = %+v", gemini)
@@ -405,13 +408,16 @@ func TestAgentPresetsEndpointIncludesBuiltInCLIs(t *testing.T) {
 	}
 	opencode := findAgentPreset(t, presets, "opencode-cli")
 	if opencode.Command != "opencode" ||
-		len(opencode.Args) != 4 ||
+		len(opencode.Args) != 6 ||
 		opencode.Args[0] != "run" ||
-		opencode.Args[1] != "--format" ||
-		opencode.Args[2] != "json" ||
-		opencode.Args[3] != agents.PromptArgPlaceholder ||
+		opencode.Args[1] != "--pure" ||
+		opencode.Args[2] != "--format" ||
+		opencode.Args[3] != "json" ||
+		opencode.Args[4] != "--thinking" ||
+		opencode.Args[5] != agents.PromptArgPlaceholder ||
 		opencode.OutputMode != agents.OutputJSONL ||
-		opencode.ModelLabel != "opencode" ||
+		opencode.ModelLabel != "opencode-go/kimi-k2.6" ||
+		opencode.ReasoningLabel != "high" ||
 		!opencode.Capabilities.SupportsOutputMode(agents.OutputJSONL) ||
 		!json.Valid(opencode.Settings) {
 		t.Fatalf("opencode preset = %+v", opencode)
@@ -1464,6 +1470,43 @@ func TestReviewSessionEndpointCreateGetList(t *testing.T) {
 	}
 }
 
+func TestDeleteReviewSessionEndpointDeletesSessionAndOrphanSnapshot(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPISnapshot(t, queries)
+	createHTTPAPIAgentConfig(t, queries, "agent_config_delete", "primary_reviewer", 1)
+	session := createHTTPAPIReviewSessionRow(t, queries, "review_session_delete", []string{"agent_config_delete"})
+
+	request := httptest.NewRequest(http.MethodDelete, "/api/review-sessions/"+session.ID, nil)
+	request.Header.Set("X-Cocode-Token", "test-token")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("delete status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var envelope struct {
+		Data  DeleteReviewSessionResponse `json:"data"`
+		Error any                         `json:"error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode delete response: %v", err)
+	}
+	if !envelope.Data.Deleted || !envelope.Data.SnapshotDeleted || envelope.Data.ID != session.ID || envelope.Data.SnapshotID != "snapshot_1" {
+		t.Fatalf("delete response = %+v", envelope.Data)
+	}
+	if _, err := queries.GetReviewSession(context.Background(), session.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("GetReviewSession() error = %v, want sql.ErrNoRows", err)
+	}
+	if _, err := queries.GetPullRequestSnapshot(context.Background(), "snapshot_1"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("GetPullRequestSnapshot() error = %v, want sql.ErrNoRows", err)
+	}
+	if _, err := queries.GetChangedFileByPath(context.Background(), dbgen.GetChangedFileByPathParams{
+		SnapshotID: "snapshot_1",
+		Path:       "src/new.go",
+	}); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("GetChangedFileByPath() error = %v, want sql.ErrNoRows", err)
+	}
+}
+
 func TestReviewSessionChatThreadEndpointSeedsAndAnswers(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
 	createHTTPAPISnapshot(t, queries)
@@ -1507,6 +1550,114 @@ func TestReviewSessionChatThreadEndpointSeedsAndAnswers(t *testing.T) {
 	last := answered.Messages[len(answered.Messages)-1]
 	if last.AuthorType != "cocode" || !strings.Contains(last.Body, "Current review status: draft.") {
 		t.Fatalf("local answer = %+v", last)
+	}
+}
+
+func TestReviewSessionChatThreadEndpointSyncsWorkflowProgress(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPISnapshot(t, queries)
+	createHTTPAPIAgentConfig(t, queries, "agent_config_chat", "primary_reviewer", 1)
+	session := createHTTPAPIReviewSessionRow(t, queries, "review_session_chat_progress", []string{"agent_config_chat"})
+	ctx := context.Background()
+	if _, err := queries.CreateEvent(ctx, dbgen.CreateEventParams{
+		ID:              "event_review_queued",
+		ReviewSessionID: nullableString(session.ID),
+		Type:            "ReviewSessionQueued",
+		Level:           "info",
+		Sequence:        1,
+		PayloadJson:     `{"status":"queued"}`,
+		CreatedAt:       "2026-05-03T00:08:00Z",
+	}); err != nil {
+		t.Fatalf("CreateEvent(queued) error = %v", err)
+	}
+	if _, err := queries.CreateEvent(ctx, dbgen.CreateEventParams{
+		ID:              "event_phase_started",
+		ReviewSessionID: nullableString(session.ID),
+		Type:            "WorkflowPhaseStarted",
+		Level:           "info",
+		Sequence:        2,
+		PayloadJson:     `{"phase":"run_agents"}`,
+		CreatedAt:       "2026-05-03T00:09:00Z",
+	}); err != nil {
+		t.Fatalf("CreateEvent(phase) error = %v", err)
+	}
+	if _, err := queries.CreateEvent(ctx, dbgen.CreateEventParams{
+		ID:              "event_review_completed",
+		ReviewSessionID: nullableString(session.ID),
+		Type:            "ReviewSessionCompleted",
+		Level:           "info",
+		Sequence:        3,
+		PayloadJson:     `{"status":"completed"}`,
+		CreatedAt:       "2026-05-03T00:12:00Z",
+	}); err != nil {
+		t.Fatalf("CreateEvent(completed) error = %v", err)
+	}
+	if _, err := queries.CreateAgentRun(ctx, dbgen.CreateAgentRunParams{
+		ID:              "agent_run_chat_progress",
+		ReviewSessionID: session.ID,
+		AgentConfigID:   "agent_config_chat",
+		Status:          "succeeded",
+		Role:            "primary_reviewer",
+		MetadataJson:    "{}",
+	}); err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	if _, err := queries.CreateFinding(ctx, dbgen.CreateFindingParams{
+		ID:                 "finding_chat_progress",
+		ReviewSessionID:    session.ID,
+		CanonicalClaim:     "Missing authorization check on invoice export.",
+		Category:           "security",
+		Severity:           "high",
+		Confidence:         0.91,
+		VerificationStatus: "verified",
+		DecisionStatus:     "needs_triage",
+		PrimaryPath:        nullableString("src/export.go"),
+		Fingerprint:        "finding-chat-progress",
+		FirstSeenAt:        "2026-05-03T00:10:00Z",
+		UpdatedAt:          "2026-05-03T00:10:00Z",
+	}); err != nil {
+		t.Fatalf("CreateFinding() error = %v", err)
+	}
+
+	getRequest := httptest.NewRequest(http.MethodGet, "/api/review-sessions/"+session.ID+"/chat-thread", nil)
+	getRequest.Header.Set("X-Cocode-Token", "test-token")
+	getResponse := httptest.NewRecorder()
+	router.ServeHTTP(getResponse, getRequest)
+	if getResponse.Code != http.StatusOK {
+		t.Fatalf("chat thread status = %d, body = %s", getResponse.Code, getResponse.Body.String())
+	}
+	view := decodeChatThreadViewResponse(t, getResponse.Body.Bytes())
+	bodies := make([]string, 0, len(view.Messages))
+	for _, message := range view.Messages {
+		bodies = append(bodies, message.Body)
+	}
+	joined := strings.Join(bodies, "\n")
+	for _, want := range []string{
+		"Review queued.",
+		"Agent review started.",
+		"agent_config_chat did not emit answer text.",
+		"Early findings are in.",
+		"Missing authorization check on invoice export.",
+		"Review completed.",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("chat messages missing %q:\n%s", want, joined)
+		}
+	}
+	if got := view.Messages[len(view.Messages)-1].Body; !strings.Contains(got, "Review completed.") {
+		t.Fatalf("last progress message = %q, want review completion last", got)
+	}
+
+	reloadRequest := httptest.NewRequest(http.MethodGet, "/api/review-sessions/"+session.ID+"/chat-thread", nil)
+	reloadRequest.Header.Set("X-Cocode-Token", "test-token")
+	reloadResponse := httptest.NewRecorder()
+	router.ServeHTTP(reloadResponse, reloadRequest)
+	if reloadResponse.Code != http.StatusOK {
+		t.Fatalf("reload status = %d, body = %s", reloadResponse.Code, reloadResponse.Body.String())
+	}
+	reloaded := decodeChatThreadViewResponse(t, reloadResponse.Body.Bytes())
+	if len(reloaded.Messages) != len(view.Messages) {
+		t.Fatalf("message count changed on idempotent reload: %d -> %d", len(view.Messages), len(reloaded.Messages))
 	}
 }
 
@@ -1709,6 +1860,21 @@ func TestFindingListEndpointReturnsCountsAndFilters(t *testing.T) {
 		list.Items[0].Severity != "high" {
 		t.Fatalf("list = %+v", list)
 	}
+	if len(list.Items[0].SourceAgents) != 1 ||
+		list.Items[0].SourceAgents[0].AgentConfigID != "agent_config_findings" ||
+		list.Items[0].SourceAgents[0].Name != "agent_config_findings" {
+		t.Fatalf("source agents = %+v", list.Items[0].SourceAgents)
+	}
+	if len(list.Filters.Agents) != 1 ||
+		list.Filters.Agents[0].ID != "agent_config_findings" ||
+		list.Filters.Agents[0].Count != 3 {
+		t.Fatalf("agent filters = %+v", list.Filters.Agents)
+	}
+	if len(list.Filters.Files) < 2 ||
+		list.Filters.Files[0].ID != "apps/desktop/src/renderer/src/app/App.tsx" ||
+		list.Filters.Files[0].Count != 2 {
+		t.Fatalf("file filters = %+v", list.Filters.Files)
+	}
 
 	acceptedRequest := httptest.NewRequest(http.MethodGet, "/api/review-sessions/review_session_findings/findings?status=accepted", nil)
 	acceptedRequest.Header.Set("X-Cocode-Token", "test-token")
@@ -1732,6 +1898,20 @@ func TestFindingListEndpointReturnsCountsAndFilters(t *testing.T) {
 	search := decodeFindingListResponse(t, searchResponse.Body.Bytes())
 	if len(search.Items) != 1 || search.Items[0].ID != "finding_budget" {
 		t.Fatalf("search = %+v", search)
+	}
+
+	agentRequest := httptest.NewRequest(http.MethodGet, "/api/review-sessions/review_session_findings/findings?agent=agent_config_findings&file=apps/desktop/src/renderer/src/app/App.tsx", nil)
+	agentRequest.Header.Set("X-Cocode-Token", "test-token")
+	agentResponse := httptest.NewRecorder()
+	router.ServeHTTP(agentResponse, agentRequest)
+	if agentResponse.Code != http.StatusOK {
+		t.Fatalf("agent/file status = %d, body = %s", agentResponse.Code, agentResponse.Body.String())
+	}
+	agentFiltered := decodeFindingListResponse(t, agentResponse.Body.Bytes())
+	if len(agentFiltered.Items) != 2 ||
+		agentFiltered.Items[0].ID != "finding_budget" ||
+		agentFiltered.Items[1].ID != "finding_theme" {
+		t.Fatalf("agent/file filtered = %+v", agentFiltered.Items)
 	}
 }
 

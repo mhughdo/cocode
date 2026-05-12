@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -299,6 +300,37 @@ func TestCommandOnceDriverTruncatesOutput(t *testing.T) {
 	}
 }
 
+func TestCommandOnceDriverStreamsWholeLines(t *testing.T) {
+	t.Parallel()
+
+	command := writeFakeCommand(t, "#!/bin/sh\nprintf 'first '\nprintf 'line\\nsecond'\nprintf ' line\\n'\n")
+	connection := openCommandOnce(t, ConnectionConfig{
+		AdapterID:        "agent_1",
+		Kind:             AdapterCLINonInteractive,
+		Command:          command,
+		WorkingDirectory: t.TempDir(),
+	})
+
+	events, err := connection.SendTask(context.Background(), baseCommandTask())
+	if err != nil {
+		t.Fatalf("SendTask() error = %v", err)
+	}
+	got := collectCommandEvents(t, events)
+
+	var outputs []string
+	for _, event := range got {
+		if event.Type == EventOutput && event.Stream == "stdout" {
+			outputs = append(outputs, event.Text)
+		}
+	}
+	if !slices.Equal(outputs, []string{"first line\n", "second line\n"}) {
+		t.Fatalf("stdout output events = %#v", outputs)
+	}
+	if outputText(got, "stdout") != "first line\nsecond line\n" {
+		t.Fatalf("stdout = %q", outputText(got, "stdout"))
+	}
+}
+
 func TestCommandOnceDriverValidation(t *testing.T) {
 	t.Parallel()
 
@@ -478,7 +510,13 @@ func nextCommandEvent(t *testing.T, events <-chan AgentEvent) AgentEvent {
 }
 
 func outputText(events []AgentEvent, stream string) string {
-	return outputEvent(events, stream).Text
+	var out strings.Builder
+	for _, event := range events {
+		if event.Type == EventOutput && event.Stream == stream {
+			out.WriteString(event.Text)
+		}
+	}
+	return out.String()
 }
 
 func outputEvent(events []AgentEvent, stream string) AgentEvent {

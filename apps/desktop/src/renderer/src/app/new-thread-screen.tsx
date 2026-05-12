@@ -1,4 +1,13 @@
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type ReactNode,
+  type UIEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   ActivityIcon,
   BookOpenIcon,
@@ -85,6 +94,7 @@ import {
 } from "./agent-utils";
 
 type SnapshotSource = "github" | "local-changes" | "branch-compare";
+type GitHubSnapshotAuthMethod = "token" | "gh_cli";
 
 type SetupSourcePreview = {
   key: string;
@@ -116,6 +126,15 @@ type ManualReviewAgentAssignment = {
   roleId: string;
 };
 
+const sourceInspectorMinWidth = 380;
+const sourceInspectorMaxWidth = 860;
+const sourceInspectorMainMinWidth = 760;
+const sourceInspectorTransitionMs = 220;
+const setupInitialDiffFileRenderCount = 6;
+const setupDiffFileRenderBatchSize = 6;
+const setupMaxRenderedDiffFiles = 200;
+const emptyCollapsedFileIds = new Set<string>();
+
 export function NewThreadScreen({
   activeRepository,
   activeWorkspace,
@@ -135,6 +154,8 @@ export function NewThreadScreen({
 }) {
   const [source, setSource] = useState<SnapshotSource>("github");
   const [githubUrl, setGitHubUrl] = useState("");
+  const [githubAuthMethod, setGithubAuthMethod] =
+    useState<GitHubSnapshotAuthMethod>("token");
   const [baseRefInput, setBaseRefInput] = useState("");
   const [headRef, setHeadRef] = useState("");
   const [focusPrompt, setFocusPrompt] = useState("");
@@ -142,10 +163,10 @@ export function NewThreadScreen({
     "standard",
   );
   const [selectedFocusIds, setSelectedFocusIds] = useState(
-    () => new Set(setupFocusOptions.slice(0, 4).map((item) => item.id)),
+    () => new Set<string>(),
   );
   const [selectedPresetIds, setSelectedPresetIds] = useState(
-    () => new Set(setupPresetOptions.slice(0, 3).map((item) => item.id)),
+    () => new Set<string>(),
   );
   const [presetSearch, setPresetSearch] = useState("");
   const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string> | null>(
@@ -168,14 +189,25 @@ export function NewThreadScreen({
     ManualReviewAgentAssignment[]
   >([]);
   const manualReviewAssignmentSequence = useRef(0);
+  const requestedPatchFileIds = useRef(new Set<string>());
+  const loadedPatchFileIds = useRef(new Set<string>());
+  const sourceInspectorLayoutRef = useRef<HTMLDivElement | null>(null);
   const [branchState, setBranchState] =
     useState<Loadable<RepositoryBranch[]>>(idleApiState());
   const [sourcePreview, setSourcePreview] =
     useState<Loadable<SetupSourcePreview>>(idleApiState());
-  const [sourceInspectorOpen, setSourceInspectorOpen] = useState(true);
-  const [selectedPreviewFileId, setSelectedPreviewFileId] = useState("");
-  const [filePatchPreview, setFilePatchPreview] =
-    useState<Loadable<ChangedFilePatch>>(idleApiState());
+  const [sourceInspectorOpen, setSourceInspectorOpen] = useState(false);
+  const [sourceInspectorRendered, setSourceInspectorRendered] = useState(false);
+  const [sourceInspectorVisible, setSourceInspectorVisible] = useState(false);
+  const [sourceInspectorOpenCount, setSourceInspectorOpenCount] = useState(0);
+  const [sourceInspectorWidth, setSourceInspectorWidth] = useState(560);
+  const [sourceInspectorResizing, setSourceInspectorResizing] = useState(false);
+  const [renderedDiffFileCount, setRenderedDiffFileCount] = useState(
+    setupInitialDiffFileRenderCount,
+  );
+  const [filePatchPreviews, setFilePatchPreviews] = useState<
+    Record<string, Loadable<ChangedFilePatch>>
+  >({});
   const [localError, setLocalError] = useState("");
   const [startState, setStartState] =
     useState<Loadable<ReviewSession>>(idleApiState());
@@ -195,6 +227,157 @@ export function NewThreadScreen({
       agentModelCatalogs.status === "success" ? agentModelCatalogs.data : [],
     [agentModelCatalogs],
   );
+  const sourceInspectorLayoutActive =
+    sourceInspectorOpen || sourceInspectorRendered;
+  const sourceInspectorVisualOpen =
+    sourceInspectorOpen && sourceInspectorVisible;
+  const sourceInspectorLayoutStyle = sourceInspectorLayoutActive
+    ? ({
+        "--source-inspector-width": `${sourceInspectorWidth}px`,
+      } as CSSProperties)
+    : undefined;
+  const sourceInspectorPanelStyle = sourceInspectorLayoutActive
+    ? ({
+        width: `min(${sourceInspectorWidth}px, calc(100% - 16px))`,
+      } as CSSProperties)
+    : undefined;
+
+  useEffect(() => {
+    let canceled = false;
+    if (sourceInspectorOpen) {
+      queueMicrotask(() => {
+        if (!canceled) {
+          setSourceInspectorRendered(true);
+        }
+      });
+      const frame = window.requestAnimationFrame(() => {
+        if (!canceled) {
+          setSourceInspectorVisible(true);
+        }
+      });
+      return () => {
+        canceled = true;
+        window.cancelAnimationFrame(frame);
+      };
+    }
+
+    queueMicrotask(() => {
+      if (!canceled) {
+        setSourceInspectorVisible(false);
+        setSourceInspectorResizing(false);
+      }
+    });
+    if (!sourceInspectorRendered) {
+      return () => {
+        canceled = true;
+      };
+    }
+    const timer = window.setTimeout(() => {
+      if (!canceled) {
+        setSourceInspectorRendered(false);
+      }
+    }, sourceInspectorTransitionMs);
+    return () => {
+      canceled = true;
+      window.clearTimeout(timer);
+    };
+  }, [sourceInspectorOpen, sourceInspectorRendered]);
+
+  useEffect(() => {
+    if (!sourceInspectorResizing) {
+      return;
+    }
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    function resizeFromClientX(clientX: number) {
+      const layoutBounds =
+        sourceInspectorLayoutRef.current?.getBoundingClientRect();
+      const availableWidth = layoutBounds?.width ?? window.innerWidth;
+      const rightEdge = layoutBounds?.right ?? window.innerWidth;
+      const maxWidth = Math.max(
+        sourceInspectorMinWidth,
+        Math.min(
+          sourceInspectorMaxWidth,
+          availableWidth - sourceInspectorMainMinWidth,
+        ),
+      );
+      const nextWidth = Math.min(
+        maxWidth,
+        Math.max(sourceInspectorMinWidth, rightEdge - clientX),
+      );
+      setSourceInspectorWidth(nextWidth);
+    }
+
+    function handlePointerMove(event: PointerEvent) {
+      resizeFromClientX(event.clientX);
+    }
+
+    function handleMouseMove(event: MouseEvent) {
+      resizeFromClientX(event.clientX);
+    }
+
+    function handleResizeEnd() {
+      setSourceInspectorResizing(false);
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("pointerup", handleResizeEnd, { once: true });
+    window.addEventListener("mouseup", handleResizeEnd, { once: true });
+    return () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("pointerup", handleResizeEnd);
+      window.removeEventListener("mouseup", handleResizeEnd);
+    };
+  }, [sourceInspectorResizing]);
+
+  useEffect(() => {
+    function clampInspectorWidth() {
+      const availableWidth =
+        sourceInspectorLayoutRef.current?.clientWidth ?? window.innerWidth;
+      const maxWidth = Math.max(
+        sourceInspectorMinWidth,
+        Math.min(
+          sourceInspectorMaxWidth,
+          availableWidth - sourceInspectorMainMinWidth,
+        ),
+      );
+      setSourceInspectorWidth((current) =>
+        Math.min(maxWidth, Math.max(sourceInspectorMinWidth, current)),
+      );
+    }
+
+    clampInspectorWidth();
+    window.addEventListener("resize", clampInspectorWidth);
+    return () => {
+      window.removeEventListener("resize", clampInspectorWidth);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!sourceInspectorOpen) {
+      return;
+    }
+    const availableWidth =
+      sourceInspectorLayoutRef.current?.clientWidth ?? window.innerWidth;
+    const maxWidth = Math.max(
+      sourceInspectorMinWidth,
+      Math.min(
+        sourceInspectorMaxWidth,
+        availableWidth - sourceInspectorMainMinWidth,
+      ),
+    );
+    setSourceInspectorWidth((current) =>
+      Math.min(maxWidth, Math.max(sourceInspectorMinWidth, current)),
+    );
+  }, [sourceInspectorOpen]);
+
   useEffect(() => {
     let canceled = false;
     if (!client || !activeWorkspace || !activeRepository) {
@@ -363,8 +546,9 @@ export function NewThreadScreen({
     repositoryId: activeRepository?.id ?? "",
     source,
     githubUrl,
-    baseRef,
-    headRef: headRefValue,
+    githubAuthMethod: source === "github" ? githubAuthMethod : "",
+    baseRef: source === "branch-compare" ? baseRef : "",
+    headRef: source === "branch-compare" ? headRefValue : "",
   });
   const previewReady =
     sourcePreview.status === "success" && sourcePreview.data.key === sourceKey;
@@ -374,57 +558,80 @@ export function NewThreadScreen({
     [previewReady, sourcePreview],
   );
   const previewStats = setupPreviewStats(previewFiles);
-  const defaultSelectedPreviewFileId = useMemo(
-    () =>
-      previewFiles.find((file) => file.patch_artifact_id && !file.is_binary)
-        ?.id ??
-      previewFiles[0]?.id ??
-      "",
-    [previewFiles],
+  const renderedDiffFiles = useMemo(
+    () => previewFiles.slice(0, renderedDiffFileCount),
+    [previewFiles, renderedDiffFileCount],
   );
-  const effectiveSelectedPreviewFileId = previewFiles.some(
-    (file) => file.id === selectedPreviewFileId,
-  )
-    ? selectedPreviewFileId
-    : defaultSelectedPreviewFileId;
-  const selectedPreviewFile =
-    previewFiles.find((file) => file.id === effectiveSelectedPreviewFileId) ??
-    null;
+  const patchLoadFiles = useMemo(
+    () =>
+      renderedDiffFiles.filter(
+        (file) => file.patch_artifact_id && !file.is_binary,
+      ),
+    [renderedDiffFiles],
+  );
 
   useEffect(() => {
     let canceled = false;
-    if (
-      !client ||
-      !previewReady ||
-      !selectedPreviewFile ||
-      selectedPreviewFile.is_binary ||
-      !selectedPreviewFile.patch_artifact_id
-    ) {
+    if (!client || !previewReady) {
       return () => {
         canceled = true;
       };
     }
-    queueMicrotask(() => {
-      if (!canceled) {
-        setFilePatchPreview(loadingApiState());
+    const requestedPatchFileIDs = requestedPatchFileIds.current;
+    const loadedPatchFileIDs = loadedPatchFileIds.current;
+
+    const filesToLoad = patchLoadFiles.filter((file) => {
+      if (requestedPatchFileIDs.has(file.id)) {
+        return false;
       }
+      return !loadedPatchFileIDs.has(file.id);
     });
-    void loadApiResource(() =>
-      client.getChangedFilePatch(
-        selectedPreviewFile.snapshot_id,
-        selectedPreviewFile.id,
-      ),
-    ).then((state) => {
-      if (!canceled) {
-        setFilePatchPreview(state);
+    if (filesToLoad.length === 0) {
+      return () => {
+        canceled = true;
+      };
+    }
+    for (const file of filesToLoad) {
+      requestedPatchFileIDs.add(file.id);
+    }
+
+    setFilePatchPreviews((current) => {
+      const next = { ...current };
+      for (const file of filesToLoad) {
+        next[file.id] = loadingApiState();
       }
+      return next;
     });
+
+    for (const file of filesToLoad) {
+      void loadApiResource(() =>
+        client.getChangedFilePatch(file.snapshot_id, file.id),
+      ).then((state) => {
+        requestedPatchFileIDs.delete(file.id);
+        if (!canceled) {
+          if (
+            state.status === "success" &&
+            state.data.changed_file_id === file.id
+          ) {
+            loadedPatchFileIDs.add(file.id);
+          }
+          setFilePatchPreviews((current) => ({
+            ...current,
+            [file.id]: state,
+          }));
+        }
+      });
+    }
+
     return () => {
       canceled = true;
+      for (const file of filesToLoad) {
+        requestedPatchFileIDs.delete(file.id);
+      }
     };
-  }, [client, previewReady, selectedPreviewFile]);
+  }, [client, patchLoadFiles, previewReady]);
 
-  function validateSource() {
+  const validateSource = useCallback(() => {
     if (!canCreate) {
       setLocalError("Open a git repository before creating a review.");
       return false;
@@ -442,6 +649,34 @@ export function NewThreadScreen({
     }
     setLocalError("");
     return true;
+  }, [baseRef, canCreate, githubUrl, headRefValue, source]);
+
+  const shouldAutoLoadSourcePreview = useCallback(() => {
+    return (
+      canCreate &&
+      sourcePreview.status !== "loading" &&
+      !previewReady &&
+      (source !== "github" || githubUrl.trim() !== "") &&
+      (source !== "branch-compare" || branchState.status === "success")
+    );
+  }, [
+    branchState.status,
+    canCreate,
+    githubUrl,
+    previewReady,
+    source,
+    sourcePreview.status,
+  ]);
+
+  function toggleSourceInspector() {
+    if (sourceInspectorOpen) {
+      setSourceInspectorOpen(false);
+      return;
+    }
+    setSourceInspectorRendered(true);
+    setSourceInspectorVisible(false);
+    setSourceInspectorOpenCount((value) => value + 1);
+    setSourceInspectorOpen(true);
   }
 
   function addFocusHint() {
@@ -486,19 +721,25 @@ export function NewThreadScreen({
     setSelectedPresetIds((current) => toggleSetValue(current, presetId));
   }
 
+  function loadMoreDiffFiles() {
+    setRenderedDiffFileCount((current) =>
+      Math.min(
+        current + setupDiffFileRenderBatchSize,
+        Math.min(previewFiles.length, setupMaxRenderedDiffFiles),
+      ),
+    );
+  }
+
   function resetSetup() {
     setSource("github");
     setGitHubUrl("");
+    setGithubAuthMethod("token");
     setBaseRefInput("");
     setHeadRef("");
     setFocusPrompt("");
     setReviewDepth("standard");
-    setSelectedFocusIds(
-      new Set(setupFocusOptions.slice(0, 4).map((item) => item.id)),
-    );
-    setSelectedPresetIds(
-      new Set(setupPresetOptions.slice(0, 3).map((item) => item.id)),
-    );
+    setSelectedFocusIds(new Set());
+    setSelectedPresetIds(new Set());
     setPresetSearch("");
     setSelectedAgentIds(null);
     setOrchestratorAgentId("");
@@ -507,12 +748,17 @@ export function NewThreadScreen({
     setAgentRoleChoices({});
     setHiddenReviewAssignmentIds(new Set());
     setManualReviewAssignments([]);
+    setSourceInspectorOpen(false);
     setSourcePreview(idleApiState());
+    setRenderedDiffFileCount(setupInitialDiffFileRenderCount);
+    setFilePatchPreviews({});
+    requestedPatchFileIds.current.clear();
+    loadedPatchFileIds.current.clear();
     setLocalError("");
     setStartState(idleApiState());
   }
 
-  function createSourceSnapshot() {
+  const createSourceSnapshot = useCallback((): Promise<Snapshot> => {
     if (!client || !activeWorkspace || !activeRepository) {
       throw new Error("Open a project before creating a review snapshot.");
     }
@@ -522,6 +768,7 @@ export function NewThreadScreen({
           workspaceId: activeWorkspace.id,
           repositoryId: activeRepository.id,
           url: githubUrl.trim(),
+          authMethod: githubAuthMethod,
         });
       }
       throw new Error("Desktop GitHub credential bridge is unavailable.");
@@ -538,9 +785,18 @@ export function NewThreadScreen({
       workspace_id: activeWorkspace.id,
       repository_id: activeRepository.id,
     });
-  }
+  }, [
+    activeRepository,
+    activeWorkspace,
+    baseRef,
+    client,
+    githubUrl,
+    githubAuthMethod,
+    headRefValue,
+    source,
+  ]);
 
-  async function loadSourcePreview() {
+  const loadSourcePreview = useCallback(async () => {
     if (!client) {
       setSourcePreview(
         errorApiState(new Error("Backend client is unavailable.")),
@@ -550,6 +806,10 @@ export function NewThreadScreen({
     if (!validateSource()) {
       return;
     }
+    setRenderedDiffFileCount(setupInitialDiffFileRenderCount);
+    setFilePatchPreviews({});
+    requestedPatchFileIds.current.clear();
+    loadedPatchFileIds.current.clear();
     setSourcePreview(loadingApiState());
     const requestedKey = sourceKey;
     const nextSnapshot = await loadApiResource(createSourceSnapshot);
@@ -584,7 +844,26 @@ export function NewThreadScreen({
         files: files.data,
       }),
     );
-  }
+  }, [client, createSourceSnapshot, sourceKey, validateSource]);
+
+  useEffect(() => {
+    if (
+      !sourceInspectorOpen ||
+      sourceInspectorOpenCount === 0 ||
+      !shouldAutoLoadSourcePreview()
+    ) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void loadSourcePreview();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [
+    loadSourcePreview,
+    shouldAutoLoadSourcePreview,
+    sourceInspectorOpen,
+    sourceInspectorOpenCount,
+  ]);
 
   async function startReview() {
     if (!client) {
@@ -708,7 +987,7 @@ export function NewThreadScreen({
                   : "Show source details"
               }
               variant="outline"
-              onClick={() => setSourceInspectorOpen((current) => !current)}
+              onClick={toggleSourceInspector}
             >
               {sourceInspectorOpen ? (
                 <PanelRightCloseIcon className="size-4" />
@@ -720,13 +999,19 @@ export function NewThreadScreen({
         </div>
 
         <div
+          ref={sourceInspectorLayoutRef}
           className={cn(
             "border-border/60 relative grid h-full min-h-0 grid-cols-1 overflow-hidden border-t",
-            sourceInspectorOpen &&
-              "min-[1320px]:grid-cols-[minmax(0,1fr)_420px] min-[1600px]:grid-cols-[minmax(0,1fr)_560px]",
           )}
+          style={sourceInspectorLayoutStyle}
         >
-          <div className="min-w-0 overflow-hidden px-4 py-4 min-[900px]:px-6">
+          <div
+            className={cn(
+              "min-w-0 overflow-hidden px-4 py-4 transition-all duration-[220ms] ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none min-[900px]:px-6",
+              sourceInspectorLayoutActive &&
+                "min-[1180px]:pr-[calc(var(--source-inspector-width)+1.5rem)]",
+            )}
+          >
             <div className="flex h-full min-h-0 flex-col gap-2.5 overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               {!canCreate && (
                 <ErrorState
@@ -737,10 +1022,11 @@ export function NewThreadScreen({
 
               <SetupStepPanel
                 description="Choose where to review from."
+                compact={sourceInspectorLayoutActive}
                 number={1}
                 title="Review source"
               >
-                <div className="grid gap-3 lg:grid-cols-3">
+                <div className="grid grid-cols-[repeat(auto-fit,minmax(175px,1fr))] gap-2">
                   {setupSourceOptions.map((option) => (
                     <SetupSegment
                       key={option.id}
@@ -753,7 +1039,13 @@ export function NewThreadScreen({
                   ))}
                 </div>
 
-                <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(210px,0.36fr)_minmax(0,1fr)]">
+                <div
+                  className={cn(
+                    "mt-3 grid gap-3",
+                    !sourceInspectorLayoutActive &&
+                      "min-[1320px]:grid-cols-[minmax(210px,0.36fr)_minmax(0,1fr)]",
+                  )}
+                >
                   <label className="flex min-w-0 flex-col gap-1.5 text-xs font-medium">
                     Repository
                     <Button
@@ -774,21 +1066,44 @@ export function NewThreadScreen({
                   </label>
 
                   {source === "github" && (
-                    <label className="flex min-w-0 flex-col gap-1.5 text-xs font-medium">
-                      PR URL
-                      <div className="relative">
-                        <Input
-                          aria-label="Pull request URL"
-                          className="h-9 pr-9"
-                          disabled={!canCreate}
-                          id="github-url"
-                          placeholder="https://github.com/owner/repo/pull/123"
-                          value={githubUrl}
-                          onChange={(event) => setGitHubUrl(event.target.value)}
-                        />
-                        <ExternalLinkIcon className="text-muted-foreground pointer-events-none absolute top-1/2 right-2.5 size-4 -translate-y-1/2" />
-                      </div>
-                    </label>
+                    <div className="grid min-w-0 grid-cols-1 gap-3 min-[760px]:grid-cols-[minmax(220px,1fr)_150px]">
+                      <label className="flex min-w-0 flex-col gap-1.5 text-xs font-medium">
+                        PR URL
+                        <div className="relative">
+                          <Input
+                            aria-label="Pull request URL"
+                            className="h-9 pr-9"
+                            disabled={!canCreate}
+                            id="github-url"
+                            placeholder="https://github.com/owner/repo/pull/123"
+                            value={githubUrl}
+                            onChange={(event) =>
+                              setGitHubUrl(event.target.value)
+                            }
+                          />
+                          <ExternalLinkIcon className="text-muted-foreground pointer-events-none absolute top-1/2 right-2.5 size-4 -translate-y-1/2" />
+                        </div>
+                      </label>
+                      <label className="flex min-w-0 flex-col gap-1.5 text-xs font-medium">
+                        Access
+                        <NativeSelect
+                          className="h-9"
+                          value={githubAuthMethod}
+                          onChange={(event) =>
+                            setGithubAuthMethod(
+                              event.target.value as GitHubSnapshotAuthMethod,
+                            )
+                          }
+                        >
+                          <NativeSelectOption value="token">
+                            Saved token
+                          </NativeSelectOption>
+                          <NativeSelectOption value="gh_cli">
+                            gh CLI
+                          </NativeSelectOption>
+                        </NativeSelect>
+                      </label>
+                    </div>
                   )}
 
                   {source === "local-changes" && (
@@ -806,7 +1121,13 @@ export function NewThreadScreen({
                   )}
 
                   {source === "branch-compare" && (
-                    <div className="grid grid-cols-2 gap-3">
+                    <div
+                      className={cn(
+                        "grid grid-cols-1 gap-3",
+                        !sourceInspectorLayoutActive &&
+                          "min-[760px]:grid-cols-2",
+                      )}
+                    >
                       <SetupBranchSelector
                         branches={branchState}
                         disabled={!canCreate}
@@ -828,6 +1149,7 @@ export function NewThreadScreen({
 
               <SetupStepPanel
                 description="What should the review prioritize?"
+                compact={sourceInspectorLayoutActive}
                 number={2}
                 title="Review focus"
               >
@@ -866,10 +1188,17 @@ export function NewThreadScreen({
 
               <SetupStepPanel
                 description="Choose the orchestrator and agents that will run your review."
+                compact={sourceInspectorLayoutActive}
                 number={3}
                 title="Orchestration"
               >
-                <div className="grid items-start gap-4 lg:grid-cols-[minmax(160px,0.35fr)_minmax(0,1fr)]">
+                <div
+                  className={cn(
+                    "grid items-start gap-4",
+                    !sourceInspectorLayoutActive &&
+                      "lg:grid-cols-[minmax(160px,0.35fr)_minmax(0,1fr)]",
+                  )}
+                >
                   <div className="min-w-0">
                     <div className="mb-1.5 flex h-7 items-center">
                       <label className="block text-[0.78rem] font-medium">
@@ -1088,13 +1417,14 @@ export function NewThreadScreen({
 
               <SetupStepPanel
                 description="Select a preset and confirm what's included."
+                compact={sourceInspectorLayoutActive}
                 number={4}
                 title="Scope & presets"
               >
                 <div
                   className={cn(
                     "grid items-stretch gap-3",
-                    !sourceInspectorOpen &&
+                    !sourceInspectorLayoutActive &&
                       "min-[1180px]:grid-cols-[minmax(300px,1fr)_240px]",
                   )}
                 >
@@ -1174,7 +1504,7 @@ export function NewThreadScreen({
                       </DropdownMenu>
                     </div>
                   </div>
-                  {!sourceInspectorOpen && (
+                  {!sourceInspectorLayoutActive && (
                     <div className="border-border/70 flex h-full min-h-[206px] flex-col rounded-lg border bg-white/85 p-3">
                       <div className="text-sm font-semibold">Scope summary</div>
                       <div className="mt-2 flex flex-col gap-1.5 text-xs">
@@ -1259,11 +1589,22 @@ export function NewThreadScreen({
             </div>
           </div>
 
-          {sourceInspectorOpen && (
-            <aside className="border-border/60 absolute inset-y-0 right-0 z-20 flex h-full max-h-full min-h-0 w-[min(620px,calc(100%-16px))] min-w-0 flex-col overflow-hidden border-l bg-[#f7f7f5] px-4 py-4 shadow-[-18px_0_36px_rgb(17_18_20/0.08)] min-[1320px]:relative min-[1320px]:inset-auto min-[1320px]:z-auto min-[1320px]:w-auto min-[1320px]:shadow-none">
+          {sourceInspectorRendered && (
+            <aside
+              className={cn(
+                "border-border/60 absolute inset-y-0 right-0 z-20 flex h-full max-h-full min-h-0 min-w-0 transform-gpu flex-col overflow-hidden border-l bg-white shadow-[-18px_0_36px_rgb(17_18_20/0.08)] will-change-transform motion-reduce:transition-none",
+                sourceInspectorResizing
+                  ? "transition-none"
+                  : "transition-all duration-[220ms] ease-[cubic-bezier(0.16,1,0.3,1)]",
+                sourceInspectorVisualOpen
+                  ? "pointer-events-auto translate-x-0 opacity-100"
+                  : "pointer-events-none translate-x-full opacity-0",
+              )}
+              style={sourceInspectorPanelStyle}
+            >
               <SetupSourceInspectorPanel
                 canLoad={canCreate}
-                patchPreview={filePatchPreview}
+                patchPreviews={filePatchPreviews}
                 preview={sourcePreview}
                 previewReady={previewReady}
                 projectLabel={activeRepository?.name ?? "No project"}
@@ -1278,10 +1619,30 @@ export function NewThreadScreen({
                   setupSourceOptions.find((item) => item.id === source)
                     ?.label ?? "Source"
                 }
-                selectedFile={selectedPreviewFile}
+                renderedFileCount={renderedDiffFileCount}
                 stats={previewStats}
-                onFileSelect={setSelectedPreviewFileId}
                 onLoad={() => void loadSourcePreview()}
+                onLoadMoreFiles={loadMoreDiffFiles}
+              />
+              <div
+                aria-label="Resize source details"
+                aria-orientation="vertical"
+                className={cn(
+                  "pointer-events-auto absolute inset-y-0 left-0 z-30 w-3 cursor-col-resize touch-none",
+                  "before:bg-border/80 before:absolute before:inset-y-4 before:left-0.5 before:w-px before:rounded-full before:opacity-0 before:transition-opacity hover:bg-black/[0.02] hover:before:opacity-100",
+                  sourceInspectorResizing && "before:opacity-100",
+                )}
+                role="separator"
+                tabIndex={0}
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                  setSourceInspectorResizing(true);
+                }}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  setSourceInspectorResizing(true);
+                }}
               />
             </aside>
           )}
@@ -1599,11 +1960,13 @@ const setupPrimaryPresetIds = [
 
 function SetupStepPanel({
   children,
+  compact = false,
   description,
   number,
   title,
 }: {
   children: ReactNode;
+  compact?: boolean;
   description: string;
   number: number;
   title: string;
@@ -1619,7 +1982,14 @@ function SetupStepPanel({
         </span>
       </div>
       <div className="border-border/70 rounded-xl border bg-white/88 px-4 py-3 shadow-[0_1px_2px_rgb(17_18_20/0.03)]">
-        <div className="grid gap-4 lg:grid-cols-[204px_minmax(0,1fr)]">
+        <div
+          className={cn(
+            "grid gap-4",
+            compact
+              ? "min-[1540px]:grid-cols-[204px_minmax(0,1fr)]"
+              : "lg:grid-cols-[204px_minmax(0,1fr)]",
+          )}
+        >
           <div className="min-w-0">
             <h2 className="text-[0.96rem] leading-5 font-semibold">{title}</h2>
             <p className="text-muted-foreground mt-1 text-[0.78rem] leading-5">
@@ -1649,20 +2019,20 @@ function SetupSegment({
   return (
     <button
       className={cn(
-        "border-border/70 hover:bg-surface-muted flex h-10 cursor-pointer items-center justify-between gap-2 rounded-lg border bg-white px-2.5 text-left text-[0.78rem] font-medium shadow-[0_1px_1px_rgb(17_18_20/0.025)] transition-colors",
+        "border-border/70 hover:bg-surface-muted flex h-10 min-w-0 cursor-pointer items-center justify-between gap-2 rounded-lg border bg-white px-2.5 text-left text-[0.78rem] font-medium shadow-[0_1px_1px_rgb(17_18_20/0.025)] transition-colors",
         active &&
           "border-foreground/50 bg-white shadow-[0_1px_2px_rgb(17_18_20/0.08)]",
       )}
       type="button"
       onClick={onClick}
     >
-      <span className="flex min-w-0 items-center gap-2">
+      <span className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
         {logoUrl ? (
           <img alt="" className="size-4 shrink-0 rounded-[3px]" src={logoUrl} />
         ) : (
           <Icon className="size-3.5 shrink-0" />
         )}
-        <span className="whitespace-nowrap">{label}</span>
+        <span className="min-w-0 truncate">{label}</span>
       </span>
       <span
         className={cn(
@@ -1811,6 +2181,7 @@ function SetupAgentSelector({
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
+          aria-label={placeholder}
           className="border-border/70 hover:bg-surface-muted flex h-8 w-full cursor-pointer items-center justify-between gap-3 rounded-lg border bg-white px-2.5 text-left text-[0.8rem] font-medium shadow-[0_1px_1px_rgb(17_18_20/0.03)] disabled:cursor-default disabled:opacity-60"
           disabled={disabled}
           type="button"
@@ -2255,29 +2626,40 @@ function SetupScopeRow({ label, value }: { label: string; value: string }) {
 
 function SetupSourceInspectorPanel({
   canLoad,
-  patchPreview,
+  patchPreviews,
   preview,
   previewReady,
   projectLabel,
   rangeLabel,
-  selectedFile,
+  renderedFileCount,
   sourceLabel,
   stats,
-  onFileSelect,
   onLoad,
+  onLoadMoreFiles,
 }: {
   canLoad: boolean;
-  patchPreview: Loadable<ChangedFilePatch>;
+  patchPreviews: Record<string, Loadable<ChangedFilePatch>>;
   preview: Loadable<SetupSourcePreview>;
   previewReady: boolean;
   projectLabel: string;
   rangeLabel: string;
-  selectedFile: ChangedFile | null;
+  renderedFileCount: number;
   sourceLabel: string;
   stats: SetupPreviewStats;
-  onFileSelect: (fileId: string) => void;
   onLoad: () => void;
+  onLoadMoreFiles: () => void;
 }) {
+  const stackScrollRef = useRef<HTMLDivElement | null>(null);
+  const previewKey =
+    preview.status === "success" && previewReady ? preview.data.key : "";
+  const [collapsedFileState, setCollapsedFileState] = useState<{
+    ids: Set<string>;
+    key: string;
+  }>(() => ({ ids: new Set(), key: "" }));
+  const collapsedFileIds =
+    collapsedFileState.key === previewKey
+      ? collapsedFileState.ids
+      : emptyCollapsedFileIds;
   const isLoading = preview.status === "loading";
   const actionLabel = isLoading
     ? "Loading..."
@@ -2286,22 +2668,71 @@ function SetupSourceInspectorPanel({
       : "Load source details";
   const visibleFiles =
     preview.status === "success" && previewReady
-      ? preview.data.files.slice(0, 200)
+      ? preview.data.files.slice(
+          0,
+          Math.min(renderedFileCount, setupMaxRenderedDiffFiles),
+        )
       : [];
   const hiddenFileCount =
     preview.status === "success" && previewReady
       ? Math.max(preview.data.files.length - visibleFiles.length, 0)
       : 0;
+  const hiddenStats =
+    preview.status === "success" && previewReady
+      ? preview.data.files.slice(visibleFiles.length).reduce(
+          (totals, file) => ({
+            additions: totals.additions + file.additions,
+            deletions: totals.deletions + file.deletions,
+          }),
+          { additions: 0, deletions: 0 },
+        )
+      : { additions: 0, deletions: 0 };
+
+  useEffect(() => {
+    if (
+      preview.status !== "success" ||
+      !previewReady ||
+      hiddenFileCount === 0
+    ) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      const element = stackScrollRef.current;
+      if (!element) {
+        return;
+      }
+      if (element.scrollHeight <= element.clientHeight + 96) {
+        onLoadMoreFiles();
+      }
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [
+    hiddenFileCount,
+    onLoadMoreFiles,
+    preview.status,
+    previewReady,
+    visibleFiles.length,
+  ]);
+
+  function handleStackScroll(event: UIEvent<HTMLDivElement>) {
+    const target = event.currentTarget;
+    if (
+      hiddenFileCount > 0 &&
+      target.scrollTop + target.clientHeight >= target.scrollHeight - 560
+    ) {
+      onLoadMoreFiles();
+    }
+  }
 
   return (
-    <section className="flex h-full min-h-0 flex-col overflow-hidden">
-      <div className="flex items-start justify-between gap-3">
-        <div>
+    <section className="flex h-full min-h-0 flex-col overflow-hidden bg-white">
+      <div className="flex items-start justify-between gap-3 px-4 pt-4 pb-3">
+        <div className="min-w-0">
           <h2 className="text-[0.96rem] font-semibold">Source details</h2>
-          <p className="text-muted-foreground mt-1 text-xs leading-4">
-            {previewReady
-              ? `${formatPreviewNumber(stats.reviewable)} reviewable of ${formatPreviewNumber(stats.total)} changed files`
-              : "Snapshot and file scope"}
+          <p className="text-muted-foreground mt-1 truncate text-xs leading-4">
+            {sourceLabel} / {projectLabel} / {rangeLabel}
           </p>
         </div>
         <Button
@@ -2316,28 +2747,20 @@ function SetupSourceInspectorPanel({
         </Button>
       </div>
 
-      <div className="border-border/70 mt-4 rounded-lg border bg-white/85 p-3 text-xs">
-        <div className="grid gap-2">
-          <SetupScopeRow label="Source" value={sourceLabel} />
-          <SetupScopeRow label="Project" value={projectLabel} />
-          <SetupScopeRow label="Range" value={rangeLabel} />
-        </div>
-      </div>
-
       {preview.status === "loading" && (
-        <div className="border-border/70 mt-3 rounded-lg border bg-white/85 p-3">
-          <LoadingRows rows={5} />
+        <div className="px-4 py-3">
+          <SetupDiffSkeleton rows={6} />
         </div>
       )}
 
       {preview.status === "error" && (
-        <div className="border-destructive/20 bg-destructive/5 text-destructive mt-3 rounded-lg border px-3 py-2 text-[0.74rem] leading-5 break-words">
+        <div className="border-destructive/20 bg-destructive/5 text-destructive mt-4 rounded-lg border px-3 py-2 text-[0.74rem] leading-5 break-words">
           {preview.error.message}
         </div>
       )}
 
       {preview.status === "success" && !previewReady && (
-        <div className="text-warning border-border/70 bg-surface-muted mt-3 rounded-lg border px-3 py-2 text-[0.74rem] leading-5">
+        <div className="text-warning border-border/70 mt-4 rounded-lg border bg-white px-3 py-2 text-[0.74rem] leading-5">
           Source inputs changed. Refresh source details to update the file list.
         </div>
       )}
@@ -2345,119 +2768,102 @@ function SetupSourceInspectorPanel({
       {preview.status !== "loading" &&
         preview.status !== "error" &&
         (preview.status !== "success" || !previewReady) && (
-          <div className="border-border/70 text-muted-foreground mt-3 flex min-h-[180px] flex-1 items-center justify-center rounded-lg border bg-white/70">
+          <div className="border-border/70 text-muted-foreground mt-4 flex min-h-[180px] flex-1 items-center justify-center rounded-lg border bg-white">
             <FileSearchIcon className="mr-2 size-4" />
             <span className="text-[0.78rem]">Not loaded</span>
           </div>
         )}
 
       {preview.status === "success" && previewReady && (
-        <div className="mt-3 grid min-h-0 flex-1 grid-rows-[auto_auto_minmax(96px,148px)_minmax(0,1fr)] gap-3 overflow-hidden">
-          <div className="flex flex-wrap gap-1.5">
-            {stats.generated > 0 && (
-              <Badge className="h-5 px-1.5 text-[0.62rem]" variant="outline">
-                {formatPreviewNumber(stats.generated)} generated
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div className="border-border/60 flex min-h-10 shrink-0 items-center justify-between gap-3 border-y px-4">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="text-muted-foreground text-[0.86rem]">
+                Changed files
+              </span>
+              <Badge className="h-6 px-2 text-[0.72rem]" variant="secondary">
+                {formatPreviewNumber(stats.total)}
               </Badge>
-            )}
-            {stats.binary > 0 && (
-              <Badge className="h-5 px-1.5 text-[0.62rem]" variant="outline">
-                {formatPreviewNumber(stats.binary)} binary
-              </Badge>
-            )}
-            {stats.excluded > 0 && (
-              <Badge className="h-5 px-1.5 text-[0.62rem]" variant="outline">
-                {formatPreviewNumber(stats.excluded)} excluded
-              </Badge>
-            )}
-          </div>
-
-          <div className="grid grid-cols-2 gap-2">
-            <SetupPreviewStat
-              label="Files"
-              value={formatPreviewNumber(stats.total)}
-            />
-            <SetupPreviewStat
-              label="Reviewable"
-              value={formatPreviewNumber(stats.reviewable)}
-            />
-            <SetupPreviewStat
-              label="Added"
-              value={`+${formatPreviewNumber(stats.additions)}`}
-              tone="positive"
-            />
-            <SetupPreviewStat
-              label="Removed"
-              value={`-${formatPreviewNumber(stats.deletions)}`}
-              tone="negative"
-            />
-          </div>
-
-          <div className="border-border/60 bg-surface-muted/65 flex min-h-0 flex-col overflow-hidden rounded-lg border">
-            <div className="text-muted-foreground grid grid-cols-[minmax(0,1fr)_48px_56px] gap-2 border-b px-3 py-2 text-[0.66rem] font-medium tracking-[0.02em] uppercase">
-              <span>File</span>
-              <span className="text-right">Added</span>
-              <span className="text-right">Removed</span>
-            </div>
-            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-              {visibleFiles.map((file) => (
-                <button
-                  key={file.id}
-                  aria-pressed={file.id === selectedFile?.id}
-                  className={cn(
-                    "border-border/60 grid h-8 w-full cursor-pointer grid-cols-[minmax(0,1fr)_48px_56px] items-center gap-2 border-b bg-white px-3 text-left transition-colors last:border-b-0 hover:bg-[#f7f7f5]",
-                    file.id === selectedFile?.id && "bg-[#efefec]",
-                  )}
-                  type="button"
-                  onClick={() => onFileSelect(file.id)}
-                >
-                  <span className="flex min-w-0 items-center gap-2">
-                    <FileTextIcon
-                      className={cn(
-                        "text-muted-foreground size-3.5 shrink-0",
-                        file.is_binary && "text-amber-700",
-                        file.is_excluded && "text-muted-foreground/60",
-                      )}
-                    />
-                    <span className="min-w-0 truncate font-mono text-[0.72rem]">
-                      {file.path}
-                    </span>
-                  </span>
-                  <span className="text-right font-mono text-[0.72rem] text-emerald-700">
-                    +{formatPreviewNumber(file.additions)}
-                  </span>
-                  <span className="text-right font-mono text-[0.72rem] text-red-700">
-                    -{formatPreviewNumber(file.deletions)}
-                  </span>
-                </button>
-              ))}
-              {hiddenFileCount > 0 && (
-                <div className="text-muted-foreground flex h-8 items-center justify-between gap-3 bg-white px-3 text-[0.72rem]">
-                  <span>
-                    {formatPreviewNumber(hiddenFileCount)} more changed files
-                  </span>
-                  <span className="font-mono">
-                    +
-                    {formatPreviewNumber(
-                      preview.data.files
-                        .slice(visibleFiles.length)
-                        .reduce((total, file) => total + file.additions, 0),
-                    )}{" "}
-                    -
-                    {formatPreviewNumber(
-                      preview.data.files
-                        .slice(visibleFiles.length)
-                        .reduce((total, file) => total + file.deletions, 0),
-                    )}
-                  </span>
-                </div>
+              {(stats.generated > 0 ||
+                stats.binary > 0 ||
+                stats.excluded > 0) && (
+                <span className="text-muted-foreground text-[0.68rem]">
+                  {[
+                    stats.generated > 0
+                      ? `${formatPreviewNumber(stats.generated)} generated`
+                      : "",
+                    stats.binary > 0
+                      ? `${formatPreviewNumber(stats.binary)} binary`
+                      : "",
+                    stats.excluded > 0
+                      ? `${formatPreviewNumber(stats.excluded)} excluded`
+                      : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" / ")}
+                </span>
               )}
             </div>
+            <span className="shrink-0 font-mono text-[0.88rem]">
+              <span className="text-emerald-700">
+                +{formatPreviewNumber(stats.additions)}
+              </span>{" "}
+              <span className="text-red-700">
+                -{formatPreviewNumber(stats.deletions)}
+              </span>
+            </span>
           </div>
 
-          <SetupFileDiffPreview
-            file={selectedFile}
-            patchPreview={patchPreview}
-          />
+          <div
+            ref={stackScrollRef}
+            className="min-h-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]"
+            data-testid="setup-source-stack-scroll"
+            onScroll={handleStackScroll}
+          >
+            {visibleFiles.length === 0 && (
+              <div className="text-muted-foreground flex min-h-[180px] items-center justify-center rounded-lg border bg-white text-[0.78rem]">
+                No changed files
+              </div>
+            )}
+            {visibleFiles.map((file) => (
+              <SetupFileDiffPreview
+                key={file.id}
+                file={file}
+                patchPreview={patchPreviews[file.id]}
+                collapsed={collapsedFileIds.has(file.id)}
+                onToggleCollapsed={() =>
+                  setCollapsedFileState((current) => {
+                    const currentIds =
+                      current.key === previewKey
+                        ? current.ids
+                        : emptyCollapsedFileIds;
+                    const next = new Set(currentIds);
+                    if (next.has(file.id)) {
+                      next.delete(file.id);
+                    } else {
+                      next.add(file.id);
+                    }
+                    return { ids: next, key: previewKey };
+                  })
+                }
+              />
+            ))}
+            {hiddenFileCount > 0 && (
+              <div className="text-muted-foreground flex h-10 items-center justify-between gap-3 px-4 text-[0.72rem]">
+                <span>
+                  {formatPreviewNumber(hiddenFileCount)} more changed files
+                </span>
+                <span className="font-mono">
+                  <span className="text-emerald-700">
+                    +{formatPreviewNumber(hiddenStats.additions)}
+                  </span>{" "}
+                  <span className="text-red-700">
+                    -{formatPreviewNumber(hiddenStats.deletions)}
+                  </span>
+                </span>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </section>
@@ -2466,32 +2872,46 @@ function SetupSourceInspectorPanel({
 
 function SetupFileDiffPreview({
   file,
+  collapsed,
   patchPreview,
+  onToggleCollapsed,
 }: {
-  file: ChangedFile | null;
-  patchPreview: Loadable<ChangedFilePatch>;
+  file: ChangedFile;
+  collapsed: boolean;
+  patchPreview?: Loadable<ChangedFilePatch>;
+  onToggleCollapsed: () => void;
 }) {
-  if (!file) {
-    return (
-      <div className="border-border/70 text-muted-foreground flex h-[clamp(240px,44dvh,520px)] min-h-0 items-center justify-center rounded-lg border bg-white/80">
-        <span className="text-[0.78rem]">Choose a file to preview</span>
-      </div>
-    );
-  }
   const unavailableReason = file.is_binary
     ? "Binary files do not have a text diff preview."
     : !file.patch_artifact_id
       ? "No text patch was stored for this file."
       : "";
   const hasSelectedPatch =
-    patchPreview.status === "success" &&
+    patchPreview?.status === "success" &&
     patchPreview.data.changed_file_id === file.id;
 
   return (
-    <div className="border-border/70 flex h-[clamp(240px,44dvh,520px)] min-h-0 flex-col overflow-hidden rounded-lg border bg-white">
-      <div className="border-border/60 flex h-10 shrink-0 items-center justify-between gap-3 border-b px-3">
+    <article className="border-border/60 flex min-h-0 flex-col overflow-hidden border-b bg-white">
+      <button
+        aria-expanded={!collapsed}
+        className="hover:bg-surface-muted/50 flex min-h-9 w-full cursor-pointer items-center justify-between gap-3 px-4 text-left transition-colors"
+        type="button"
+        onClick={onToggleCollapsed}
+      >
         <div className="flex min-w-0 items-center gap-2">
-          <FileTextIcon className="text-muted-foreground size-3.5 shrink-0" />
+          <ChevronDownIcon
+            className={cn(
+              "text-muted-foreground size-3.5 shrink-0 transition-transform",
+              collapsed && "-rotate-90",
+            )}
+          />
+          <FileTextIcon
+            className={cn(
+              "text-muted-foreground size-3.5 shrink-0",
+              file.is_binary && "text-amber-700",
+              file.is_excluded && "text-muted-foreground/60",
+            )}
+          />
           <span className="min-w-0 truncate font-mono text-[0.72rem]">
             {file.path}
           </span>
@@ -2504,43 +2924,56 @@ function SetupFileDiffPreview({
             -{formatPreviewNumber(file.deletions)}
           </span>
         </span>
-      </div>
+      </button>
 
-      {unavailableReason && (
-        <div className="text-muted-foreground flex min-h-0 flex-1 items-center justify-center px-4 text-center text-[0.78rem] leading-5">
-          {unavailableReason}
+      {!collapsed && (
+        <div className="border-border/60 border-t">
+          {unavailableReason && (
+            <div className="text-muted-foreground flex min-h-0 items-center justify-center px-4 py-5 text-center text-[0.78rem] leading-5">
+              {unavailableReason}
+            </div>
+          )}
+          {!unavailableReason &&
+            (!patchPreview || patchPreview.status === "loading") && (
+              <div className="px-4 py-3">
+                <SetupDiffSkeleton rows={4} />
+              </div>
+            )}
+          {!unavailableReason &&
+            patchPreview?.status === "success" &&
+            !hasSelectedPatch && (
+              <div className="px-4 py-3">
+                <SetupDiffSkeleton rows={4} />
+              </div>
+            )}
+          {!unavailableReason && patchPreview?.status === "error" && (
+            <div className="text-destructive flex min-h-0 items-center justify-center px-4 py-5 text-center text-[0.78rem] leading-5">
+              {patchPreview.error.message}
+            </div>
+          )}
+          {!unavailableReason && patchPreview?.status === "success" && (
+            <>
+              {hasSelectedPatch && (
+                <SetupDiffContent patch={patchPreview.data} />
+              )}
+            </>
+          )}
         </div>
       )}
-      {!unavailableReason && patchPreview.status === "loading" && (
-        <div className="p-3">
-          <LoadingRows rows={6} />
-        </div>
-      )}
-      {!unavailableReason &&
-        patchPreview.status === "success" &&
-        !hasSelectedPatch && (
-          <div className="p-3">
-            <LoadingRows rows={6} />
-          </div>
-        )}
-      {!unavailableReason && patchPreview.status === "error" && (
-        <div className="text-destructive flex min-h-0 flex-1 items-center justify-center px-4 text-center text-[0.78rem] leading-5">
-          {patchPreview.error.message}
-        </div>
-      )}
-      {!unavailableReason &&
-        patchPreview.status !== "loading" &&
-        patchPreview.status !== "error" &&
-        patchPreview.status !== "success" && (
-          <div className="text-muted-foreground flex min-h-0 flex-1 items-center justify-center px-4 text-center text-[0.78rem] leading-5">
-            Loading diff preview...
-          </div>
-        )}
-      {!unavailableReason && patchPreview.status === "success" && (
-        <>
-          {hasSelectedPatch && <SetupDiffContent patch={patchPreview.data} />}
-        </>
-      )}
+    </article>
+  );
+}
+
+function SetupDiffSkeleton({ rows }: { rows: number }) {
+  return (
+    <div className="grid gap-2" aria-label="Loading diff">
+      {Array.from({ length: rows }, (_, index) => (
+        <div
+          key={index}
+          className="bg-surface-muted/80 h-3 rounded-full"
+          style={{ width: `${92 - (index % 4) * 13}%` }}
+        />
+      ))}
     </div>
   );
 }
@@ -2557,20 +2990,20 @@ function SetupDiffContent({ patch }: { patch: ChangedFilePatch }) {
   return (
     <>
       <div
-        className="min-h-0 flex-1 overflow-auto overscroll-contain bg-white [scrollbar-gutter:stable_both-edges]"
+        className="overflow-x-auto overscroll-contain bg-white [scrollbar-gutter:stable_both-edges]"
         data-testid="setup-diff-scroll"
       >
         <div className="grid w-max min-w-full auto-rows-min grid-cols-[42px_minmax(320px,max-content)_42px_minmax(320px,max-content)]">
-          <span className="border-border/60 text-muted-foreground sticky top-0 z-[2] border-b bg-[#fbfbfa] px-2 py-1.5 text-right text-[0.64rem] font-medium tracking-[0.02em] uppercase">
+          <span className="border-border/60 text-muted-foreground sticky top-0 z-[2] border-b bg-white px-2 py-1.5 text-right text-[0.64rem] font-medium tracking-[0.02em] uppercase">
             Old
           </span>
-          <span className="border-border/60 text-muted-foreground sticky top-0 z-[2] border-b bg-[#fbfbfa] px-2 py-1.5 text-[0.64rem] font-medium tracking-[0.02em] uppercase">
+          <span className="border-border/60 text-muted-foreground sticky top-0 z-[2] border-b bg-white px-2 py-1.5 text-[0.64rem] font-medium tracking-[0.02em] uppercase">
             Before
           </span>
-          <span className="border-border/60 text-muted-foreground sticky top-0 z-[2] border-b border-l bg-[#fbfbfa] px-2 py-1.5 text-right text-[0.64rem] font-medium tracking-[0.02em] uppercase">
+          <span className="border-border/60 text-muted-foreground sticky top-0 z-[2] border-b border-l bg-white px-2 py-1.5 text-right text-[0.64rem] font-medium tracking-[0.02em] uppercase">
             New
           </span>
-          <span className="border-border/60 text-muted-foreground sticky top-0 z-[2] border-b bg-[#fbfbfa] px-2 py-1.5 text-[0.64rem] font-medium tracking-[0.02em] uppercase">
+          <span className="border-border/60 text-muted-foreground sticky top-0 z-[2] border-b bg-white px-2 py-1.5 text-[0.64rem] font-medium tracking-[0.02em] uppercase">
             After
           </span>
           {rows.map((row, index) => (
@@ -2595,18 +3028,13 @@ function SetupSideBySideDiffRow({ row }: { row: SetupSideBySideDiffRowData }) {
   if (row.tone === "meta" || row.tone === "hunk") {
     return (
       <>
-        <span
-          className={cn(
-            "text-[0.68rem] leading-5 select-none",
-            row.tone === "hunk" ? "bg-blue-50" : "bg-[#f6f6f3]",
-          )}
-        />
+        <span className={cn("bg-white text-[0.68rem] leading-5 select-none")} />
         <code
           className={cn(
             "col-span-3 px-2 font-mono text-[0.68rem] leading-5 whitespace-pre",
             row.tone === "hunk"
-              ? "bg-blue-50 text-blue-800"
-              : "text-muted-foreground bg-[#f6f6f3]",
+              ? "bg-white text-blue-800"
+              : "text-muted-foreground bg-white",
           )}
         >
           {row.newText || row.oldText || " "}
@@ -2649,31 +3077,6 @@ function SetupSideBySideDiffRow({ row }: { row: SetupSideBySideDiffRowData }) {
         {row.newText || " "}
       </code>
     </>
-  );
-}
-
-function SetupPreviewStat({
-  label,
-  tone,
-  value,
-}: {
-  label: string;
-  tone?: "negative" | "positive";
-  value: string;
-}) {
-  return (
-    <div className="border-border/50 rounded-md border bg-white px-3 py-2">
-      <div className="text-muted-foreground text-[0.68rem]">{label}</div>
-      <div
-        className={cn(
-          "mt-0.5 truncate font-mono text-[0.88rem] font-semibold",
-          tone === "positive" && "text-emerald-700",
-          tone === "negative" && "text-red-700",
-        )}
-      >
-        {value}
-      </div>
-    </div>
   );
 }
 
@@ -2808,7 +3211,7 @@ function setupDiffCellTone(tone: SetupSideBySideDiffTone, side: "new" | "old") {
     (tone === "delete" && side === "new") ||
     (tone === "add" && side === "old")
   ) {
-    return "bg-[#f8f8f6] text-muted-foreground";
+    return "bg-white text-muted-foreground";
   }
   return "bg-white text-foreground";
 }
@@ -2827,7 +3230,7 @@ function setupDiffLineNumberTone(
     (tone === "delete" && side === "new") ||
     (tone === "add" && side === "old")
   ) {
-    return "bg-[#f8f8f6]";
+    return "bg-white";
   }
   return "bg-white";
 }
@@ -2934,32 +3337,47 @@ function setupDefaultBaseRef(
   repository?: Repository,
   branches: RepositoryBranch[] = [],
 ) {
-  const branch = repository?.default_branch?.trim();
-  if (branch && branches.some((item) => item.name === branch)) {
-    return branch;
+  const primary = setupPreferredBranch(branches, ["main", "master"]);
+  if (primary) {
+    return primary;
   }
-  const common = branches.find(
-    (item) =>
-      !item.remote &&
-      ["main", "master", "develop", "dev", "trunk"].includes(item.name),
-  );
-  if (common) {
-    return common.name;
+  const fallback = setupPreferredBranch(branches, ["develop", "dev", "trunk"]);
+  if (fallback) {
+    return fallback;
   }
-  if (!branch || branch === "HEAD") {
-    return "main";
-  }
+  const repositoryDefault = repository?.default_branch?.trim();
   if (
-    branch === "main" ||
-    branch === "master" ||
-    branch === "develop" ||
-    branch === "dev" ||
-    branch === "trunk" ||
-    branch.startsWith("release/")
+    repositoryDefault &&
+    repositoryDefault !== "HEAD" &&
+    branches.some((item) => item.name === repositoryDefault)
   ) {
-    return branch;
+    return repositoryDefault;
   }
-  return "main";
+  return repositoryDefault && repositoryDefault !== "HEAD"
+    ? repositoryDefault
+    : "main";
+}
+
+function setupPreferredBranch(branches: RepositoryBranch[], names: string[]) {
+  for (const name of names) {
+    const local = branches.find(
+      (branch) => !branch.remote && branch.name === name,
+    );
+    if (local) {
+      return local.name;
+    }
+  }
+  for (const name of names) {
+    const remote = branches.find(
+      (branch) =>
+        branch.remote &&
+        (branch.name === name || branch.name.endsWith(`/${name}`)),
+    );
+    if (remote) {
+      return remote.name;
+    }
+  }
+  return "";
 }
 
 function setupRuntimeLimitSeconds(depth: "quick" | "standard" | "deep") {
@@ -2974,24 +3392,27 @@ function setupRuntimeLimitSeconds(depth: "quick" | "standard" | "deep") {
 
 function setupSourceKey({
   baseRef,
+  githubAuthMethod,
   githubUrl,
   headRef,
   repositoryId,
   source,
 }: {
   baseRef: string;
+  githubAuthMethod: string;
   githubUrl: string;
   headRef: string;
   repositoryId: string;
   source: SnapshotSource;
 }) {
-  return [
-    repositoryId.trim(),
-    source,
-    githubUrl.trim(),
-    baseRef.trim(),
-    headRef.trim(),
-  ].join("\u001f");
+  const parts = [repositoryId.trim(), source];
+  if (source === "github") {
+    parts.push(githubUrl.trim(), githubAuthMethod.trim());
+  }
+  if (source === "branch-compare") {
+    parts.push(baseRef.trim(), headRef.trim());
+  }
+  return parts.join("\u001f");
 }
 
 function setupPreviewStats(files: ChangedFile[]): SetupPreviewStats {

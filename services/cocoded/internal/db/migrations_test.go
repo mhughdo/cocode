@@ -88,7 +88,10 @@ CREATE TABLE review_sessions (
 );
 
 CREATE TABLE agent_configs (
-  id TEXT PRIMARY KEY
+  id TEXT PRIMARY KEY,
+  command TEXT,
+  args_json TEXT NOT NULL DEFAULT '[]',
+  updated_at TEXT
 );
 
 CREATE TABLE review_session_agents (
@@ -133,6 +136,52 @@ CREATE TABLE review_session_agents (
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate index_list rows: %v", err)
+	}
+}
+
+func TestApplyRepairsStaleClaudeToolsArgs(t *testing.T) {
+	t.Parallel()
+
+	database, err := Open(context.Background(), MemoryDatabase)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer database.Close()
+
+	if err := Apply(context.Background(), database, Migrations[:3]); err != nil {
+		t.Fatalf("Apply(initial migrations) error = %v", err)
+	}
+	const staleArgs = `["-p","{{prompt}}","--output-format","json","--permission-mode","plan","--no-session-persistence","--tools"]`
+	const validToolsArgs = `["--tools","Read,Glob","-p","{{prompt}}"]`
+	if _, err := database.ExecContext(context.Background(), `
+INSERT INTO agent_configs (
+  id, name, role, adapter_kind, command, args_json, cwd_mode,
+  env_allowlist_json, output_mode, capabilities_json, settings_json,
+  enabled, created_at, updated_at
+) VALUES
+  ('agent_config_stale_claude', 'Claude Code CLI', 'primary_reviewer', 'cli_noninteractive', 'claude', ?, 'repo_root', '[]', 'json', '{}', '{}', 1, '2026-05-10T00:00:00Z', '2026-05-10T00:00:00Z'),
+  ('agent_config_valid_claude', 'Claude With Tools', 'primary_reviewer', 'cli_noninteractive', 'claude', ?, 'repo_root', '[]', 'json', '{}', '{}', 1, '2026-05-10T00:00:00Z', '2026-05-10T00:00:00Z')
+`, staleArgs, validToolsArgs); err != nil {
+		t.Fatalf("insert stale configs: %v", err)
+	}
+	if err := Apply(context.Background(), database, Migrations); err != nil {
+		t.Fatalf("Apply(repair migration) error = %v", err)
+	}
+
+	const repairedArgs = `["-p","{{prompt}}","--output-format","stream-json","--verbose","--include-partial-messages","--permission-mode","plan","--no-session-persistence"]`
+	var staleConfigArgs string
+	if err := database.QueryRowContext(context.Background(), "SELECT args_json FROM agent_configs WHERE id = 'agent_config_stale_claude'").Scan(&staleConfigArgs); err != nil {
+		t.Fatalf("read repaired stale config: %v", err)
+	}
+	if staleConfigArgs != repairedArgs {
+		t.Fatalf("stale config args = %s, want %s", staleConfigArgs, repairedArgs)
+	}
+	var validConfigArgs string
+	if err := database.QueryRowContext(context.Background(), "SELECT args_json FROM agent_configs WHERE id = 'agent_config_valid_claude'").Scan(&validConfigArgs); err != nil {
+		t.Fatalf("read valid config: %v", err)
+	}
+	if validConfigArgs != validToolsArgs {
+		t.Fatalf("valid config args = %s, want unchanged %s", validConfigArgs, validToolsArgs)
 	}
 }
 

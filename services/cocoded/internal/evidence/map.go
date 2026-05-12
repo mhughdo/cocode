@@ -8,8 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -53,6 +57,8 @@ const (
 const (
 	defaultEvidenceMapItemLimit = 80
 	defaultCallPathStepLimit    = 8
+	goplsCallHierarchyLimit     = 4
+	goplsCallHierarchyTimeout   = 2 * time.Second
 )
 
 type MapSummary struct {
@@ -76,6 +82,10 @@ type MapView struct {
 	Legend                    []LegendItem       `json:"legend"`
 	Panel                     MapPanel           `json:"panel"`
 	MissingReasons            []string           `json:"missing_reasons,omitempty"`
+}
+
+type MapContext struct {
+	RepositoryLocalPath string
 }
 
 type GraphView struct {
@@ -103,6 +113,7 @@ type MapFindingView struct {
 	PrimaryEndLine         int64   `json:"primary_end_line,omitempty"`
 	EvidenceSummary        string  `json:"evidence_summary,omitempty"`
 	CounterEvidenceSummary string  `json:"counter_evidence_summary,omitempty"`
+	SuggestedFix           string  `json:"suggested_fix,omitempty"`
 }
 
 type HierarchyItem struct {
@@ -176,6 +187,7 @@ type MapPanel struct {
 	DecisionStatus         string                `json:"decision_status"`
 	EvidenceSummary        string                `json:"evidence_summary,omitempty"`
 	CounterEvidenceSummary string                `json:"counter_evidence_summary,omitempty"`
+	SuggestedFix           string                `json:"suggested_fix,omitempty"`
 	EvidenceCounts         map[string]int        `json:"evidence_counts"`
 	Evidence               []MapPanelEvidenceRef `json:"evidence"`
 }
@@ -244,9 +256,15 @@ func (s *Service) BuildSessionEvidenceMaps(ctx context.Context, session dbgen.Re
 	if err != nil {
 		return MapSummary{}, fmt.Errorf("list findings for evidence maps: %w", err)
 	}
+	mapCtx := MapContext{}
+	if session.RepositoryID != "" {
+		if repository, err := s.Queries.GetRepository(ctx, session.RepositoryID); err == nil {
+			mapCtx.RepositoryLocalPath = repository.LocalPath
+		}
+	}
 	summary := MapSummary{Findings: len(findings), ByStatus: map[string]int{}}
 	for _, finding := range findings {
-		view, err := s.RebuildEvidenceMap(ctx, finding)
+		view, err := s.RebuildEvidenceMapWithContext(ctx, finding, mapCtx)
 		if err != nil {
 			return MapSummary{}, err
 		}
@@ -290,6 +308,10 @@ func (s *Service) LoadEvidenceMap(ctx context.Context, finding dbgen.Finding) (M
 }
 
 func (s *Service) RebuildEvidenceMap(ctx context.Context, finding dbgen.Finding) (MapView, error) {
+	return s.RebuildEvidenceMapWithContext(ctx, finding, MapContext{})
+}
+
+func (s *Service) RebuildEvidenceMapWithContext(ctx context.Context, finding dbgen.Finding, mapCtx MapContext) (MapView, error) {
 	if s == nil || s.Queries == nil {
 		return MapView{}, errors.New("evidence map queries are required")
 	}
@@ -305,7 +327,7 @@ func (s *Service) RebuildEvidenceMap(ctx context.Context, finding dbgen.Finding)
 		return MapView{}, fmt.Errorf("read previous evidence map %s: %w", finding.ID, err)
 	}
 
-	plan := buildMapPlan(finding, items)
+	plan := s.buildMapPlan(ctx, finding, items, mapCtx)
 	now := s.now().Format(time.RFC3339Nano)
 	layout := mustMetadata(plan.layout)
 	graph, err := s.Queries.CreateEvidenceGraph(ctx, dbgen.CreateEvidenceGraphParams{
@@ -394,7 +416,20 @@ func (s *Service) RebuildEvidenceMap(ctx context.Context, finding dbgen.Finding)
 	return s.mapView(ctx, finding, graph)
 }
 
+func (s *Service) buildMapPlan(ctx context.Context, finding dbgen.Finding, items []dbgen.EvidenceItem, mapCtx MapContext) mapBuildPlan {
+	plan := buildBaseMapPlan(finding, items)
+	s.enrichMapPlanWithGopls(ctx, &plan, finding, mapCtx)
+	finalizeMapPlan(finding, &plan)
+	return plan
+}
+
 func buildMapPlan(finding dbgen.Finding, items []dbgen.EvidenceItem) mapBuildPlan {
+	plan := buildBaseMapPlan(finding, items)
+	finalizeMapPlan(finding, &plan)
+	return plan
+}
+
+func buildBaseMapPlan(finding dbgen.Finding, items []dbgen.EvidenceItem) mapBuildPlan {
 	plan := mapBuildPlan{
 		status:         GraphStatusReady,
 		primaryNodeKey: "primary",
@@ -434,6 +469,14 @@ func buildMapPlan(finding dbgen.Finding, items []dbgen.EvidenceItem) mapBuildPla
 			metadata:   map[string]any{"source": "local_rule", "rule": missing.metadata["rule"]},
 		})
 	}
+	return plan
+}
+
+func finalizeMapPlan(finding dbgen.Finding, plan *mapBuildPlan) {
+	if plan == nil {
+		return
+	}
+	plan.status = GraphStatusReady
 	plan.callSteps, plan.callPathUnavailableReason = callPathSteps(plan.nodes, plan.edges, plan.primaryNodeKey)
 	if plan.callPathUnavailableReason != "" {
 		plan.missingReasons = append(plan.missingReasons, plan.callPathUnavailableReason)
@@ -444,7 +487,7 @@ func buildMapPlan(finding dbgen.Finding, items []dbgen.EvidenceItem) mapBuildPla
 	if len(plan.missingReasons) > 0 {
 		plan.status = GraphStatusPartial
 	}
-	plan.summary = mapSummaryText(finding, plan)
+	plan.summary = mapSummaryText(finding, *plan)
 	plan.layout = map[string]any{
 		"direction":                    "LR",
 		"generated_by":                 "local_evidence_map_builder",
@@ -456,19 +499,251 @@ func buildMapPlan(finding dbgen.Finding, items []dbgen.EvidenceItem) mapBuildPla
 			"call_path_steps": defaultCallPathStepLimit,
 		},
 	}
-	return plan
+}
+
+var (
+	goplsHierarchyRelationRE   = regexp.MustCompile(`^(caller|callee)\[\d+\]: .* from/to function (.+) in (.+):(\d+):`)
+	goplsHierarchyIdentifierRE = regexp.MustCompile(`^identifier: function (.+) in (.+):(\d+):`)
+)
+
+type goplsHierarchyEntry struct {
+	direction string
+	symbol    string
+	path      string
+	line      int64
+}
+
+func (s *Service) enrichMapPlanWithGopls(ctx context.Context, plan *mapBuildPlan, finding dbgen.Finding, mapCtx MapContext) {
+	if plan == nil {
+		return
+	}
+	repoRoot := strings.TrimSpace(mapCtx.RepositoryLocalPath)
+	if repoRoot == "" {
+		return
+	}
+	primary := mapPlanNode(plan, plan.primaryNodeKey)
+	if primary == nil || primary.path == "" || primary.startLine <= 0 || filepath.Ext(primary.path) != ".go" {
+		return
+	}
+	goplsPath, err := exec.LookPath("gopls")
+	if err != nil {
+		return
+	}
+	targetPath := primary.path
+	if filepath.IsAbs(targetPath) {
+		if rel, err := filepath.Rel(repoRoot, targetPath); err == nil {
+			targetPath = rel
+		}
+	}
+	targetPath = filepath.ToSlash(targetPath)
+	if _, err := os.Stat(filepath.Join(repoRoot, filepath.FromSlash(targetPath))); err != nil {
+		return
+	}
+	moduleRoot, ok := findGoModuleRoot(repoRoot, targetPath)
+	if !ok {
+		return
+	}
+	moduleTargetPath := targetPath
+	if rel, err := filepath.Rel(moduleRoot, filepath.Join(repoRoot, filepath.FromSlash(targetPath))); err == nil && !isParentRelativePath(rel) {
+		moduleTargetPath = filepath.ToSlash(rel)
+	}
+
+	commandCtx, cancel := context.WithTimeout(ctx, goplsCallHierarchyTimeout)
+	defer cancel()
+	target := fmt.Sprintf("%s:%d:1", moduleTargetPath, primary.startLine)
+	command := exec.CommandContext(commandCtx, goplsPath, "call_hierarchy", target)
+	command.Dir = moduleRoot
+	output, err := command.CombinedOutput()
+	if err != nil || commandCtx.Err() != nil {
+		return
+	}
+	identifier, entries := parseGoplsCallHierarchy(string(output), repoRoot)
+	if identifier != nil {
+		primary.symbol = identifier.symbol
+		primary.metadata["symbol"] = identifier.symbol
+		primary.metadata["gopls_call_hierarchy"] = true
+	}
+	if len(entries) == 0 {
+		return
+	}
+	var callers, callees []goplsHierarchyEntry
+	for _, entry := range entries {
+		switch entry.direction {
+		case "caller":
+			callers = append(callers, entry)
+		case "callee":
+			callees = append(callees, entry)
+		}
+	}
+	callers = limitGoplsEntries(callers, goplsCallHierarchyLimit/2)
+	callees = limitGoplsEntries(callees, goplsCallHierarchyLimit-len(callers))
+	for index, entry := range callers {
+		key := fmt.Sprintf("gopls:caller:%d:%s:%d", index, entry.path, entry.line)
+		plan.nodes = append(plan.nodes, goplsNodeSpec(key, entry, NodeHandler))
+		plan.edges = append(plan.edges, edgeSpec{
+			key:        "gopls:caller:" + key,
+			sourceKey:  key,
+			targetKey:  plan.primaryNodeKey,
+			kind:       EdgeCalls,
+			status:     EdgeStatusObserved,
+			label:      "calls changed code",
+			confidence: 0.78,
+			metadata:   map[string]any{"source": "gopls_call_hierarchy", "direction": "incoming"},
+		})
+	}
+	for index, entry := range callees {
+		key := fmt.Sprintf("gopls:callee:%d:%s:%d", index, entry.path, entry.line)
+		plan.nodes = append(plan.nodes, goplsNodeSpec(key, entry, NodeRelatedCode))
+		plan.edges = append(plan.edges, edgeSpec{
+			key:        "gopls:callee:" + key,
+			sourceKey:  plan.primaryNodeKey,
+			targetKey:  key,
+			kind:       EdgeCalls,
+			status:     EdgeStatusObserved,
+			label:      "calls",
+			confidence: 0.72,
+			metadata:   map[string]any{"source": "gopls_call_hierarchy", "direction": "outgoing"},
+		})
+	}
+}
+
+func mapPlanNode(plan *mapBuildPlan, key string) *nodeSpec {
+	for index := range plan.nodes {
+		if plan.nodes[index].key == key {
+			return &plan.nodes[index]
+		}
+	}
+	return nil
+}
+
+func goplsNodeSpec(key string, entry goplsHierarchyEntry, kind string) nodeSpec {
+	return nodeSpec{
+		key:        key,
+		kind:       kind,
+		label:      trimOrDefault(entry.symbol, lineLabel(entry.path, entry.line, entry.line)),
+		path:       entry.path,
+		symbol:     entry.symbol,
+		startLine:  entry.line,
+		endLine:    entry.line,
+		confidence: 0.75,
+		metadata: map[string]any{
+			"source":    "gopls_call_hierarchy",
+			"direction": entry.direction,
+		},
+	}
+}
+
+func limitGoplsEntries(entries []goplsHierarchyEntry, limit int) []goplsHierarchyEntry {
+	if limit <= 0 || len(entries) <= limit {
+		return entries
+	}
+	return entries[:limit]
+}
+
+func parseGoplsCallHierarchy(output string, repoRoot string) (*goplsHierarchyEntry, []goplsHierarchyEntry) {
+	var identifier *goplsHierarchyEntry
+	var entries []goplsHierarchyEntry
+	for _, rawLine := range strings.Split(output, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" {
+			continue
+		}
+		if match := goplsHierarchyIdentifierRE.FindStringSubmatch(line); len(match) == 4 {
+			if entry, ok := newGoplsHierarchyEntry("identifier", match[1], match[2], match[3], repoRoot); ok {
+				identifier = &entry
+			}
+			continue
+		}
+		if match := goplsHierarchyRelationRE.FindStringSubmatch(line); len(match) == 5 {
+			if entry, ok := newGoplsHierarchyEntry(match[1], match[2], match[3], match[4], repoRoot); ok {
+				entries = append(entries, entry)
+			}
+		}
+	}
+	return identifier, entries
+}
+
+func newGoplsHierarchyEntry(direction string, symbol string, path string, lineText string, repoRoot string) (goplsHierarchyEntry, bool) {
+	line, err := strconv.ParseInt(lineText, 10, 64)
+	if err != nil || line <= 0 {
+		return goplsHierarchyEntry{}, false
+	}
+	return goplsHierarchyEntry{
+		direction: direction,
+		symbol:    strings.TrimSpace(symbol),
+		path:      normalizeGoplsPath(path, repoRoot),
+		line:      line,
+	}, true
+}
+
+func normalizeGoplsPath(path string, repoRoot string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if filepath.IsAbs(path) && repoRoot != "" {
+		if rel, err := filepath.Rel(repoRoot, path); err == nil && !isParentRelativePath(rel) {
+			return filepath.ToSlash(rel)
+		}
+	}
+	return filepath.ToSlash(path)
+}
+
+func findGoModuleRoot(repoRoot string, targetPath string) (string, bool) {
+	repoRoot = filepath.Clean(repoRoot)
+	targetAbs := filepath.Join(repoRoot, filepath.FromSlash(targetPath))
+	if !strings.HasSuffix(filepath.Base(targetAbs), ".go") {
+		return "", false
+	}
+	dir := filepath.Dir(targetAbs)
+	for {
+		if rel, err := filepath.Rel(repoRoot, dir); err != nil || isParentRelativePath(rel) {
+			return "", false
+		}
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir, true
+		}
+		if dir == repoRoot {
+			return "", false
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
+}
+
+func isParentRelativePath(path string) bool {
+	path = filepath.Clean(path)
+	return path == ".." || strings.HasPrefix(path, ".."+string(filepath.Separator))
 }
 
 func primaryNodeSpec(finding dbgen.Finding, primaryEvidence *dbgen.EvidenceItem) nodeSpec {
 	path := nullableStringValue(finding.PrimaryPath)
 	startLine := nullableInt64Value(finding.PrimaryStartLine)
 	endLine := nullableInt64Value(finding.PrimaryEndLine)
+	if primaryEvidence != nil {
+		if path == "" {
+			path = nullableStringValue(primaryEvidence.Path)
+		}
+		if startLine <= 0 {
+			startLine = nullableInt64Value(primaryEvidence.StartLine)
+		}
+		if endLine <= 0 {
+			endLine = nullableInt64Value(primaryEvidence.EndLine)
+		}
+	}
 	if endLine == 0 {
 		endLine = startLine
 	}
 	label := "Primary changed code"
 	if path != "" {
-		label = lineLabel(path, startLine, endLine)
+		if startLine > 0 {
+			label = lineLabel(path, startLine, endLine)
+		} else {
+			label = "Changed file needs a line anchor"
+		}
 	}
 	spec := nodeSpec{
 		key:        "primary",
@@ -487,6 +762,10 @@ func primaryNodeSpec(finding dbgen.Finding, primaryEvidence *dbgen.EvidenceItem)
 		spec.evidenceItemID = primaryEvidence.ID
 		spec.confidence = clampConfidence(primaryEvidence.Confidence)
 		spec.metadata["evidence_item_id"] = primaryEvidence.ID
+	}
+	if path != "" && startLine <= 0 {
+		spec.kind = NodeUnknown
+		spec.metadata["reason"] = "missing_primary_line"
 	}
 	return spec
 }
@@ -712,12 +991,25 @@ func (s *Service) mapView(ctx context.Context, finding dbgen.Finding, graph dbge
 		layout = json.RawMessage("{}")
 	}
 	nodeViews := make([]NodeView, 0, len(nodes))
+	visibleNodeIDs := map[string]struct{}{}
 	for _, node := range nodes {
-		nodeViews = append(nodeViews, nodeView(node))
+		view := nodeView(node)
+		if !shouldDisplayEvidenceMapNode(view) {
+			continue
+		}
+		nodeViews = append(nodeViews, view)
+		visibleNodeIDs[view.ID] = struct{}{}
 	}
 	edgeViews := make([]EdgeView, 0, len(edges))
 	for _, edge := range edges {
-		edgeViews = append(edgeViews, edgeView(edge))
+		view := edgeView(edge)
+		if _, ok := visibleNodeIDs[view.Source]; !ok {
+			continue
+		}
+		if _, ok := visibleNodeIDs[view.Target]; !ok {
+			continue
+		}
+		edgeViews = append(edgeViews, view)
 	}
 	callPathViews := make([]CallPathView, 0, len(paths))
 	for _, path := range paths {
@@ -725,7 +1017,11 @@ func (s *Service) mapView(ctx context.Context, finding dbgen.Finding, graph dbge
 		if err != nil {
 			return MapView{}, fmt.Errorf("list evidence map call path steps: %w", err)
 		}
-		callPathViews = append(callPathViews, callPathView(path, steps))
+		view := callPathView(path, steps)
+		view.Steps = visibleCallPathSteps(view.Steps, visibleNodeIDs)
+		if len(view.Steps) > 0 {
+			callPathViews = append(callPathViews, view)
+		}
 	}
 	var primaryCallPath []CallPathStepView
 	if len(callPathViews) > 0 {
@@ -758,8 +1054,9 @@ func (s *Service) mapView(ctx context.Context, finding dbgen.Finding, graph dbge
 			DecisionStatus:         finding.DecisionStatus,
 			EvidenceSummary:        nullableStringValue(finding.EvidenceSummary),
 			CounterEvidenceSummary: nullableStringValue(finding.CounterEvidenceSummary),
-			EvidenceCounts:         evidenceItemKindCounts(items),
-			Evidence:               panelEvidenceItems(items),
+			SuggestedFix:           nullableStringValue(finding.SuggestedFix),
+			EvidenceCounts:         evidenceItemKindCounts(visibleEvidenceItems(items)),
+			Evidence:               panelEvidenceItems(visibleEvidenceItems(items)),
 		},
 		MissingReasons: missingReasons,
 	}, nil
@@ -850,6 +1147,7 @@ func mapFindingView(row dbgen.Finding) MapFindingView {
 		PrimaryEndLine:         nullableInt64Value(row.PrimaryEndLine),
 		EvidenceSummary:        nullableStringValue(row.EvidenceSummary),
 		CounterEvidenceSummary: nullableStringValue(row.CounterEvidenceSummary),
+		SuggestedFix:           nullableStringValue(row.SuggestedFix),
 	}
 }
 
@@ -913,6 +1211,9 @@ func boundedEvidenceItemsForGraph(items []dbgen.EvidenceItem, primary *dbgen.Evi
 		if primary != nil && item.ID == primary.ID {
 			continue
 		}
+		if !shouldUseEvidenceItemInMap(item) {
+			continue
+		}
 		filtered = append(filtered, item)
 	}
 	sort.SliceStable(filtered, func(i, j int) bool {
@@ -933,6 +1234,49 @@ func boundedEvidenceItemsForGraph(items []dbgen.EvidenceItem, primary *dbgen.Evi
 		return filtered, 0
 	}
 	return filtered[:defaultEvidenceMapItemLimit], len(filtered) - defaultEvidenceMapItemLimit
+}
+
+func visibleEvidenceItems(items []dbgen.EvidenceItem) []dbgen.EvidenceItem {
+	filtered := make([]dbgen.EvidenceItem, 0, len(items))
+	for _, item := range items {
+		if !shouldUseEvidenceItemInMap(item) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered
+}
+
+func shouldUseEvidenceItemInMap(item dbgen.EvidenceItem) bool {
+	path := nullableStringValue(item.Path)
+	if path == "" {
+		return true
+	}
+	if !isProjectMetadataPath(path) {
+		return true
+	}
+	return item.Kind == KindSupporting && metadataString(item.MetadataJson, "source") == "primary_location"
+}
+
+func shouldDisplayEvidenceMapNode(node NodeView) bool {
+	if node.Path == "" || !isProjectMetadataPath(node.Path) {
+		return true
+	}
+	return node.Kind == NodeChangedCode
+}
+
+func visibleCallPathSteps(steps []CallPathStepView, visibleNodeIDs map[string]struct{}) []CallPathStepView {
+	filtered := make([]CallPathStepView, 0, len(steps))
+	for _, step := range steps {
+		if step.NodeID == "" {
+			filtered = append(filtered, step)
+			continue
+		}
+		if _, ok := visibleNodeIDs[step.NodeID]; ok {
+			filtered = append(filtered, step)
+		}
+	}
+	return filtered
 }
 
 func evidenceMapKindRank(kind string) int {

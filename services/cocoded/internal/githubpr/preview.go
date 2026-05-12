@@ -65,6 +65,19 @@ func BuildReviewPreview(input ReviewPreviewInput) (ReviewPreview, error) {
 			FindingID: finding.ID,
 			Body:      previewCommentBody(finding),
 		}
+		if strings.TrimSpace(finding.PrimaryPath) == "" || finding.PrimaryStartLine < 1 {
+			message := previewMissingAnchorWarning(finding)
+			comment.Path = finding.PrimaryPath
+			comment.Unanchored = true
+			comment.Warning = message
+			warnings = append(warnings, AnchorWarning{
+				FindingID: finding.ID,
+				Path:      finding.PrimaryPath,
+				Message:   message,
+			})
+			comments = append(comments, comment)
+			continue
+		}
 		anchor, err := MapDiffLine(input.Diff, DiffAnchorRequest{
 			Path: finding.PrimaryPath,
 			Line: int(finding.PrimaryStartLine),
@@ -141,6 +154,14 @@ func previewCommentBody(finding PreviewFinding) string {
 		builder.WriteString(strings.TrimSpace(finding.SuggestedFix))
 	}
 	return strings.TrimSpace(builder.String())
+}
+
+func previewMissingAnchorWarning(finding PreviewFinding) string {
+	path := strings.TrimSpace(finding.PrimaryPath)
+	if path == "" {
+		return fmt.Sprintf("Finding %s has no changed-file location; it will be included in the summary only.", finding.ID)
+	}
+	return fmt.Sprintf("Finding %s at %s has no positive line number; it will be included in the summary only.", finding.ID, path)
 }
 
 func previewAnchorWarning(finding PreviewFinding, err error) string {

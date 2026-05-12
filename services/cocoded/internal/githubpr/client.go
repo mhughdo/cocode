@@ -23,6 +23,13 @@ type Client struct {
 	Client  *http.Client
 }
 
+type PullRequestFetcher interface {
+	FetchMetadata(ctx context.Context, ref Reference) (Metadata, error)
+	FetchChangedFiles(ctx context.Context, ref Reference) ([]ChangedFile, error)
+	FetchDiff(ctx context.Context, ref Reference) ([]byte, error)
+	FetchPreviousComments(ctx context.Context, ref Reference) (PreviousComments, error)
+}
+
 type Metadata struct {
 	Owner   string `json:"owner"`
 	Repo    string `json:"repo"`
@@ -195,76 +202,7 @@ func (c Client) FetchPreviousComments(ctx context.Context, ref Reference) (Previ
 		return PreviousComments{}, err
 	}
 
-	result := PreviousComments{
-		IssueCommentCount:  len(issueComments),
-		ReviewCommentCount: len(reviewComments),
-		Comments:           make([]PreviousComment, 0, len(issueComments)+len(reviewComments)+len(reviews)),
-	}
-	for _, comment := range issueComments {
-		result.Comments = append(result.Comments, PreviousComment{
-			Source:            "issue_comment",
-			ID:                comment.ID,
-			Author:            comment.User.Login,
-			AuthorAssociation: comment.AuthorAssociation,
-			Body:              comment.Body,
-			HTMLURL:           comment.HTMLURL,
-			CreatedAt:         comment.CreatedAt,
-			UpdatedAt:         comment.UpdatedAt,
-		})
-	}
-	for _, comment := range reviewComments {
-		result.Comments = append(result.Comments, PreviousComment{
-			Source:            "review_comment",
-			ID:                comment.ID,
-			ReviewID:          comment.PullRequestReviewID,
-			Author:            comment.User.Login,
-			AuthorAssociation: comment.AuthorAssociation,
-			Body:              comment.Body,
-			HTMLURL:           comment.HTMLURL,
-			Path:              comment.Path,
-			DiffHunk:          comment.DiffHunk,
-			CommitID:          comment.CommitID,
-			OriginalCommitID:  comment.OriginalCommitID,
-			Line:              comment.Line,
-			OriginalLine:      comment.OriginalLine,
-			StartLine:         comment.StartLine,
-			OriginalStartLine: comment.OriginalStartLine,
-			Side:              comment.Side,
-			StartSide:         comment.StartSide,
-			InReplyToID:       comment.InReplyToID,
-			CreatedAt:         comment.CreatedAt,
-			UpdatedAt:         comment.UpdatedAt,
-		})
-	}
-	for _, review := range reviews {
-		if strings.EqualFold(review.State, "PENDING") || strings.TrimSpace(review.SubmittedAt) == "" {
-			continue
-		}
-		result.ReviewCount++
-		result.Comments = append(result.Comments, PreviousComment{
-			Source:            "review",
-			ID:                review.ID,
-			Author:            review.User.Login,
-			AuthorAssociation: review.AuthorAssociation,
-			Body:              review.Body,
-			State:             review.State,
-			HTMLURL:           review.HTMLURL,
-			CommitID:          review.CommitID,
-			SubmittedAt:       review.SubmittedAt,
-		})
-	}
-	sort.SliceStable(result.Comments, func(i, j int) bool {
-		left := commentTime(result.Comments[i])
-		right := commentTime(result.Comments[j])
-		if left != right {
-			return left < right
-		}
-		if result.Comments[i].Source != result.Comments[j].Source {
-			return result.Comments[i].Source < result.Comments[j].Source
-		}
-		return result.Comments[i].ID < result.Comments[j].ID
-	})
-	return result, nil
+	return previousCommentsFromGitHub(issueComments, reviewComments, reviews), nil
 }
 
 func (c Client) SubmitReview(ctx context.Context, ref Reference, params SubmitReviewParams) (PublishedReview, error) {
@@ -575,6 +513,79 @@ type pullReview struct {
 	SubmittedAt       string      `json:"submitted_at"`
 	AuthorAssociation string      `json:"author_association"`
 	User              userSummary `json:"user"`
+}
+
+func previousCommentsFromGitHub(issueComments []issueComment, reviewComments []reviewComment, reviews []pullReview) PreviousComments {
+	result := PreviousComments{
+		IssueCommentCount:  len(issueComments),
+		ReviewCommentCount: len(reviewComments),
+		Comments:           make([]PreviousComment, 0, len(issueComments)+len(reviewComments)+len(reviews)),
+	}
+	for _, comment := range issueComments {
+		result.Comments = append(result.Comments, PreviousComment{
+			Source:            "issue_comment",
+			ID:                comment.ID,
+			Author:            comment.User.Login,
+			AuthorAssociation: comment.AuthorAssociation,
+			Body:              comment.Body,
+			HTMLURL:           comment.HTMLURL,
+			CreatedAt:         comment.CreatedAt,
+			UpdatedAt:         comment.UpdatedAt,
+		})
+	}
+	for _, comment := range reviewComments {
+		result.Comments = append(result.Comments, PreviousComment{
+			Source:            "review_comment",
+			ID:                comment.ID,
+			ReviewID:          comment.PullRequestReviewID,
+			Author:            comment.User.Login,
+			AuthorAssociation: comment.AuthorAssociation,
+			Body:              comment.Body,
+			HTMLURL:           comment.HTMLURL,
+			Path:              comment.Path,
+			DiffHunk:          comment.DiffHunk,
+			CommitID:          comment.CommitID,
+			OriginalCommitID:  comment.OriginalCommitID,
+			Line:              comment.Line,
+			OriginalLine:      comment.OriginalLine,
+			StartLine:         comment.StartLine,
+			OriginalStartLine: comment.OriginalStartLine,
+			Side:              comment.Side,
+			StartSide:         comment.StartSide,
+			InReplyToID:       comment.InReplyToID,
+			CreatedAt:         comment.CreatedAt,
+			UpdatedAt:         comment.UpdatedAt,
+		})
+	}
+	for _, review := range reviews {
+		if strings.EqualFold(review.State, "PENDING") || strings.TrimSpace(review.SubmittedAt) == "" {
+			continue
+		}
+		result.ReviewCount++
+		result.Comments = append(result.Comments, PreviousComment{
+			Source:            "review",
+			ID:                review.ID,
+			Author:            review.User.Login,
+			AuthorAssociation: review.AuthorAssociation,
+			Body:              review.Body,
+			State:             review.State,
+			HTMLURL:           review.HTMLURL,
+			CommitID:          review.CommitID,
+			SubmittedAt:       review.SubmittedAt,
+		})
+	}
+	sort.SliceStable(result.Comments, func(i, j int) bool {
+		left := commentTime(result.Comments[i])
+		right := commentTime(result.Comments[j])
+		if left != right {
+			return left < right
+		}
+		if result.Comments[i].Source != result.Comments[j].Source {
+			return result.Comments[i].Source < result.Comments[j].Source
+		}
+		return result.Comments[i].ID < result.Comments[j].ID
+	})
+	return result
 }
 
 func commentTime(comment PreviousComment) string {

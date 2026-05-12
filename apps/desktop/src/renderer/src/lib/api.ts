@@ -363,6 +363,13 @@ export interface ReviewSession {
   updated_at: string;
 }
 
+export interface DeleteReviewSessionResponse {
+  id: string;
+  deleted: boolean;
+  snapshot_id: string;
+  snapshot_deleted: boolean;
+}
+
 export interface ReviewContextPolicy {
   include_prompt_material?: boolean;
   include_changed_code?: boolean;
@@ -491,6 +498,19 @@ export interface Finding {
   introduced_in_sha?: string;
   first_seen_at: string;
   updated_at: string;
+  source_agents?: FindingSourceAgent[];
+}
+
+export interface FindingSourceAgent {
+  agent_run_id: string;
+  agent_config_id?: string;
+  name: string;
+  role?: string;
+  adapter_kind?: string;
+  model_label?: string;
+  reasoning_label?: string;
+  severity?: string;
+  confidence?: number;
 }
 
 export interface FindingListStats {
@@ -502,9 +522,21 @@ export interface FindingListStats {
   needs_triage: number;
 }
 
+export interface FindingListFilterOption {
+  id: string;
+  label: string;
+  count: number;
+}
+
+export interface FindingListFilters {
+  agents: FindingListFilterOption[];
+  files: FindingListFilterOption[];
+}
+
 export interface FindingListResponse {
   items: Finding[];
   stats: FindingListStats;
+  filters: FindingListFilters;
 }
 
 export interface FindingCandidate {
@@ -526,6 +558,12 @@ export interface FindingCandidate {
   fingerprint?: string;
   created_at: string;
   relation?: string;
+  agent_config_id?: string;
+  agent_name?: string;
+  agent_role?: string;
+  adapter_kind?: string;
+  model_label?: string;
+  reasoning_label?: string;
 }
 
 export interface EvidenceItem {
@@ -599,6 +637,7 @@ export interface EvidenceMapFinding {
   primary_end_line?: number;
   evidence_summary?: string;
   counter_evidence_summary?: string;
+  suggested_fix?: string;
 }
 
 export interface EvidenceMapHierarchyItem {
@@ -683,6 +722,7 @@ export interface EvidenceMapPanel {
   decision_status: string;
   evidence_summary?: string;
   counter_evidence_summary?: string;
+  suggested_fix?: string;
   evidence_counts: Record<string, number>;
   evidence: EvidenceMapPanelEvidenceRef[];
 }
@@ -1067,6 +1107,7 @@ export class ApiClient {
       repository_id: string;
       url: string;
       github_token?: string;
+      auth_method?: "token" | "api" | "gh_cli";
     },
     options: Omit<ApiRequestOptions, "method" | "body"> = {},
   ) {
@@ -1322,6 +1363,16 @@ export class ApiClient {
     );
   }
 
+  deleteReviewSession(
+    id: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.delete<DeleteReviewSessionResponse>(
+      `/api/review-sessions/${encodeURIComponent(id)}`,
+      options,
+    );
+  }
+
   reviewSessionSummary(
     id: string,
     options: Omit<ApiRequestOptions, "method" | "body"> = {},
@@ -1403,6 +1454,8 @@ export class ApiClient {
     query: {
       status?: string;
       severity?: string;
+      agent?: string;
+      file?: string;
       q?: string;
     } = {},
     options: Omit<ApiRequestOptions, "method" | "body" | "query"> = {},

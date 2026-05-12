@@ -23,6 +23,7 @@ describe("review component surfaces", () => {
         selected
         onAccept={vi.fn()}
         onCopy={vi.fn()}
+        onOpenDetail={vi.fn()}
         onSelect={vi.fn()}
       />,
     );
@@ -30,7 +31,7 @@ describe("review component surfaces", () => {
     expect(html).toContain("Repository settings update lacks admin guard");
     expect(html).toContain("apps/api/src/routes/repositories.ts");
     expect(html).toContain("high");
-    expect(html).toContain("Verified");
+    expect(html).toContain("Needs Triage");
     expect(html).toContain("Copy");
   });
 
@@ -98,6 +99,16 @@ const findingFixture = {
   merged_from_count: 2,
   first_seen_at: "2026-05-04T00:00:00Z",
   updated_at: "2026-05-04T00:01:00Z",
+  source_agents: [
+    {
+      agent_run_id: "agent_run_1",
+      agent_config_id: "agent_config_1",
+      name: "Codex CLI",
+      model_label: "GPT-5.5",
+      severity: "high",
+      confidence: 0.92,
+    },
+  ],
 } satisfies Finding;
 
 const evidenceItems = [
@@ -221,6 +232,7 @@ const evidenceMapFixture = {
     verification_status: findingFixture.verification_status,
     decision_status: findingFixture.decision_status,
     evidence_counts: { supporting: 1, missing: 1 },
+    suggested_fix: findingFixture.suggested_fix,
     evidence: [],
   },
 } satisfies EvidenceMapResponse;

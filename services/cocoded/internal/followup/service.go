@@ -16,6 +16,7 @@ import (
 	"github.com/hughdo/cocode/services/cocoded/internal/artifact"
 	"github.com/hughdo/cocode/services/cocoded/internal/contextbundle"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
+	"github.com/hughdo/cocode/services/cocoded/internal/eventlog"
 )
 
 const (
@@ -44,8 +45,13 @@ type Service struct {
 	ContextBuilder *contextbundle.Service
 	Artifacts      *artifact.Store
 	AgentManager   *agentrun.Manager
+	Events         EventLog
 	Now            func() time.Time
 	NewID          func(prefix string) string
+}
+
+type EventLog interface {
+	Append(ctx context.Context, params eventlog.AppendParams) (dbgen.Event, error)
 }
 
 type EnsureThreadParams struct {

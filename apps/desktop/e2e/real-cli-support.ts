@@ -1,4 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { accessSync, constants, readdirSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, join } from "node:path";
 
 import { apiRequest, type BackendInfo } from "./test-support";
 
@@ -7,10 +10,14 @@ export const smokeMarker = "COCODE_REAL_CLI_SMOKE_OK";
 export const commonEnvAllowlist = [
   "PATH",
   "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TMPDIR",
   "TERM",
+  "COLORTERM",
   "LANG",
   "NO_COLOR",
-  "FORCE_COLOR",
   "CODEX_HOME",
   "ANTHROPIC_API_KEY",
   "OPENAI_API_KEY",
@@ -32,6 +39,7 @@ export type RealCliTarget = {
   outputMode: "json" | "jsonl";
   promptDelivery: "stdin" | "arg";
   modelLabel: string;
+  reasoningLabel?: string;
   provider: string;
   versionArgs?: string[];
 };
@@ -42,10 +50,10 @@ export const realCliTargets: Record<string, RealCliTarget> = {
     name: "E2E Real Codex CLI",
     command: "codex",
     args: [
+      "-a",
+      "never",
       "exec",
       "--json",
-      "-m",
-      process.env.COCODE_E2E_CODEX_MODEL || "gpt-5.4-mini",
       "--sandbox",
       "read-only",
       "--skip-git-repo-check",
@@ -58,6 +66,7 @@ export const realCliTargets: Record<string, RealCliTarget> = {
     outputMode: "jsonl",
     promptDelivery: "stdin",
     modelLabel: process.env.COCODE_E2E_CODEX_MODEL || "gpt-5.4-mini",
+    reasoningLabel: process.env.COCODE_E2E_CODEX_REASONING || "low",
     provider: "openai",
   },
   gemini: {
@@ -70,7 +79,7 @@ export const realCliTargets: Record<string, RealCliTarget> = {
       "--output-format",
       "json",
       "--approval-mode",
-      "plan",
+      "default",
       "--skip-trust",
     ],
     outputMode: "json",
@@ -80,13 +89,15 @@ export const realCliTargets: Record<string, RealCliTarget> = {
   },
   opencode: {
     id: "opencode",
-    name: "E2E Real OpenCode CLI",
+    name: "E2E Real OpenCode Go Kimi",
     command: "opencode",
-    args: ["run", "--format", "json", "{{prompt}}"],
+    args: ["run", "--pure", "--format", "json", "--thinking", "{{prompt}}"],
     outputMode: "jsonl",
     promptDelivery: "arg",
-    modelLabel: "opencode",
-    provider: "opencode",
+    modelLabel:
+      process.env.COCODE_E2E_OPENCODE_MODEL || "opencode-go/kimi-k2.6",
+    reasoningLabel: process.env.COCODE_E2E_OPENCODE_VARIANT || "high",
+    provider: process.env.COCODE_E2E_OPENCODE_PROVIDER || "opencode-go",
   },
   claude: {
     id: "claude",
@@ -106,6 +117,7 @@ export const realCliTargets: Record<string, RealCliTarget> = {
     outputMode: "json",
     promptDelivery: "arg",
     modelLabel: "claude",
+    reasoningLabel: process.env.COCODE_E2E_CLAUDE_EFFORT || "high",
     provider: "anthropic",
   },
 };
@@ -158,7 +170,7 @@ export async function createRealCliAgentConfig(
         env_allowlist: commonEnvAllowlist,
         output_mode: target.outputMode,
         model_label: target.modelLabel,
-        reasoning_label: options.purpose === "smoke" ? "smoke" : "real-review",
+        reasoning_label: target.reasoningLabel ?? "",
         capabilities: {
           supports_json: true,
           supports_streaming: target.outputMode === "jsonl",
@@ -196,10 +208,29 @@ export async function createRealCliAgentConfig(
 }
 
 export function ensureCommandAvailable(command: string) {
+  if (resolveCommandExecutableForE2E(command)) {
+    return;
+  }
+  throw new Error(`${command} is not installed or not on PATH`);
+}
+
+export function resolveCommandExecutableForE2E(command: string): string {
+  if (isExecutableFile(command)) {
+    return command;
+  }
   try {
-    execFileSync("which", [command], { stdio: "pipe" });
+    return execFileSync("which", [command], {
+      stdio: "pipe",
+      encoding: "utf8",
+    }).trim();
   } catch {
-    throw new Error(`${command} is not installed or not on PATH`);
+    if (basename(command) === "opencode") {
+      const resolved = resolveOpenCodeExecutableForE2E();
+      if (resolved) {
+        return resolved;
+      }
+    }
+    return "";
   }
 }
 
@@ -214,4 +245,93 @@ export function isExternalProviderLimit(text: string) {
     "resource_exhausted",
     "too many requests",
   ].some((needle) => normalized.includes(needle));
+}
+
+function resolveOpenCodeExecutableForE2E(): string {
+  const home = homedir();
+  const platformPackage = opencodePlatformPackageForE2E();
+  const candidates: string[] = [];
+  const pnpmRoots = [
+    process.env.PNPM_HOME,
+    join(home, "Library", "pnpm"),
+    join(home, ".local", "share", "pnpm"),
+    join(home, ".pnpm"),
+  ].filter((value): value is string => Boolean(value));
+  for (const root of pnpmRoots) {
+    const globalRoot = join(root, "global");
+    for (const globalVersion of safeReadDir(globalRoot)) {
+      const pnpmDir = join(globalRoot, globalVersion, ".pnpm");
+      for (const entry of safeReadDir(pnpmDir)) {
+        if (entry.startsWith(`${platformPackage}@`)) {
+          candidates.push(
+            join(
+              pnpmDir,
+              entry,
+              "node_modules",
+              platformPackage,
+              "bin",
+              "opencode",
+            ),
+          );
+        }
+        if (!entry.startsWith("opencode-ai@")) {
+          continue;
+        }
+        candidates.push(
+          join(
+            pnpmDir,
+            entry,
+            "node_modules",
+            "opencode-ai",
+            "node_modules",
+            platformPackage,
+            "bin",
+            "opencode",
+          ),
+          join(
+            pnpmDir,
+            entry,
+            "node_modules",
+            "opencode-ai",
+            "bin",
+            "opencode",
+          ),
+        );
+      }
+    }
+  }
+  candidates.sort().reverse();
+  return candidates.find(isExecutableFile) ?? "";
+}
+
+function opencodePlatformPackageForE2E(): string {
+  const arch = process.arch === "x64" ? "x64" : process.arch;
+  const platform =
+    process.platform === "darwin"
+      ? "darwin"
+      : process.platform === "win32"
+        ? "win32"
+        : process.platform;
+  return `opencode-${platform}-${arch}`;
+}
+
+function safeReadDir(path: string): string[] {
+  try {
+    return readdirSync(path);
+  } catch {
+    return [];
+  }
+}
+
+function isExecutableFile(path: string): boolean {
+  try {
+    const stat = statSync(path);
+    if (!stat.isFile()) {
+      return false;
+    }
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }

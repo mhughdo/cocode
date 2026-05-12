@@ -109,6 +109,96 @@ func TestExtractCandidatesIgnoresPlainTextRealCLIWrappers(t *testing.T) {
 	}
 }
 
+func TestExtractCandidatesIgnoresMachineEventTextOutput(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`{"type":"system","subtype":"hook_started","hook_id":"2426712d-ace5-429b-b4c9-107262f89d68","hook_name":"SessionStart:startup","hook_event":"SessionStart","uuid":"fd5c487a-dd86-4620-9c1d-271cdc7c47e0","session_id":"14266035-e47a-4de9-b11c-b4750205eebf"}
+{"type":"thread.started","thread_id":"019e121d-edae-7f82-a67a-fbb5d755a9b9"}
+{"type":"turn.started"}
+`)
+	parsed := Parse(raw, agents.OutputText)
+	result := ExtractCandidates(parsed)
+	if len(result.Candidates) != 0 {
+		t.Fatalf("Candidates = %+v Diagnostics = %+v", result.Candidates, result.Diagnostics)
+	}
+}
+
+func TestExtractCandidatesIgnoresMachineEventFindingText(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`{"findings":[{"claim":"{\"type\":\"system\",\"subtype\":\"hook_started\",\"hook_id\":\"2426712d-ace5-429b-b4c9-107262f89d68\",\"hook_name\":\"SessionStart:startup\"}","category":"security","severity":"low","confidence":0.5,"locations":[{"path":"src/server.js","start_line":1,"end_line":1,"side":"RIGHT"}],"evidence":[{"title":"bad","summary":"machine event should not become a finding"}]}]}`)
+	parsed := Parse(raw, agents.OutputJSON)
+	result := ExtractCandidates(parsed)
+	if len(result.Candidates) != 0 || len(result.Diagnostics) != 0 {
+		t.Fatalf("Candidates = %+v Diagnostics = %+v", result.Candidates, result.Diagnostics)
+	}
+}
+
+func TestExtractCandidatesIgnoresMachineEventJSONWrappers(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`{"type":"system","subtype":"hook_started","text":"{\"findings\":[{\"claim\":\"hook should not become finding\",\"category\":\"security\",\"severity\":\"high\",\"confidence\":0.9,\"locations\":[{\"path\":\"src/server.js\",\"start_line\":1,\"end_line\":1,\"side\":\"RIGHT\"}],\"evidence\":[{\"title\":\"bad\",\"summary\":\"bad\"}]}]}"}
+{"type":"item.completed","item":{"type":"command_execution","text":"{\"findings\":[{\"claim\":\"command output should not become finding\",\"category\":\"security\",\"severity\":\"high\",\"confidence\":0.9,\"locations\":[{\"path\":\"src/server.js\",\"start_line\":2,\"end_line\":2,\"side\":\"RIGHT\"}],\"evidence\":[{\"title\":\"bad\",\"summary\":\"bad\"}]}]}"}}
+{"type":"content_block_stop","event":"content_block_stop","text":"{\"findings\":[{\"claim\":\"stop event should not become finding\",\"category\":\"security\",\"severity\":\"high\",\"confidence\":0.9,\"locations\":[{\"path\":\"src/server.js\",\"start_line\":3,\"end_line\":3,\"side\":\"RIGHT\"}],\"evidence\":[{\"title\":\"bad\",\"summary\":\"bad\"}]}]}"}
+`)
+	parsed := Parse(raw, agents.OutputJSONL)
+	result := ExtractCandidates(parsed)
+	if len(result.Candidates) != 0 || len(result.Diagnostics) != 0 {
+		t.Fatalf("Candidates = %+v Diagnostics = %+v", result.Candidates, result.Diagnostics)
+	}
+}
+
+func TestExtractCandidatesParsesLineRangeAliases(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`{
+		"findings": [
+			{
+				"title": "Missing admin authorization in cancelSubscription",
+				"severity": "blocker",
+				"category": "security",
+				"confidence": 0.9,
+				"path": "src/server.js",
+				"lines": "L10-L11",
+				"evidence": "The changed route calls the database without requireAdmin.",
+				"suggested_fix": "Restore requireAdmin(request.user)."
+			},
+			{
+				"title": "Invoice export lacks authorization",
+				"severity": "high",
+				"category": "security",
+				"confidence": 0.8,
+				"location": "src/server.js:L17-L20",
+				"evidence": [{"summary": "The new exportInvoices route has no guard."}]
+			}
+		]
+	}`)
+	parsed := Parse(raw, agents.OutputJSON)
+	result := ExtractCandidates(parsed)
+	if len(result.Diagnostics) != 0 {
+		t.Fatalf("Diagnostics = %+v", result.Diagnostics)
+	}
+	if len(result.Candidates) != 2 {
+		t.Fatalf("Candidates = %+v", result.Candidates)
+	}
+	first := result.Candidates[0]
+	if first.PrimaryPath != "src/server.js" ||
+		first.PrimaryStartLine != 10 ||
+		first.PrimaryEndLine != 11 ||
+		first.Locations[0].StartLine != 10 ||
+		first.Locations[0].EndLine != 11 {
+		t.Fatalf("first = %+v", first)
+	}
+	second := result.Candidates[1]
+	if second.PrimaryPath != "src/server.js" ||
+		second.PrimaryStartLine != 17 ||
+		second.PrimaryEndLine != 20 ||
+		second.Locations[0].StartLine != 17 ||
+		second.Locations[0].EndLine != 20 {
+		t.Fatalf("second = %+v", second)
+	}
+}
+
 func TestExtractCandidatesNormalizesRealCLIReviewVariants(t *testing.T) {
 	t.Parallel()
 

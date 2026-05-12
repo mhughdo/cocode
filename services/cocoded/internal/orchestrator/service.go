@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -903,11 +904,9 @@ func (s *Service) runAgent(ctx context.Context, item runContext) (agentrun.RunRe
 			"context_bundle_id":       item.Bundle.ID,
 			"output_mode":             string(agents.OutputMode(item.AgentConfig.OutputMode)),
 		},
+		EventSink: s.agentRunEventSink(item.Session.ID),
 	})
 	if err != nil {
-		return result, err
-	}
-	if err := s.appendAgentRunEvents(ctx, item.Session.ID, result.Events); err != nil {
 		return result, err
 	}
 	if err := s.parseAgentOutputForPhase(ctx, item, &result, PhaseNormalizeOutputs); err != nil {
@@ -1306,13 +1305,13 @@ func (s *Service) buildEvidenceMaps(ctx context.Context, session dbgen.ReviewSes
 }
 
 func (s *Service) connectionConfig(item runContext) (agents.ConnectionConfig, agents.TaskLimits, error) {
-	args, err := decodeStringArray(item.AgentConfig.ArgsJson, "agent args")
+	args, err := agents.DecodeStringArray(item.AgentConfig.ArgsJson, "agent args")
 	if err != nil {
-		return agents.ConnectionConfig{}, agents.TaskLimits{}, err
+		return agents.ConnectionConfig{}, agents.TaskLimits{}, fmt.Errorf("%w: %v", ErrInvalidAgentConfiguration, err)
 	}
-	envNames, err := decodeStringArray(item.AgentConfig.EnvAllowlistJson, "agent env_allowlist")
+	envNames, err := agents.DecodeStringArray(item.AgentConfig.EnvAllowlistJson, "agent env_allowlist")
 	if err != nil {
-		return agents.ConnectionConfig{}, agents.TaskLimits{}, err
+		return agents.ConnectionConfig{}, agents.TaskLimits{}, fmt.Errorf("%w: %v", ErrInvalidAgentConfiguration, err)
 	}
 	env, err := agents.ResolveAllowedEnvironment(envNames)
 	if err != nil {
@@ -1334,7 +1333,8 @@ func (s *Service) connectionConfig(item runContext) (agents.ConnectionConfig, ag
 	reasoningLabel := selectedAgentReasoningLabel(item, selection)
 	command := nullableValue(item.AgentConfig.Command)
 	kind := agents.AdapterKind(item.AgentConfig.AdapterKind)
-	args = commandArgsWithModelSelection(kind, command, args, modelLabel, reasoningLabel)
+	args = agents.SanitizeCommandArgs(command, args)
+	args = agents.CommandArgsWithModelSelection(kind, command, args, modelLabel, reasoningLabel)
 	config := agents.ConnectionConfig{
 		AdapterID:        item.AgentConfig.ID,
 		Kind:             kind,
@@ -1475,44 +1475,71 @@ func (s *Service) appendEvent(ctx context.Context, params appendEventParams) err
 
 func (s *Service) appendAgentRunEvents(ctx context.Context, reviewSessionID string, events []agents.AgentEvent) error {
 	for _, event := range events {
-		eventType := workflowEventType(event.Type)
-		if eventType == "" {
-			continue
-		}
-		payload := map[string]any{
-			"agent_run_id": event.RunID,
-			"agent_event":  string(event.Type),
-			"message":      event.Message,
-		}
-		level := "info"
-		if event.Stream != "" {
-			payload["stream"] = event.Stream
-			payload["text_bytes"] = len(event.Text)
-			payload["truncated"] = event.Truncated
-		}
-		if event.ExitCode != nil {
-			payload["exit_code"] = *event.ExitCode
-		}
-		if event.ErrorCode != "" {
-			payload["error_code"] = event.ErrorCode
-		}
-		if event.Error != "" {
-			payload["error"] = event.Error
-			level = "error"
-		}
-		if err := s.appendEvent(ctx, appendEventParams{
-			ReviewSessionID: reviewSessionID,
-			AgentRunID:      nullableEventString(event.RunID),
-			Type:            eventType,
-			Level:           level,
-			Payload:         payload,
-			ArtifactID:      nullableEventString(event.ArtifactID),
-			CreatedAt:       event.At,
-		}); err != nil {
+		if err := s.appendAgentRunEvent(ctx, reviewSessionID, event); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (s *Service) agentRunEventSink(reviewSessionID string) func(context.Context, agents.AgentEvent) {
+	if s.Events == nil {
+		return nil
+	}
+	return func(ctx context.Context, event agents.AgentEvent) {
+		if err := s.appendAgentRunEvent(ctx, reviewSessionID, event); err != nil {
+			log.Printf("orchestrator: append agent run event failed review_session_id=%s agent_run_id=%s event=%s: %v", reviewSessionID, event.RunID, event.Type, err)
+		}
+	}
+}
+
+func (s *Service) appendAgentRunEvent(ctx context.Context, reviewSessionID string, event agents.AgentEvent) error {
+	eventType := workflowEventType(event.Type)
+	if eventType == "" {
+		return nil
+	}
+	payload := map[string]any{
+		"agent_run_id": event.RunID,
+		"agent_event":  string(event.Type),
+		"message":      event.Message,
+	}
+	level := "info"
+	if event.Stream != "" {
+		payload["stream"] = event.Stream
+		payload["text_bytes"] = len(event.Text)
+		payload["truncated"] = event.Truncated
+		if preview := truncateEventPreview(event.Text); preview != "" {
+			payload["text_preview"] = preview
+		}
+	}
+	if event.ExitCode != nil {
+		payload["exit_code"] = *event.ExitCode
+	}
+	if event.ErrorCode != "" {
+		payload["error_code"] = event.ErrorCode
+	}
+	if event.Error != "" {
+		payload["error"] = event.Error
+		level = "error"
+	}
+	return s.appendEvent(ctx, appendEventParams{
+		ReviewSessionID: reviewSessionID,
+		AgentRunID:      nullableEventString(event.RunID),
+		Type:            eventType,
+		Level:           level,
+		Payload:         payload,
+		ArtifactID:      nullableEventString(event.ArtifactID),
+		CreatedAt:       event.At,
+	})
+}
+
+func truncateEventPreview(value string) string {
+	value = strings.TrimSpace(value)
+	const limit = 12 * 1024
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "\n..."
 }
 
 func workflowEventType(eventType agents.EventType) string {
@@ -1653,113 +1680,6 @@ func selectedAgentReasoningLabel(item runContext, override sessionAgentSettingsO
 		return override.ReasoningLabel
 	}
 	return strings.TrimSpace(nullableValue(item.AgentConfig.ReasoningLabel))
-}
-
-func commandArgsWithModelSelection(kind agents.AdapterKind, command string, args []string, modelLabel string, reasoningLabel string) []string {
-	out := append([]string(nil), args...)
-	if kind != agents.AdapterCLINonInteractive {
-		return out
-	}
-	commandName := commandBaseName(command)
-	modelLabel = strings.TrimSpace(modelLabel)
-	reasoningLabel = strings.TrimSpace(reasoningLabel)
-	if shouldSkipCLIModelArgument(commandName, modelLabel) && reasoningLabel == "" {
-		return out
-	}
-	switch commandName {
-	case "codex":
-		injected := make([]string, 0, 4)
-		if !shouldSkipCLIModelArgument(commandName, modelLabel) {
-			injected = append(injected, "--model", modelLabel)
-		}
-		if reasoningLabel != "" {
-			injected = append(injected, "-c", fmt.Sprintf("model_reasoning_effort=%q", reasoningLabel))
-		}
-		return injectArgsAfterSubcommand(out, "exec", injected)
-	case "opencode":
-		injected := make([]string, 0, 4)
-		if !shouldSkipCLIModelArgument(commandName, modelLabel) {
-			injected = append(injected, "--model", modelLabel)
-		}
-		if reasoningLabel != "" {
-			injected = append(injected, "--variant", reasoningLabel)
-		}
-		return injectArgsAfterSubcommand(out, "run", injected)
-	case "claude":
-		injected := make([]string, 0, 4)
-		if !shouldSkipCLIModelArgument(commandName, modelLabel) {
-			injected = append(injected, "--model", modelLabel)
-		}
-		if reasoningLabel != "" {
-			injected = append(injected, "--effort", reasoningLabel)
-		}
-		return append(injected, out...)
-	case "gemini":
-		if shouldSkipCLIModelArgument(commandName, modelLabel) {
-			return out
-		}
-		return append([]string{"--model", modelLabel}, out...)
-	default:
-		return out
-	}
-}
-
-func injectArgsAfterSubcommand(args []string, subcommand string, injected []string) []string {
-	if len(injected) == 0 {
-		return append([]string(nil), args...)
-	}
-	out := make([]string, 0, len(args)+len(injected))
-	inserted := false
-	for _, arg := range args {
-		out = append(out, arg)
-		if !inserted && arg == subcommand {
-			out = append(out, injected...)
-			inserted = true
-		}
-	}
-	if inserted {
-		return out
-	}
-	return append(append([]string{}, injected...), args...)
-}
-
-func shouldSkipCLIModelArgument(command string, modelLabel string) bool {
-	modelLabel = strings.TrimSpace(modelLabel)
-	if modelLabel == "" || strings.EqualFold(modelLabel, "default") {
-		return true
-	}
-	switch strings.ToLower(modelLabel) {
-	case "codex", "claude", "gemini", "opencode", "gemini-acp", "opencode-acp":
-		return true
-	}
-	return strings.EqualFold(command, modelLabel)
-}
-
-func commandBaseName(command string) string {
-	command = strings.TrimSpace(command)
-	if command == "" {
-		return ""
-	}
-	if index := strings.LastIndexAny(command, `/\`); index >= 0 && index+1 < len(command) {
-		command = command[index+1:]
-	}
-	return strings.ToLower(command)
-}
-
-func decodeStringArray(raw string, field string) ([]string, error) {
-	if strings.TrimSpace(raw) == "" {
-		raw = "[]"
-	}
-	var values []string
-	if err := json.Unmarshal([]byte(raw), &values); err != nil {
-		return nil, fmt.Errorf("%w: %s must be a JSON string array", ErrInvalidAgentConfiguration, field)
-	}
-	for _, value := range values {
-		if strings.TrimSpace(value) == "" {
-			return nil, fmt.Errorf("%w: %s cannot contain empty values", ErrInvalidAgentConfiguration, field)
-		}
-	}
-	return values, nil
 }
 
 func workingDirectoryForAgent(cwdMode string, repository dbgen.Repository, workspace dbgen.Workspace) (string, error) {

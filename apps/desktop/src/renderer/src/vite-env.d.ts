@@ -48,6 +48,7 @@ interface Window {
       workspaceId: string;
       repositoryId: string;
       url: string;
+      authMethod?: "token" | "api" | "gh_cli";
     }) => Promise<import("@/lib/api").Snapshot>;
     selectRepository: () => Promise<string | null>;
     openFile: (request: {

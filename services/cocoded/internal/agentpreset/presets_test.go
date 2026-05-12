@@ -20,17 +20,19 @@ func TestCodexCLIPreset(t *testing.T) {
 		!preset.Capabilities.SupportsOutputMode(agents.OutputJSONL) {
 		t.Fatalf("preset = %+v", preset)
 	}
-	if len(preset.Args) != 10 ||
-		preset.Args[0] != "exec" ||
-		preset.Args[1] != "--json" ||
-		preset.Args[2] != "--sandbox" ||
-		preset.Args[3] != "read-only" ||
-		preset.Args[4] != "--skip-git-repo-check" ||
-		preset.Args[5] != "--ephemeral" ||
-		preset.Args[6] != "--ignore-rules" ||
-		preset.Args[7] != "--color" ||
-		preset.Args[8] != "never" ||
-		preset.Args[9] != "-" {
+	if len(preset.Args) != 12 ||
+		preset.Args[0] != "-a" ||
+		preset.Args[1] != "never" ||
+		preset.Args[2] != "exec" ||
+		preset.Args[3] != "--json" ||
+		preset.Args[4] != "--sandbox" ||
+		preset.Args[5] != "read-only" ||
+		preset.Args[6] != "--skip-git-repo-check" ||
+		preset.Args[7] != "--ephemeral" ||
+		preset.Args[8] != "--ignore-rules" ||
+		preset.Args[9] != "--color" ||
+		preset.Args[10] != "never" ||
+		preset.Args[11] != "-" {
 		t.Fatalf("preset args = %+v", preset.Args)
 	}
 	if !containsString(preset.EnvAllowlist, "PATH") ||
@@ -87,22 +89,23 @@ func TestClaudeCodeCLIPreset(t *testing.T) {
 	if preset.ID != "claude-code-cli" ||
 		preset.Command != "claude" ||
 		preset.AdapterKind != agents.AdapterCLINonInteractive ||
-		preset.OutputMode != agents.OutputJSON ||
+		preset.OutputMode != agents.OutputJSONL ||
 		preset.ModelLabel != "claude" ||
+		!preset.Capabilities.SupportsStreaming ||
 		!preset.Capabilities.CanCancel ||
-		!preset.Capabilities.SupportsOutputMode(agents.OutputJSON) {
+		!preset.Capabilities.SupportsOutputMode(agents.OutputJSONL) {
 		t.Fatalf("preset = %+v", preset)
 	}
 	if len(preset.Args) != 9 ||
 		preset.Args[0] != "-p" ||
 		preset.Args[1] != agents.PromptArgPlaceholder ||
 		preset.Args[2] != "--output-format" ||
-		preset.Args[3] != "json" ||
-		preset.Args[4] != "--permission-mode" ||
-		preset.Args[5] != "plan" ||
-		preset.Args[6] != "--no-session-persistence" ||
-		preset.Args[7] != "--tools" ||
-		preset.Args[8] != "" {
+		preset.Args[3] != "stream-json" ||
+		preset.Args[4] != "--verbose" ||
+		preset.Args[5] != "--include-partial-messages" ||
+		preset.Args[6] != "--permission-mode" ||
+		preset.Args[7] != "plan" ||
+		preset.Args[8] != "--no-session-persistence" {
 		t.Fatalf("preset args = %+v", preset.Args)
 	}
 	if !containsString(preset.EnvAllowlist, "PATH") ||
@@ -127,7 +130,7 @@ func TestGeminiCLIPreset(t *testing.T) {
 		preset.Command != "gemini" ||
 		preset.AdapterKind != agents.AdapterCLINonInteractive ||
 		preset.OutputMode != agents.OutputJSON ||
-		preset.ModelLabel != "default" ||
+		preset.ModelLabel != "gemini-3.1-pro-preview" ||
 		!preset.Capabilities.CanCancel ||
 		!preset.Capabilities.SupportsOutputMode(agents.OutputJSON) {
 		t.Fatalf("preset = %+v", preset)
@@ -138,7 +141,7 @@ func TestGeminiCLIPreset(t *testing.T) {
 		preset.Args[2] != "--output-format" ||
 		preset.Args[3] != "json" ||
 		preset.Args[4] != "--approval-mode" ||
-		preset.Args[5] != "plan" ||
+		preset.Args[5] != "default" ||
 		preset.Args[6] != "--skip-trust" {
 		t.Fatalf("preset args = %+v", preset.Args)
 	}
@@ -201,17 +204,20 @@ func TestOpenCodeCLIPreset(t *testing.T) {
 		preset.Command != "opencode" ||
 		preset.AdapterKind != agents.AdapterCLINonInteractive ||
 		preset.OutputMode != agents.OutputJSONL ||
-		preset.ModelLabel != "opencode" ||
+		preset.ModelLabel != "opencode-go/kimi-k2.6" ||
+		preset.ReasoningLabel != "high" ||
 		!preset.Capabilities.CanCancel ||
 		!preset.Capabilities.SupportsOutputMode(agents.OutputJSONL) ||
 		!preset.Capabilities.SupportsOutputMode(agents.OutputJSON) {
 		t.Fatalf("preset = %+v", preset)
 	}
-	if len(preset.Args) != 4 ||
+	if len(preset.Args) != 6 ||
 		preset.Args[0] != "run" ||
-		preset.Args[1] != "--format" ||
-		preset.Args[2] != "json" ||
-		preset.Args[3] != agents.PromptArgPlaceholder {
+		preset.Args[1] != "--pure" ||
+		preset.Args[2] != "--format" ||
+		preset.Args[3] != "json" ||
+		preset.Args[4] != "--thinking" ||
+		preset.Args[5] != agents.PromptArgPlaceholder {
 		t.Fatalf("preset args = %+v", preset.Args)
 	}
 	settings := decodePresetSettings(t, preset)

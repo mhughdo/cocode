@@ -103,6 +103,7 @@ type CreateGitHubSnapshotRequest struct {
 	RepositoryID string `json:"repository_id"`
 	URL          string `json:"url"`
 	GitHubToken  string `json:"github_token"`
+	AuthMethod   string `json:"auth_method"`
 }
 
 type CreateLocalCompareSnapshotRequest struct {
@@ -160,25 +161,26 @@ type ArtifactDebugResponse struct {
 }
 
 type routerServices struct {
-	database            *sql.DB
-	queries             *dbgen.Queries
-	snapshots           *snapshot.Service
-	snapshotInitErr     error
-	contextBuilder      *contextbundle.Service
-	contextBuilderErr   error
-	artifacts           *artifact.Store
-	copyPackets         *exports.Service
-	followups           *followup.Service
-	chat                *chat.Service
-	reviewWorkflow      *orchestrator.Service
-	reviewWorkflowErr   error
-	eventBus            *eventbus.Bus
-	githubAuth          *githubauth.Service
-	githubAuthErr       error
-	gitCollector        gitrepo.Collector
-	gitRepositories     *gitrepo.Service
-	gitRepositoriesErr  error
-	githubClientFactory func(token string) githubpr.Client
+	database               *sql.DB
+	queries                *dbgen.Queries
+	snapshots              *snapshot.Service
+	snapshotInitErr        error
+	contextBuilder         *contextbundle.Service
+	contextBuilderErr      error
+	artifacts              *artifact.Store
+	copyPackets            *exports.Service
+	followups              *followup.Service
+	chat                   *chat.Service
+	reviewWorkflow         *orchestrator.Service
+	reviewWorkflowErr      error
+	eventBus               *eventbus.Bus
+	githubAuth             *githubauth.Service
+	githubAuthErr          error
+	gitCollector           gitrepo.Collector
+	gitRepositories        *gitrepo.Service
+	gitRepositoriesErr     error
+	githubClientFactory    func(token string) githubpr.PullRequestFetcher
+	githubCLIClientFactory func() githubpr.PullRequestFetcher
 }
 
 func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Handler {
@@ -246,6 +248,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 			ContextBuilder: contextBuilder,
 			Artifacts:      artifactStore,
 			AgentManager:   agentManager,
+			Events:         bus,
 		},
 		chat: &chat.Service{
 			Database:       database,
@@ -263,11 +266,14 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 		gitCollector:       gitrepo.NewCollector(gitrepo.DefaultRunner()),
 		gitRepositories:    gitRepositories,
 		gitRepositoriesErr: gitRepositoriesErr,
-		githubClientFactory: func(token string) githubpr.Client {
+		githubClientFactory: func(token string) githubpr.PullRequestFetcher {
 			return githubpr.Client{
 				BaseURL: config.GitHubAPIBaseURL,
 				Token:   token,
 			}
+		},
+		githubCLIClientFactory: func() githubpr.PullRequestFetcher {
+			return githubpr.GHClient{}
 		},
 	}
 
@@ -323,6 +329,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.POST("/review-sessions", createReviewSessionHandler(queries))
 	api.GET("/review-sessions", listReviewSessionsHandler(queries))
 	api.GET("/review-sessions/:id", getReviewSessionHandler(queries))
+	api.DELETE("/review-sessions/:id", deleteReviewSessionHandler(services))
 	api.POST("/review-sessions/:id/start", startReviewSessionHandler(services))
 	api.POST("/review-sessions/:id/pause", pauseReviewSessionHandler(services))
 	api.POST("/review-sessions/:id/resume", resumeReviewSessionHandler(services))
@@ -404,7 +411,11 @@ func createGitHubSnapshotHandler(services routerServices) gin.HandlerFunc {
 			respondAppError(c, err)
 			return
 		}
-		client := services.githubClientFactory(strings.TrimSpace(request.GitHubToken))
+		client, appErr := gitHubSnapshotFetcher(services, request)
+		if appErr != nil {
+			respondError(c, appErr)
+			return
+		}
 		metadata, err := client.FetchMetadata(c.Request.Context(), ref)
 		if err != nil {
 			respondAppError(c, err)
@@ -443,6 +454,27 @@ func createGitHubSnapshotHandler(services routerServices) gin.HandlerFunc {
 			return
 		}
 		respondSnapshotResult(c, result)
+	}
+}
+
+func gitHubSnapshotFetcher(services routerServices, request CreateGitHubSnapshotRequest) (githubpr.PullRequestFetcher, *apperror.Error) {
+	authMethod := strings.TrimSpace(request.AuthMethod)
+	if authMethod == "" {
+		authMethod = "token"
+	}
+	switch authMethod {
+	case "token", "api":
+		if services.githubClientFactory == nil {
+			return nil, apperror.Internal("GitHub API client is not configured")
+		}
+		return services.githubClientFactory(strings.TrimSpace(request.GitHubToken)), nil
+	case "gh_cli":
+		if services.githubCLIClientFactory == nil {
+			return nil, apperror.Internal("GitHub CLI client is not configured")
+		}
+		return services.githubCLIClientFactory(), nil
+	default:
+		return nil, apperror.InvalidRequest("GitHub auth_method is invalid")
 	}
 }
 

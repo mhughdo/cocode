@@ -1,4 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 import {
   closeCocode,
@@ -101,10 +103,6 @@ test("opens a local repository and configures a branch comparison", async ({
     await expect(page.getByText("Review source")).toBeVisible();
     await expect(
       page.getByRole("heading", { name: "Source details" }),
-    ).toBeVisible();
-    await page.getByRole("button", { name: "Hide source details" }).click();
-    await expect(
-      page.getByRole("heading", { name: "Source details" }),
     ).toHaveCount(0);
     await page.getByRole("button", { name: "Show source details" }).click();
     await expect(
@@ -114,41 +112,60 @@ test("opens a local repository and configures a branch comparison", async ({
       page.getByText("main..feature/review-auth").first(),
     ).toBeVisible();
     await expect(
+      page.getByRole("button", { name: /Base branch: main/ }),
+    ).toBeVisible();
+    await expect(
       page.getByRole("button", { name: "Start review" }),
     ).toBeVisible();
-    await page.getByRole("button", { name: "Load source details" }).click();
-    await expect(page.getByText("Reviewable", { exact: true })).toBeVisible();
+    await expect(
+      page.getByText("Changed files", { exact: true }),
+    ).toBeVisible();
     await expect(page.getByText("src/auth.ts").first()).toBeVisible();
-    await expect(page.getByText("Before")).toBeVisible();
-    await expect(page.getByText("After")).toBeVisible();
-    await expect(page.getByText(/role === "member"/).first()).toBeVisible();
-    const diffScroll = page.getByTestId("setup-diff-scroll");
-    const initialDiffMetrics = await diffScroll.evaluate((element) => ({
-      clientHeight: element.clientHeight,
-      clientWidth: element.clientWidth,
-      hasHorizontalScroll: element.scrollWidth > element.clientWidth,
-      hasVerticalScroll: element.scrollHeight > element.clientHeight,
-      scrollHeight: element.scrollHeight,
-      scrollWidth: element.scrollWidth,
-    }));
-    expect(
-      initialDiffMetrics.hasHorizontalScroll,
-      JSON.stringify(initialDiffMetrics),
-    ).toBe(true);
-    expect(
-      initialDiffMetrics.hasVerticalScroll,
-      JSON.stringify(initialDiffMetrics),
-    ).toBe(true);
-    const scrolledDiffMetrics = await diffScroll.evaluate((element) => {
-      element.scrollLeft = 160;
-      element.scrollTop = 160;
-      return {
-        left: element.scrollLeft,
-        top: element.scrollTop,
-      };
-    });
-    expect(scrolledDiffMetrics.left).toBeGreaterThan(0);
-    expect(scrolledDiffMetrics.top).toBeGreaterThan(0);
+  } finally {
+    await closeCocode(app);
+  }
+});
+
+test("loads local changes source details and collapses file diffs", async ({
+  browserName,
+}, testInfo) => {
+  expect(browserName).toBe("chromium");
+  const repoPath = createBranchReviewRepo(testInfo.outputPath("local-repo"));
+  writeFileSync(
+    join(repoPath, "src/auth.ts"),
+    [
+      "export function canUpdateRepository(role: string): boolean {",
+      '  return role === "admin" || role === "member" || role === "viewer";',
+      "}",
+      "",
+      "export function canReadRepository(role: string): boolean {",
+      '  return role === "admin" || role === "member" || role === "viewer";',
+      "}",
+      "",
+      "export const permissionMatrix = [];",
+      "",
+    ].join("\n"),
+  );
+  const app = await launchCocode(testInfo, {
+    COCODE_E2E_REPOSITORY_PATH: repoPath,
+  });
+  const { page } = app;
+
+  try {
+    await openSeededProject(page);
+    await page.getByRole("button", { name: /Local changes/ }).click();
+    await page.getByRole("button", { name: "Show source details" }).click();
+    await expect(page.getByText("src/auth.ts").first()).toBeVisible();
+    await expect(page.getByTestId("setup-source-stack-scroll")).toBeVisible();
+    const fileToggle = page
+      .getByRole("button", { name: /src\/auth\.ts/ })
+      .first();
+    await expect(fileToggle).toHaveAttribute("aria-expanded", "true");
+    await fileToggle.click();
+    await expect(fileToggle).toHaveAttribute("aria-expanded", "false");
+    await expect(page.getByTestId("setup-diff-scroll")).toHaveCount(0);
+    await fileToggle.click();
+    await expect(fileToggle).toHaveAttribute("aria-expanded", "true");
   } finally {
     await closeCocode(app);
   }
@@ -213,9 +230,9 @@ test("updates generated review agents when presets are toggled", async ({
     await waitForReviewAgentOption(page, /E2E Fake Reviewer/);
 
     await expect(
-      page.getByText("3 selected from 10 built-in presets."),
+      page.getByText("0 selected from 10 built-in presets."),
     ).toBeVisible();
-    await expectAgentCount(page, 10);
+    await expectAgentCount(page, 1);
 
     await clearPrimaryPresets(page);
     await expect(
@@ -285,7 +302,7 @@ test("searches and toggles secondary presets from more presets", async ({
     await page.reload();
     await openSeededProject(page);
     await waitForReviewAgentOption(page, /E2E Fake Reviewer/);
-    await expectAgentCount(page, 10);
+    await expectAgentCount(page, 1);
     await clearPrimaryPresets(page);
     await expectAgentCount(page, 1);
 

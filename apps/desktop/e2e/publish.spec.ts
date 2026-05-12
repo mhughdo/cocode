@@ -26,6 +26,7 @@ test("copies selected packet and previews GitHub payload", async ({
     await expect(
       page.getByText(
         "Repository settings updates miss the workspace admin guard.",
+        { exact: true },
       ),
     ).toBeVisible();
 
@@ -45,9 +46,7 @@ test("copies selected packet and previews GitHub payload", async ({
     expect(clipboardText).toContain("apps/api/src/routes/repositories.ts");
 
     await page.getByRole("button", { name: "Preview" }).click();
-    await expect(
-      page.getByText("GitHub preview", { exact: true }),
-    ).toBeVisible();
+    await expect(page.getByText("GitHub review preview")).toBeVisible();
     await expect(page.getByText("Review body", { exact: true })).toBeVisible();
     await expect(page.getByText("Inline comments").first()).toBeVisible();
     await expect(page.getByText("Selected findings").first()).toBeVisible();

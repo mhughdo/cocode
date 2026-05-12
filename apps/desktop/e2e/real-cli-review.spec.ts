@@ -18,6 +18,22 @@ type Workspace = {
   root_path: string;
 };
 
+type Repository = {
+  id: string;
+  workspace_id: string;
+  local_path: string;
+};
+
+type OpenRepositoryResponse = {
+  workspace: Workspace;
+  repository: Repository;
+  repositories: Repository[];
+};
+
+type Snapshot = {
+  id: string;
+};
+
 type ReviewSession = {
   id: string;
   status: string;
@@ -47,6 +63,11 @@ type Finding = {
 
 type FindingListResponse = {
   items: Finding[];
+};
+
+type RealCliAgentConfig = {
+  id: string;
+  name: string;
 };
 
 const selectedTargets = selectedRealCliTargets("COCODE_E2E_REAL_REVIEW_CLIS");
@@ -79,35 +100,31 @@ if (selectedTargets.length === 0) {
     });
 
     try {
-      const configs: Array<{ id: string; name: string }> = [];
+      const configs: RealCliAgentConfig[] = [];
       for (const target of selectedTargets) {
         configs.push(
           await createRealCliAgentConfig(backendInfo, target, {
             purpose: "review",
-            timeoutSeconds: 300,
+            timeoutSeconds: 420,
           }),
         );
       }
 
-      await page.getByRole("button", { name: "Open project" }).last().click();
-      const workspace = await waitForWorkspace(backendInfo, repoPath);
+      await expect(page.getByText("cocode").first()).toBeVisible();
+      const opened = await openRepository(backendInfo, repoPath);
+      const snapshot = await createBranchSnapshot(
+        backendInfo,
+        opened.workspace.id,
+        opened.repository.id,
+      );
+      const session = await createReviewSession(
+        backendInfo,
+        opened.workspace.id,
+        snapshot.id,
+        configs,
+      );
+      await startReviewSession(backendInfo, session.id);
 
-      await page.getByRole("button", { name: /Compare branches/ }).click();
-      await page.getByLabel("Base ref").fill("main");
-      await page.getByLabel("Head ref").fill("feature/review-auth");
-
-      await expect(
-        page.getByRole("heading", { name: "Set up review" }),
-      ).toBeVisible();
-      for (const config of configs) {
-        await expect(
-          page.getByRole("button", { name: config.name }).first(),
-        ).toBeVisible();
-      }
-      await page.getByLabel("Focus prompt").fill(reviewFocus);
-      await page.getByRole("button", { name: "Start review" }).click();
-
-      const session = await waitForLatestSession(backendInfo, workspace.id);
       const summary = await waitForReviewCompletion(
         backendInfo,
         session.id,
@@ -146,57 +163,95 @@ if (selectedTargets.length === 0) {
         /member|admin|authorization|permission|privilege/,
       );
 
-      await expect(page.getByRole("tab", { name: "Findings" })).toBeVisible();
-      await page.getByRole("tab", { name: "Findings" }).click();
-      await expect(page.getByText("src/auth.ts").first()).toBeVisible();
+      const refreshedSession = await apiRequest<ReviewSession>(
+        backendInfo,
+        `/api/review-sessions/${encodeURIComponent(session.id)}`,
+      );
+      expect(refreshedSession.status).toBe("completed");
     } finally {
       await electronApp.close();
     }
   });
 }
 
-async function waitForWorkspace(
+async function openRepository(
   backendInfo: BackendInfo,
   repoPath: string,
-): Promise<Workspace> {
-  const deadline = Date.now() + 30_000;
-  let lastWorkspaces: Workspace[] = [];
-  while (Date.now() < deadline) {
-    lastWorkspaces = await apiRequest<Workspace[]>(
-      backendInfo,
-      "/api/workspaces",
-    );
-    const workspace =
-      lastWorkspaces.find((item) => item.root_path === repoPath) ??
-      lastWorkspaces.find((item) => repoPath.startsWith(item.root_path));
-    if (workspace) {
-      return workspace;
-    }
-    await delay(500);
-  }
-  throw new Error(
-    `Timed out waiting for workspace for ${repoPath}. Workspaces: ${JSON.stringify(lastWorkspaces)}`,
+): Promise<OpenRepositoryResponse> {
+  return apiRequest<OpenRepositoryResponse>(
+    backendInfo,
+    "/api/workspaces/open-repository",
+    {
+      method: "POST",
+      body: { path: repoPath },
+    },
   );
 }
 
-async function waitForLatestSession(
+async function createBranchSnapshot(
   backendInfo: BackendInfo,
   workspaceID: string,
+  repositoryID: string,
+): Promise<Snapshot> {
+  return apiRequest<Snapshot>(
+    backendInfo,
+    "/api/pr-snapshots/from-local-compare",
+    {
+      method: "POST",
+      body: {
+        workspace_id: workspaceID,
+        repository_id: repositoryID,
+        base_ref: "main",
+        head_ref: "feature/review-auth",
+      },
+    },
+  );
+}
+
+async function createReviewSession(
+  backendInfo: BackendInfo,
+  workspaceID: string,
+  snapshotID: string,
+  configs: RealCliAgentConfig[],
 ): Promise<ReviewSession> {
-  const deadline = Date.now() + 30_000;
-  let lastSessions: ReviewSession[] = [];
-  while (Date.now() < deadline) {
-    lastSessions = await apiRequest<ReviewSession[]>(
-      backendInfo,
-      `/api/review-sessions?workspace_id=${encodeURIComponent(workspaceID)}`,
-    );
-    if (lastSessions[0]) {
-      return lastSessions[0];
-    }
-    await delay(500);
-  }
-  throw new Error(
-    `Timed out waiting for a review session. Sessions: ${JSON.stringify(lastSessions)}`,
+  return apiRequest<ReviewSession>(backendInfo, "/api/review-sessions", {
+    method: "POST",
+    body: {
+      workspace_id: workspaceID,
+      snapshot_id: snapshotID,
+      title: "Real CLI authorization review",
+      review_depth: "quick",
+      focus_prompt: reviewFocus,
+      preset: "real-cli-e2e",
+      runtime_limit_seconds: 1800,
+      context_policy: {
+        include_prompt_material: true,
+        include_changed_code: true,
+        include_related_call_sites: false,
+        include_related_tests: false,
+        include_project_conventions: false,
+        include_prior_comments: false,
+        include_prior_decisions: false,
+        redact_secrets: true,
+        max_tokens: 10_000,
+        max_items: 80,
+      },
+      agent_selections: configs.map((config) => ({
+        agent_config_id: config.id,
+        role: "General Reviewer",
+      })),
+    },
+  });
+}
+
+async function startReviewSession(
+  backendInfo: BackendInfo,
+  sessionID: string,
+): Promise<ReviewSession> {
+  return apiRequest<ReviewSession>(
+    backendInfo,
+    `/api/review-sessions/${encodeURIComponent(sessionID)}/start`,
+    { method: "POST" },
   );
 }
 
@@ -237,12 +292,21 @@ async function assertSelectedRunsCompleted(
   const selectedRuns = runs.filter((run) =>
     agentConfigIDs.includes(run.agent_config_id),
   );
-  expect(selectedRuns.length).toBe(agentConfigIDs.length);
+  const configsWithRuns = new Set(
+    selectedRuns.map((run) => run.agent_config_id),
+  );
+  const missingConfigIDs = agentConfigIDs.filter(
+    (id) => !configsWithRuns.has(id),
+  );
   const successfulRunStatuses = new Set(["completed", "succeeded"]);
   const failedRuns = selectedRuns.filter(
     (run) => !successfulRunStatuses.has(run.status),
   );
-  if (summary.status === "completed" && failedRuns.length === 0) {
+  if (
+    summary.status === "completed" &&
+    missingConfigIDs.length === 0 &&
+    failedRuns.length === 0
+  ) {
     return;
   }
 
@@ -250,7 +314,12 @@ async function assertSelectedRunsCompleted(
     backendInfo,
     `/api/review-sessions/${encodeURIComponent(sessionID)}/audit-log`,
   );
-  const details = JSON.stringify({ summary, auditLog });
+  const details = JSON.stringify({
+    summary,
+    auditLog,
+    expected_agent_config_ids: agentConfigIDs,
+    missing_agent_config_ids: missingConfigIDs,
+  });
   if (isExternalProviderLimit(details)) {
     testInfo.annotations.push({
       type: "external-provider-limit",

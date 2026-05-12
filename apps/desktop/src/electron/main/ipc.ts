@@ -17,6 +17,7 @@ interface GitHubSnapshotRequest {
   workspaceId: string;
   repositoryId: string;
   url: string;
+  authMethod?: "token" | "api" | "gh_cli";
 }
 
 interface SaveGitHubTokenRequest {
@@ -128,9 +129,13 @@ export function registerIpc(
     "cocode:create-github-snapshot",
     async (_event, request: unknown) => {
       const parsed = parseGitHubSnapshotRequest(request);
-      const token = await secretStore.get(githubTokenStorageKey);
-      if (!token) {
-        throw new Error("GitHub token is not configured");
+      const authMethod = parsed.authMethod ?? "token";
+      let token = "";
+      if (authMethod !== "gh_cli") {
+        token = (await secretStore.get(githubTokenStorageKey)) ?? "";
+        if (!token) {
+          throw new Error("GitHub token is not configured");
+        }
       }
       return backendRequest(backend, "/api/pr-snapshots/from-github-url", {
         method: "POST",
@@ -138,6 +143,7 @@ export function registerIpc(
           workspace_id: parsed.workspaceId,
           repository_id: parsed.repositoryId,
           url: parsed.url,
+          auth_method: authMethod,
           github_token: token,
         },
       });
@@ -220,6 +226,12 @@ function parseGitHubSnapshotRequest(request: unknown): GitHubSnapshotRequest {
     workspaceId: value.workspaceId.trim(),
     repositoryId: value.repositoryId.trim(),
     url: value.url.trim(),
+    authMethod:
+      value.authMethod === "api" ||
+      value.authMethod === "token" ||
+      value.authMethod === "gh_cli"
+        ? value.authMethod
+        : undefined,
   };
 }
 

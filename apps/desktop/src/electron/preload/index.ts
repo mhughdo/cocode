@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld("cocode", {
     workspaceId: string;
     repositoryId: string;
     url: string;
+    authMethod?: "token" | "api" | "gh_cli";
   }) => ipcRenderer.invoke("cocode:create-github-snapshot", request),
   selectRepository: () => ipcRenderer.invoke("cocode:select-repository"),
   openFile: (request: { filePath: string; line?: number; column?: number }) =>

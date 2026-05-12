@@ -16,6 +16,16 @@ var Migrations = []Migration{
 		Name:    "centralized_chat",
 		SQL:     centralizedChatSQL,
 	},
+	{
+		Version: 4,
+		Name:    "repair_stale_claude_tools_args",
+		SQL:     repairStaleClaudeToolsArgsSQL,
+	},
+	{
+		Version: 5,
+		Name:    "enable_cli_reasoning_traces",
+		SQL:     enableCLIReasoningTracesSQL,
+	},
 }
 
 const schemaV1SQL = `
@@ -541,4 +551,39 @@ CREATE INDEX idx_chat_messages_thread_created ON chat_messages(thread_id, create
 CREATE INDEX idx_chat_message_context_refs_message ON chat_message_context_refs(message_id);
 CREATE INDEX idx_chat_message_context_refs_ref ON chat_message_context_refs(ref_type, ref_id);
 CREATE INDEX idx_chat_turns_thread_created ON chat_turns(thread_id, created_at);
+`
+
+const repairStaleClaudeToolsArgsSQL = `
+UPDATE agent_configs
+SET
+  args_json = '["-p","{{prompt}}","--output-format","json","--permission-mode","plan","--no-session-persistence"]',
+  updated_at = datetime('now')
+WHERE command = 'claude'
+  AND args_json IN (
+    '["-p","{{prompt}}","--output-format","json","--permission-mode","plan","--no-session-persistence","--tools"]',
+    '["-p","{{prompt}}","--output-format","json","--permission-mode","plan","--no-session-persistence","--tools",""]'
+  );
+`
+
+const enableCLIReasoningTracesSQL = `
+UPDATE agent_configs
+SET
+  args_json = '["-p","{{prompt}}","--output-format","stream-json","--verbose","--include-partial-messages","--permission-mode","plan","--no-session-persistence"]',
+  updated_at = datetime('now')
+WHERE command = 'claude'
+  AND args_json = '["-p","{{prompt}}","--output-format","json","--permission-mode","plan","--no-session-persistence"]';
+
+UPDATE agent_configs
+SET
+  args_json = '["run","--pure","--format","json","--thinking","{{prompt}}"]',
+  updated_at = datetime('now')
+WHERE command = 'opencode'
+  AND args_json = '["run","--format","json","{{prompt}}"]';
+
+UPDATE agent_configs
+SET
+  args_json = '["-a","never","exec","--json","--sandbox","read-only","--skip-git-repo-check","--ephemeral","--ignore-rules","--color","never","-"]',
+  updated_at = datetime('now')
+WHERE command = 'codex'
+  AND args_json = '["exec","--json","--sandbox","read-only","--skip-git-repo-check","--ephemeral","--ignore-rules","--color","never","-"]';
 `

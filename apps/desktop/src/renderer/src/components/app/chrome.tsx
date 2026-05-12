@@ -54,7 +54,7 @@ export function AppShell({
 }: AppShellProps) {
   return (
     <TooltipProvider>
-      <main className="bg-background text-foreground flex min-h-screen overflow-hidden">
+      <main className="bg-background text-foreground flex h-screen min-h-0 overflow-hidden">
         <aside className="bg-sidebar text-sidebar-foreground flex w-[266px] shrink-0 flex-col border-r shadow-[inset_-1px_0_0_rgb(17_18_20/0.04)]">
           {sidebar}
         </aside>

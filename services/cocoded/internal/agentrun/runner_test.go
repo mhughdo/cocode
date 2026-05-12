@@ -64,6 +64,74 @@ func TestRunnerPersistsSuccessfulCommandRun(t *testing.T) {
 	})
 }
 
+func TestRunnerStreamsCommandEventsBeforeRunCompletes(t *testing.T) {
+	t.Parallel()
+
+	env := setupOutputRecorder(t)
+	task := runnerTask(env, "agent_run_streaming")
+	command := writeFakeAgent(t, "#!/bin/sh\nprintf 'partial\\n'\n/bin/sleep 0.2\nprintf 'done\\n'\n")
+	outputSeen := make(chan agents.AgentEvent, 1)
+	resultCh := make(chan RunResult, 1)
+	errCh := make(chan error, 1)
+
+	go func() {
+		result, err := runnerWithClock(env).Execute(context.Background(), RunParams{
+			WorkspaceID: env.WorkspaceID,
+			Config:      runnerConfig(command),
+			Task:        task,
+			EventSink: func(_ context.Context, event agents.AgentEvent) {
+				if event.Type == agents.EventOutput && strings.Contains(event.Text, "partial") {
+					select {
+					case outputSeen <- event:
+					default:
+					}
+				}
+			},
+		})
+		if err != nil {
+			errCh <- err
+			return
+		}
+		resultCh <- result
+	}()
+
+	select {
+	case event := <-outputSeen:
+		if event.RunID != task.RunID || event.Stream != "stdout" {
+			t.Fatalf("streamed event = %+v", event)
+		}
+		run, err := env.Queries.GetAgentRun(context.Background(), task.RunID)
+		if err != nil {
+			t.Fatalf("GetAgentRun() error = %v", err)
+		}
+		if run.Status != RunStatusRunning {
+			t.Fatalf("run status after streamed output = %s, want running", run.Status)
+		}
+	case err := <-errCh:
+		t.Fatalf("Execute() error before stream = %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for streamed output")
+	}
+
+	select {
+	case result := <-resultCh:
+		if result.Run.Status != RunStatusSucceeded {
+			t.Fatalf("run = %+v", result.Run)
+		}
+		stdout, _, err := env.Artifacts.Read(context.Background(), result.Run.StdoutArtifactID.String)
+		if err != nil {
+			t.Fatalf("Read(stdout) error = %v", err)
+		}
+		if string(stdout) != "partial\ndone\n" {
+			t.Fatalf("stdout = %q", string(stdout))
+		}
+	case err := <-errCh:
+		t.Fatalf("Execute() error = %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for completed run")
+	}
+}
+
 func TestRunnerUsesProtocolDriverForJSONRPCAdapters(t *testing.T) {
 	t.Parallel()
 

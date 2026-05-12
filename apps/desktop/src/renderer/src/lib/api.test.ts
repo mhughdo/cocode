@@ -168,6 +168,72 @@ describe("ApiClient", () => {
     ]);
   });
 
+  it("creates GitHub snapshots with gh CLI auth and deletes review sessions", async () => {
+    const seen: { url: string; method: string; body: unknown }[] = [];
+    const fetcher = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        seen.push({
+          url: String(input),
+          method: init?.method ?? "GET",
+          body: init?.body ? JSON.parse(String(init.body)) : null,
+        });
+        if (String(input).endsWith("/api/pr-snapshots/from-github-url")) {
+          return jsonResponse({ data: snapshotFixture, error: null });
+        }
+        if (String(input).endsWith("/api/review-sessions/session_1")) {
+          return jsonResponse({
+            data: {
+              id: "session_1",
+              deleted: true,
+              snapshot_id: "snapshot_1",
+              snapshot_deleted: true,
+            },
+            error: null,
+          });
+        }
+        return jsonResponse({ data: null, error: null });
+      },
+    );
+    const client = createCocodeClient({
+      baseUrl: "http://127.0.0.1:17658",
+      authToken: "local-token",
+      fetch: fetcher,
+    });
+
+    await expect(
+      client.createGitHubSnapshot({
+        workspace_id: "workspace_1",
+        repository_id: "repo_1",
+        url: "https://github.com/openai/codex/pull/123",
+        auth_method: "gh_cli",
+      }),
+    ).resolves.toMatchObject({ id: "snapshot_1" });
+    await expect(
+      client.deleteReviewSession("session_1"),
+    ).resolves.toMatchObject({
+      deleted: true,
+      snapshot_deleted: true,
+    });
+
+    expect(seen).toEqual([
+      {
+        url: "http://127.0.0.1:17658/api/pr-snapshots/from-github-url",
+        method: "POST",
+        body: {
+          workspace_id: "workspace_1",
+          repository_id: "repo_1",
+          url: "https://github.com/openai/codex/pull/123",
+          auth_method: "gh_cli",
+        },
+      },
+      {
+        url: "http://127.0.0.1:17658/api/review-sessions/session_1",
+        method: "DELETE",
+        body: null,
+      },
+    ]);
+  });
+
   it("controls live reviews, queries findings, and reads SSE events", async () => {
     const seen: {
       url: string;

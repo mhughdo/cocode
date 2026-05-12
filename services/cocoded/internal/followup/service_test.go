@@ -163,7 +163,7 @@ func TestServiceFollowupAgentConfigRejectsWriteCapability(t *testing.T) {
 		t.Fatalf("CreateAgentConfig(writer) error = %v", err)
 	}
 
-	_, err := service.followupAgentConfig(context.Background(), "agent_config_writer")
+	_, err := service.followupAgentConfig(context.Background(), "agent_config_writer", "")
 	if !errors.Is(err, ErrInvalidAgentConfig) {
 		t.Fatalf("followupAgentConfig() error = %v, want ErrInvalidAgentConfig", err)
 	}
@@ -203,13 +203,56 @@ func TestServiceFollowupAgentConfigAcceptsProtocolAdapters(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("CreateAgentConfig(%s) error = %v", tc.id, err)
 		}
-		config, err := service.followupAgentConfig(context.Background(), tc.id)
+		config, err := service.followupAgentConfig(context.Background(), tc.id, "")
 		if err != nil {
 			t.Fatalf("followupAgentConfig(%s) error = %v", tc.kind, err)
 		}
 		if config.AdapterKind != string(tc.kind) {
 			t.Fatalf("adapter kind = %s, want %s", config.AdapterKind, tc.kind)
 		}
+	}
+}
+
+func TestServiceFollowupAgentConfigAutoSelectsSessionReviewer(t *testing.T) {
+	t.Parallel()
+
+	queries := setupFollowupDB(t)
+	service := testFollowupService(queries)
+	if _, err := queries.CreateAgentConfig(context.Background(), dbgen.CreateAgentConfigParams{
+		ID:               "agent_config_global_followup",
+		Name:             "Global Follow-up Agent",
+		Role:             "follow-up",
+		AdapterKind:      "cli_noninteractive",
+		ArgsJson:         "[]",
+		CwdMode:          "repo_root",
+		EnvAllowlistJson: "[]",
+		OutputMode:       "json",
+		CapabilitiesJson: "{}",
+		SettingsJson:     "{}",
+		Enabled:          1,
+		CreatedAt:        "2026-05-03T00:08:00Z",
+		UpdatedAt:        "2026-05-03T00:08:00Z",
+	}); err != nil {
+		t.Fatalf("CreateAgentConfig(global followup) error = %v", err)
+	}
+	if _, err := queries.CreateReviewSessionAgent(context.Background(), dbgen.CreateReviewSessionAgentParams{
+		ID:                   "review_session_agent_followup",
+		ReviewSessionID:      "review_session_followup",
+		AgentConfigID:        "agent_config_followup",
+		Role:                 "general",
+		RunOrder:             1,
+		Enabled:              1,
+		SettingsOverrideJson: "{}",
+	}); err != nil {
+		t.Fatalf("CreateReviewSessionAgent() error = %v", err)
+	}
+
+	config, err := service.followupAgentConfig(context.Background(), "", "review_session_followup")
+	if err != nil {
+		t.Fatalf("followupAgentConfig(auto) error = %v", err)
+	}
+	if config.ID != "agent_config_followup" {
+		t.Fatalf("followupAgentConfig(auto).ID = %s, want session agent", config.ID)
 	}
 }
 

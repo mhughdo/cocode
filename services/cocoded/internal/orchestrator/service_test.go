@@ -200,6 +200,48 @@ func TestWorkflowRunsFakeAgentEndToEnd(t *testing.T) {
 	}
 }
 
+func TestSanitizeCommandArgsRepairsStaleClaudeToolsFlag(t *testing.T) {
+	args := agents.SanitizeCommandArgs("claude", []string{
+		"-p",
+		agents.PromptArgPlaceholder,
+		"--output-format",
+		"json",
+		"--tools",
+		"",
+		"--permission-mode",
+		"plan",
+	})
+	want := []string{
+		"-p",
+		agents.PromptArgPlaceholder,
+		"--output-format",
+		"json",
+		"--permission-mode",
+		"plan",
+	}
+	if !slices.Equal(args, want) {
+		t.Fatalf("SanitizeCommandArgs() = %#v, want %#v", args, want)
+	}
+}
+
+func TestSanitizeCommandArgsKeepsConfiguredClaudeTools(t *testing.T) {
+	args := agents.SanitizeCommandArgs("claude", []string{
+		"--tools",
+		"Read,Glob,Grep",
+		"-p",
+		agents.PromptArgPlaceholder,
+	})
+	want := []string{
+		"--tools",
+		"Read,Glob,Grep",
+		"-p",
+		agents.PromptArgPlaceholder,
+	}
+	if !slices.Equal(args, want) {
+		t.Fatalf("SanitizeCommandArgs() = %#v, want %#v", args, want)
+	}
+}
+
 func TestWorkflowPersistsStructuredFindingCandidates(t *testing.T) {
 	t.Parallel()
 

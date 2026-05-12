@@ -52,9 +52,9 @@ Current examples:
 | Preset | Prompt | Output | Notes |
 |---|---|---|---|
 | Codex CLI | stdin | JSONL | `codex exec --json --sandbox read-only --skip-git-repo-check --ephemeral --ignore-rules --color never -` |
-| Claude Code CLI | arg | JSON | `claude -p {{prompt}} --output-format json --permission-mode plan --no-session-persistence --tools ""` |
-| Gemini CLI | arg | JSON | `gemini -p {{prompt}} --output-format json --approval-mode plan --skip-trust` |
-| OpenCode CLI | arg | JSONL | `opencode run --format json {{prompt}}` |
+| Claude Code CLI | arg | JSON | `claude -p {{prompt}} --output-format json --permission-mode plan --no-session-persistence` |
+| Gemini CLI | arg | JSON | `gemini -p {{prompt}} --output-format json --approval-mode default --skip-trust` |
+| OpenCode CLI | arg | JSONL | `opencode run --pure --format json --thinking --model opencode-go/kimi-k2.6 --variant high {{prompt}}` |
 | Codex App Server | JSON-RPC stdio | JSON | `codex app-server --listen stdio://` |
 | Gemini ACP | ACP stdio | JSON | `gemini --acp` |
 | OpenCode ACP | ACP stdio | JSON | `opencode acp` |

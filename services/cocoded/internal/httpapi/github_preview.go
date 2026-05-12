@@ -97,13 +97,21 @@ func createGitHubPreviewHandler(services routerServices) gin.HandlerFunc {
 			respondError(c, apperrorInternal("failed to store GitHub preview"))
 			return
 		}
+		comments := preview.Comments
+		if comments == nil {
+			comments = []githubpr.ReviewCommentDraft{}
+		}
+		warnings := preview.Warnings
+		if warnings == nil {
+			warnings = []githubpr.AnchorWarning{}
+		}
 		respondOK(c, GitHubPreviewResponse{
 			PublishDraftID: draft.ID,
 			ArtifactID:     artifactRow.ID,
 			ReviewEvent:    reviewEvent,
 			Body:           preview.Body,
-			Comments:       preview.Comments,
-			Warnings:       preview.Warnings,
+			Comments:       comments,
+			Warnings:       warnings,
 			Checklist:      checklist,
 		})
 	}

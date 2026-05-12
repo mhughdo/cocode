@@ -17,8 +17,9 @@ import (
 )
 
 type FindingListResponse struct {
-	Items []FindingResponse `json:"items"`
-	Stats FindingListStats  `json:"stats"`
+	Items   []FindingResponse  `json:"items"`
+	Stats   FindingListStats   `json:"stats"`
+	Filters FindingListFilters `json:"filters"`
 }
 
 type FindingListStats struct {
@@ -30,27 +31,51 @@ type FindingListStats struct {
 	NeedsTriage int            `json:"needs_triage"`
 }
 
+type FindingListFilters struct {
+	Agents []FindingFilterOption `json:"agents"`
+	Files  []FindingFilterOption `json:"files"`
+}
+
+type FindingFilterOption struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	Count int    `json:"count"`
+}
+
+type FindingSourceAgentResponse struct {
+	AgentRunID    string  `json:"agent_run_id"`
+	AgentConfigID string  `json:"agent_config_id,omitempty"`
+	Name          string  `json:"name"`
+	Role          string  `json:"role,omitempty"`
+	AdapterKind   string  `json:"adapter_kind,omitempty"`
+	ModelLabel    string  `json:"model_label,omitempty"`
+	Reasoning     string  `json:"reasoning_label,omitempty"`
+	Severity      string  `json:"severity,omitempty"`
+	Confidence    float64 `json:"confidence,omitempty"`
+}
+
 type FindingResponse struct {
-	ID                     string  `json:"id"`
-	ReviewSessionID        string  `json:"review_session_id"`
-	CanonicalClaim         string  `json:"canonical_claim"`
-	Category               string  `json:"category"`
-	Severity               string  `json:"severity"`
-	Confidence             float64 `json:"confidence"`
-	VerificationStatus     string  `json:"verification_status"`
-	DecisionStatus         string  `json:"decision_status"`
-	PrimaryPath            string  `json:"primary_path,omitempty"`
-	PrimaryStartLine       int64   `json:"primary_start_line,omitempty"`
-	PrimaryEndLine         int64   `json:"primary_end_line,omitempty"`
-	EvidenceSummary        string  `json:"evidence_summary,omitempty"`
-	CounterEvidenceSummary string  `json:"counter_evidence_summary,omitempty"`
-	SuggestedFix           string  `json:"suggested_fix,omitempty"`
-	DraftComment           string  `json:"draft_comment,omitempty"`
-	Fingerprint            string  `json:"fingerprint"`
-	MergedFromCount        int64   `json:"merged_from_count"`
-	IntroducedInSHA        string  `json:"introduced_in_sha,omitempty"`
-	FirstSeenAt            string  `json:"first_seen_at"`
-	UpdatedAt              string  `json:"updated_at"`
+	ID                     string                       `json:"id"`
+	ReviewSessionID        string                       `json:"review_session_id"`
+	CanonicalClaim         string                       `json:"canonical_claim"`
+	Category               string                       `json:"category"`
+	Severity               string                       `json:"severity"`
+	Confidence             float64                      `json:"confidence"`
+	VerificationStatus     string                       `json:"verification_status"`
+	DecisionStatus         string                       `json:"decision_status"`
+	PrimaryPath            string                       `json:"primary_path,omitempty"`
+	PrimaryStartLine       int64                        `json:"primary_start_line,omitempty"`
+	PrimaryEndLine         int64                        `json:"primary_end_line,omitempty"`
+	EvidenceSummary        string                       `json:"evidence_summary,omitempty"`
+	CounterEvidenceSummary string                       `json:"counter_evidence_summary,omitempty"`
+	SuggestedFix           string                       `json:"suggested_fix,omitempty"`
+	DraftComment           string                       `json:"draft_comment,omitempty"`
+	Fingerprint            string                       `json:"fingerprint"`
+	MergedFromCount        int64                        `json:"merged_from_count"`
+	IntroducedInSHA        string                       `json:"introduced_in_sha,omitempty"`
+	FirstSeenAt            string                       `json:"first_seen_at"`
+	UpdatedAt              string                       `json:"updated_at"`
+	SourceAgents           []FindingSourceAgentResponse `json:"source_agents,omitempty"`
 }
 
 type FindingDetailResponse struct {
@@ -100,6 +125,12 @@ type FindingCandidateResponse struct {
 	Fingerprint      string          `json:"fingerprint,omitempty"`
 	CreatedAt        string          `json:"created_at"`
 	Relation         string          `json:"relation,omitempty"`
+	AgentConfigID    string          `json:"agent_config_id,omitempty"`
+	AgentName        string          `json:"agent_name,omitempty"`
+	AgentRole        string          `json:"agent_role,omitempty"`
+	AdapterKind      string          `json:"adapter_kind,omitempty"`
+	ModelLabel       string          `json:"model_label,omitempty"`
+	ReasoningLabel   string          `json:"reasoning_label,omitempty"`
 }
 
 type HumanDecisionResponse struct {
@@ -156,15 +187,25 @@ func listFindingsHandler(queries *dbgen.Queries) gin.HandlerFunc {
 			respondError(c, apperror.Internal("failed to list findings"))
 			return
 		}
+		rows = userVisibleFindings(rows)
 		sortFindings(rows)
+		sourceAgents, err := sourceAgentsByFinding(c.Request.Context(), queries, rows)
+		if err != nil {
+			respondError(c, apperror.Internal("failed to load finding sources"))
+			return
+		}
 		stats := findingListStats(rows)
-		filtered := filterFindings(rows, c.Query("status"), c.Query("severity"), c.Query("q"))
+		filtered := filterFindings(rows, sourceAgents, c.Query("status"), c.Query("severity"), c.Query("agent"), c.Query("file"), c.Query("q"))
 		response := make([]FindingResponse, 0, len(filtered))
 		for _, row := range filtered {
-			response = append(response, findingResponse(row))
+			response = append(response, findingResponseWithSources(row, sourceAgents[row.ID]))
 		}
 		stats.Filtered = len(response)
-		respondOK(c, FindingListResponse{Items: response, Stats: stats})
+		respondOK(c, FindingListResponse{
+			Items:   response,
+			Stats:   stats,
+			Filters: findingListFilters(rows, sourceAgents),
+		})
 	}
 }
 
@@ -208,14 +249,23 @@ func findingEvidenceMapHandler(services routerServices, rebuild bool) gin.Handle
 			return
 		}
 		builder := evidencepkg.Service{Queries: services.queries}
+		mapCtx := evidencepkg.MapContext{}
+		if session, err := services.queries.GetReviewSession(c.Request.Context(), finding.ReviewSessionID); err == nil && session.RepositoryID != "" {
+			if repository, err := services.queries.GetRepository(c.Request.Context(), session.RepositoryID); err == nil {
+				mapCtx.RepositoryLocalPath = repository.LocalPath
+			}
+		}
 		var (
 			view FindingEvidenceMapResponse
 			err  error
 		)
 		if rebuild {
-			view, err = builder.RebuildEvidenceMap(c.Request.Context(), finding)
+			view, err = builder.RebuildEvidenceMapWithContext(c.Request.Context(), finding, mapCtx)
 		} else {
-			view, _, err = builder.LoadOrRebuildEvidenceMap(c.Request.Context(), finding)
+			view, err = builder.LoadEvidenceMap(c.Request.Context(), finding)
+			if errors.Is(err, sql.ErrNoRows) {
+				view, err = builder.RebuildEvidenceMapWithContext(c.Request.Context(), finding, mapCtx)
+			}
 		}
 		if err != nil {
 			respondError(c, apperror.Internal("failed to build evidence map"))
@@ -431,7 +481,7 @@ func findingDetailResponse(ctx context.Context, queries *dbgen.Queries, reviewSe
 		if err != nil {
 			return FindingDetailResponse{}, apperror.Internal("failed to read finding candidate")
 		}
-		item, appErr := findingCandidateResponse(candidate, link.Relation)
+		item, appErr := findingCandidateResponse(ctx, queries, candidate, link.Relation)
 		if appErr != nil {
 			return FindingDetailResponse{}, appErr
 		}
@@ -479,7 +529,16 @@ func evidenceItemsForFinding(ctx context.Context, queries *dbgen.Queries, findin
 }
 
 func groupEvidenceItems(items []EvidenceItemResponse) EvidenceGroupsResponse {
-	groups := EvidenceGroupsResponse{}
+	groups := EvidenceGroupsResponse{
+		Supporting:     []EvidenceItemResponse{},
+		Counter:        []EvidenceItemResponse{},
+		Neutral:        []EvidenceItemResponse{},
+		Missing:        []EvidenceItemResponse{},
+		Test:           []EvidenceItemResponse{},
+		Search:         []EvidenceItemResponse{},
+		Agent:          []EvidenceItemResponse{},
+		StaticAnalysis: []EvidenceItemResponse{},
+	}
 	for _, item := range items {
 		switch item.Kind {
 		case "supporting":
@@ -572,6 +631,10 @@ func normalizeDecision(request UpdateFindingDecisionRequest) (string, *apperror.
 }
 
 func findingResponse(row dbgen.Finding) FindingResponse {
+	return findingResponseWithSources(row, nil)
+}
+
+func findingResponseWithSources(row dbgen.Finding, sources []FindingSourceAgentResponse) FindingResponse {
 	return FindingResponse{
 		ID:                     row.ID,
 		ReviewSessionID:        row.ReviewSessionID,
@@ -593,15 +656,17 @@ func findingResponse(row dbgen.Finding) FindingResponse {
 		IntroducedInSHA:        nullableValue(row.IntroducedInSha),
 		FirstSeenAt:            row.FirstSeenAt,
 		UpdatedAt:              row.UpdatedAt,
+		SourceAgents:           sources,
 	}
 }
 
-func findingCandidateResponse(row dbgen.FindingCandidate, relation string) (FindingCandidateResponse, *apperror.Error) {
+func findingCandidateResponse(ctx context.Context, queries *dbgen.Queries, row dbgen.FindingCandidate, relation string) (FindingCandidateResponse, *apperror.Error) {
 	locations := json.RawMessage(row.LocationsJson)
 	evidence := json.RawMessage(row.EvidenceJson)
 	if !json.Valid(locations) || !json.Valid(evidence) {
 		return FindingCandidateResponse{}, apperror.Internal("stored finding candidate JSON is invalid")
 	}
+	source := findingSourceAgentForCandidate(ctx, queries, row)
 	return FindingCandidateResponse{
 		ID:               row.ID,
 		ReviewSessionID:  row.ReviewSessionID,
@@ -621,6 +686,12 @@ func findingCandidateResponse(row dbgen.FindingCandidate, relation string) (Find
 		Fingerprint:      nullableValue(row.Fingerprint),
 		CreatedAt:        row.CreatedAt,
 		Relation:         relation,
+		AgentConfigID:    source.AgentConfigID,
+		AgentName:        source.Name,
+		AgentRole:        source.Role,
+		AdapterKind:      source.AdapterKind,
+		ModelLabel:       source.ModelLabel,
+		ReasoningLabel:   source.Reasoning,
 	}, nil
 }
 
@@ -691,6 +762,166 @@ func evidenceSnippetFields(metadata json.RawMessage) (string, *EvidenceLineWindo
 	return strings.TrimSpace(payload.CodeSnippet), window
 }
 
+func sourceAgentsByFinding(ctx context.Context, queries *dbgen.Queries, rows []dbgen.Finding) (map[string][]FindingSourceAgentResponse, error) {
+	result := make(map[string][]FindingSourceAgentResponse, len(rows))
+	for _, row := range rows {
+		links, err := queries.ListFindingCandidateLinks(ctx, row.ID)
+		if err != nil {
+			return nil, err
+		}
+		seen := map[string]struct{}{}
+		for _, link := range links {
+			candidate, err := queries.GetFindingCandidate(ctx, link.FindingCandidateID)
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					continue
+				}
+				return nil, err
+			}
+			source := findingSourceAgentForCandidate(ctx, queries, candidate)
+			key := source.AgentRunID
+			if key == "" {
+				key = source.AgentConfigID
+			}
+			if key == "" {
+				key = source.Name
+			}
+			if key != "" {
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+			}
+			result[row.ID] = append(result[row.ID], source)
+		}
+		sort.SliceStable(result[row.ID], func(i, j int) bool {
+			left, right := result[row.ID][i], result[row.ID][j]
+			if left.Name != right.Name {
+				return left.Name < right.Name
+			}
+			return left.AgentRunID < right.AgentRunID
+		})
+	}
+	return result, nil
+}
+
+func findingSourceAgentForCandidate(ctx context.Context, queries *dbgen.Queries, candidate dbgen.FindingCandidate) FindingSourceAgentResponse {
+	source := FindingSourceAgentResponse{
+		AgentRunID: candidate.AgentRunID,
+		Name:       "Reviewer",
+		Severity:   candidate.Severity,
+		Confidence: candidate.Confidence,
+	}
+	run, err := queries.GetAgentRun(ctx, candidate.AgentRunID)
+	if err != nil {
+		if candidate.AgentRunID != "" {
+			source.Name = candidate.AgentRunID
+		}
+		return source
+	}
+	source.AgentConfigID = run.AgentConfigID
+	source.Role = run.Role
+	config, err := queries.GetAgentConfig(ctx, run.AgentConfigID)
+	if err != nil {
+		if source.AgentConfigID != "" {
+			source.Name = source.AgentConfigID
+		}
+		return source
+	}
+	source.Name = strings.TrimSpace(config.Name)
+	if source.Name == "" {
+		source.Name = strings.TrimSpace(config.ID)
+	}
+	source.Role = strings.TrimSpace(config.Role)
+	source.AdapterKind = strings.TrimSpace(config.AdapterKind)
+	source.ModelLabel = nullableValue(config.ModelLabel)
+	source.Reasoning = nullableValue(config.ReasoningLabel)
+	return source
+}
+
+func findingListFilters(rows []dbgen.Finding, sourceAgents map[string][]FindingSourceAgentResponse) FindingListFilters {
+	files := map[string]int{}
+	agents := map[string]FindingFilterOption{}
+	for _, row := range rows {
+		if path := strings.TrimSpace(nullableValue(row.PrimaryPath)); path != "" {
+			files[path]++
+		}
+		seenAgents := map[string]struct{}{}
+		for _, source := range sourceAgents[row.ID] {
+			id := strings.TrimSpace(source.AgentConfigID)
+			if id == "" {
+				id = strings.TrimSpace(source.AgentRunID)
+			}
+			if id == "" {
+				id = strings.TrimSpace(source.Name)
+			}
+			if id == "" {
+				continue
+			}
+			if _, ok := seenAgents[id]; ok {
+				continue
+			}
+			seenAgents[id] = struct{}{}
+			option := agents[id]
+			if option.ID == "" {
+				option = FindingFilterOption{
+					ID:    id,
+					Label: fallbackFilterLabel(source.Name, id),
+				}
+			}
+			option.Count++
+			agents[id] = option
+		}
+	}
+	return FindingListFilters{
+		Agents: sortedFilterOptions(agents),
+		Files:  sortedFileFilterOptions(files),
+	}
+}
+
+func fallbackFilterLabel(value string, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func sortedFilterOptions(options map[string]FindingFilterOption) []FindingFilterOption {
+	items := make([]FindingFilterOption, 0, len(options))
+	for _, option := range options {
+		items = append(items, option)
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].Count != items[j].Count {
+			return items[i].Count > items[j].Count
+		}
+		if items[i].Label != items[j].Label {
+			return items[i].Label < items[j].Label
+		}
+		return items[i].ID < items[j].ID
+	})
+	return items
+}
+
+func sortedFileFilterOptions(files map[string]int) []FindingFilterOption {
+	items := make([]FindingFilterOption, 0, len(files))
+	for path, count := range files {
+		items = append(items, FindingFilterOption{
+			ID:    path,
+			Label: path,
+			Count: count,
+		})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].Count != items[j].Count {
+			return items[i].Count > items[j].Count
+		}
+		return items[i].Label < items[j].Label
+	})
+	return items
+}
+
 func sortFindings(rows []dbgen.Finding) {
 	sort.SliceStable(rows, func(i, j int) bool {
 		left, right := rows[i], rows[j]
@@ -713,12 +944,14 @@ func sortFindings(rows []dbgen.Finding) {
 	})
 }
 
-func filterFindings(rows []dbgen.Finding, status string, severity string, query string) []dbgen.Finding {
+func filterFindings(rows []dbgen.Finding, sourceAgents map[string][]FindingSourceAgentResponse, status string, severity string, agent string, file string, query string) []dbgen.Finding {
 	status = strings.ToLower(strings.TrimSpace(status))
 	if status == "" {
 		status = "all"
 	}
 	severity = strings.ToLower(strings.TrimSpace(severity))
+	agent = strings.ToLower(strings.TrimSpace(agent))
+	file = strings.ToLower(strings.TrimSpace(file))
 	query = strings.ToLower(strings.TrimSpace(query))
 	filtered := make([]dbgen.Finding, 0, len(rows))
 	for _, row := range rows {
@@ -728,12 +961,53 @@ func filterFindings(rows []dbgen.Finding, status string, severity string, query 
 		if !findingMatchesStatus(row, status) {
 			continue
 		}
-		if query != "" && !findingMatchesQuery(row, query) {
+		if file != "" && !findingMatchesFile(row, file) {
+			continue
+		}
+		if agent != "" && !findingMatchesAgent(sourceAgents[row.ID], agent) {
+			continue
+		}
+		if query != "" && !findingMatchesQuery(row, sourceAgents[row.ID], query) {
 			continue
 		}
 		filtered = append(filtered, row)
 	}
 	return filtered
+}
+
+func userVisibleFindings(rows []dbgen.Finding) []dbgen.Finding {
+	filtered := rows[:0]
+	for _, row := range rows {
+		if isMachineEventFinding(row) {
+			continue
+		}
+		filtered = append(filtered, row)
+	}
+	return filtered
+}
+
+func isMachineEventFinding(row dbgen.Finding) bool {
+	claim := strings.TrimSpace(row.CanonicalClaim)
+	if claim == "" || !strings.HasPrefix(claim, "{") {
+		return false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(claim), &payload); err != nil {
+		return strings.Contains(claim, `"hook_started"`) && strings.Contains(claim, `"hook_name"`)
+	}
+	eventType := strings.ToLower(strings.TrimSpace(stringValue(payload["type"])))
+	subtype := strings.ToLower(strings.TrimSpace(stringValue(payload["subtype"])))
+	hookName := strings.ToLower(strings.TrimSpace(stringValue(payload["hook_name"])))
+	return eventType == "system" ||
+		eventType == "thread.started" ||
+		eventType == "turn.started" ||
+		strings.Contains(subtype, "hook") ||
+		strings.Contains(hookName, "sessionstart")
+}
+
+func stringValue(value any) string {
+	text, _ := value.(string)
+	return text
 }
 
 func findingMatchesStatus(row dbgen.Finding, status string) bool {
@@ -749,14 +1023,45 @@ func findingMatchesStatus(row dbgen.Finding, status string) bool {
 	}
 }
 
-func findingMatchesQuery(row dbgen.Finding, query string) bool {
-	haystack := strings.ToLower(strings.Join([]string{
+func findingMatchesFile(row dbgen.Finding, file string) bool {
+	path := strings.ToLower(strings.TrimSpace(nullableValue(row.PrimaryPath)))
+	return path == file || strings.Contains(path, file)
+}
+
+func findingMatchesAgent(sources []FindingSourceAgentResponse, agent string) bool {
+	for _, source := range sources {
+		values := []string{
+			source.AgentConfigID,
+			source.AgentRunID,
+			source.Name,
+			source.Role,
+			source.AdapterKind,
+			source.ModelLabel,
+		}
+		for _, value := range values {
+			value = strings.ToLower(strings.TrimSpace(value))
+			if value == agent || strings.Contains(value, agent) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func findingMatchesQuery(row dbgen.Finding, sources []FindingSourceAgentResponse, query string) bool {
+	parts := []string{
 		row.CanonicalClaim,
 		row.Category,
 		row.Severity,
 		nullableValue(row.PrimaryPath),
 		nullableValue(row.EvidenceSummary),
-	}, " "))
+		nullableValue(row.CounterEvidenceSummary),
+		nullableValue(row.SuggestedFix),
+	}
+	for _, source := range sources {
+		parts = append(parts, source.Name, source.Role, source.AdapterKind, source.ModelLabel, source.Reasoning)
+	}
+	haystack := strings.ToLower(strings.Join(parts, " "))
 	return strings.Contains(haystack, query)
 }
 

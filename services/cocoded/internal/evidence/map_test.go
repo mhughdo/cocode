@@ -3,6 +3,8 @@ package evidence
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -54,6 +56,34 @@ func TestRebuildEvidenceMapPersistsGraphNodesEdgesAndCallPath(t *testing.T) {
 	}
 }
 
+func TestRebuildEvidenceMapOmitsProjectMetadataEvidence(t *testing.T) {
+	t.Parallel()
+
+	env := setupEvidenceEnv(t)
+	finding := createEvidenceFinding(t, env.Queries, testFindingParams("finding_metadata_map", "Invoice export lacks admin guard", "security", "high", 0.9))
+	createMapEvidenceItem(t, env, "evidence_metadata_primary", finding.ID, KindSupporting, "Changed export", "Primary location is changed.", "src/server.js", 19, 19, 0.9, `{"producer":"local_verifier","source":"primary_location"}`)
+	createMapEvidenceItem(t, env, "evidence_metadata_manifest", finding.ID, KindCounter, "Package test script", "Manifest mentions a test script.", "package.json", 1, 1, 0.6, `{"producer":"local_verifier","source":"counter_evidence_search","rule":"auth_guard"}`)
+	createMapEvidenceItem(t, env, "evidence_metadata_test", finding.ID, KindTest, "Authorization test", "A related test mentions admin access.", "test/server.test.js", 7, 7, 0.6, `{"producer":"local_verifier","source":"counter_evidence_search","rule":"auth_guard"}`)
+
+	view, err := env.Service.RebuildEvidenceMap(context.Background(), finding)
+	if err != nil {
+		t.Fatalf("RebuildEvidenceMap() error = %v", err)
+	}
+	if hasMapNode(view.Nodes, NodeCounterEvidence, "package.json") {
+		t.Fatalf("project metadata leaked into evidence map nodes: %+v", view.Nodes)
+	}
+	for _, item := range view.Panel.Evidence {
+		if item.Path == "package.json" {
+			t.Fatalf("project metadata leaked into evidence panel: %+v", view.Panel.Evidence)
+		}
+	}
+	if !hasMapNode(view.Nodes, NodeTest, "test/server.test.js") ||
+		view.Panel.EvidenceCounts[KindTest] != 1 ||
+		view.Panel.EvidenceCounts[KindCounter] != 0 {
+		t.Fatalf("useful evidence was not preserved: nodes=%+v panel=%+v", view.Nodes, view.Panel)
+	}
+}
+
 func TestRebuildEvidenceMapReturnsPartialForSparseFinding(t *testing.T) {
 	t.Parallel()
 
@@ -94,6 +124,59 @@ func TestRebuildEvidenceMapBoundsEvidenceNodeCount(t *testing.T) {
 		!containsMissingReason(view.MissingReasons, "omitted from graph") ||
 		view.Graph.Status != GraphStatusPartial {
 		t.Fatalf("bounded view nodes=%d status=%s missing=%+v", len(view.Nodes), view.Graph.Status, view.MissingReasons)
+	}
+}
+
+func TestParseGoplsCallHierarchy(t *testing.T) {
+	t.Parallel()
+
+	output := `caller[0]: ranges 10:3-11 in /repo/internal/router.go from/to function BuildRouter in /repo/internal/router.go:24:6-17
+identifier: function cancelSubscription in /repo/internal/handlers.go:42:6-24
+callee[0]: ranges 44:8-17 in /repo/internal/handlers.go from/to function requireAdmin in /repo/internal/auth.go:11:6-18
+callee[1]: ranges 45:8-31 in /repo/internal/handlers.go from/to function CancelSubscription in /repo/internal/db.go:72:6-24`
+
+	identifier, entries := parseGoplsCallHierarchy(output, "/repo")
+	if identifier == nil ||
+		identifier.symbol != "cancelSubscription" ||
+		identifier.path != "internal/handlers.go" ||
+		identifier.line != 42 {
+		t.Fatalf("identifier = %+v", identifier)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("entries = %+v", entries)
+	}
+	if entries[0].direction != "caller" ||
+		entries[0].symbol != "BuildRouter" ||
+		entries[0].path != "internal/router.go" ||
+		entries[0].line != 24 {
+		t.Fatalf("caller = %+v", entries[0])
+	}
+	if entries[1].direction != "callee" ||
+		entries[1].symbol != "requireAdmin" ||
+		entries[1].path != "internal/auth.go" ||
+		entries[1].line != 11 {
+		t.Fatalf("callee = %+v", entries[1])
+	}
+}
+
+func TestFindGoModuleRootSupportsNestedModules(t *testing.T) {
+	t.Parallel()
+
+	repoRoot := t.TempDir()
+	moduleRoot := filepath.Join(repoRoot, "services", "api")
+	if err := os.MkdirAll(filepath.Join(moduleRoot, "internal"), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(moduleRoot, "go.mod"), []byte("module example.com/api\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(go.mod) error = %v", err)
+	}
+
+	root, ok := findGoModuleRoot(repoRoot, "services/api/internal/handler.go")
+	if !ok || root != moduleRoot {
+		t.Fatalf("findGoModuleRoot() = %q, %v; want %q, true", root, ok, moduleRoot)
+	}
+	if root, ok := findGoModuleRoot(repoRoot, "../outside/handler.go"); ok || root != "" {
+		t.Fatalf("findGoModuleRoot(outside) = %q, %v; want empty false", root, ok)
 	}
 }
 

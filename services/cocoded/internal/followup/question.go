@@ -14,6 +14,7 @@ import (
 	"github.com/hughdo/cocode/services/cocoded/internal/agents"
 	"github.com/hughdo/cocode/services/cocoded/internal/contextbundle"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
+	"github.com/hughdo/cocode/services/cocoded/internal/eventlog"
 )
 
 const (
@@ -51,24 +52,9 @@ type runtimeSettings struct {
 	SkipVersion        bool                  `json:"skip_version"`
 }
 
-type followupAgentDocument struct {
-	Answer       string          `json:"answer"`
-	Content      string          `json:"content"`
-	Message      string          `json:"message"`
-	Summary      string          `json:"summary"`
-	EvidenceRefs json.RawMessage `json:"evidence_refs"`
-	References   json.RawMessage `json:"references"`
-	Result       *struct {
-		Answer       string          `json:"answer"`
-		Content      string          `json:"content"`
-		Message      string          `json:"message"`
-		EvidenceRefs json.RawMessage `json:"evidence_refs"`
-		References   json.RawMessage `json:"references"`
-	} `json:"result"`
-}
-
 type followupAgentAnswer struct {
 	Content          string
+	ReasoningSummary string
 	EvidenceRefsJSON json.RawMessage
 }
 
@@ -95,7 +81,7 @@ func (s Service) AskQuestion(ctx context.Context, params AskQuestionParams) (Ask
 			return AskQuestionResult{}, err
 		}
 	}
-	config, err := s.followupAgentConfig(ctx, params.AgentConfigID)
+	config, err := s.followupAgentConfig(ctx, params.AgentConfigID, view.Finding.ReviewSessionID)
 	if err != nil {
 		return AskQuestionResult{}, err
 	}
@@ -191,16 +177,23 @@ func (s Service) answerWithCLI(ctx context.Context, view ThreadView, userMessage
 			"context_scope":     string(scope),
 			"output_mode":       config.OutputMode,
 		},
+		EventSink: s.agentRunEventSink(
+			view.Finding.ReviewSessionID,
+			view.Finding.ID,
+			view.Thread.ID,
+			userMessage.ID,
+			string(scope),
+		),
 	})
 	if err != nil {
-		return AskQuestionResult{View: view, UserMessage: userMessage, AgentRun: result.Run, ContextBundle: built.Bundle}, err
+		return s.appendFollowupFailure(ctx, view, userMessage, config, result.Run, built.Bundle, err)
 	}
 	if result.Run.Status != agentrun.RunStatusSucceeded {
-		return AskQuestionResult{View: view, UserMessage: userMessage, AgentRun: result.Run, ContextBundle: built.Bundle}, fmt.Errorf("%w: %s", ErrAgentRunFailed, nullableSQLStringValue(result.Run.ErrorMessage))
+		return s.appendFollowupFailure(ctx, view, userMessage, config, result.Run, built.Bundle, fmt.Errorf("%w: %s", ErrAgentRunFailed, nullableSQLStringValue(result.Run.ErrorMessage)))
 	}
 	answer, err := s.answerFromRun(ctx, result.Run, agents.OutputMode(config.OutputMode))
 	if err != nil {
-		return AskQuestionResult{View: view, UserMessage: userMessage, AgentRun: result.Run, ContextBundle: built.Bundle}, err
+		return s.appendFollowupFailure(ctx, view, userMessage, config, result.Run, built.Bundle, err)
 	}
 	assistantMessage, err := s.AppendMessage(ctx, AppendMessageParams{
 		ThreadID:         view.Thread.ID,
@@ -224,6 +217,54 @@ func (s Service) answerWithCLI(ctx context.Context, view ThreadView, userMessage
 		AgentRun:         result.Run,
 		ContextBundle:    built.Bundle,
 	}, nil
+}
+
+func (s Service) appendFollowupFailure(ctx context.Context, view ThreadView, userMessage dbgen.FindingThreadMessage, config dbgen.AgentConfig, run dbgen.AgentRun, bundle contextbundle.Bundle, runErr error) (AskQuestionResult, error) {
+	content := s.followupFailureMessage(ctx, config, run, runErr)
+	artifactID := nullableSQLStringValue(run.StderrArtifactID)
+	if artifactID == "" {
+		artifactID = nullableSQLStringValue(run.StdoutArtifactID)
+	}
+	assistantMessage, appendErr := s.AppendMessage(ctx, AppendMessageParams{
+		ThreadID:         view.Thread.ID,
+		Role:             MessageRoleAssistant,
+		AgentConfigID:    config.ID,
+		Content:          content,
+		EvidenceRefsJSON: json.RawMessage("[]"),
+		ArtifactID:       artifactID,
+	})
+	if appendErr != nil {
+		return AskQuestionResult{View: view, UserMessage: userMessage, AgentRun: run, ContextBundle: bundle}, runErr
+	}
+	reloaded, err := s.LoadThread(ctx, view.Thread.ID)
+	if err != nil {
+		return AskQuestionResult{}, err
+	}
+	return AskQuestionResult{
+		View:             reloaded,
+		UserMessage:      userMessage,
+		AssistantMessage: assistantMessage,
+		AgentRun:         run,
+		ContextBundle:    bundle,
+	}, nil
+}
+
+func (s Service) followupFailureMessage(ctx context.Context, config dbgen.AgentConfig, run dbgen.AgentRun, runErr error) string {
+	label := strings.TrimSpace(config.Name)
+	if label == "" {
+		label = "Reviewer"
+	}
+	detail := strings.TrimSpace(nullableSQLStringValue(run.ErrorMessage))
+	if detail == "" && runErr != nil {
+		detail = strings.TrimSpace(runErr.Error())
+	}
+	if stderr, ok := s.readRunArtifactText(ctx, run.StderrArtifactID); ok {
+		detail = stderr
+	}
+	if detail == "" {
+		detail = "unknown error"
+	}
+	return fmt.Sprintf("%s could not answer this follow-up.\n\n```text\n%s\n```", label, detail)
 }
 
 func (s Service) buildQuestionContext(ctx context.Context, view ThreadView, scope contextbundle.Scope, policy json.RawMessage, agentConfigID string) (contextbundle.BuildReviewContextResult, error) {
@@ -385,7 +426,7 @@ func normalizeContextScope(scope contextbundle.Scope) contextbundle.Scope {
 	return contextbundle.ScopeFinding
 }
 
-func (s Service) followupAgentConfig(ctx context.Context, agentConfigID string) (dbgen.AgentConfig, error) {
+func (s Service) followupAgentConfig(ctx context.Context, agentConfigID string, reviewSessionID string) (dbgen.AgentConfig, error) {
 	if strings.TrimSpace(agentConfigID) != "" {
 		config, err := s.Queries.GetAgentConfig(ctx, strings.TrimSpace(agentConfigID))
 		if err != nil {
@@ -405,10 +446,20 @@ func (s Service) followupAgentConfig(ctx context.Context, agentConfigID string) 
 		}
 		return config, nil
 	}
+	if strings.TrimSpace(reviewSessionID) != "" {
+		config, ok, err := s.sessionFollowupAgentConfig(ctx, strings.TrimSpace(reviewSessionID))
+		if err != nil {
+			return dbgen.AgentConfig{}, err
+		}
+		if ok {
+			return config, nil
+		}
+	}
 	configs, err := s.Queries.ListAgentConfigs(ctx)
 	if err != nil {
 		return dbgen.AgentConfig{}, fmt.Errorf("list agent configs: %w", err)
 	}
+	var firstValid dbgen.AgentConfig
 	for _, config := range configs {
 		if config.Enabled == 0 || !supportedFollowupAdapter(config.AdapterKind) {
 			continue
@@ -416,12 +467,55 @@ func (s Service) followupAgentConfig(ctx context.Context, agentConfigID string) 
 		if err := validateReviewModeAgentConfig(config); err != nil {
 			continue
 		}
+		if strings.TrimSpace(firstValid.ID) == "" {
+			firstValid = config
+		}
 		role := strings.ToLower(strings.TrimSpace(config.Role))
 		if strings.Contains(role, "follow") || strings.Contains(role, "verifier") {
 			return config, nil
 		}
 	}
+	if strings.TrimSpace(firstValid.ID) != "" {
+		return firstValid, nil
+	}
 	return dbgen.AgentConfig{}, ErrAgentConfigNotFound
+}
+
+func (s Service) sessionFollowupAgentConfig(ctx context.Context, reviewSessionID string) (dbgen.AgentConfig, bool, error) {
+	assignments, err := s.Queries.ListReviewSessionAgents(ctx, reviewSessionID)
+	if err != nil {
+		return dbgen.AgentConfig{}, false, fmt.Errorf("list review session agents: %w", err)
+	}
+	var firstValid dbgen.AgentConfig
+	for _, assignment := range assignments {
+		if assignment.Enabled == 0 {
+			continue
+		}
+		config, err := s.Queries.GetAgentConfig(ctx, assignment.AgentConfigID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			return dbgen.AgentConfig{}, false, fmt.Errorf("read session agent config: %w", err)
+		}
+		if config.Enabled == 0 || !supportedFollowupAdapter(config.AdapterKind) {
+			continue
+		}
+		if err := validateReviewModeAgentConfig(config); err != nil {
+			continue
+		}
+		if strings.TrimSpace(firstValid.ID) == "" {
+			firstValid = config
+		}
+		role := strings.ToLower(strings.TrimSpace(assignment.Role + " " + config.Role))
+		if strings.Contains(role, "follow") || strings.Contains(role, "verifier") {
+			return config, true, nil
+		}
+	}
+	if strings.TrimSpace(firstValid.ID) != "" {
+		return firstValid, true, nil
+	}
+	return dbgen.AgentConfig{}, false, nil
 }
 
 func supportedFollowupAdapter(kind string) bool {
@@ -450,13 +544,13 @@ func (s Service) sessionRepositoryWorkspace(ctx context.Context, finding dbgen.F
 }
 
 func (s Service) connectionConfig(config dbgen.AgentConfig, repository dbgen.Repository, workspace dbgen.Workspace) (agents.ConnectionConfig, agents.TaskLimits, error) {
-	args, err := decodeStringArray(config.ArgsJson, "agent args")
+	args, err := agents.DecodeStringArray(config.ArgsJson, "agent args")
 	if err != nil {
-		return agents.ConnectionConfig{}, agents.TaskLimits{}, err
+		return agents.ConnectionConfig{}, agents.TaskLimits{}, fmt.Errorf("%w: %v", ErrInvalidAgentConfig, err)
 	}
-	envNames, err := decodeStringArray(config.EnvAllowlistJson, "agent env_allowlist")
+	envNames, err := agents.DecodeStringArray(config.EnvAllowlistJson, "agent env_allowlist")
 	if err != nil {
-		return agents.ConnectionConfig{}, agents.TaskLimits{}, err
+		return agents.ConnectionConfig{}, agents.TaskLimits{}, fmt.Errorf("%w: %v", ErrInvalidAgentConfig, err)
 	}
 	env, err := agents.ResolveAllowedEnvironment(envNames)
 	if err != nil {
@@ -470,10 +564,16 @@ func (s Service) connectionConfig(config dbgen.AgentConfig, repository dbgen.Rep
 	if err != nil {
 		return agents.ConnectionConfig{}, agents.TaskLimits{}, err
 	}
+	command := nullableSQLStringValue(config.Command)
+	kind := agents.AdapterKind(config.AdapterKind)
+	modelLabel := strings.TrimSpace(nullableSQLStringValue(config.ModelLabel))
+	reasoningLabel := strings.TrimSpace(nullableSQLStringValue(config.ReasoningLabel))
+	args = agents.SanitizeCommandArgs(command, args)
+	args = agents.CommandArgsWithModelSelection(kind, command, args, modelLabel, reasoningLabel)
 	return agents.ConnectionConfig{
 			AdapterID:        config.ID,
-			Kind:             agents.AdapterKind(config.AdapterKind),
-			Command:          nullableSQLStringValue(config.Command),
+			Kind:             kind,
+			Command:          command,
 			Args:             args,
 			PromptDelivery:   settings.PromptDelivery,
 			CommandSafety:    agents.CommandSafetyOptions{AllowRiskyCommand: settings.AllowRiskyCommand},
@@ -481,8 +581,8 @@ func (s Service) connectionConfig(config dbgen.AgentConfig, repository dbgen.Rep
 			Env:              env,
 			Metadata: map[string]any{
 				"output_mode":     config.OutputMode,
-				"model_label":     nullableSQLStringValue(config.ModelLabel),
-				"reasoning_label": nullableSQLStringValue(config.ReasoningLabel),
+				"model_label":     modelLabel,
+				"reasoning_label": reasoningLabel,
 			},
 		}, agents.TaskLimits{
 			TimeoutSeconds: settings.TimeoutSeconds,
@@ -516,31 +616,6 @@ func decodeRuntimeSettings(raw string) (runtimeSettings, error) {
 		return runtimeSettings{}, fmt.Errorf("%w: runtime limits cannot be negative", ErrInvalidAgentConfig)
 	}
 	return settings, nil
-}
-
-func decodeStringArray(raw string, field string) ([]string, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		raw = "[]"
-	}
-	var values []string
-	if err := json.Unmarshal([]byte(raw), &values); err != nil {
-		return nil, fmt.Errorf("%w: %s must be a JSON string array", ErrInvalidAgentConfig, field)
-	}
-	cleaned := make([]string, 0, len(values))
-	seen := map[string]struct{}{}
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			return nil, fmt.Errorf("%w: %s cannot contain empty values", ErrInvalidAgentConfig, field)
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		cleaned = append(cleaned, value)
-	}
-	return cleaned, nil
 }
 
 func workingDirectoryForAgent(cwdMode string, repository dbgen.Repository, workspace dbgen.Workspace) (string, error) {
@@ -638,7 +713,15 @@ func (s Service) answerFromRun(ctx context.Context, run dbgen.AgentRun, outputMo
 		return followupAgentAnswer{}, fmt.Errorf("read follow-up stdout: %w", err)
 	}
 	parsed := agentoutput.Parse(content, outputMode)
-	answer := parseFollowupAgentAnswer(parsed)
+	if !parsed.Structured {
+		parsed = agentoutput.ParseAuto(content)
+	}
+	extracted := agentoutput.ExtractAnswer(parsed)
+	answer := followupAgentAnswer{
+		Content:          extracted.Content,
+		ReasoningSummary: extracted.ReasoningSummary,
+		EvidenceRefsJSON: extracted.EvidenceRefs,
+	}
 	if strings.TrimSpace(answer.Content) == "" {
 		return followupAgentAnswer{}, fmt.Errorf("%w: agent produced no answer", ErrAgentRunFailed)
 	}
@@ -651,43 +734,111 @@ func (s Service) answerFromRun(ctx context.Context, run dbgen.AgentRun, outputMo
 	return answer, nil
 }
 
-func parseFollowupAgentAnswer(parsed agentoutput.ParsedOutput) followupAgentAnswer {
-	answer := followupAgentAnswer{EvidenceRefsJSON: json.RawMessage("[]")}
-	for _, raw := range parsed.Documents {
-		var doc followupAgentDocument
-		if err := json.Unmarshal(raw, &doc); err != nil {
-			continue
-		}
-		if doc.Result != nil {
-			if doc.Result.Answer != "" {
-				doc.Answer = doc.Result.Answer
-			}
-			if doc.Result.Content != "" {
-				doc.Content = doc.Result.Content
-			}
-			if doc.Result.Message != "" {
-				doc.Message = doc.Result.Message
-			}
-			if len(doc.Result.EvidenceRefs) > 0 {
-				doc.EvidenceRefs = doc.Result.EvidenceRefs
-			}
-			if len(doc.Result.References) > 0 {
-				doc.References = doc.Result.References
-			}
-		}
-		if content := firstNonEmpty(doc.Answer, doc.Content, doc.Message, doc.Summary); content != "" {
-			answer.Content = content
-		}
-		if len(doc.EvidenceRefs) > 0 {
-			answer.EvidenceRefsJSON = doc.EvidenceRefs
-		} else if len(doc.References) > 0 {
-			answer.EvidenceRefsJSON = doc.References
+func (s Service) readRunArtifactText(ctx context.Context, artifactID sql.NullString) (string, bool) {
+	if s.Artifacts == nil || !artifactID.Valid {
+		return "", false
+	}
+	content, _, err := s.Artifacts.Read(ctx, artifactID.String)
+	if err != nil {
+		return "", false
+	}
+	text := strings.TrimSpace(string(content))
+	return text, text != ""
+}
+
+func (s Service) agentRunEventSink(reviewSessionID string, findingID string, threadID string, userMessageID string, scope string) func(context.Context, agents.AgentEvent) {
+	if s.Events == nil || strings.TrimSpace(reviewSessionID) == "" {
+		return nil
+	}
+	return func(ctx context.Context, event agents.AgentEvent) {
+		_ = s.appendAgentRunEvent(ctx, reviewSessionID, findingID, threadID, userMessageID, scope, event)
+	}
+}
+
+func (s Service) appendAgentRunEvent(ctx context.Context, reviewSessionID string, findingID string, threadID string, userMessageID string, scope string, event agents.AgentEvent) error {
+	eventType := followupAgentRunEventType(event.Type)
+	if eventType == "" {
+		return nil
+	}
+	payload := map[string]any{
+		"agent_run_id":    event.RunID,
+		"agent_event":     string(event.Type),
+		"message":         event.Message,
+		"finding_id":      findingID,
+		"thread_id":       threadID,
+		"user_message_id": userMessageID,
+		"context_scope":   scope,
+	}
+	level := "info"
+	if event.Stream != "" {
+		payload["stream"] = event.Stream
+		payload["text_bytes"] = len(event.Text)
+		payload["truncated"] = event.Truncated
+		if preview := truncateAgentEventPreview(event.Text); preview != "" {
+			payload["text_preview"] = preview
 		}
 	}
-	if answer.Content == "" {
-		answer.Content = strings.TrimSpace(parsed.Text)
+	if event.ExitCode != nil {
+		payload["exit_code"] = *event.ExitCode
 	}
-	return answer
+	if event.ErrorCode != "" {
+		payload["error_code"] = event.ErrorCode
+	}
+	if event.Error != "" {
+		payload["error"] = event.Error
+		level = "error"
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encode follow-up agent event payload: %w", err)
+	}
+	createdAt := event.At
+	if createdAt.IsZero() {
+		createdAt = s.now()
+	}
+	_, err = s.Events.Append(ctx, eventlog.AppendParams{
+		ID:              s.newID("event_"),
+		ReviewSessionID: strings.TrimSpace(reviewSessionID),
+		AgentRunID:      nullableSQLString(event.RunID),
+		Type:            eventType,
+		Level:           level,
+		PayloadJSON:     string(payloadJSON),
+		ArtifactID:      nullableSQLString(event.ArtifactID),
+		CreatedAt:       createdAt.UTC().Format(time.RFC3339Nano),
+	})
+	return err
+}
+
+func followupAgentRunEventType(eventType agents.EventType) string {
+	switch eventType {
+	case agents.EventQueued:
+		return "AgentRunQueued"
+	case agents.EventStarted:
+		return "AgentRunStarted"
+	case agents.EventProgress:
+		return "AgentRunProgress"
+	case agents.EventOutput:
+		return "AgentRunOutput"
+	case agents.EventArtifact:
+		return "AgentRunArtifact"
+	case agents.EventCompleted:
+		return "AgentRunCompleted"
+	case agents.EventFailed:
+		return "AgentRunFailed"
+	case agents.EventCanceled:
+		return "AgentRunCanceled"
+	default:
+		return ""
+	}
+}
+
+func truncateAgentEventPreview(value string) string {
+	value = strings.TrimSpace(value)
+	const limit = 12 * 1024
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "\n..."
 }
 
 func localVerifierAnswer(finding dbgen.Finding, items []dbgen.EvidenceItem) string {
@@ -715,20 +866,16 @@ func localVerifierAnswer(finding dbgen.Finding, items []dbgen.EvidenceItem) stri
 	return builder.String()
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
-}
-
 func nullableSQLStringValue(value sql.NullString) string {
 	if !value.Valid {
 		return ""
 	}
 	return value.String
+}
+
+func nullableSQLString(value string) sql.NullString {
+	value = strings.TrimSpace(value)
+	return sql.NullString{String: value, Valid: value != ""}
 }
 
 func maxInt64(a int64, b int64) int64 {

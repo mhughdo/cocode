@@ -215,7 +215,7 @@ Large parallel workstreams:
 | T105 | Add Claude Code CLI preset | Add configurable preset for Claude `-p`/JSON mode. | Done | T092, T093 | T104,T106 | Preset appears in UI; docs explain required local auth. |
 | T106 | Add Gemini CLI preset | Add configurable generic CLI preset for Gemini non-interactive mode. | Done | T092, T093 | T104,T105 | Preset appears; ACP support is tracked separately below. |
 | T107 | Add custom CLI preset | User can create arbitrary CLI adapter config. | Done | T092 | T248 | Custom command can be saved, health checked, and used in review. |
-| T107A | Add OpenCode CLI preset | Add configurable preset for OpenCode `run --format json` non-interactive usage. | Done | T092, T093 | T248 | Preset appears in UI; health check can validate local `opencode` if installed. |
+| T107A | Add OpenCode CLI preset | Add configurable preset for OpenCode `run --pure --format json --thinking` with `opencode-go/kimi-k2.6` non-interactive usage. | Done | T092, T093 | T248 | Preset appears in UI; health check can validate local `opencode` if installed. |
 | T108 | Add JSON-RPC stdio skeleton | Create connection driver boundary for Codex App Server/ACP. | Done | T090 | T109 | Interfaces compile; runtime implementation progress is tracked in F001/F002. |
 | T109 | Add Codex App Server adapter stub | Add Codex app-server event mapping boundary. | Done | T108 | T110 | Adapter identity/capabilities are present; runtime implementation progress is tracked in F001. |
 | T110 | Add ACP adapter stub | Add ACP agent integration boundary. | Done | T108 | T111 | Adapter identity/capabilities are present; runtime implementation progress is tracked in F002. |

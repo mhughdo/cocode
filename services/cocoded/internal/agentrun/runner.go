@@ -42,6 +42,7 @@ type RunParams struct {
 	Task          agents.AgentTask
 	TimeoutPolicy TimeoutPolicy
 	Metadata      map[string]any
+	EventSink     func(context.Context, agents.AgentEvent)
 }
 
 type RunResult struct {
@@ -126,6 +127,7 @@ func (r Runner) Execute(ctx context.Context, params RunParams) (RunResult, error
 			Message: "agent run queued",
 		}},
 	}
+	r.emitEvent(persistCtx, params.EventSink, result.Events[0])
 	run, err = r.updateRun(persistCtx, run, runUpdate{
 		status:    RunStatusRunning,
 		startedAt: nullableRunString(startedAt.Format(time.RFC3339Nano)),
@@ -136,18 +138,18 @@ func (r Runner) Execute(ctx context.Context, params RunParams) (RunResult, error
 	result.Run = run
 	if preflightOutcome != nil {
 		completedAt := r.now()
-		result.Events = append(result.Events, syntheticTerminalEvent(run.ID, completedAt, *preflightOutcome))
+		r.appendEvent(persistCtx, &result, params.EventSink, syntheticTerminalEvent(run.ID, completedAt, *preflightOutcome))
 		finished, err := r.finishRun(persistCtx, run, startedAt, completedAt, *preflightOutcome)
 		result.Run = finished
 		return result, err
 	}
 	if denied, ok := permissions.FirstDenied(); ok {
-		return r.finishWithError(persistCtx, result, run, startedAt, "permission_denied", permissionDeniedError(denied))
+		return r.finishWithError(persistCtx, result, run, startedAt, "permission_denied", permissionDeniedError(denied), params.EventSink)
 	}
 
 	connection, err := r.driver(config.Kind).Open(ctx, config)
 	if err != nil {
-		return r.finishWithError(persistCtx, result, run, startedAt, "open_error", err)
+		return r.finishWithError(persistCtx, result, run, startedAt, "open_error", err, params.EventSink)
 	}
 	defer func() {
 		_ = connection.Close(context.Background())
@@ -155,10 +157,10 @@ func (r Runner) Execute(ctx context.Context, params RunParams) (RunResult, error
 
 	eventStream, err := connection.SendTask(ctx, task)
 	if err != nil {
-		return r.finishWithError(persistCtx, result, run, startedAt, "send_error", err)
+		return r.finishWithError(persistCtx, result, run, startedAt, "send_error", err, params.EventSink)
 	}
 	for event := range eventStream {
-		result.Events = append(result.Events, event)
+		r.appendEvent(persistCtx, &result, params.EventSink, event)
 	}
 
 	completedAt := r.now()
@@ -191,16 +193,31 @@ func (r Runner) Execute(ctx context.Context, params RunParams) (RunResult, error
 	return result, nil
 }
 
-func (r Runner) finishWithError(ctx context.Context, result RunResult, run dbgen.AgentRun, startedAt time.Time, code string, err error) (RunResult, error) {
+func (r Runner) finishWithError(ctx context.Context, result RunResult, run dbgen.AgentRun, startedAt time.Time, code string, err error, sink func(context.Context, agents.AgentEvent)) (RunResult, error) {
 	completedAt := r.now()
 	outcome := outcomeFromError(code, err)
-	result.Events = append(result.Events, syntheticTerminalEvent(run.ID, completedAt, outcome))
+	r.appendEvent(ctx, &result, sink, syntheticTerminalEvent(run.ID, completedAt, outcome))
 	finished, updateErr := r.finishRun(ctx, run, startedAt, completedAt, outcome)
 	result.Run = finished
 	if updateErr != nil {
 		return result, updateErr
 	}
 	return result, nil
+}
+
+func (r Runner) appendEvent(ctx context.Context, result *RunResult, sink func(context.Context, agents.AgentEvent), event agents.AgentEvent) {
+	result.Events = append(result.Events, event)
+	r.emitEvent(ctx, sink, event)
+}
+
+func (r Runner) emitEvent(ctx context.Context, sink func(context.Context, agents.AgentEvent), event agents.AgentEvent) {
+	if sink == nil {
+		return
+	}
+	if event.At.IsZero() {
+		event.At = r.now()
+	}
+	sink(ctx, event)
 }
 
 type runUpdate struct {

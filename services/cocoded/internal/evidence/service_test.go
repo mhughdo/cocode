@@ -83,6 +83,52 @@ func TestVerifySessionCreatesPrimaryAndCounterEvidence(t *testing.T) {
 	}
 }
 
+func TestVerifySessionIgnoresProjectMetadataCounterEvidence(t *testing.T) {
+	t.Parallel()
+
+	env := setupEvidenceEnv(t)
+	createEvidenceFinding(t, env.Queries, dbgen.CreateFindingParams{
+		ID:                 "finding_auth_metadata",
+		ReviewSessionID:    "session_1",
+		CanonicalClaim:     "Invoice export lacks admin guard",
+		Category:           "security",
+		Severity:           "high",
+		Confidence:         0.9,
+		VerificationStatus: StatusUnverified,
+		DecisionStatus:     "undecided",
+		PrimaryPath:        nullableTestString("src/server.js"),
+		PrimaryStartLine:   nullableTestInt64(19),
+		PrimaryEndLine:     nullableTestInt64(19),
+		Fingerprint:        "fp_auth_metadata",
+		MergedFromCount:    1,
+		FirstSeenAt:        "2026-05-03T00:04:00Z",
+		UpdatedAt:          "2026-05-03T00:04:00Z",
+	})
+	env.Searcher.matches = map[string][]SearchMatch{
+		"admin": {
+			{Path: "package.json", Line: 1, Text: `{"scripts":{"test":"node --test"}}`},
+			{Path: "test/server.test.js", Line: 7, Text: "assert.throws(() => exportInvoices(), /admin required/)"},
+		},
+	}
+
+	_, err := env.Service.VerifySession(context.Background(), env.Session, env.Repository)
+	if err != nil {
+		t.Fatalf("VerifySession() error = %v", err)
+	}
+	items, err := env.Queries.ListEvidenceItemsByFinding(context.Background(), "finding_auth_metadata")
+	if err != nil {
+		t.Fatalf("ListEvidenceItemsByFinding() error = %v", err)
+	}
+	for _, item := range items {
+		if nullableTestValue(item.Path) == "package.json" {
+			t.Fatalf("package metadata should not be counter-evidence: %+v", items)
+		}
+	}
+	if countEvidenceKind(items, KindTest) != 1 {
+		t.Fatalf("expected one useful test evidence item, got %+v", items)
+	}
+}
+
 func TestVerifySessionAssignsVerifiedWhenNoCounterEvidence(t *testing.T) {
 	t.Parallel()
 
@@ -300,6 +346,39 @@ func TestGoldenAuthRepoVerifierBuildsEvidenceMap(t *testing.T) {
 		!hasMapNode(view.Nodes, NodeCounterEvidence, "apps/api/src/middleware/auth.ts") ||
 		!hasMapEdge(view.Edges, EdgeMissingGuard, EdgeStatusMissing) {
 		t.Fatalf("view = %+v", view)
+	}
+}
+
+func TestVerifierInfersPrimaryLineFromChangedFileRange(t *testing.T) {
+	t.Parallel()
+
+	env := setupEvidenceEnv(t)
+	createEvidenceFinding(t, env.Queries, dbgen.CreateFindingParams{
+		ID:                 "finding_missing_line",
+		ReviewSessionID:    env.Session.ID,
+		CanonicalClaim:     "Handler changed file has a missing admin guard",
+		Category:           "security",
+		Severity:           "high",
+		Confidence:         0.84,
+		VerificationStatus: StatusUnverified,
+		DecisionStatus:     "undecided",
+		PrimaryPath:        nullableTestString("src/handler.go"),
+		Fingerprint:        "fp_missing_line",
+		MergedFromCount:    1,
+		FirstSeenAt:        "2026-05-03T00:04:00Z",
+		UpdatedAt:          "2026-05-03T00:04:00Z",
+	})
+
+	if _, err := env.Service.VerifySession(context.Background(), env.Session, env.Repository); err != nil {
+		t.Fatalf("VerifySession() error = %v", err)
+	}
+	items, err := env.Queries.ListEvidenceItemsByFinding(context.Background(), "finding_missing_line")
+	if err != nil {
+		t.Fatalf("ListEvidenceItemsByFinding() error = %v", err)
+	}
+	item := evidenceItemByKind(t, items, KindSupporting)
+	if !item.StartLine.Valid || item.StartLine.Int64 != 4 || !strings.Contains(item.Summary, "src/handler.go:4-4") {
+		t.Fatalf("supporting evidence = %+v", item)
 	}
 }
 

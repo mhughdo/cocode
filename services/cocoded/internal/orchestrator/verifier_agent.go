@@ -336,11 +336,9 @@ func (s *Service) runVerifierAgent(ctx context.Context, session dbgen.ReviewSess
 			"output_mode":           string(agents.OutputMode(config.OutputMode)),
 			"verifier_agent_config": config.ID,
 		},
+		EventSink: s.agentRunEventSink(session.ID),
 	})
 	if err != nil {
-		return result, err
-	}
-	if err := s.appendAgentRunEvents(ctx, session.ID, result.Events); err != nil {
 		return result, err
 	}
 	if result.Run.Status == agentrun.RunStatusSucceeded {

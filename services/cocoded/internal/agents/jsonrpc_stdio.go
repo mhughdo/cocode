@@ -35,6 +35,7 @@ type JSONRPCStdioConnection struct {
 	stdin         io.WriteCloser
 	maxFrameBytes int64
 	stderr        *limitedOutput
+	cleanupEnv    func()
 
 	writeMu sync.Mutex
 
@@ -120,8 +121,23 @@ func (d JSONRPCStdioDriver) Open(ctx context.Context, config ConnectionConfig) (
 	if err := validateEnv(config.Env); err != nil {
 		return nil, err
 	}
+	env, cleanupEnv, err := PrepareCommandRuntimeEnvironment(config.Command, config.Env)
+	if err != nil {
+		return nil, err
+	}
+	config.Env = env
+	cleanupOnError := true
+	defer func() {
+		if cleanupOnError {
+			cleanupEnv()
+		}
+	}()
 
-	cmd := exec.CommandContext(ctx, config.Command, config.Args...)
+	command, err := ResolveCommandExecutableWithEnv(config.Command, config.Env)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, command, config.Args...)
 	if config.WorkingDirectory != "" {
 		cmd.Dir = config.WorkingDirectory
 	}
@@ -146,6 +162,7 @@ func (d JSONRPCStdioDriver) Open(ctx context.Context, config ConnectionConfig) (
 		stdin:         stdin,
 		maxFrameBytes: metadataInt64Default(config.Metadata, "max_frame_bytes", defaultJSONRPCFrameLimit),
 		stderr:        &limitedOutput{limit: metadataInt64Default(config.Metadata, "max_stderr_bytes", defaultJSONRPCStderrLimit)},
+		cleanupEnv:    cleanupEnv,
 		pending:       map[string]chan jsonRPCResult{},
 		notifications: make(chan jsonRPCNotification, 128),
 		done:          make(chan error, 1),
@@ -166,6 +183,7 @@ func (d JSONRPCStdioDriver) Open(ctx context.Context, config ConnectionConfig) (
 	go func() {
 		connection.waitDone <- cmd.Wait()
 	}()
+	cleanupOnError = false
 	return connection, nil
 }
 
@@ -234,6 +252,10 @@ func (c *JSONRPCStdioConnection) Close(ctx context.Context) error {
 			closeErr = ctx.Err()
 		case <-time.After(2 * time.Second):
 			closeErr = errors.New("timed out waiting for json-rpc command to exit")
+		}
+		if c.cleanupEnv != nil {
+			c.cleanupEnv()
+			c.cleanupEnv = nil
 		}
 	})
 	if closeErr != nil && strings.Contains(closeErr.Error(), "signal: killed") {

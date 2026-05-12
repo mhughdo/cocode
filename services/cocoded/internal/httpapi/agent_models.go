@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/hughdo/cocode/services/cocoded/internal/agents"
 )
 
 const modelCatalogCommandTimeout = 12 * time.Second
@@ -189,26 +192,41 @@ func discoverCodexModels(ctx context.Context) AgentModelCatalogResponse {
 
 func discoverOpenCodeModels(ctx context.Context) AgentModelCatalogResponse {
 	catalog := modelCatalog("opencode", "OpenCode", "opencode")
-	if _, err := exec.LookPath("opencode"); err != nil {
+	if _, err := agents.ResolveCommandExecutable("opencode"); err != nil {
 		catalog.Error = "opencode command is not installed or not on PATH"
 		return catalog
 	}
 	catalog.Available = true
-	stdout, stderr, err := runModelCatalogCommand(ctx, "opencode", "models")
+	stdout, stderr, err := runModelCatalogCommand(ctx, "opencode", "models", "--verbose")
 	if err != nil {
-		catalog.Error = commandCatalogError(err, stderr)
+		stdout, stderr, err = runModelCatalogCommand(ctx, "opencode", "models")
+		if err != nil {
+			catalog.Error = commandCatalogError(err, stderr)
+			return catalog
+		}
+		catalog.Models = openCodePlainModelOptions(stdout)
+		markPreferredDefault(catalog.Models, []string{"opencode-go/kimi-k2.6", "xai/grok-4.3", "xai/grok-4"})
+		catalog.Source = sourceForModels(catalog.Models)
 		return catalog
 	}
+	catalog.Models = openCodeVerboseModelOptions(stdout)
+	if len(catalog.Models) == 0 {
+		catalog.Models = openCodePlainModelOptions(stdout)
+	}
+	markPreferredDefault(catalog.Models, []string{"opencode-go/kimi-k2.6", "xai/grok-4.3", "xai/grok-4"})
+	catalog.Source = sourceForModels(catalog.Models)
+	return catalog
+}
+
+func openCodePlainModelOptions(stdout string) []AgentModelOptionResponse {
+	models := []AgentModelOptionResponse{}
 	for _, line := range strings.Split(stdout, "\n") {
 		id := strings.TrimSpace(line)
 		if id == "" || strings.HasPrefix(id, "#") {
 			continue
 		}
-		provider := "opencode"
-		if prefix, _, ok := strings.Cut(id, "/"); ok && strings.TrimSpace(prefix) != "" {
-			provider = strings.TrimSpace(prefix)
-		}
-		catalog.Models = append(catalog.Models, AgentModelOptionResponse{
+		provider := openCodeModelProvider(id)
+		models = append(models, AgentModelOptionResponse{
 			ID:               id,
 			Label:            modelIDLabel(id),
 			Provider:         provider,
@@ -217,9 +235,121 @@ func discoverOpenCodeModels(ctx context.Context) AgentModelCatalogResponse {
 			ReasoningEfforts: genericReasoningOptions("medium", []string{"low", "medium", "high"}),
 		})
 	}
-	markPreferredDefault(catalog.Models, []string{"xai/grok-4.3", "xai/grok-4"})
-	catalog.Source = sourceForModels(catalog.Models)
-	return catalog
+	return models
+}
+
+func openCodeVerboseModelOptions(stdout string) []AgentModelOptionResponse {
+	type verbosePayload struct {
+		Name     string                     `json:"name"`
+		Variants map[string]json.RawMessage `json:"variants"`
+	}
+	type candidate struct {
+		id      string
+		payload verbosePayload
+	}
+	candidates := []candidate{}
+	lines := strings.Split(stdout, "\n")
+	for index := 0; index < len(lines); index++ {
+		id := strings.TrimSpace(lines[index])
+		if id == "" || strings.HasPrefix(id, "{") || strings.HasPrefix(id, "}") || strings.HasPrefix(id, "#") {
+			continue
+		}
+		if _, _, ok := strings.Cut(id, "/"); !ok {
+			continue
+		}
+		jsonText, next := collectOpenCodeJSONBlock(lines, index+1)
+		if jsonText == "" {
+			continue
+		}
+		index = next - 1
+		var payload verbosePayload
+		if err := json.Unmarshal([]byte(jsonText), &payload); err != nil {
+			continue
+		}
+		candidates = append(candidates, candidate{id: id, payload: payload})
+	}
+	models := make([]AgentModelOptionResponse, 0, len(candidates))
+	for _, item := range candidates {
+		provider := openCodeModelProvider(item.id)
+		label := strings.TrimSpace(item.payload.Name)
+		if label == "" {
+			label = modelIDLabel(item.id)
+		}
+		models = append(models, AgentModelOptionResponse{
+			ID:               item.id,
+			Label:            label,
+			Provider:         provider,
+			ProviderLabel:    providerLabel(provider),
+			Source:           "cli",
+			ReasoningEfforts: openCodeReasoningOptions(item.payload.Variants),
+		})
+	}
+	return models
+}
+
+func collectOpenCodeJSONBlock(lines []string, start int) (string, int) {
+	var builder strings.Builder
+	depth := 0
+	started := false
+	for index := start; index < len(lines); index++ {
+		line := lines[index]
+		trimmed := strings.TrimSpace(line)
+		if !started {
+			if !strings.HasPrefix(trimmed, "{") {
+				continue
+			}
+			started = true
+		}
+		builder.WriteString(line)
+		builder.WriteByte('\n')
+		depth += strings.Count(line, "{")
+		depth -= strings.Count(line, "}")
+		if started && depth <= 0 {
+			return builder.String(), index + 1
+		}
+	}
+	return "", len(lines)
+}
+
+func openCodeReasoningOptions(variants map[string]json.RawMessage) []AgentReasoningOptionResponse {
+	if len(variants) == 0 {
+		return nil
+	}
+	preferred := []string{"low", "medium", "high", "max", "minimal", "xhigh"}
+	efforts := make([]string, 0, len(variants))
+	seen := map[string]struct{}{}
+	for _, effort := range preferred {
+		if _, ok := variants[effort]; ok {
+			efforts = append(efforts, effort)
+			seen[effort] = struct{}{}
+		}
+	}
+	for effort := range variants {
+		key := strings.TrimSpace(effort)
+		if key == "" {
+			continue
+		}
+		lower := strings.ToLower(key)
+		if _, ok := seen[lower]; ok {
+			continue
+		}
+		efforts = append(efforts, key)
+	}
+	defaultEffort := ""
+	if _, ok := variants["high"]; ok {
+		defaultEffort = "high"
+	} else if _, ok := variants["medium"]; ok {
+		defaultEffort = "medium"
+	}
+	return genericReasoningOptions(defaultEffort, efforts)
+}
+
+func openCodeModelProvider(id string) string {
+	provider := "opencode"
+	if prefix, _, ok := strings.Cut(id, "/"); ok && strings.TrimSpace(prefix) != "" {
+		provider = strings.TrimSpace(prefix)
+	}
+	return provider
 }
 
 func discoverClaudeModels(_ context.Context) AgentModelCatalogResponse {
@@ -248,12 +378,10 @@ func discoverGeminiModels(_ context.Context) AgentModelCatalogResponse {
 	}
 	catalog.Available = true
 	catalog.Models = knownModelOptions("google", "cli-known", []knownModel{
-		{ID: "default", Label: "Default model", Default: true},
-		{ID: "gemini-3.1-pro", Label: "Gemini 3.1 Pro"},
-		{ID: "gemini-3-flash", Label: "Gemini 3 Flash"},
+		{ID: "gemini-3.1-pro-preview", Label: "Gemini 3.1 Pro Preview", Default: true},
 		{ID: "gemini-2.5-pro", Label: "Gemini 2.5 Pro"},
 		{ID: "gemini-2.5-flash", Label: "Gemini 2.5 Flash"},
-		{ID: "gemini-flash-latest", Label: "Gemini Flash Latest"},
+		{ID: "default", Label: "CLI default"},
 	}, nil)
 	catalog.Source = sourceForModels(catalog.Models)
 	return catalog
@@ -337,6 +465,8 @@ func providerLabel(provider string) string {
 		return "OpenAI"
 	case "opencode":
 		return "OpenCode"
+	case "opencode-go":
+		return "OpenCode Go"
 	case "anthropic":
 		return "Anthropic"
 	case "google":
@@ -357,13 +487,40 @@ func providerLabel(provider string) string {
 func runModelCatalogCommand(ctx context.Context, command string, args ...string) (string, string, error) {
 	runCtx, cancel := context.WithTimeout(ctx, modelCatalogCommandTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(runCtx, command, args...)
+	env := currentProcessEnvMap()
+	env = agents.NormalizeCLIEnvironment(command, env)
+	executable, err := agents.ResolveCommandExecutableWithEnv(command, env)
+	if err != nil {
+		return "", "", err
+	}
+	cmd := exec.CommandContext(runCtx, executable, args...)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	cmd.Env = envListFromMap(env)
+	err = cmd.Run()
 	return stdout.String(), stderr.String(), err
+}
+
+func currentProcessEnvMap() map[string]string {
+	env := map[string]string{}
+	for _, item := range os.Environ() {
+		key, value, ok := strings.Cut(item, "=")
+		if !ok {
+			continue
+		}
+		env[key] = value
+	}
+	return env
+}
+
+func envListFromMap(env map[string]string) []string {
+	out := make([]string, 0, len(env))
+	for key, value := range env {
+		out = append(out, key+"="+value)
+	}
+	return out
 }
 
 func commandCatalogError(err error, stderr string) string {

@@ -1,6 +1,21 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
+vi.mock("react-shiki", () => ({
+  default: ({
+    children,
+    startingLineNumber,
+  }: {
+    children: string;
+    startingLineNumber?: number;
+  }) => (
+    <pre>
+      {startingLineNumber ? <span>{startingLineNumber}</span> : null}
+      <code>{children}</code>
+    </pre>
+  ),
+}));
+
 import { composerContextPolicy, MessageComposer } from "./App";
 import type { AgentConfig } from "@/lib/api";
 

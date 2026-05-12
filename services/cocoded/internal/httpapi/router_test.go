@@ -1553,6 +1553,46 @@ func TestReviewSessionChatThreadEndpointSeedsAndAnswers(t *testing.T) {
 	}
 }
 
+func TestReviewSessionChatThreadEndpointUsesOrchestratorResponder(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+	command := fakeJSONAgentPath(t)
+	createHTTPAPIAgentConfigWithCommand(t, queries, "agent_config_orchestrator", "orchestrator", 1, command, agents.OutputJSON, `{"prompt_delivery":"stdin","timeout_seconds":30}`)
+	if _, err := queries.CreateReviewSessionAgent(context.Background(), dbgen.CreateReviewSessionAgentParams{
+		ID:                   "review_session_agent_orchestrator",
+		ReviewSessionID:      "review_session_findings",
+		AgentConfigID:        "agent_config_orchestrator",
+		Role:                 "orchestrator",
+		RunOrder:             2,
+		Enabled:              1,
+		SettingsOverrideJson: "{}",
+	}); err != nil {
+		t.Fatalf("CreateReviewSessionAgent(orchestrator) error = %v", err)
+	}
+
+	askRequest := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/review-sessions/review_session_findings/chat-turns", map[string]any{
+		"body":                      "Explain the finding again for me.",
+		"audience":                  "orchestrator",
+		"responder_agent_config_id": "agent_config_orchestrator",
+	})
+	askResponse := httptest.NewRecorder()
+	router.ServeHTTP(askResponse, askRequest)
+	if askResponse.Code != http.StatusOK {
+		t.Fatalf("chat turn status = %d, body = %s", askResponse.Code, askResponse.Body.String())
+	}
+	answered := decodeChatTurnResponse(t, askResponse.Body.Bytes())
+	if answered.Turn.Status != "completed" || answered.Turn.Audience != "orchestrator" {
+		t.Fatalf("chat turn = %+v", answered.Turn)
+	}
+	if len(answered.Messages) == 0 {
+		t.Fatalf("answered messages = %+v", answered.Messages)
+	}
+	last := answered.Messages[len(answered.Messages)-1]
+	if last.AuthorType != "orchestrator" || strings.Contains(last.Body, "Current review status:") || !strings.Contains(last.Body, "Found one deterministic fixture issue.") {
+		t.Fatalf("orchestrator answer = %+v", last)
+	}
+}
+
 func TestReviewSessionChatThreadEndpointSyncsWorkflowProgress(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
 	createHTTPAPISnapshot(t, queries)
@@ -1939,6 +1979,77 @@ func TestFindingDetailEndpointReturnsProvenanceAndEvidence(t *testing.T) {
 		len(detail.Decisions) != 1 ||
 		detail.Decisions[0].Decision != "accepted" {
 		t.Fatalf("detail = %+v", detail)
+	}
+}
+
+func TestFindingDetailEndpointHydratesEvidenceSnippetFromRepository(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	repoPath := t.TempDir()
+	writeHTTPAPIRepoFile(t, repoPath, "src/server.js", strings.Join([]string{
+		"export function createBillingRouter({ db }) {",
+		"  return {",
+		"    cancelSubscription(request) {",
+		"      return db.cancelSubscription(request.params.subscriptionId);",
+		"    },",
+		"  };",
+		"}",
+	}, "\n"))
+	createHTTPAPISnapshotAt(t, queries, repoPath)
+	createHTTPAPIAgentConfig(t, queries, "agent_config_hydrate", "primary_reviewer", 1)
+	createHTTPAPIReviewSessionRow(t, queries, "review_session_hydrate", []string{"agent_config_hydrate"})
+	if _, err := queries.CreateFinding(context.Background(), dbgen.CreateFindingParams{
+		ID:                 "finding_hydrate",
+		ReviewSessionID:    "review_session_hydrate",
+		CanonicalClaim:     "Subscription cancellation bypasses authorization.",
+		Category:           "security",
+		Severity:           "high",
+		Confidence:         0.91,
+		VerificationStatus: "verified",
+		DecisionStatus:     "needs_triage",
+		PrimaryPath:        nullableString("src/server.js"),
+		PrimaryStartLine:   sql.NullInt64{Int64: 4, Valid: true},
+		PrimaryEndLine:     sql.NullInt64{Int64: 4, Valid: true},
+		EvidenceSummary:    nullableString("The changed route calls the database directly."),
+		SuggestedFix:       nullableString("Require admin authorization before calling the database."),
+		Fingerprint:        "hydrate-snippet",
+		FirstSeenAt:        "2026-05-03T00:20:00Z",
+		UpdatedAt:          "2026-05-03T00:20:00Z",
+	}); err != nil {
+		t.Fatalf("CreateFinding(hydrate) error = %v", err)
+	}
+	if _, err := queries.CreateEvidenceItem(context.Background(), dbgen.CreateEvidenceItemParams{
+		ID:           "evidence_hydrate",
+		FindingID:    "finding_hydrate",
+		Kind:         "supporting",
+		Title:        "Changed route calls cancelSubscription",
+		Summary:      "The changed route reaches the database without a guard.",
+		Path:         nullableString("src/server.js"),
+		StartLine:    sql.NullInt64{Int64: 4, Valid: true},
+		EndLine:      sql.NullInt64{Int64: 4, Valid: true},
+		Confidence:   0.9,
+		MetadataJson: `{"producer":"local_verifier"}`,
+		CreatedAt:    "2026-05-03T00:21:00Z",
+	}); err != nil {
+		t.Fatalf("CreateEvidenceItem(hydrate) error = %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/findings/finding_hydrate", nil)
+	request.Header.Set("X-Cocode-Token", "test-token")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, body = %s", response.Code, response.Body.String())
+	}
+	detail := decodeFindingDetailResponse(t, response.Body.Bytes())
+	if len(detail.EvidenceItems) != 1 {
+		t.Fatalf("evidence items = %+v, want one", detail.EvidenceItems)
+	}
+	item := detail.EvidenceItems[0]
+	if !strings.Contains(item.CodeSnippet, "cancelSubscription") ||
+		item.LineWindow == nil ||
+		item.LineWindow.StartLine != 1 ||
+		item.LineWindow.EndLine < 4 {
+		t.Fatalf("hydrated evidence = %+v", item)
 	}
 }
 

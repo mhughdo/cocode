@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("react-shiki", () => ({
+  default: ({ children }: { children: string }) => children,
+}));
 
 import type { ReviewEvent } from "@/lib/api";
 import { summarizeRuntimeTraceEvents } from "./agent-runtime-trace";
@@ -216,8 +220,10 @@ describe("summarizeRuntimeTraceEvents", () => {
 
     expect(summary.output.join("\n")).toContain("Findings (1)");
     expect(summary.output.join("\n")).toContain("Missing admin check");
-    expect(summary.output.join("\n")).toContain("Location: src/server.js:10");
-    expect(summary.output.join("\n")).toContain("Suggested fix:");
+    expect(summary.output.join("\n")).toContain(
+      "- **Location:** `src/server.js:10`",
+    );
+    expect(summary.output.join("\n")).toContain("- **Suggested fix:**");
     expect(summary.output.join("\n")).not.toContain('\\"findings\\"');
   });
 

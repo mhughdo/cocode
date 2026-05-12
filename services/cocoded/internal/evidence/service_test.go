@@ -57,8 +57,8 @@ func TestVerifySessionCreatesPrimaryAndCounterEvidence(t *testing.T) {
 		t.Fatalf("GetFinding() error = %v", err)
 	}
 	if updated.VerificationStatus != StatusPlausible ||
-		!strings.Contains(nullableTestValue(updated.EvidenceSummary), "Primary changed code") ||
-		!strings.Contains(nullableTestValue(updated.CounterEvidenceSummary), "Potential counter-evidence") {
+		!strings.Contains(nullableTestValue(updated.EvidenceSummary), "anchored to changed code") ||
+		!strings.Contains(nullableTestValue(updated.CounterEvidenceSummary), "possible guard") {
 		t.Fatalf("updated finding = %+v", updated)
 	}
 	items, err := env.Queries.ListEvidenceItemsByFinding(context.Background(), finding.ID)
@@ -126,6 +126,60 @@ func TestVerifySessionIgnoresProjectMetadataCounterEvidence(t *testing.T) {
 	}
 	if countEvidenceKind(items, KindTest) != 1 {
 		t.Fatalf("expected one useful test evidence item, got %+v", items)
+	}
+}
+
+func TestVerifySessionAvoidsLooseGenericCounterEvidence(t *testing.T) {
+	t.Parallel()
+
+	env := setupEvidenceEnv(t)
+	createEvidenceFinding(t, env.Queries, dbgen.CreateFindingParams{
+		ID:                 "finding_generic",
+		ReviewSessionID:    "session_1",
+		CanonicalClaim:     "Rewards are matched by token id without the NFT contract address",
+		Category:           "correctness",
+		Severity:           "high",
+		Confidence:         0.78,
+		VerificationStatus: StatusUnverified,
+		DecisionStatus:     "undecided",
+		PrimaryPath:        nullableTestString("src/handler.go"),
+		PrimaryStartLine:   nullableTestInt64(4),
+		PrimaryEndLine:     nullableTestInt64(4),
+		Fingerprint:        "fp_generic",
+		MergedFromCount:    1,
+		FirstSeenAt:        "2026-05-03T00:04:00Z",
+		UpdatedAt:          "2026-05-03T00:04:00Z",
+	})
+	env.Searcher.matches = map[string][]SearchMatch{
+		"test": {
+			{Path: "docs/rewards.md", Line: 9, Text: "token id examples"},
+			{Path: "docker-compose.yaml", Line: 8, Text: "ENABLE_TOKEN_TEST=true"},
+			{Path: "src/handler_test.go", Line: 12, Text: "func TestRewardsUseContractAddress(t *testing.T) {}"},
+		},
+		"token": {
+			{Path: "docs/loose-token-notes.md", Line: 4, Text: "token id"},
+		},
+	}
+
+	_, err := env.Service.VerifySession(context.Background(), env.Session, env.Repository)
+	if err != nil {
+		t.Fatalf("VerifySession() error = %v", err)
+	}
+	items, err := env.Queries.ListEvidenceItemsByFinding(context.Background(), "finding_generic")
+	if err != nil {
+		t.Fatalf("ListEvidenceItemsByFinding() error = %v", err)
+	}
+	if countEvidenceKind(items, KindTest) != 1 || countEvidenceKind(items, KindCounter) != 0 {
+		t.Fatalf("expected only one useful test signal, got %+v", items)
+	}
+	for _, item := range items {
+		path := nullableTestValue(item.Path)
+		if strings.Contains(path, "docs/") || strings.Contains(path, "docker-compose") {
+			t.Fatalf("loose metadata/docs signal should not become evidence: %+v", items)
+		}
+	}
+	if containsString(env.Searcher.queries, "token") {
+		t.Fatalf("generic profile should not issue broad claim-token searches: %+v", env.Searcher.queries)
 	}
 }
 
@@ -377,7 +431,7 @@ func TestVerifierInfersPrimaryLineFromChangedFileRange(t *testing.T) {
 		t.Fatalf("ListEvidenceItemsByFinding() error = %v", err)
 	}
 	item := evidenceItemByKind(t, items, KindSupporting)
-	if !item.StartLine.Valid || item.StartLine.Int64 != 4 || !strings.Contains(item.Summary, "src/handler.go:4-4") {
+	if !item.StartLine.Valid || item.StartLine.Int64 != 4 || !strings.Contains(item.Summary, "src/handler.go:4") {
 		t.Fatalf("supporting evidence = %+v", item)
 	}
 }
@@ -563,12 +617,14 @@ type evidenceEnv struct {
 type fakeEvidenceSearcher struct {
 	matches map[string][]SearchMatch
 	err     error
+	queries []string
 }
 
 func (s *fakeEvidenceSearcher) Search(_ context.Context, options SearchOptions) ([]SearchMatch, error) {
 	if s.err != nil {
 		return nil, s.err
 	}
+	s.queries = append(s.queries, options.Query)
 	matches := append([]SearchMatch(nil), s.matches[options.Query]...)
 	if options.Limit > 0 && len(matches) > options.Limit {
 		matches = matches[:options.Limit]

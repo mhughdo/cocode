@@ -214,7 +214,7 @@ func (s *Service) attachPrimaryLocationEvidence(ctx context.Context, repoRoot st
 	if endLine != startLine {
 		title = fmt.Sprintf("Changed code at %s:%d-%d", changedFile.Path, startLine, endLine)
 	}
-	summary := fmt.Sprintf("Primary changed code was found at %s:%d-%d.", changedFile.Path, startLine, endLine)
+	summary := primaryEvidenceSummary(finding, changedFile.Path, startLine, endLine, snippet, truncated)
 	item, err := s.createEvidenceItem(ctx, finding.ID, Item{
 		Kind:       KindSupporting,
 		Title:      title,
@@ -313,10 +313,21 @@ func (s *Service) attachCounterEvidence(ctx context.Context, repoRoot string, fi
 			if isLikelyTestPath(match.Path) {
 				kind = KindTest
 			}
-			title := fmt.Sprintf("Potential counter-evidence at %s:%d", match.Path, match.Line)
-			summary := fmt.Sprintf("Local %s check found %q in a likely guard, config, or test path.", profile.DisplayName, term)
-			if kind == KindTest {
-				summary = fmt.Sprintf("Local %s check found %q in a likely test path.", profile.DisplayName, term)
+			title := counterEvidenceTitle(kind, match)
+			summary := counterEvidenceSummary(kind, profile, term, match)
+			codeSnippet := fmt.Sprintf("%d: %s", match.Line, strings.TrimSpace(match.Text))
+			lineWindow := map[string]any{
+				"start_line": match.Line,
+				"end_line":   match.Line,
+			}
+			truncated := false
+			if snippet, windowStart, windowEnd, wasTruncated, err := readSnippet(repoRoot, match.Path, match.Line, match.Line, 2, s.maxSnippetBytes()); err == nil && strings.TrimSpace(snippet) != "" {
+				codeSnippet = snippet
+				lineWindow = map[string]any{
+					"start_line": windowStart,
+					"end_line":   windowEnd,
+				}
+				truncated = wasTruncated
 			}
 			if _, err := s.createEvidenceItem(ctx, finding.ID, Item{
 				Kind:       kind,
@@ -331,7 +342,9 @@ func (s *Service) attachCounterEvidence(ctx context.Context, repoRoot string, fi
 					"source":       "counter_evidence_search",
 					"rule":         profile.ID,
 					"search_term":  term,
-					"code_snippet": fmt.Sprintf("%d: %s", match.Line, strings.TrimSpace(match.Text)),
+					"line_window":  lineWindow,
+					"code_snippet": codeSnippet,
+					"truncated":    truncated,
 				}),
 			}); err != nil {
 				return findingEvidenceResult{}, err
@@ -341,9 +354,103 @@ func (s *Service) attachCounterEvidence(ctx context.Context, repoRoot string, fi
 		}
 	}
 	if result.counter > 0 {
-		result.counterEvidenceSummary = fmt.Sprintf("Potential counter-evidence found in %d likely guard, config, or test location(s).", result.counter)
+		result.counterEvidenceSummary = fmt.Sprintf("%d possible guard, config, or test signal(s) need comparison against the changed path before the finding is accepted or dismissed.", result.counter)
 	}
 	return result, nil
+}
+
+func primaryEvidenceSummary(finding dbgen.Finding, path string, startLine int64, endLine int64, snippet string, truncated bool) string {
+	location := fmt.Sprintf("%s:%d", path, startLine)
+	if endLine > startLine {
+		location = fmt.Sprintf("%s:%d-%d", path, startLine, endLine)
+	}
+	parts := []string{
+		fmt.Sprintf("The finding is anchored to changed code at %s.", location),
+	}
+	if claim := strings.TrimSpace(finding.CanonicalClaim); claim != "" {
+		parts = append(parts, fmt.Sprintf("Claim: %s.", sentenceTrim(claim)))
+	}
+	if observed := firstSnippetLineInRange(snippet, startLine, endLine); observed != "" {
+		parts = append(parts, fmt.Sprintf("Observed code: `%s`.", observed))
+	}
+	if finding.SuggestedFix.Valid && strings.TrimSpace(finding.SuggestedFix.String) != "" {
+		parts = append(parts, fmt.Sprintf("Expected remediation: %s.", sentenceTrim(finding.SuggestedFix.String)))
+	}
+	if truncated {
+		parts = append(parts, "The stored code window was truncated; open the file for full context.")
+	}
+	return strings.Join(parts, " ")
+}
+
+func firstSnippetLineInRange(snippet string, startLine int64, endLine int64) string {
+	if startLine <= 0 {
+		startLine = 1
+	}
+	if endLine < startLine {
+		endLine = startLine
+	}
+	fallback := ""
+	for _, raw := range strings.Split(snippet, "\n") {
+		lineNumber, text, ok := parseNumberedSnippetLine(raw)
+		if !ok {
+			candidate := strings.TrimSpace(raw)
+			if fallback == "" && candidate != "" {
+				fallback = candidate
+			}
+			continue
+		}
+		candidate := strings.TrimSpace(text)
+		if fallback == "" && candidate != "" {
+			fallback = candidate
+		}
+		if lineNumber >= startLine && lineNumber <= endLine && candidate != "" {
+			return sentenceTrim(candidate)
+		}
+	}
+	return sentenceTrim(fallback)
+}
+
+func parseNumberedSnippetLine(line string) (int64, string, bool) {
+	prefix, suffix, ok := strings.Cut(strings.TrimLeft(line, " \t"), ":")
+	if !ok {
+		return 0, "", false
+	}
+	var lineNumber int64
+	for _, char := range prefix {
+		if char < '0' || char > '9' {
+			return 0, "", false
+		}
+		lineNumber = lineNumber*10 + int64(char-'0')
+	}
+	if lineNumber <= 0 {
+		return 0, "", false
+	}
+	return lineNumber, strings.TrimSpace(suffix), true
+}
+
+func sentenceTrim(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.TrimRight(value, ".")
+	return value
+}
+
+func counterEvidenceTitle(kind string, match SearchMatch) string {
+	if kind == KindTest {
+		return fmt.Sprintf("Related test signal at %s:%d", match.Path, match.Line)
+	}
+	return fmt.Sprintf("Possible guard or config signal at %s:%d", match.Path, match.Line)
+}
+
+func counterEvidenceSummary(kind string, profile ruleProfile, term string, match SearchMatch) string {
+	location := fmt.Sprintf("%s:%d", match.Path, match.Line)
+	trimmed := strings.TrimSpace(match.Text)
+	if len(trimmed) > 180 {
+		trimmed = strings.TrimSpace(trimmed[:180]) + "..."
+	}
+	if kind == KindTest {
+		return fmt.Sprintf("Related test search found %q at %s. Use this to check whether tests cover the claim or encode the same behavior. Matched line: `%s`.", term, location, trimmed)
+	}
+	return fmt.Sprintf("Possible %s counter-signal found %q at %s. Treat this as a lead for an existing guard/config path and compare it with the changed code before dismissing the finding. Matched line: `%s`.", profile.DisplayName, term, location, trimmed)
 }
 
 func (s *Service) createEvidenceItem(ctx context.Context, findingID string, item Item) (dbgen.EvidenceItem, error) {
@@ -466,6 +573,11 @@ func readSnippet(repoRoot string, relativePath string, startLine int64, endLine 
 	return strings.TrimRight(builder.String(), "\n"), windowStart, minInt64(windowEnd, line), truncated, nil
 }
 
+// ReadSnippet returns a bounded, line-numbered source window from a repository file.
+func ReadSnippet(repoRoot string, relativePath string, startLine int64, endLine int64, contextLines int, maxBytes int64) (string, int64, int64, bool, error) {
+	return readSnippet(repoRoot, relativePath, startLine, endLine, contextLines, maxBytes)
+}
+
 func newChangedFileIndex(files []dbgen.ChangedFile) changedFileIndex {
 	index := changedFileIndex{byPath: map[string]dbgen.ChangedFile{}}
 	for _, file := range files {
@@ -520,10 +632,12 @@ func counterEvidenceTerms(finding dbgen.Finding, profile ruleProfile) []string {
 	for _, term := range profile.Terms {
 		addTerm(&terms, term)
 	}
-	for _, token := range claimTokens(finding.CanonicalClaim) {
-		addTerm(&terms, token)
-		if len(terms) >= 6 {
-			break
+	if profile.ID != "generic" {
+		for _, token := range claimTokens(finding.CanonicalClaim) {
+			addTerm(&terms, token)
+			if len(terms) >= 6 {
+				break
+			}
 		}
 	}
 	if finding.PrimaryPath.Valid {
@@ -578,6 +692,9 @@ func looksLikeCounterEvidence(match SearchMatch) bool {
 	if isProjectMetadataPath(path) {
 		return false
 	}
+	if isDocumentationPath(path) {
+		return false
+	}
 	if isLikelyTestPath(path) || strings.Contains(path, "auth") || strings.Contains(path, "guard") ||
 		strings.Contains(path, "middleware") || strings.Contains(path, "permission") || strings.Contains(path, "config") {
 		return true
@@ -605,11 +722,23 @@ func isProjectMetadataPath(path string) bool {
 	switch base {
 	case "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
 		"go.mod", "go.sum", "cargo.toml", "cargo.lock", "poetry.lock",
-		"pyproject.toml", "requirements.txt":
+		"pyproject.toml", "requirements.txt", "docker-compose.yml", "docker-compose.yaml",
+		"compose.yml", "compose.yaml":
 		return true
 	default:
 		return false
 	}
+}
+
+func isDocumentationPath(path string) bool {
+	path = strings.ToLower(filepath.ToSlash(path))
+	base := filepath.Base(path)
+	return strings.HasPrefix(path, "docs/") ||
+		strings.Contains(path, "/docs/") ||
+		strings.HasSuffix(base, ".md") ||
+		strings.HasSuffix(base, ".mdx") ||
+		strings.HasPrefix(base, "readme") ||
+		strings.HasPrefix(base, "changelog")
 }
 
 func primaryExcludePath(finding dbgen.Finding) []string {

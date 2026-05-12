@@ -165,6 +165,11 @@ type EvidenceLineWindow struct {
 	EndLine   int64 `json:"end_line"`
 }
 
+const (
+	detailEvidenceContextLines    = 3
+	detailEvidenceMaxSnippetBytes = 8 * 1024
+)
+
 type UpdateFindingDecisionRequest struct {
 	Decision             string `json:"decision"`
 	Reason               string `json:"reason"`
@@ -232,6 +237,7 @@ func findingEvidenceHandler(queries *dbgen.Queries) gin.HandlerFunc {
 			respondError(c, appErr)
 			return
 		}
+		items = hydrateEvidenceSnippets(c.Request.Context(), queries, finding, items)
 		respondOK(c, FindingEvidenceResponse{
 			Finding: findingResponse(finding),
 			Items:   items,
@@ -495,6 +501,7 @@ func findingDetailResponse(ctx context.Context, queries *dbgen.Queries, reviewSe
 	if appErr != nil {
 		return FindingDetailResponse{}, appErr
 	}
+	evidenceResponses = hydrateEvidenceSnippets(ctx, queries, finding, evidenceResponses)
 	decisionResponses := make([]HumanDecisionResponse, 0, len(decisions))
 	for _, decision := range decisions {
 		item, appErr := humanDecisionResponse(decision)
@@ -526,6 +533,49 @@ func evidenceItemsForFinding(ctx context.Context, queries *dbgen.Queries, findin
 		evidenceResponses = append(evidenceResponses, response)
 	}
 	return evidenceResponses, nil
+}
+
+func hydrateEvidenceSnippets(ctx context.Context, queries *dbgen.Queries, finding dbgen.Finding, items []EvidenceItemResponse) []EvidenceItemResponse {
+	if len(items) == 0 {
+		return items
+	}
+	session, err := queries.GetReviewSession(ctx, finding.ReviewSessionID)
+	if err != nil || session.RepositoryID == "" {
+		return items
+	}
+	repository, err := queries.GetRepository(ctx, session.RepositoryID)
+	if err != nil || strings.TrimSpace(repository.LocalPath) == "" {
+		return items
+	}
+	hydrated := make([]EvidenceItemResponse, len(items))
+	copy(hydrated, items)
+	for index := range hydrated {
+		item := &hydrated[index]
+		if strings.TrimSpace(item.CodeSnippet) != "" || strings.TrimSpace(item.Path) == "" || item.StartLine <= 0 {
+			continue
+		}
+		endLine := item.EndLine
+		if endLine < item.StartLine {
+			endLine = item.StartLine
+		}
+		snippet, windowStart, windowEnd, _, err := evidencepkg.ReadSnippet(
+			repository.LocalPath,
+			item.Path,
+			item.StartLine,
+			endLine,
+			detailEvidenceContextLines,
+			detailEvidenceMaxSnippetBytes,
+		)
+		if err != nil || strings.TrimSpace(snippet) == "" {
+			continue
+		}
+		item.CodeSnippet = snippet
+		item.LineWindow = &EvidenceLineWindow{
+			StartLine: windowStart,
+			EndLine:   windowEnd,
+		}
+	}
+	return hydrated
 }
 
 func groupEvidenceItems(items []EvidenceItemResponse) EvidenceGroupsResponse {
@@ -743,8 +793,9 @@ func evidenceItemResponse(row dbgen.EvidenceItem) (EvidenceItemResponse, *apperr
 
 func evidenceSnippetFields(metadata json.RawMessage) (string, *EvidenceLineWindow) {
 	var payload struct {
-		CodeSnippet string `json:"code_snippet"`
-		LineWindow  struct {
+		CodeSnippet   string          `json:"code_snippet"`
+		AgentMetadata json.RawMessage `json:"agent_metadata"`
+		LineWindow    struct {
 			StartLine int64 `json:"start_line"`
 			EndLine   int64 `json:"end_line"`
 		} `json:"line_window"`
@@ -759,7 +810,11 @@ func evidenceSnippetFields(metadata json.RawMessage) (string, *EvidenceLineWindo
 			EndLine:   payload.LineWindow.EndLine,
 		}
 	}
-	return strings.TrimSpace(payload.CodeSnippet), window
+	snippet := strings.TrimSpace(payload.CodeSnippet)
+	if snippet == "" && json.Valid(payload.AgentMetadata) {
+		return evidenceSnippetFields(payload.AgentMetadata)
+	}
+	return snippet, window
 }
 
 func sourceAgentsByFinding(ctx context.Context, queries *dbgen.Queries, rows []dbgen.Finding) (map[string][]FindingSourceAgentResponse, error) {

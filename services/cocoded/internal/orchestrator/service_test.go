@@ -903,7 +903,7 @@ func TestVerifyFindingsKeepsLocalEvidenceWhenVerifierCLIFails(t *testing.T) {
 	}
 	if updated.VerificationStatus != evidence.StatusVerified ||
 		!updated.EvidenceSummary.Valid ||
-		!strings.Contains(updated.EvidenceSummary.String, "Primary changed code was found") {
+		!strings.Contains(updated.EvidenceSummary.String, "anchored to changed code") {
 		t.Fatalf("updated finding = %+v", updated)
 	}
 	items, err := env.Queries.ListEvidenceItemsByFinding(context.Background(), finding.ID)

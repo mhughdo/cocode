@@ -91,6 +91,7 @@ export function AgentRuntimeTrace({
               {summary.reasoning.length > 0 && (
                 <RuntimeTraceSection
                   items={summary.reasoning}
+                  markdown
                   title="Visible reasoning"
                   tone="amber"
                 />
@@ -202,7 +203,7 @@ function RuntimeTraceSection({
       </div>
       <div
         className={cn(
-          "space-y-1 overflow-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+          "space-y-1 overflow-auto [scrollbar-width:thin]",
           compact ? "max-h-48" : "max-h-72",
         )}
       >
@@ -253,7 +254,7 @@ function RuntimeTraceItem({
             {lines.length} lines
           </span>
         </summary>
-        <div className="mt-2 max-h-64 overflow-auto border-t pt-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="mt-2 max-h-64 overflow-auto border-t pt-2 [scrollbar-width:thin]">
           <MarkdownMessage className="text-[11px] leading-5" content={item} />
         </div>
       </details>
@@ -277,7 +278,7 @@ function RuntimeTraceItem({
           {lines.length} lines
         </span>
       </summary>
-      <pre className="mt-2 max-h-48 overflow-auto border-t pt-2 font-mono text-[11px] leading-4 break-words whitespace-pre-wrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <pre className="mt-2 max-h-48 overflow-auto border-t pt-2 font-mono text-[11px] leading-4 break-words whitespace-pre-wrap [scrollbar-width:thin]">
         {item}
       </pre>
     </details>
@@ -307,7 +308,7 @@ function collectEventSummary(
     pushTraceItem(accumulator.errors, error);
   }
 
-  if (event.type === "AgentRunOutput" && preview) {
+  if ((event.type === "AgentRunOutput" || event.type === "AgentRunProgress") && preview) {
     const parsed = collectPreviewJSON(preview, accumulator);
     if (!parsed) {
       if (stream === "stderr" || event.level === "error") {
@@ -421,6 +422,15 @@ function collectTraceValue(
     pushToolTraceItem(accumulator.toolCalls, traceToolDescription(value));
   }
 
+  const structuredFindings = structuredFindingsFromValue(value);
+  if (structuredFindings.length > 0) {
+    pushTraceItem(
+      accumulator.output,
+      formatStructuredFindings(structuredFindings),
+    );
+    return;
+  }
+
   if (!isReasoningType(nestedType) && !isToolType(nestedType)) {
     const text =
       stringFromUnknown(value.answer) ||
@@ -435,7 +445,26 @@ function collectTraceValue(
     }
   }
 
-  for (const key of ["event", "part", "item", "delta", "message", "content"]) {
+  for (const key of [
+    "event",
+    "part",
+    "item",
+    "delta",
+    "message",
+    "content",
+    "response",
+    "result",
+    "answer",
+    "text",
+    "output",
+    "summary",
+    "findings",
+    "finding",
+    "params",
+    "update",
+    "sessionUpdate",
+    "data",
+  ]) {
     collectTraceValue(value[key], accumulator);
   }
 }
@@ -444,12 +473,14 @@ function collectGeminiJSONValue(
   value: Record<string, unknown>,
   accumulator: RuntimeTraceAccumulator,
 ) {
-  if (!("response" in value) || !isPlainRecord(value.stats)) {
+  if (!("response" in value)) {
     return false;
   }
   pushTraceItem(accumulator.output, stringFromUnknown(value.response));
-  collectGeminiToolStats(value.stats, accumulator);
-  collectGeminiThinkingStats(value.stats, accumulator);
+  if (isPlainRecord(value.stats)) {
+    collectGeminiToolStats(value.stats, accumulator);
+    collectGeminiThinkingStats(value.stats, accumulator);
+  }
   return true;
 }
 
@@ -832,7 +863,7 @@ function cleanModelOutputItems(items: string[]) {
 }
 
 function isReadableFindingOutput(item: string) {
-  return /^Findings \(\d+\)/.test(item.trim());
+  return /^#{0,2}\s*Findings \(\d+\)/.test(item.trim());
 }
 
 function looksLikeEscapedJSONFragment(item: string) {
@@ -999,11 +1030,12 @@ function formatStructuredFindings(findings: Record<string, unknown>[]) {
       stringFromUnknown(finding.recommendation) ||
       stringFromUnknown(finding.fix);
     return [
-      `${index + 1}. ${title}`,
-      [severity, category].filter(Boolean).join(" / "),
-      path && `Location: ${path}${line ? `:${line}` : ""}`,
-      description,
-      fix && `Suggested fix: ${fix}`,
+      `### ${index + 1}. ${title}`,
+      severity && `- **Severity:** ${severity}`,
+      category && `- **Category:** ${category}`,
+      path && `- **Location:** \`${path}${line ? `:${line}` : ""}\``,
+      description && `- **Evidence:** ${description}`,
+      fix && `- **Suggested fix:** ${fix}`,
     ]
       .filter(Boolean)
       .join("\n");
@@ -1012,7 +1044,7 @@ function formatStructuredFindings(findings: Record<string, unknown>[]) {
   if (omitted > 0) {
     blocks.push(`${omitted} more finding${omitted === 1 ? "" : "s"} omitted.`);
   }
-  return [`Findings (${findings.length})`, ...blocks].join("\n\n");
+  return [`## Findings (${findings.length})`, ...blocks].join("\n\n");
 }
 
 function firstLocationPath(value: unknown) {
@@ -1044,11 +1076,26 @@ function isIgnorableTraceRecord(value: Record<string, unknown>) {
   const type = stringFromUnknown(value.type).toLowerCase();
   const subtype = stringFromUnknown(value.subtype).toLowerCase();
   const hookName = stringFromUnknown(value.hook_name).toLowerCase();
+  const hookEvent = stringFromUnknown(value.hook_event).toLowerCase();
+  const item = isPlainRecord(value.item) ? value.item : undefined;
+  const part = isPlainRecord(value.part) ? value.part : undefined;
+  const delta = isPlainRecord(value.delta) ? value.delta : undefined;
+  const nestedType = [
+    type,
+    stringFromUnknown(item?.type).toLowerCase(),
+    stringFromUnknown(part?.type).toLowerCase(),
+    stringFromUnknown(delta?.type).toLowerCase(),
+  ].join(" ");
   return (
-    (type === "system" && (subtype.includes("hook") || hookName)) ||
+    (type === "system" &&
+      (subtype.includes("hook") ||
+        hookName.includes("hook") ||
+        hookEvent.includes("hook") ||
+        hookEvent.includes("sessionstart"))) ||
     type === "thread.started" ||
     type === "turn.started" ||
-    type === "session.update"
+    type === "session.update" ||
+    (isToolType(nestedType) && !nestedType.includes("agent_message"))
   );
 }
 
@@ -1066,6 +1113,9 @@ function answerFromTraceJSON(value: unknown): string | null {
     return null;
   }
   if (!isPlainRecord(value)) {
+    return null;
+  }
+  if (isIgnorableTraceRecord(value)) {
     return null;
   }
   for (const key of [
@@ -1114,10 +1164,20 @@ function isReasoningType(value: string) {
 }
 
 function isToolType(value: string) {
+  const normalized = value.toLowerCase();
   return (
-    value.includes("command_execution") ||
-    value.includes("tool") ||
-    value.includes("function")
+    normalized.includes("command_execution") ||
+    normalized.includes("tool_call") ||
+    normalized.includes("tool_use") ||
+    normalized.includes("function_call") ||
+    normalized.includes("command") ||
+    normalized.includes("tool") ||
+    normalized.includes("function") ||
+    normalized.includes("bash") ||
+    normalized.includes("glob") ||
+    normalized.includes("grep") ||
+    normalized.includes("read_file") ||
+    normalized.includes("list_directory")
   );
 }
 

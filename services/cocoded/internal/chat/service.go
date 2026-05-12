@@ -10,6 +10,7 @@ import (
 	"log"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/hughdo/cocode/services/cocoded/internal/agentoutput"
@@ -285,6 +286,36 @@ func (s Service) Ask(ctx context.Context, params AskParams) (AskResult, error) {
 				"error":        runErr.Error(),
 			})
 			return AskResult{Thread: view.Thread, Messages: messages, Turn: turn, AgentRunIDs: agentRuns}, nil
+		}
+	case AudienceOrchestrator:
+		if responderID := strings.TrimSpace(params.ResponderAgentConfigID); responderID != "" {
+			if config, err := s.agentConfig(ctx, responderID); err == nil {
+				synthesisRunID, synthesisErr := s.answerWithSynthesisAgentConfig(ctx, view.Session, view.Thread, userMessage, config, params, body, nil, nil)
+				if synthesisRunID != "" {
+					agentRuns = append(agentRuns, synthesisRunID)
+					_ = s.linkTurnAgentRun(ctx, turn.ID, synthesisRunID, "chat")
+				}
+				if synthesisErr == nil {
+					break
+				}
+				findings, _ := s.Queries.ListFindingsBySession(ctx, view.Session.ID)
+				if _, err := s.appendMessage(ctx, appendMessageParams{
+					ThreadID:          view.Thread.ID,
+					AuthorType:        AuthorOrchestrator,
+					AuthorDisplayName: "Orchestrator",
+					Body:              orchestratorSynthesisMessage(view.Session, findings, nil, nil, body),
+					Status:            MessageStatusCompleted,
+					MetadataJSON:      agentSynthesisMetadata(agentRuns, nil),
+				}); err != nil {
+					turn, _ = s.updateTurn(ctx, turn, TurnStatusFailed, "orchestrator_answer_failed", err.Error())
+					return AskResult{}, err
+				}
+				break
+			}
+		}
+		if _, err := s.appendLocalAnswer(ctx, view.Session, view.Thread, body); err != nil {
+			turn, _ = s.updateTurn(ctx, turn, TurnStatusFailed, "local_answer_failed", err.Error())
+			return AskResult{}, err
 		}
 	case AudienceAllAgents:
 		ids, runErr := s.answerWithAllAgents(ctx, view.Session, view.Thread, userMessage, params, body)
@@ -1167,20 +1198,9 @@ func (s Service) sessionReviewerAgentConfigs(ctx context.Context, reviewSessionI
 		if config.Enabled == 0 {
 			continue
 		}
-		if isOrchestratorConfig(config) {
-			continue
-		}
 		configs = append(configs, config)
 	}
 	return configs, nil
-}
-
-func isOrchestratorConfig(config dbgen.AgentConfig) bool {
-	role := strings.ToLower(strings.TrimSpace(config.Role))
-	name := strings.ToLower(strings.TrimSpace(config.Name))
-	return role == AuthorOrchestrator ||
-		strings.Contains(role, "orchestrator") ||
-		strings.Contains(name, "orchestrator")
 }
 
 func (s Service) enabledSessionAgentCount(ctx context.Context, reviewSessionID string) (int, error) {
@@ -1309,9 +1329,13 @@ func messageIDs(messages []Message) []string {
 func orchestratorSynthesisMessage(session dbgen.ReviewSession, findings []dbgen.Finding, answers []Message, failures []string, question string) string {
 	var builder strings.Builder
 	builder.WriteString("## Orchestrator synthesis\n\n")
-	builder.WriteString(fmt.Sprintf("I asked %d reviewer%s and reviewed %d persisted answer%s before responding.", len(answers)+len(failures), plural(len(answers)+len(failures)), len(answers), plural(len(answers))))
-	if len(failures) > 0 {
-		builder.WriteString(fmt.Sprintf(" %d reviewer%s failed, so I treated those as gaps instead of blocking the turn.", len(failures), plural(len(failures))))
+	if len(answers) == 0 && len(failures) == 0 {
+		builder.WriteString("I answered directly from the current review state and recent centralized chat.")
+	} else {
+		builder.WriteString(fmt.Sprintf("I asked %d reviewer%s and reviewed %d persisted answer%s before responding.", len(answers)+len(failures), plural(len(answers)+len(failures)), len(answers), plural(len(answers))))
+		if len(failures) > 0 {
+			builder.WriteString(fmt.Sprintf(" %d reviewer%s failed, so I treated those as gaps instead of blocking the turn.", len(failures), plural(len(failures))))
+		}
 	}
 	builder.WriteString("\n\n")
 
@@ -1869,6 +1893,11 @@ func scanTurn(scanner interface {
 }
 
 func localAnswer(session dbgen.ReviewSession, findings []dbgen.Finding, events []dbgen.Event, question string) string {
+	findings = userVisibleChatFindings(findings)
+	if finding, ok := bestLocalFindingMatch(question, findings); ok {
+		return localFindingAnswer(session, finding)
+	}
+
 	verified := 0
 	accepted := 0
 	dismissed := 0
@@ -1895,6 +1924,112 @@ func localAnswer(session dbgen.ReviewSession, findings []dbgen.Finding, events [
 		lines = append(lines, "Top finding: "+findings[0].CanonicalClaim)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func bestLocalFindingMatch(question string, findings []dbgen.Finding) (dbgen.Finding, bool) {
+	if len(findings) == 0 || !looksLikeFindingsQuestion(question) {
+		return dbgen.Finding{}, false
+	}
+	questionText := normalizeFindingMatchText(question)
+	questionTokens := findingMatchTokens(questionText)
+	bestIndex := -1
+	bestScore := 0
+	for index, finding := range findings {
+		claim := normalizeFindingMatchText(finding.CanonicalClaim)
+		location := normalizeFindingMatchText(findingPromptLocation(finding))
+		score := 0
+		if claim != "" && strings.Contains(questionText, claim) {
+			score += 100
+		}
+		if location != "" && strings.Contains(questionText, location) {
+			score += 50
+		}
+		findingTokens := findingMatchTokens(strings.Join([]string{
+			finding.CanonicalClaim,
+			finding.Severity,
+			finding.Category,
+			findingPromptLocation(finding),
+		}, " "))
+		for token := range questionTokens {
+			if _, ok := findingTokens[token]; ok {
+				score += 3
+			}
+		}
+		if score > bestScore {
+			bestScore = score
+			bestIndex = index
+		}
+	}
+	if bestIndex < 0 || bestScore < 9 {
+		return dbgen.Finding{}, false
+	}
+	return findings[bestIndex], true
+}
+
+func localFindingAnswer(session dbgen.ReviewSession, finding dbgen.Finding) string {
+	title := fallbackLabel(finding.CanonicalClaim, "Untitled finding")
+	lines := []string{
+		"## " + title,
+		"",
+		fmt.Sprintf("This is a **%s** finding in review session `%s` with **%.0f%% confidence**.", fallbackLabel(finding.Severity, "unknown severity"), session.ID, finding.Confidence*100),
+		fmt.Sprintf("Status: `%s`; verification: `%s`; session: `%s`.", fallbackLabel(finding.DecisionStatus, "needs_triage"), fallbackLabel(finding.VerificationStatus, "unverified"), fallbackLabel(session.Status, "unknown")),
+	}
+	if location := findingPromptLocation(finding); location != "No primary location" {
+		lines = append(lines, fmt.Sprintf("Location: `%s`.", location))
+	}
+	if evidence := strings.TrimSpace(nullableStringValue(finding.EvidenceSummary)); evidence != "" {
+		lines = append(lines, "", "### Why it was flagged", truncatePromptText(evidence, 1200))
+	}
+	if counter := strings.TrimSpace(nullableStringValue(finding.CounterEvidenceSummary)); counter != "" {
+		lines = append(lines, "", "### Counter-evidence", truncatePromptText(counter, 900))
+	}
+	if fix := strings.TrimSpace(nullableStringValue(finding.SuggestedFix)); fix != "" {
+		lines = append(lines, "", "### Suggested fix", truncatePromptText(fix, 900))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func normalizeFindingMatchText(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var builder strings.Builder
+	builder.Grow(len(value))
+	lastSpace := false
+	for _, r := range value {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			builder.WriteRune(r)
+			lastSpace = false
+			continue
+		}
+		if !lastSpace {
+			builder.WriteByte(' ')
+			lastSpace = true
+		}
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func findingMatchTokens(value string) map[string]struct{} {
+	tokens := map[string]struct{}{}
+	for _, token := range strings.Fields(normalizeFindingMatchText(value)) {
+		if len(token) < 3 || localFindingStopWords[token] {
+			continue
+		}
+		tokens[token] = struct{}{}
+	}
+	return tokens
+}
+
+var localFindingStopWords = map[string]bool{
+	"again": true,
+	"and":   true,
+	"for":   true,
+	"from":  true,
+	"high":  true,
+	"low":   true,
+	"me":    true,
+	"the":   true,
+	"this":  true,
+	"with":  true,
 }
 
 func chatPrompt(session dbgen.ReviewSession, thread Thread, userMessage Message, config dbgen.AgentConfig, promptContext chatPromptContext, question string) string {

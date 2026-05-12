@@ -2,6 +2,7 @@ import {
   type CSSProperties,
   type ReactNode,
   type UIEvent,
+  type WheelEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -76,6 +77,11 @@ import {
   successApiState,
   type Workspace,
 } from "@/lib/api";
+import {
+  type HighlightedCodeLine,
+  highlightCodeLines,
+  languageForFilePath,
+} from "@/lib/syntax-highlighting";
 import { cn } from "@/lib/utils";
 import githubLogoUrl from "../../../../../../assets/agents/github.svg";
 
@@ -127,8 +133,11 @@ type ManualReviewAgentAssignment = {
 };
 
 const sourceInspectorMinWidth = 380;
-const sourceInspectorMaxWidth = 860;
-const sourceInspectorMainMinWidth = 760;
+const sourceInspectorDefaultWidth = 760;
+const sourceInspectorMaxWidth = 1280;
+const sourceInspectorMainMinWidth = 520;
+const sourceInspectorOverlayGutter = 16;
+const sourceInspectorSideBySideMinWidth = 1180;
 const sourceInspectorTransitionMs = 220;
 const setupInitialDiffFileRenderCount = 6;
 const setupDiffFileRenderBatchSize = 6;
@@ -200,7 +209,9 @@ export function NewThreadScreen({
   const [sourceInspectorRendered, setSourceInspectorRendered] = useState(false);
   const [sourceInspectorVisible, setSourceInspectorVisible] = useState(false);
   const [sourceInspectorOpenCount, setSourceInspectorOpenCount] = useState(0);
-  const [sourceInspectorWidth, setSourceInspectorWidth] = useState(560);
+  const [sourceInspectorWidth, setSourceInspectorWidth] = useState(
+    sourceInspectorDefaultWidth,
+  );
   const [sourceInspectorResizing, setSourceInspectorResizing] = useState(false);
   const [renderedDiffFileCount, setRenderedDiffFileCount] = useState(
     setupInitialDiffFileRenderCount,
@@ -297,13 +308,7 @@ export function NewThreadScreen({
         sourceInspectorLayoutRef.current?.getBoundingClientRect();
       const availableWidth = layoutBounds?.width ?? window.innerWidth;
       const rightEdge = layoutBounds?.right ?? window.innerWidth;
-      const maxWidth = Math.max(
-        sourceInspectorMinWidth,
-        Math.min(
-          sourceInspectorMaxWidth,
-          availableWidth - sourceInspectorMainMinWidth,
-        ),
-      );
+      const maxWidth = maxSourceInspectorWidth(availableWidth);
       const nextWidth = Math.min(
         maxWidth,
         Math.max(sourceInspectorMinWidth, rightEdge - clientX),
@@ -341,13 +346,7 @@ export function NewThreadScreen({
     function clampInspectorWidth() {
       const availableWidth =
         sourceInspectorLayoutRef.current?.clientWidth ?? window.innerWidth;
-      const maxWidth = Math.max(
-        sourceInspectorMinWidth,
-        Math.min(
-          sourceInspectorMaxWidth,
-          availableWidth - sourceInspectorMainMinWidth,
-        ),
-      );
+      const maxWidth = maxSourceInspectorWidth(availableWidth);
       setSourceInspectorWidth((current) =>
         Math.min(maxWidth, Math.max(sourceInspectorMinWidth, current)),
       );
@@ -366,13 +365,7 @@ export function NewThreadScreen({
     }
     const availableWidth =
       sourceInspectorLayoutRef.current?.clientWidth ?? window.innerWidth;
-    const maxWidth = Math.max(
-      sourceInspectorMinWidth,
-      Math.min(
-        sourceInspectorMaxWidth,
-        availableWidth - sourceInspectorMainMinWidth,
-      ),
-    );
+    const maxWidth = maxSourceInspectorWidth(availableWidth);
     setSourceInspectorWidth((current) =>
       Math.min(maxWidth, Math.max(sourceInspectorMinWidth, current)),
     );
@@ -1026,7 +1019,7 @@ export function NewThreadScreen({
                 number={1}
                 title="Review source"
               >
-                <div className="grid grid-cols-[repeat(auto-fit,minmax(175px,1fr))] gap-2">
+                <div className="grid grid-cols-[repeat(auto-fit,minmax(min(175px,100%),1fr))] gap-2">
                   {setupSourceOptions.map((option) => (
                     <SetupSegment
                       key={option.id}
@@ -2003,6 +1996,17 @@ function SetupStepPanel({
   );
 }
 
+function maxSourceInspectorWidth(availableWidth: number) {
+  const responsiveMax =
+    availableWidth < sourceInspectorSideBySideMinWidth
+      ? availableWidth - sourceInspectorOverlayGutter
+      : availableWidth - sourceInspectorMainMinWidth;
+  return Math.max(
+    sourceInspectorMinWidth,
+    Math.min(sourceInspectorMaxWidth, responsiveMax),
+  );
+}
+
 function SetupSegment({
   active,
   icon: Icon,
@@ -2718,6 +2722,39 @@ function SetupSourceInspectorPanel({
 
   function handleStackScroll(event: UIEvent<HTMLDivElement>) {
     const target = event.currentTarget;
+    maybeLoadMoreDiffFiles(target);
+  }
+
+  function handleStackWheel(event: WheelEvent<HTMLElement>) {
+    if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) {
+      return;
+    }
+    const target =
+      event.target instanceof HTMLElement ? event.target : undefined;
+    if (!target?.closest("[data-setup-diff-scroll]")) {
+      return;
+    }
+    const scroller = stackScrollRef.current;
+    if (!scroller) {
+      return;
+    }
+    const maxScrollTop = scroller.scrollHeight - scroller.clientHeight;
+    if (maxScrollTop <= 0) {
+      return;
+    }
+    const nextScrollTop = Math.min(
+      maxScrollTop,
+      Math.max(0, scroller.scrollTop + event.deltaY),
+    );
+    if (nextScrollTop === scroller.scrollTop) {
+      return;
+    }
+    event.preventDefault();
+    scroller.scrollTop = nextScrollTop;
+    maybeLoadMoreDiffFiles(scroller);
+  }
+
+  function maybeLoadMoreDiffFiles(target: HTMLElement) {
     if (
       hiddenFileCount > 0 &&
       target.scrollTop + target.clientHeight >= target.scrollHeight - 560
@@ -2727,7 +2764,13 @@ function SetupSourceInspectorPanel({
   }
 
   return (
-    <section className="flex h-full min-h-0 flex-col overflow-hidden bg-white">
+    <section
+      ref={stackScrollRef}
+      className="h-full overflow-y-auto bg-white [-webkit-overflow-scrolling:touch] [scrollbar-gutter:stable]"
+      data-testid="setup-source-stack-scroll"
+      onScroll={handleStackScroll}
+      onWheel={handleStackWheel}
+    >
       <div className="flex items-start justify-between gap-3 px-4 pt-4 pb-3">
         <div className="min-w-0">
           <h2 className="text-[0.96rem] font-semibold">Source details</h2>
@@ -2768,15 +2811,15 @@ function SetupSourceInspectorPanel({
       {preview.status !== "loading" &&
         preview.status !== "error" &&
         (preview.status !== "success" || !previewReady) && (
-          <div className="border-border/70 text-muted-foreground mt-4 flex min-h-[180px] flex-1 items-center justify-center rounded-lg border bg-white">
+          <div className="border-border/70 text-muted-foreground mx-4 mt-4 flex min-h-[220px] items-center justify-center rounded-lg border bg-white">
             <FileSearchIcon className="mr-2 size-4" />
             <span className="text-[0.78rem]">Not loaded</span>
           </div>
         )}
 
       {preview.status === "success" && previewReady && (
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          <div className="border-border/60 flex min-h-10 shrink-0 items-center justify-between gap-3 border-y px-4">
+        <div className="flex flex-col">
+          <div className="border-border/60 sticky top-0 z-10 flex min-h-10 shrink-0 items-center justify-between gap-3 border-y bg-white px-4">
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
               <span className="text-muted-foreground text-[0.86rem]">
                 Changed files
@@ -2814,12 +2857,7 @@ function SetupSourceInspectorPanel({
             </span>
           </div>
 
-          <div
-            ref={stackScrollRef}
-            className="min-h-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]"
-            data-testid="setup-source-stack-scroll"
-            onScroll={handleStackScroll}
-          >
+          <div>
             {visibleFiles.length === 0 && (
               <div className="text-muted-foreground flex min-h-[180px] items-center justify-center rounded-lg border bg-white text-[0.78rem]">
                 No changed files
@@ -2954,7 +2992,7 @@ function SetupFileDiffPreview({
           {!unavailableReason && patchPreview?.status === "success" && (
             <>
               {hasSelectedPatch && (
-                <SetupDiffContent patch={patchPreview.data} />
+                <SetupDiffContent file={file} patch={patchPreview.data} />
               )}
             </>
           )}
@@ -2978,8 +3016,44 @@ function SetupDiffSkeleton({ rows }: { rows: number }) {
   );
 }
 
-function SetupDiffContent({ patch }: { patch: ChangedFilePatch }) {
-  const rows = setupSideBySideDiffRows(patch.content);
+function SetupDiffContent({
+  file,
+  patch,
+}: {
+  file: ChangedFile;
+  patch: ChangedFilePatch;
+}) {
+  const rows = useMemo(
+    () => setupSideBySideDiffRows(patch.content),
+    [patch.content],
+  );
+  const language = useMemo(() => languageForFilePath(file.path), [file.path]);
+  const oldCode = useMemo(
+    () => rows.map((row) => row.oldText).join("\n"),
+    [rows],
+  );
+  const newCode = useMemo(
+    () => rows.map((row) => row.newText).join("\n"),
+    [rows],
+  );
+  const [highlightedDiff, setHighlightedDiff] =
+    useState<SetupHighlightedDiff | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void Promise.all([
+      highlightCodeLines(oldCode, language),
+      highlightCodeLines(newCode, language),
+    ]).then(([oldLines, newLines]) => {
+      if (active) {
+        setHighlightedDiff({ newLines, oldLines });
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [language, newCode, oldCode]);
+
   if (rows.length === 0) {
     return (
       <div className="text-muted-foreground flex min-h-0 flex-1 items-center justify-center px-4 text-center text-[0.78rem] leading-5">
@@ -2990,7 +3064,8 @@ function SetupDiffContent({ patch }: { patch: ChangedFilePatch }) {
   return (
     <>
       <div
-        className="overflow-x-auto overscroll-contain bg-white [scrollbar-gutter:stable_both-edges]"
+        className="overflow-x-auto bg-white [scrollbar-gutter:stable_both-edges]"
+        data-setup-diff-scroll
         data-testid="setup-diff-scroll"
       >
         <div className="grid w-max min-w-full auto-rows-min grid-cols-[42px_minmax(320px,max-content)_42px_minmax(320px,max-content)]">
@@ -3009,6 +3084,8 @@ function SetupDiffContent({ patch }: { patch: ChangedFilePatch }) {
           {rows.map((row, index) => (
             <SetupSideBySideDiffRow
               key={`${index}:${row.oldLineNumber ?? ""}:${row.newLineNumber ?? ""}:${row.oldText}:${row.newText}`}
+              newLine={highlightedDiff?.newLines[index]}
+              oldLine={highlightedDiff?.oldLines[index]}
               row={row}
             />
           ))}
@@ -3024,7 +3101,15 @@ function SetupDiffContent({ patch }: { patch: ChangedFilePatch }) {
   );
 }
 
-function SetupSideBySideDiffRow({ row }: { row: SetupSideBySideDiffRowData }) {
+function SetupSideBySideDiffRow({
+  newLine,
+  oldLine,
+  row,
+}: {
+  newLine?: HighlightedCodeLine;
+  oldLine?: HighlightedCodeLine;
+  row: SetupSideBySideDiffRowData;
+}) {
   if (row.tone === "meta" || row.tone === "hunk") {
     return (
       <>
@@ -3058,7 +3143,7 @@ function SetupSideBySideDiffRow({ row }: { row: SetupSideBySideDiffRowData }) {
           setupDiffCellTone(row.tone, "old"),
         )}
       >
-        {row.oldText || " "}
+        <SetupHighlightedCodeLine line={oldLine} text={row.oldText} />
       </code>
       <span
         className={cn(
@@ -3074,10 +3159,56 @@ function SetupSideBySideDiffRow({ row }: { row: SetupSideBySideDiffRowData }) {
           setupDiffCellTone(row.tone, "new"),
         )}
       >
-        {row.newText || " "}
+        <SetupHighlightedCodeLine line={newLine} text={row.newText} />
       </code>
     </>
   );
+}
+
+function SetupHighlightedCodeLine({
+  line,
+  text,
+}: {
+  line?: HighlightedCodeLine;
+  text: string;
+}) {
+  if (text === "") {
+    return " ";
+  }
+  if (!line || line.length === 0) {
+    return text;
+  }
+  return (
+    <>
+      {line.map((token, index) => (
+        <span
+          key={`${index}:${token.content}`}
+          style={setupSyntaxTokenStyle(token)}
+        >
+          {token.content}
+        </span>
+      ))}
+    </>
+  );
+}
+
+function setupSyntaxTokenStyle(token: HighlightedCodeLine[number]) {
+  const style: CSSProperties = {};
+  if (token.color) {
+    style.color = token.color;
+  }
+  if (token.fontStyle && token.fontStyle > 0) {
+    if (token.fontStyle & 1) {
+      style.fontStyle = "italic";
+    }
+    if (token.fontStyle & 2) {
+      style.fontWeight = 600;
+    }
+    if (token.fontStyle & 4) {
+      style.textDecoration = "underline";
+    }
+  }
+  return Object.keys(style).length > 0 ? style : undefined;
 }
 
 function formatPreviewNumber(value: number) {
@@ -3100,6 +3231,11 @@ type SetupSideBySideDiffRowData = {
   oldLineNumber?: number;
   oldText: string;
   tone: SetupSideBySideDiffTone;
+};
+
+type SetupHighlightedDiff = {
+  newLines: HighlightedCodeLine[];
+  oldLines: HighlightedCodeLine[];
 };
 
 function setupSideBySideDiffRows(

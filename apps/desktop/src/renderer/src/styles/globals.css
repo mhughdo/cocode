@@ -169,6 +169,39 @@ pre,
     box-shadow: 0 1px 2px rgb(17 18 20 / 0.025);
   }
 
+  .cocode-shiki-block {
+    --line-numbers-foreground: color-mix(
+      in oklab,
+      var(--muted-foreground) 72%,
+      transparent
+    );
+    --line-numbers-width: 3ch;
+    --line-numbers-padding-left: 0.25rem;
+    --line-numbers-padding-right: 0.85rem;
+    --line-numbers-font-size: 0.72rem;
+  }
+
+  .cocode-shiki-block .cocode-shiki pre {
+    margin: 0;
+    min-width: 100%;
+    overflow: auto;
+    background: transparent !important;
+    padding: 0.7rem 0.8rem;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    line-height: 1.55;
+    scrollbar-width: thin;
+  }
+
+  .cocode-shiki-block .cocode-shiki code {
+    font-family: var(--font-mono);
+  }
+
+  .cocode-shiki-block .rs-line-number::before {
+    border-right: 1px solid var(--border);
+    margin-right: 0.75rem;
+  }
+
   .cocode-page {
     margin-inline: auto;
     width: min(100%, 1120px);
@@ -190,5 +223,63 @@ pre,
       linear-gradient(90deg, oklch(0.9 0.012 255 / 0.42) 1px, transparent 1px),
       linear-gradient(180deg, oklch(0.9 0.012 255 / 0.42) 1px, transparent 1px);
     background-size: 28px 28px;
+  }
+
+  .evidence-map-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+    min-height: 0;
+  }
+
+  .evidence-map-right-panel {
+    grid-column: 1 / -1;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .evidence-map-right-panel * {
+    min-width: 0;
+  }
+
+  .evidence-map-right-panel pre,
+  .evidence-map-right-panel code {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  @media (min-width: 1024px) {
+    .evidence-map-layout {
+      grid-template-columns: 260px minmax(0, 1fr);
+    }
+  }
+
+  @media (min-width: 1280px) {
+    .evidence-map-layout {
+      grid-template-columns: 260px minmax(0, 1fr) 320px;
+    }
+
+    .evidence-map-right-panel {
+      grid-column: auto;
+      border-top-width: 0;
+      border-left-width: 1px;
+    }
+  }
+
+  @media (min-width: 1440px) {
+    .evidence-map-layout {
+      grid-template-columns: 280px minmax(0, 1fr) 360px;
+    }
+  }
+
+  @media (min-width: 1800px) {
+    .evidence-map-layout {
+      grid-template-columns: 300px minmax(0, 1fr) 420px;
+    }
+
+    .evidence-map-right-panel {
+      height: 640px;
+    }
   }
 }

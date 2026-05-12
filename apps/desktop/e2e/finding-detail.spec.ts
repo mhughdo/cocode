@@ -38,8 +38,10 @@ test("opens finding detail and Evidence Map from seeded data", async ({
 
     await page.getByRole("tab", { exact: true, name: "Code" }).click();
     await expect(page.getByText("Changed code")).toBeVisible();
-    await expect(page.getByText("Line", { exact: true })).toBeVisible();
-    await expect(page.getByText("Code", { exact: true }).last()).toBeVisible();
+    await expect(page.getByText("requireWorkspaceAdmin")).toBeVisible();
+    await expect(
+      page.getByText("apps/api/src/routes/repositories.ts").first(),
+    ).toBeVisible();
 
     await page
       .locator("button")

@@ -1,5 +1,12 @@
-import { Fragment, type ReactElement, type ReactNode } from "react";
+import {
+  Fragment,
+  type CSSProperties,
+  type ReactElement,
+  type ReactNode,
+} from "react";
+import ShikiHighlighter from "react-shiki";
 
+import { normalizeSyntaxLanguage, SYNTAX_THEME } from "@/lib/syntax-highlighting";
 import { cn } from "@/lib/utils";
 
 export function MarkdownMessage({
@@ -30,8 +37,19 @@ export function normalizeMarkdownMessageContent(content: string) {
   if (!raw) {
     return content;
   }
-  const extracted = extractJSONLinesAnswer(raw) ?? extractJSONAnswer(raw);
+  const extracted =
+    extractJSONLinesAnswer(raw) ??
+    extractJSONFenceAnswer(raw) ??
+    extractEmbeddedJSONAnswer(raw) ??
+    extractJSONAnswer(raw) ??
+    extractEscapedJSONAnswer(raw);
   return extracted || content;
+}
+
+function extractJSONFenceAnswer(raw: string) {
+  const match = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  const fenced = match?.[1]?.trim();
+  return fenced ? extractJSONAnswer(fenced) : null;
 }
 
 function extractJSONLinesAnswer(raw: string) {
@@ -52,6 +70,41 @@ function extractJSONLinesAnswer(raw: string) {
     }
   }
   return parsedAny ? answer : null;
+}
+
+function extractEmbeddedJSONAnswer(raw: string) {
+  if (!raw.includes("{") || !raw.includes("}")) {
+    return null;
+  }
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start < 0 || end <= start) {
+    return null;
+  }
+  const candidate = raw.slice(start, end + 1).trim();
+  if (!candidate.includes('"findings"') && !candidate.includes('"response"')) {
+    return null;
+  }
+  return extractJSONAnswer(candidate);
+}
+
+function extractEscapedJSONAnswer(raw: string) {
+  if (!raw.includes("\\n") && !raw.includes('\\"')) {
+    return null;
+  }
+  const decoded = raw
+    .replace(/\\r\\n/g, "\n")
+    .replace(/\\n/g, "\n")
+    .replace(/\\"/g, '"')
+    .trim();
+  if (decoded === raw) {
+    return null;
+  }
+  return (
+    extractJSONFenceAnswer(decoded) ??
+    extractEmbeddedJSONAnswer(decoded) ??
+    extractJSONAnswer(decoded)
+  );
 }
 
 function extractJSONAnswer(raw: string): string | null {
@@ -82,6 +135,13 @@ function answerFromUnknown(value: unknown): string | null {
   if (!isPlainRecord(value)) {
     return null;
   }
+  if (isIgnorableAnswerRecord(value)) {
+    return null;
+  }
+  const findings = structuredFindingsFromRecord(value);
+  if (findings.length > 0) {
+    return formatStructuredFindingsMarkdown(findings);
+  }
   for (const key of [
     "answer",
     "content",
@@ -106,6 +166,103 @@ function answerFromUnknown(value: unknown): string | null {
     }
   }
   return null;
+}
+
+function isIgnorableAnswerRecord(value: Record<string, unknown>) {
+  const type = textFromUnknown(value.type).toLowerCase();
+  const subtype = textFromUnknown(value.subtype).toLowerCase();
+  const hookName = textFromUnknown(value.hook_name).toLowerCase();
+  const nestedItem = isPlainRecord(value.item) ? value.item : undefined;
+  const nestedType = textFromUnknown(nestedItem?.type).toLowerCase();
+  return (
+    (type === "system" && (subtype.includes("hook") || Boolean(hookName))) ||
+    type === "thread.started" ||
+    type === "turn.started" ||
+    type === "session.update" ||
+    nestedType.includes("command_execution") ||
+    nestedType.includes("tool") ||
+    nestedType.includes("function")
+  );
+}
+
+function structuredFindingsFromRecord(value: Record<string, unknown>) {
+  const rawFindings = Array.isArray(value.findings)
+    ? value.findings
+    : isPlainRecord(value.finding)
+      ? [value.finding]
+      : [];
+  return rawFindings.filter(isPlainRecord);
+}
+
+function formatStructuredFindingsMarkdown(findings: Record<string, unknown>[]) {
+  const blocks = findings.slice(0, 8).map((finding, index) => {
+    const title =
+      textFromUnknown(finding.title) ||
+      textFromUnknown(finding.claim) ||
+      textFromUnknown(finding.message) ||
+      textFromUnknown(finding.description) ||
+      `Finding ${index + 1}`;
+    const severity = textFromUnknown(finding.severity);
+    const category = textFromUnknown(finding.category);
+    const path =
+      textFromUnknown(finding.path) ||
+      textFromUnknown(finding.file) ||
+      firstLocationPath(finding.locations);
+    const line =
+      numberText(finding.line) ||
+      numberText(finding.start_line) ||
+      firstLocationLine(finding.locations);
+    const description =
+      textFromUnknown(finding.body) ||
+      textFromUnknown(finding.description) ||
+      textFromUnknown(finding.evidence) ||
+      textFromUnknown(finding.summary);
+    const fix =
+      textFromUnknown(finding.suggested_fix) ||
+      textFromUnknown(finding.recommendation) ||
+      textFromUnknown(finding.fix);
+    return [
+      `### ${index + 1}. ${title}`,
+      severity && `- **Severity:** ${severity}`,
+      category && `- **Category:** ${category}`,
+      path && `- **Location:** \`${path}${line ? `:${line}` : ""}\``,
+      description && `- **Evidence:** ${description}`,
+      fix && `- **Suggested fix:** ${fix}`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  });
+  const omitted = Math.max(findings.length - blocks.length, 0);
+  if (omitted > 0) {
+    blocks.push(`${omitted} more finding${omitted === 1 ? "" : "s"} omitted.`);
+  }
+  return [`## Findings (${findings.length})`, ...blocks].join("\n\n");
+}
+
+function firstLocationPath(value: unknown) {
+  if (!Array.isArray(value)) {
+    return "";
+  }
+  const location = value.find(isPlainRecord);
+  return textFromUnknown(location?.path) || textFromUnknown(location?.file);
+}
+
+function firstLocationLine(value: unknown) {
+  if (!Array.isArray(value)) {
+    return "";
+  }
+  const location = value.find(isPlainRecord);
+  return numberText(location?.start_line) || numberText(location?.line);
+}
+
+function numberText(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? String(value)
+    : textFromUnknown(value);
+}
+
+function textFromUnknown(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -303,40 +460,67 @@ function renderHeading(depth: number, text: string, key: string) {
 }
 
 function CodeBlock({ language, lines }: { language: string; lines: string[] }) {
-  const isDiff =
-    language.includes("diff") ||
-    lines.some((line) => /^[-+@]/.test(line.trimStart()));
+  const normalizedLanguage =
+    language || (looksLikeDiffBlock(lines) ? "diff" : "plaintext");
   return (
-    <pre className="border-border/70 bg-muted/55 max-w-full overflow-x-auto rounded-lg border py-2 font-mono text-[12px] leading-5 [scrollbar-width:thin]">
-      <code className="block min-w-max">
-        {lines.map((line, index) => {
-          const diffClass = isDiff ? diffLineClass(line) : "";
-          return (
-            <span
-              className={cn("block px-3 whitespace-pre", diffClass)}
-              key={`${index}-${line}`}
-            >
-              {line || " "}
-            </span>
-          );
-        })}
-      </code>
-    </pre>
+    <SyntaxCodeBlock code={lines.join("\n")} language={normalizedLanguage} />
   );
 }
 
-function diffLineClass(line: string) {
-  const trimmed = line.trimStart();
-  if (trimmed.startsWith("+") && !trimmed.startsWith("+++")) {
-    return "bg-emerald-50 text-emerald-900";
-  }
-  if (trimmed.startsWith("-") && !trimmed.startsWith("---")) {
-    return "bg-red-50 text-red-900";
-  }
-  if (trimmed.startsWith("@@")) {
-    return "bg-sky-50 text-sky-900";
-  }
-  return "";
+export function SyntaxCodeBlock({
+  className,
+  code,
+  language,
+  lineNumbers,
+  startLine,
+}: {
+  className?: string;
+  code: string;
+  language?: string;
+  lineNumbers?: boolean;
+  startLine?: number;
+}) {
+  const normalizedLanguage = normalizeSyntaxLanguage(language ?? "");
+  const style =
+    lineNumbers && startLine && startLine > 1
+      ? ({
+          "--line-start": String(startLine),
+        } as CSSProperties)
+      : undefined;
+
+  return (
+    <div
+      className={cn(
+        "cocode-shiki-block border-border/70 bg-muted/55 max-w-full overflow-hidden rounded-lg border",
+        className,
+      )}
+      style={style}
+    >
+      <ShikiHighlighter
+        addDefaultStyles={false}
+        className="cocode-shiki"
+        language={normalizedLanguage}
+        showLanguage={false}
+        showLineNumbers={Boolean(lineNumbers)}
+        startingLineNumber={startLine && startLine > 0 ? startLine : 1}
+        theme={SYNTAX_THEME}
+      >
+        {code.trimEnd() || " "}
+      </ShikiHighlighter>
+    </div>
+  );
+}
+
+function looksLikeDiffBlock(lines: string[]) {
+  return lines.some((line) => {
+    const trimmed = line.trimStart();
+    return (
+      trimmed.startsWith("diff --git") ||
+      trimmed.startsWith("@@") ||
+      trimmed.startsWith("+++") ||
+      trimmed.startsWith("---")
+    );
+  });
 }
 
 function MarkdownTable({ lines }: { lines: string[] }) {

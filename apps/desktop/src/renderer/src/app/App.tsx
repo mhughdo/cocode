@@ -1,5 +1,4 @@
 import {
-  Fragment,
   type FormEvent,
   useCallback,
   useEffect,
@@ -33,7 +32,6 @@ import {
   PlusIcon,
   RefreshCwIcon,
   SearchIcon,
-  SendIcon,
   SettingsIcon,
   ShieldCheckIcon,
   TerminalIcon,
@@ -103,7 +101,6 @@ import {
   type EvidenceMapCallPathStep,
   type EvidenceMapEdge,
   type EvidenceMapFinding,
-  type EvidenceMapGraphRef,
   type EvidenceMapHierarchyItem,
   type EvidenceMapNode,
   type EvidenceMapPanelEvidenceRef,
@@ -131,6 +128,7 @@ import {
   type SettingsImportResponse,
   type Workspace,
 } from "@/lib/api";
+import { languageForFilePath } from "@/lib/syntax-highlighting";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { AgentRuntimeTrace } from "./agent-runtime-trace";
@@ -142,7 +140,7 @@ import {
   formatSetupAgentLabel,
 } from "./agent-utils";
 import { CentralizedChatScreen } from "./centralized-chat-screen";
-import { MarkdownMessage } from "./markdown-message";
+import { MarkdownMessage, SyntaxCodeBlock } from "./markdown-message";
 import { NewThreadScreen } from "./new-thread-screen";
 
 const MAX_SIDEBAR_SESSIONS = 12;
@@ -152,10 +150,10 @@ const MAX_REVIEW_EVENTS_PER_AGENT_RUN = 2500;
 const MAX_NON_AGENT_RUN_EVENTS = 1200;
 const MAX_AUDIT_ENTRIES_RENDERED = 120;
 const MAX_FINDINGS_RENDERED = 150;
-const MAX_CODE_LINES_RENDERED = 80;
 const EVIDENCE_MAP_NODE_WIDTH = 232;
-const EVIDENCE_MAP_NODE_HEIGHT = 82;
-const EVIDENCE_MAP_COLUMN_GAP = 326;
+const EVIDENCE_MAP_NODE_HEIGHT = 104;
+const EVIDENCE_MAP_COLUMN_GAP = 300;
+const EVIDENCE_MAP_ROW_GAP = 136;
 const REVIEW_THREAD_TAB_CLASS =
   "mt-4 min-h-0 overflow-y-auto pr-1 pl-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden";
 const COMPOSER_RUNTIME_POLICIES = {
@@ -3247,9 +3245,7 @@ function ReviewThread({
               {evidenceMapFinding ? (
                 <EvidenceMapScreen
                   activeRepository={activeRepository}
-                  agentConfigs={agentConfigs}
                   client={client}
-                  events={live.events}
                   finding={evidenceMapFinding}
                   onBack={() => setActiveTab("findings")}
                 />
@@ -3317,7 +3313,7 @@ function ReviewDetailsScreen({
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex min-h-0 flex-col gap-4">
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(340px,0.72fr)]">
         <ReviewContextSafetyPanel
           agentConfigs={agentConfigs}
@@ -5639,7 +5635,11 @@ function FindingDetailScreen({
   const counterEvidence = evidenceItemsOrEmpty(
     detail?.evidence_groups?.counter,
   );
+  const missingEvidence = evidenceItemsOrEmpty(
+    detail?.evidence_groups?.missing,
+  );
   const testEvidence = evidenceItemsOrEmpty(detail?.evidence_groups?.test);
+  const searchEvidence = evidenceItemsOrEmpty(detail?.evidence_groups?.search);
   const runtimeEvents = useMemo(
     () => followUpRuntimeEvents(events, activeFinding.id),
     [activeFinding.id, events],
@@ -5746,10 +5746,10 @@ function FindingDetailScreen({
               {truncate(activeFinding.canonical_claim, 72)}
             </span>
           </div>
-          <h2 className="text-xl leading-7 font-semibold">
+          <h2 className="text-xl leading-7 font-semibold break-words">
             {activeFinding.canonical_claim}
           </h2>
-          <p className="text-muted-foreground mt-1 font-mono text-xs">
+          <p className="text-muted-foreground mt-1 font-mono text-xs break-all">
             {formatFindingLocation(activeFinding)}
           </p>
         </div>
@@ -5779,11 +5779,11 @@ function FindingDetailScreen({
         />
       )}
       {detail && (
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(300px,0.75fr)_280px]">
+        <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(340px,0.72fr)] 2xl:grid-cols-[minmax(0,1.05fr)_minmax(320px,0.72fr)_320px]">
           <section className="cocode-panel min-w-0 overflow-hidden">
             <div className="border-b px-4 py-3">
               <div className="text-sm font-semibold">Changed file</div>
-              <div className="text-muted-foreground mt-1 truncate font-mono text-xs">
+              <div className="text-muted-foreground mt-1 font-mono text-xs break-all">
                 {activeFinding.primary_path || "No primary file"}
               </div>
             </div>
@@ -5801,13 +5801,13 @@ function FindingDetailScreen({
           </section>
 
           <section className="flex min-w-0 flex-col gap-3">
-            <div className="cocode-panel p-4">
-              <div className="text-sm font-semibold">Detailed explanation</div>
-              <p className="text-muted-foreground mt-2 text-sm leading-6">
-                {activeFinding.evidence_summary ||
-                  "The selected agents reported this finding from the changed code and evidence bundle."}
-              </p>
-            </div>
+            <FindingExplanationCard
+              counterEvidence={[...counterEvidence, ...missingEvidence]}
+              detail={detail}
+              finding={activeFinding}
+              supportingEvidence={supportingEvidence}
+              testEvidence={testEvidence}
+            />
             <EvidenceNarrativeCard
               title="Supporting evidence"
               items={supportingEvidence}
@@ -5815,12 +5815,12 @@ function FindingDetailScreen({
             />
             <EvidenceNarrativeCard
               title="Counter-evidence"
-              items={counterEvidence}
+              items={[...counterEvidence, ...missingEvidence]}
               fallback={activeFinding.counter_evidence_summary}
             />
             <EvidenceNarrativeCard
               title="Related tests"
-              items={testEvidence}
+              items={[...testEvidence, ...searchEvidence]}
               fallback="No related test signal was found for this finding."
             />
             {activeFinding.suggested_fix && (
@@ -5834,7 +5834,7 @@ function FindingDetailScreen({
             <AgentConsensusPanel detail={detail} finding={activeFinding} />
           </section>
 
-          <aside className="flex min-w-0 flex-col gap-3">
+          <aside className="flex min-w-0 flex-col gap-3 xl:col-span-2 2xl:col-span-1">
             <div className="cocode-panel p-4">
               <div className="mb-3 text-sm font-semibold">Finding details</div>
               <FindingDetailFacts finding={activeFinding} detail={detail} />
@@ -5897,7 +5897,7 @@ function FindingDetailScreen({
               </div>
               <Textarea
                 aria-label="Detailed draft GitHub comment"
-                className="min-h-44 font-mono text-xs"
+                className="max-h-80 min-h-44 resize-y overflow-auto font-mono text-xs leading-5 [scrollbar-width:thin]"
                 value={draftComment}
                 onChange={(event) => setDraftComment(event.target.value)}
               />
@@ -5957,6 +5957,69 @@ function FindingDetailScreen({
   );
 }
 
+function FindingExplanationCard({
+  counterEvidence,
+  detail,
+  finding,
+  supportingEvidence,
+  testEvidence,
+}: {
+  counterEvidence: EvidenceItem[];
+  detail: FindingDetailResponse;
+  finding: Finding;
+  supportingEvidence: EvidenceItem[];
+  testEvidence: EvidenceItem[];
+}) {
+  const primary = primaryEvidenceItem(detail.evidence_items, finding);
+  const supporting = primary ?? supportingEvidence[0];
+  const counter =
+    counterEvidence.find((item) => item.kind !== "missing") ??
+    counterEvidence[0];
+  const test = testEvidence[0];
+  const observedCode = supporting?.code_snippet
+    ? firstMeaningfulSnippetLine(supporting.code_snippet)
+    : "";
+  const sourceCount = Math.max(
+    detail.candidates.length,
+    finding.merged_from_count,
+  );
+  const content = [
+    `**Claim.** ${finding.canonical_claim}`,
+    "",
+    finding.primary_path
+      ? `**Primary location.** \`${formatFindingLocation(finding)}\``
+      : "**Primary location.** No changed-file anchor has been verified yet.",
+    "",
+    supporting
+      ? `**What grounds it.** ${supporting.summary} ${formatEvidenceLocationMarkdown(supporting)}`
+      : `**What grounds it.** ${
+          finding.evidence_summary ||
+          "The finding needs a refreshed evidence pass before it has a concrete supporting code window."
+        }`,
+    observedCode ? `**Observed code.** \`${observedCode}\`` : "",
+    "",
+    counter
+      ? `**What might weaken it.** ${counter.summary} ${formatEvidenceLocationMarkdown(counter)}`
+      : "**What might weaken it.** No concrete counter-evidence has been attached yet.",
+    "",
+    test
+      ? `**Related tests.** ${test.summary} ${formatEvidenceLocationMarkdown(test)}`
+      : "**Related tests.** No related test signal is attached yet.",
+    "",
+    finding.suggested_fix ? `**Suggested fix.** ${finding.suggested_fix}` : "",
+    sourceCount > 0
+      ? `**Agent signal.** ${sourceCount} reviewer signal${sourceCount === 1 ? "" : "s"} contributed to this merged finding.`
+      : "",
+  ].filter(Boolean);
+
+  return (
+    <div className="cocode-panel p-4">
+      <div className="text-sm font-semibold">Detailed explanation</div>
+      <MarkdownMessage className="mt-3" content={content.join("\n")} />
+    </div>
+  );
+}
+
 function EvidenceNarrativeCard({
   fallback,
   items,
@@ -5970,20 +6033,54 @@ function EvidenceNarrativeCard({
     <div className="cocode-panel p-4">
       <div className="text-sm font-semibold">{title}</div>
       {items.length > 0 ? (
-        <ul className="text-muted-foreground mt-2 space-y-2 text-sm leading-6">
+        <div className="mt-3 flex flex-col gap-3">
           {items.slice(0, 5).map((item) => (
-            <li key={item.id}>
-              <span className="text-foreground font-medium">{item.title}</span>
-              <span> — {item.summary}</span>
-              {item.path && (
-                <span className="font-mono text-xs">
-                  {" "}
-                  ({formatEvidenceLocation(item)})
-                </span>
-              )}
-            </li>
+            <article
+              className="border-border/70 bg-surface/40 min-w-0 rounded-lg border p-3"
+              key={item.id}
+            >
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <Badge variant={evidenceBadgeVariant(item.kind)}>
+                  {formatDecisionLabel(item.kind)}
+                </Badge>
+                <Badge variant="outline">
+                  {Math.round(item.confidence * 100)}%
+                </Badge>
+                {item.path && (
+                  <span className="text-muted-foreground min-w-0 truncate font-mono text-xs">
+                    {formatEvidenceLocation(item)}
+                  </span>
+                )}
+              </div>
+              <div className="mt-2 text-sm font-medium break-words">
+                {item.title}
+              </div>
+              <MarkdownMessage
+                className="text-muted-foreground mt-1"
+                content={item.summary}
+              />
+              {item.code_snippet?.trim() ? (
+                <div className="mt-3 overflow-hidden rounded-md border bg-white">
+                  <SyntaxCodeBlock
+                    className="max-h-56 overflow-auto rounded-none border-0 bg-white text-xs"
+                    code={snippetPreview(item.code_snippet, 14)}
+                    language={languageForFilePath(item.path || "")}
+                    lineNumbers
+                    startLine={
+                      item.line_window?.start_line ?? item.start_line ?? 1
+                    }
+                  />
+                </div>
+              ) : null}
+            </article>
           ))}
-        </ul>
+          {items.length > 5 && (
+            <div className="text-muted-foreground text-xs">
+              {items.length - 5} more evidence item
+              {items.length - 5 === 1 ? "" : "s"} omitted from this summary.
+            </div>
+          )}
+        </div>
       ) : (
         <p className="text-muted-foreground mt-2 text-sm leading-6">
           {fallback || "No stored evidence for this section yet."}
@@ -5991,6 +6088,66 @@ function EvidenceNarrativeCard({
       )}
     </div>
   );
+}
+
+function primaryEvidenceItem(items: EvidenceItem[], finding: Finding) {
+  const normalizedPrimaryPath = finding.primary_path?.trim();
+  const candidates = prioritizedEvidenceItems(items).filter((item) => {
+    if (!item.code_snippet?.trim()) {
+      return false;
+    }
+    if (normalizedPrimaryPath && item.path === normalizedPrimaryPath) {
+      return true;
+    }
+    return item.kind === "supporting";
+  });
+  return candidates[0];
+}
+
+function formatEvidenceLocationMarkdown(item: EvidenceItem) {
+  const location = formatEvidenceLocation(item);
+  return location && location !== item.kind ? `(\`${location}\`)` : "";
+}
+
+function snippetPreview(snippet: string, maxLines: number) {
+  const lines = snippet.trimEnd().split(/\r?\n/);
+  if (lines.length <= maxLines) {
+    return lines.join("\n");
+  }
+  return `${lines.slice(0, maxLines).join("\n")}\n...`;
+}
+
+function firstMeaningfulSnippetLine(snippet: string) {
+  const line = snippet
+    .split(/\r?\n/)
+    .map((candidate) => candidate.replace(/^\s*\d+:\s?/, "").trim())
+    .find((candidate) => candidate.length > 0);
+  return truncate(line || "", 160);
+}
+
+function prioritizedCodeSnippetItems(items: EvidenceItem[], finding: Finding) {
+  const primaryPath = finding.primary_path?.trim();
+  return prioritizedEvidenceItems(items)
+    .filter((item) => item.code_snippet?.trim())
+    .sort((left, right) => {
+      const leftPrimary = primaryPath && left.path === primaryPath ? 1 : 0;
+      const rightPrimary = primaryPath && right.path === primaryPath ? 1 : 0;
+      if (leftPrimary !== rightPrimary) {
+        return rightPrimary - leftPrimary;
+      }
+      const leftLineDistance =
+        finding.primary_start_line && left.start_line
+          ? Math.abs(left.start_line - finding.primary_start_line)
+          : Number.MAX_SAFE_INTEGER;
+      const rightLineDistance =
+        finding.primary_start_line && right.start_line
+          ? Math.abs(right.start_line - finding.primary_start_line)
+          : Number.MAX_SAFE_INTEGER;
+      if (leftLineDistance !== rightLineDistance) {
+        return leftLineDistance - rightLineDistance;
+      }
+      return 0;
+    });
 }
 
 function FindingDetailFacts({
@@ -6015,7 +6172,7 @@ function FindingDetailFacts({
       {rows.map(([label, value]) => (
         <div className="grid grid-cols-[90px_minmax(0,1fr)] gap-3" key={label}>
           <dt className="text-muted-foreground">{label}</dt>
-          <dd className="min-w-0 truncate text-right font-medium">{value}</dd>
+          <dd className="min-w-0 text-right font-medium break-all">{value}</dd>
         </div>
       ))}
     </dl>
@@ -6151,7 +6308,7 @@ function FindingFollowUpScreen({
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex min-h-0 flex-col gap-4">
       <PaneHeader
         title="Finding follow-up"
         description={activeFinding.canonical_claim}
@@ -6457,32 +6614,21 @@ interface EvidenceMapLayout {
 
 function EvidenceMapScreen({
   activeRepository,
-  agentConfigs,
   client,
-  events,
   finding,
   onBack,
 }: {
   activeRepository?: Repository;
-  agentConfigs: Loadable<AgentConfig[]>;
   client: ApiClient | null;
-  events: ReviewEvent[];
   finding: Finding;
   onBack: () => void;
 }) {
   const [mapState, setMapState] =
     useState<Loadable<EvidenceMapResponse>>(idleApiState());
   const [selection, setSelection] = useState<EvidenceMapSelection | null>(null);
-  const [question, setQuestion] = useState("");
-  const [askState, setAskState] =
-    useState<Loadable<AskFindingQuestionResponse>>(idleApiState());
   const [actionMessage, setActionMessage] = useState("");
   const [isRebuilding, setIsRebuilding] = useState(false);
   const [isOpeningEditor, setIsOpeningEditor] = useState(false);
-  const runtimeEvents = useMemo(
-    () => followUpRuntimeEvents(events, finding.id),
-    [events, finding.id],
-  );
 
   useEffect(() => {
     let canceled = false;
@@ -6515,14 +6661,6 @@ function EvidenceMapScreen({
   }, [client, finding.id]);
 
   const map = mapState.status === "success" ? mapState.data : undefined;
-  const agentList = agentConfigs.status === "success" ? agentConfigs.data : [];
-  const verifierAgent =
-    agentList.find(
-      (agent) =>
-        agent.enabled &&
-        (agent.role.toLowerCase().includes("verifier") ||
-          agent.adapter_kind === "local_verifier"),
-    ) ?? agentList.find((agent) => agent.enabled);
   const selectedNode =
     map && selection?.kind === "node"
       ? map.nodes.find((node) => node.id === selection.id)
@@ -6556,25 +6694,6 @@ function EvidenceMapScreen({
     setActionMessage(
       state.status === "error" ? state.error.message : "Rebuild failed",
     );
-  }
-
-  async function askVerifier() {
-    if (!client || !question.trim()) {
-      return;
-    }
-    setAskState(loadingApiState());
-    const state = await loadApiResource(() =>
-      client.askEvidenceMapQuestion(finding.id, {
-        question: question.trim(),
-        agent_config_id: verifierAgent?.id,
-        graph_refs: evidenceMapGraphRefs(selection),
-        context_policy: { max_tokens: 10_000, max_items: 120 },
-      }),
-    );
-    setAskState(state);
-    if (state.status === "success") {
-      setQuestion("");
-    }
   }
 
   async function openSelectedInEditor() {
@@ -6645,14 +6764,14 @@ function EvidenceMapScreen({
         />
       )}
       {map && (
-        <div className="cocode-panel grid min-h-[620px] overflow-hidden lg:grid-cols-[260px_minmax(0,1fr)] xl:grid-cols-[280px_minmax(0,1fr)_360px]">
+        <div className="cocode-panel evidence-map-layout min-h-0 min-w-0 overflow-hidden lg:h-[min(760px,calc(100vh-240px))]">
           <EvidenceMapHierarchyPane
             hierarchy={map.hierarchy}
             selection={selection}
             onSelect={setSelection}
           />
 
-          <div className="bg-background flex min-w-0 flex-col">
+          <div className="bg-background flex min-h-0 min-w-0 flex-col">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
               <div className="flex min-w-0 flex-wrap items-center gap-2">
                 <span className="mr-1 text-sm font-semibold">
@@ -6686,7 +6805,7 @@ function EvidenceMapScreen({
               />
             )}
 
-            <div className="min-h-0 flex-1 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <div className="min-h-0 flex-1 overflow-y-auto [scrollbar-width:thin]">
               <EvidenceMapGraphCanvas
                 map={map}
                 selection={selection}
@@ -6721,20 +6840,13 @@ function EvidenceMapScreen({
 
           <EvidenceMapRightPanel
             activeRepository={activeRepository}
-            askState={askState}
-            canAsk={Boolean(client && question.trim())}
             isOpeningEditor={isOpeningEditor}
             map={map}
-            onAsk={() => void askVerifier()}
             onOpenEditor={() => void openSelectedInEditor()}
-            question={question}
-            runtimeEvents={runtimeEvents}
             selectedCallPath={selectedCallPath}
             selectedEdge={selectedEdge}
             selectedNode={selectedNode}
             selection={selection}
-            setQuestion={setQuestion}
-            verifierAgent={verifierAgent}
           />
         </div>
       )}
@@ -6752,14 +6864,14 @@ function EvidenceMapHierarchyPane({
   selection: EvidenceMapSelection | null;
 }) {
   return (
-    <aside className="bg-surface/60 min-w-0 border-b lg:border-r lg:border-b-0">
+    <aside className="bg-surface/60 min-h-0 min-w-0 border-b lg:border-r lg:border-b-0">
       <div className="border-b px-4 py-3">
         <div className="text-base font-semibold">Code hierarchy</div>
         <div className="text-muted-foreground mt-1 text-xs">
           {hierarchy.length} locations
         </div>
       </div>
-      <ScrollArea className="h-48 lg:h-[430px] xl:h-[590px]">
+      <ScrollArea className="h-full min-w-0">
         <div className="flex flex-col gap-1 p-2">
           {hierarchy.map((item) => {
             const targetNodeId = item.node_ids[0];
@@ -6771,11 +6883,12 @@ function EvidenceMapHierarchyPane({
               <button
                 key={`${item.path}:${item.start_line ?? 0}:${item.kind}`}
                 className={cn(
-                  "hover:bg-surface-raised flex min-w-0 flex-col items-start rounded-md border border-transparent px-3 py-2 text-left text-sm transition-colors",
+                  "hover:bg-surface-raised flex min-w-0 flex-col items-start overflow-hidden rounded-md border border-transparent px-3 py-2 text-left text-sm transition-colors",
                   selected &&
                     "border-primary/30 bg-surface-raised shadow-[0_1px_2px_oklch(0.2_0.02_255/0.04)]",
                 )}
                 disabled={!targetNodeId}
+                title={item.path}
                 type="button"
                 onClick={() => {
                   if (targetNodeId) {
@@ -6784,9 +6897,9 @@ function EvidenceMapHierarchyPane({
                 }}
               >
                 <span className="w-full truncate font-medium">
-                  {shortPath(item.path)}
+                  {pathLeafForDisplay(item.path)}
                 </span>
-                <span className="text-muted-foreground mt-1 flex max-w-full items-center gap-2 text-xs">
+                <span className="text-muted-foreground mt-1 flex max-w-full flex-wrap items-center gap-2 text-xs break-all">
                   <span>{item.kind.replaceAll("_", " ")}</span>
                   {item.start_line ? (
                     <span>
@@ -6823,8 +6936,8 @@ function EvidenceMapNarrativeFlow({
   const story = useMemo(() => evidenceMapNarrativeStory(map), [map]);
 
   return (
-    <div className="min-h-[420px] min-w-0 flex-1 overflow-auto bg-[#fbfbfa] p-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-      <div className="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)_minmax(0,0.95fr)]">
+    <div className="min-h-[300px] min-w-0 flex-1 overflow-auto bg-[#fbfbfa] p-4 [scrollbar-width:thin]">
+      <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3">
         <EvidenceMapFlowColumn
           caption="Step 1"
           description="The changed location that grounds the finding."
@@ -6895,7 +7008,7 @@ function EvidenceMapFlowColumn({
   tone: "amber" | "green";
 }) {
   return (
-    <section className="border-border/70 flex min-h-[280px] flex-col rounded-xl border bg-white p-3 shadow-[0_1px_2px_rgb(17_18_20/0.03)]">
+    <section className="border-border/70 flex min-h-[220px] min-w-0 flex-col overflow-hidden rounded-xl border bg-white p-3 shadow-[0_1px_2px_rgb(17_18_20/0.03)]">
       <div className="text-muted-foreground text-[0.7rem] font-medium tracking-wide uppercase">
         {caption}
       </div>
@@ -6931,15 +7044,15 @@ function EvidenceMapClaimColumn({
   summary: string;
 }) {
   return (
-    <section className="border-foreground/15 flex min-h-[280px] flex-col rounded-xl border bg-white p-4 shadow-[0_1px_2px_rgb(17_18_20/0.03)]">
+    <section className="border-foreground/15 flex min-h-[220px] min-w-0 flex-col overflow-hidden rounded-xl border bg-white p-4 shadow-[0_1px_2px_rgb(17_18_20/0.03)]">
       <div className="text-muted-foreground text-[0.7rem] font-medium tracking-wide uppercase">
         Step 2
       </div>
       <div className="mt-1 text-base font-semibold">Finding claim</div>
-      <p className="mt-3 text-[0.92rem] leading-6 font-semibold">
+      <p className="mt-3 text-[0.92rem] leading-6 font-semibold [overflow-wrap:anywhere] break-words">
         {finding.canonical_claim}
       </p>
-      <p className="text-muted-foreground mt-3 text-xs leading-5">
+      <p className="text-muted-foreground mt-3 text-xs leading-5 [overflow-wrap:anywhere] break-words">
         {summary ||
           "This is the merged reviewer claim. The surrounding cards show the source and the checks that make it credible."}
       </p>
@@ -6967,21 +7080,22 @@ function EvidenceMapFlowNode({
   return (
     <button
       className={cn(
-        "flex min-w-0 cursor-pointer flex-col items-start rounded-lg border px-3 py-2 text-left transition-colors",
+        "flex min-w-0 cursor-pointer flex-col items-start overflow-hidden rounded-lg border px-3 py-2 text-left transition-colors",
         tone === "green" &&
           "border-emerald-200 bg-emerald-50/55 hover:bg-emerald-50",
         tone === "amber" && "border-amber-200 bg-amber-50/55 hover:bg-amber-50",
         selected &&
           "border-foreground bg-white shadow-[0_1px_3px_rgb(17_18_20/0.12)]",
       )}
+      title={`${evidenceMapReadableNodeLabel(node)}\n${formatEvidenceNodeLocation(node)}`}
       type="button"
       onClick={onSelect}
     >
-      <span className="line-clamp-2 text-[0.82rem] leading-5 font-semibold">
-        {evidenceMapReadableNodeLabel(node)}
+      <span className="line-clamp-2 w-full text-[0.82rem] leading-5 font-semibold [overflow-wrap:anywhere] break-words">
+        {evidenceMapFlowNodeTitle(node)}
       </span>
-      <span className="text-muted-foreground mt-1 line-clamp-1 font-mono text-[0.68rem]">
-        {formatEvidenceNodeLocation(node)}
+      <span className="text-muted-foreground mt-1 line-clamp-1 w-full font-mono text-[0.68rem] break-all">
+        {formatCompactEvidenceNodeLocation(node, 2)}
       </span>
       <span className="text-muted-foreground mt-2 flex w-full items-center justify-between gap-2 text-[0.7rem]">
         <span>{node.kind.replaceAll("_", " ")}</span>
@@ -7038,10 +7152,10 @@ export function EvidenceMapGraphCanvas({
   }
 
   return (
-    <div className="evidence-map-canvas min-h-[420px] min-w-0 flex-1 overflow-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+    <div className="evidence-map-canvas min-h-[420px] min-w-0 flex-1 overflow-auto [scrollbar-width:thin]">
       <svg
         aria-label="Evidence Map graph"
-        className="mx-auto min-h-[420px]"
+        className="block min-h-[420px]"
         height={layout.height}
         role="img"
         viewBox={`0 0 ${layout.width} ${layout.height}`}
@@ -7139,18 +7253,6 @@ export function EvidenceMapGraphCanvas({
                 strokeDasharray={edge.status === "missing" ? "7 5" : undefined}
                 strokeWidth={selected ? 2.6 : 1.6}
               />
-              {edge.label && (
-                <text
-                  className={cn(
-                    "fill-muted-foreground text-[11px]",
-                    edge.status === "missing" && "fill-destructive",
-                  )}
-                  x={(sourceX + targetX) / 2}
-                  y={(sourceY + targetY) / 2 - 8}
-                >
-                  {truncate(edge.label, 28)}
-                </text>
-              )}
               {edge.status === "missing" && (
                 <text
                   className="fill-destructive text-[22px] font-semibold"
@@ -7167,8 +7269,10 @@ export function EvidenceMapGraphCanvas({
         {layout.nodes.map(({ node, x, y }) => {
           const selected =
             selection?.kind === "node" && selection.id === node.id;
-          const label = evidenceMapReadableNodeLabel(node);
-          const labelLines = wrapSvgLabel(label, 24).slice(0, 2);
+          const label = evidenceMapGraphNodeTitle(node);
+          const labelLines = wrapSvgLabel(label, 24).slice(0, 3);
+          const location = formatEvidenceNodeLocation(node);
+          const title = `${evidenceMapReadableNodeLabel(node)}${location ? `\n${location}` : ""}`;
           const style = evidenceMapNodeStyle(node.kind);
           return (
             <g
@@ -7184,7 +7288,7 @@ export function EvidenceMapGraphCanvas({
                 }
               }}
             >
-              <title>{label}</title>
+              <title>{title}</title>
               <rect
                 className={cn(style.surface, selected && style.selected)}
                 height={EVIDENCE_MAP_NODE_HEIGHT}
@@ -7203,16 +7307,19 @@ export function EvidenceMapGraphCanvas({
               />
               <text className="fill-foreground text-[12px] font-semibold">
                 {labelLines.map((line, index) => (
-                  <tspan key={`${node.id}:${index}`} x="12" y={31 + index * 15}>
+                  <tspan key={`${node.id}:${index}`} x="12" y={30 + index * 15}>
                     {line}
                   </tspan>
                 ))}
               </text>
               <text className="fill-muted-foreground text-[10px]">
-                <tspan x="12" y="72">
-                  {truncate(evidenceMapNodeMeta(node), 25)}
+                <tspan x="12" y={EVIDENCE_MAP_NODE_HEIGHT - 14}>
+                  {truncate(evidenceMapGraphNodeMeta(node), 27)}
                 </tspan>
-                <tspan x="178" y="72">
+                <tspan
+                  x={EVIDENCE_MAP_NODE_WIDTH - 54}
+                  y={EVIDENCE_MAP_NODE_HEIGHT - 14}
+                >
                   {Math.round(node.confidence * 100)}%
                 </tspan>
               </text>
@@ -7282,36 +7389,22 @@ function EvidenceMapCallPathPanel({
 
 function EvidenceMapRightPanel({
   activeRepository,
-  askState,
-  canAsk,
   isOpeningEditor,
   map,
-  onAsk,
   onOpenEditor,
-  question,
-  runtimeEvents,
   selectedCallPath,
   selectedEdge,
   selectedNode,
   selection,
-  setQuestion,
-  verifierAgent,
 }: {
   activeRepository?: Repository;
-  askState: Loadable<AskFindingQuestionResponse>;
-  canAsk: boolean;
   isOpeningEditor: boolean;
   map: EvidenceMapResponse;
-  onAsk: () => void;
   onOpenEditor: () => void;
-  question: string;
-  runtimeEvents: ReviewEvent[];
   selectedCallPath?: EvidenceMapCallPath;
   selectedEdge?: EvidenceMapEdge;
   selectedNode?: EvidenceMapNode;
   selection: EvidenceMapSelection | null;
-  setQuestion: (question: string) => void;
-  verifierAgent?: AgentConfig;
 }) {
   const openTarget = evidenceMapOpenTarget(
     selectedNode,
@@ -7320,12 +7413,12 @@ function EvidenceMapRightPanel({
   );
 
   return (
-    <aside className="bg-surface/60 min-w-0 overflow-hidden border-t lg:col-span-2 xl:col-span-1 xl:border-t-0 xl:border-l">
-      <ScrollArea className="h-96 xl:h-[680px]">
-        <div className="flex flex-col gap-4 p-4">
-          <div className="bg-background min-w-0 rounded-md border p-3">
+    <aside className="evidence-map-right-panel bg-surface/60 min-h-0 max-w-full min-w-0 overflow-hidden border-t lg:border-t-0 lg:border-l">
+      <ScrollArea className="h-full min-w-0">
+        <div className="flex max-w-full min-w-0 flex-col gap-4 p-4">
+          <div className="bg-background max-w-full min-w-0 overflow-hidden rounded-md border p-3">
             <div className="mb-2 text-sm font-semibold">Why this matters</div>
-            <p className="text-muted-foreground text-sm leading-6 break-words">
+            <p className="text-muted-foreground max-w-full text-sm leading-6 [overflow-wrap:anywhere] break-words [word-break:break-word]">
               {map.panel.evidence_summary ||
                 map.graph.summary ||
                 `Evidence map for "${map.panel.claim}" with ${map.nodes.length} node(s) and ${map.edges.length} edge(s).`}
@@ -7338,15 +7431,21 @@ function EvidenceMapRightPanel({
                 {map.panel.evidence.slice(0, 4).map((item) => (
                   <div
                     key={item.id}
-                    className="grid grid-cols-[18px_minmax(0,1fr)] gap-2 text-sm"
+                    className="grid max-w-full min-w-0 grid-cols-[18px_minmax(0,1fr)] gap-2 overflow-hidden text-sm"
                   >
                     <CheckIcon className="text-success mt-0.5 size-3.5" />
-                    <div className="min-w-0">
-                      <div className="line-clamp-1 font-medium">
-                        {item.title}
+                    <div className="max-w-full min-w-0 overflow-hidden">
+                      <div
+                        className="line-clamp-2 max-w-full font-medium [overflow-wrap:anywhere] break-words [word-break:break-word]"
+                        title={item.title}
+                      >
+                        {compactEvidencePanelTitle(item)}
                       </div>
-                      <div className="text-muted-foreground mt-0.5 truncate text-xs">
-                        {formatEvidenceRefLocation(item)}
+                      <div
+                        className="text-muted-foreground mt-0.5 max-w-full text-xs break-all"
+                        title={formatEvidenceRefLocation(item)}
+                      >
+                        {formatCompactEvidenceRefLocation(item, 2)}
                       </div>
                     </div>
                   </div>
@@ -7360,7 +7459,7 @@ function EvidenceMapRightPanel({
             </div>
             <div className="mt-4 border-t pt-4">
               <div className="mb-2 text-sm font-semibold">Interpretation</div>
-              <p className="text-muted-foreground text-sm leading-6 break-words">
+              <p className="text-muted-foreground max-w-full text-sm leading-6 [overflow-wrap:anywhere] break-words [word-break:break-word]">
                 {map.graph.summary ||
                   "Follow the solid path for reachable code and the dashed red edge for the missing or disputed guard."}
               </p>
@@ -7369,7 +7468,7 @@ function EvidenceMapRightPanel({
               <div className="mb-2 text-sm font-semibold">
                 Suggested remediation
               </div>
-              <p className="text-muted-foreground text-sm leading-6 break-words">
+              <p className="text-muted-foreground max-w-full text-sm leading-6 [overflow-wrap:anywhere] break-words [word-break:break-word]">
                 {map.panel.suggested_fix ||
                   map.finding.suggested_fix ||
                   "Review the selected path, restore the missing guard when the path is reachable, or document the existing control that makes the finding safe."}
@@ -7377,7 +7476,7 @@ function EvidenceMapRightPanel({
             </div>
           </div>
 
-          <div className="bg-background min-w-0 rounded-md border p-3">
+          <div className="bg-background max-w-full min-w-0 overflow-hidden rounded-md border p-3">
             <div className="mb-2 text-sm font-semibold">Selected context</div>
             <SelectedEvidenceMapDetail
               edge={selectedEdge}
@@ -7397,76 +7496,40 @@ function EvidenceMapRightPanel({
             </Button>
           </div>
 
-          <div className="bg-background min-w-0 rounded-md border p-3">
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <div className="text-sm font-semibold">Ask verifier</div>
-              <Badge className="max-w-32 truncate" variant="outline">
-                {verifierAgent?.name ?? "auto-select"}
-              </Badge>
-            </div>
-            <Textarea
-              aria-label="Ask verifier about Evidence Map"
-              className="min-h-24"
-              placeholder="Ask about the selected graph path..."
-              value={question}
-              onChange={(event) => setQuestion(event.target.value)}
-            />
-            <Button
-              className="mt-2 w-full justify-start"
-              disabled={!canAsk || askState.status === "loading"}
-              size="sm"
-              onClick={onAsk}
-            >
-              <SendIcon data-icon="inline-start" />
-              Ask verifier
-            </Button>
-            {askState.status === "error" && (
-              <p className="text-destructive mt-2 text-sm">
-                {askState.error.message}
-              </p>
-            )}
-            {askState.status === "success" && (
-              <div className="bg-surface/55 mt-3 rounded-md border p-3">
-                <div className="text-xs font-medium">Verifier response</div>
-                <div className="text-muted-foreground mt-2">
-                  <MarkdownMessage
-                    content={askState.data.assistant_message.content}
-                  />
-                </div>
-              </div>
-            )}
-            <AgentRuntimeTrace
-              events={runtimeEvents}
-              loading={askState.status === "loading"}
-              compact
-            />
-          </div>
-
-          <div className="bg-background min-w-0 rounded-md border p-3">
+          <div className="bg-background max-w-full min-w-0 overflow-hidden rounded-md border p-3">
             <EvidenceMapLegend map={map} />
           </div>
 
           {map.panel.evidence.length > 0 && (
-            <div className="bg-background min-w-0 rounded-md border p-3">
+            <div className="bg-background max-w-full min-w-0 overflow-hidden rounded-md border p-3">
               <div className="mb-2 text-sm font-semibold">Evidence bundle</div>
               <div className="flex flex-col gap-2">
                 {map.panel.evidence.slice(0, 8).map((item) => (
                   <div
                     key={item.id}
-                    className="bg-surface/35 rounded-md border p-3"
+                    className="bg-surface/35 max-w-full min-w-0 overflow-hidden rounded-md border p-3"
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="truncate text-sm font-medium">
-                        {item.title}
+                    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
+                      <span
+                        className="line-clamp-2 text-sm font-medium [overflow-wrap:anywhere] break-words [word-break:break-word]"
+                        title={item.title}
+                      >
+                        {compactEvidencePanelTitle(item)}
                       </span>
-                      <Badge variant={evidenceBadgeVariant(item.kind)}>
+                      <Badge
+                        className="shrink-0"
+                        variant={evidenceBadgeVariant(item.kind)}
+                      >
                         {item.kind}
                       </Badge>
                     </div>
-                    <div className="text-muted-foreground mt-1 text-xs">
-                      {formatEvidenceRefLocation(item)}
+                    <div
+                      className="text-muted-foreground mt-1 text-xs break-all"
+                      title={formatEvidenceRefLocation(item)}
+                    >
+                      {formatCompactEvidenceRefLocation(item, 3)}
                     </div>
-                    <p className="text-muted-foreground mt-2 line-clamp-3 text-sm leading-6">
+                    <p className="text-muted-foreground mt-2 line-clamp-3 max-w-full text-sm leading-6 [overflow-wrap:anywhere] break-words [word-break:break-word]">
                       {item.summary}
                     </p>
                   </div>
@@ -7493,20 +7556,20 @@ function SelectedEvidenceMapDetail({
 }) {
   if (node) {
     return (
-      <div className="bg-surface/35 min-w-0 rounded-md border p-3">
-        <div className="flex items-center justify-between gap-2">
-          <span className="min-w-0 truncate text-sm font-medium">
+      <div className="bg-surface/35 max-w-full min-w-0 overflow-hidden rounded-md border p-3">
+        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
+          <span className="min-w-0 text-sm font-medium [overflow-wrap:anywhere] break-words [word-break:break-word]">
             {node.label}
           </span>
-          <Badge className="max-w-28 shrink-0 truncate" variant="outline">
+          <Badge className="max-w-28 shrink-0 break-words" variant="outline">
             {node.kind.replaceAll("_", " ")}
           </Badge>
         </div>
-        <div className="text-muted-foreground mt-2 text-xs">
+        <div className="text-muted-foreground mt-2 text-xs break-all">
           {formatEvidenceNodeLocation(node)}
         </div>
         {node.symbol && (
-          <div className="text-muted-foreground mt-2 text-sm">
+          <div className="text-muted-foreground mt-2 text-sm [overflow-wrap:anywhere] break-words">
             Symbol: {node.symbol}
           </div>
         )}
@@ -7519,9 +7582,9 @@ function SelectedEvidenceMapDetail({
 
   if (edge) {
     return (
-      <div className="bg-surface/35 min-w-0 rounded-md border p-3">
-        <div className="flex items-center justify-between gap-2">
-          <span className="min-w-0 truncate text-sm font-medium">
+      <div className="bg-surface/35 max-w-full min-w-0 overflow-hidden rounded-md border p-3">
+        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
+          <span className="min-w-0 text-sm font-medium [overflow-wrap:anywhere] break-words [word-break:break-word]">
             {edge.label || edge.kind.replaceAll("_", " ")}
           </span>
           <Badge
@@ -7530,7 +7593,7 @@ function SelectedEvidenceMapDetail({
             {edge.status}
           </Badge>
         </div>
-        <div className="text-muted-foreground mt-2 text-sm leading-6">
+        <div className="text-muted-foreground mt-2 text-sm leading-6 [overflow-wrap:anywhere] break-all">
           {edge.source} {"->"} {edge.target}
         </div>
         <div className="text-muted-foreground mt-2 text-sm">
@@ -7542,8 +7605,8 @@ function SelectedEvidenceMapDetail({
 
   if (callPath) {
     return (
-      <div className="bg-surface/35 min-w-0 rounded-md border p-3">
-        <div className="text-sm font-medium break-words">
+      <div className="bg-surface/35 max-w-full min-w-0 overflow-hidden rounded-md border p-3">
+        <div className="text-sm font-medium [overflow-wrap:anywhere] break-words [word-break:break-word]">
           {callPath.label || "Evidence path"}
         </div>
         <div className="text-muted-foreground mt-2 text-sm">
@@ -7551,13 +7614,18 @@ function SelectedEvidenceMapDetail({
         </div>
         <div className="mt-3 flex flex-col gap-2">
           {callPath.steps.map((step) => (
-            <div key={`${step.step_index}:${step.label}`} className="text-sm">
+            <div
+              key={`${step.step_index}:${step.label}`}
+              className="min-w-0 text-sm [overflow-wrap:anywhere] break-words"
+            >
               <span className="text-muted-foreground mr-2">
                 {step.step_index + 1}.
               </span>
-              {step.label}
+              <span className="[overflow-wrap:anywhere] [word-break:break-word]">
+                {step.label}
+              </span>
               {step.path && (
-                <div className="text-muted-foreground ml-6 text-xs">
+                <div className="text-muted-foreground ml-6 text-xs break-all">
                   {formatCallPathStepLocation(step)}
                 </div>
               )}
@@ -7569,7 +7637,7 @@ function SelectedEvidenceMapDetail({
   }
 
   return (
-    <div className="text-muted-foreground bg-surface/35 rounded-md border p-3 text-sm">
+    <div className="text-muted-foreground bg-surface/35 min-w-0 rounded-md border p-3 text-sm [overflow-wrap:anywhere] break-words">
       {selection
         ? "The selected graph item is no longer available."
         : "Select a node, edge, or call path to inspect it."}
@@ -7583,9 +7651,14 @@ function EvidenceMapLegend({ map }: { map: EvidenceMapResponse }) {
       <div className="mb-2 text-sm font-semibold">Legend</div>
       <div className="flex flex-col gap-2">
         {map.legend.map((item) => (
-          <div key={item.kind} className="bg-surface/35 rounded-md border p-3">
-            <div className="text-sm font-medium">{item.label}</div>
-            <p className="text-muted-foreground mt-1 text-xs leading-5">
+          <div
+            key={item.kind}
+            className="bg-surface/35 max-w-full min-w-0 overflow-hidden rounded-md border p-3"
+          >
+            <div className="text-sm font-medium [overflow-wrap:anywhere] break-words">
+              {item.label}
+            </div>
+            <p className="text-muted-foreground mt-1 text-xs leading-5 [overflow-wrap:anywhere] break-words [word-break:break-word]">
               {item.description}
             </p>
           </div>
@@ -7885,12 +7958,14 @@ export function CodeSnippetViewer({
   finding: Finding;
   onCopyPath: () => void;
 }) {
-  const snippets = prioritizedEvidenceItems(evidence)
-    .filter((item) => item.code_snippet && item.code_snippet.trim() !== "")
-    .slice(0, 3);
+  const snippets = prioritizedCodeSnippetItems(evidence, finding).slice(0, 4);
 
   if (snippets.length === 0) {
     const lineNumber = finding.primary_start_line || 1;
+    const path = finding.primary_path || formatFindingLocation(finding);
+    const evidenceLocations = prioritizedEvidenceItems(evidence)
+      .filter((item) => item.path)
+      .slice(0, 4);
     return (
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between gap-2">
@@ -7902,26 +7977,34 @@ export function CodeSnippetViewer({
         </div>
         <div className="border-border/70 overflow-hidden rounded-lg border bg-white shadow-[0_1px_2px_rgb(17_18_20/0.03)]">
           <div className="border-border/60 flex items-center justify-between gap-2 border-b bg-[#fbfbfa] px-3 py-2">
-            <span className="truncate font-mono text-xs">
-              {finding.primary_path || formatFindingLocation(finding)}
-            </span>
-            <Badge variant="outline">location</Badge>
-          </div>
-          <div className="overflow-auto bg-white font-mono [scrollbar-gutter:stable_both-edges]">
-            <div className="grid w-max min-w-full auto-rows-min grid-cols-[52px_minmax(520px,max-content)]">
-              <span className="border-border/60 text-muted-foreground sticky top-0 z-[1] border-b bg-[#fbfbfa] px-2 py-1.5 text-right text-[0.64rem] font-medium tracking-[0.02em] uppercase">
-                Line
-              </span>
-              <span className="border-border/60 text-muted-foreground sticky top-0 z-[1] border-b bg-[#fbfbfa] px-2 py-1.5 text-[0.64rem] font-medium tracking-[0.02em] uppercase">
-                Code
-              </span>
-              <span className="text-muted-foreground/75 border-border/40 border-b pr-3 text-right text-[0.72rem] leading-6 select-none">
-                {lineNumber}
-              </span>
-              <code className="border-border/40 border-b bg-amber-50/55 px-3 text-[0.72rem] leading-6 whitespace-pre">
-                Code snippet unavailable. {finding.evidence_summary}
-              </code>
+            <span className="truncate font-mono text-xs">{path}</span>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <Badge variant="outline">location</Badge>
+              <Badge variant="secondary">L{lineNumber}</Badge>
             </div>
+          </div>
+          <div className="p-3">
+            <p className="text-muted-foreground text-sm leading-6">
+              No code window is attached yet. Refresh or rebuild evidence to
+              hydrate snippets from the cited repository path.
+            </p>
+            {evidenceLocations.length > 0 && (
+              <div className="mt-3 flex flex-col gap-2">
+                {evidenceLocations.map((item) => (
+                  <div
+                    className="flex min-w-0 items-center justify-between gap-2 rounded-md border bg-[#fbfbfa] px-3 py-2"
+                    key={item.id}
+                  >
+                    <span className="min-w-0 truncate font-mono text-xs">
+                      {formatEvidenceLocation(item)}
+                    </span>
+                    <Badge variant={evidenceBadgeVariant(item.kind)}>
+                      {formatDecisionLabel(item.kind)}
+                    </Badge>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -7946,37 +8029,25 @@ export function CodeSnippetViewer({
             <span className="truncate font-mono text-xs">
               {item.path || formatFindingLocation(finding)}
             </span>
-            <Badge variant="outline">{item.kind}</Badge>
-          </div>
-          <div className="max-h-[420px] overflow-auto bg-white font-mono [scrollbar-gutter:stable_both-edges]">
-            <div className="grid w-max min-w-full auto-rows-min grid-cols-[52px_minmax(520px,max-content)]">
-              <span className="border-border/60 text-muted-foreground sticky top-0 z-[1] border-b bg-[#fbfbfa] px-2 py-1.5 text-right text-[0.64rem] font-medium tracking-[0.02em] uppercase">
-                Line
-              </span>
-              <span className="border-border/60 text-muted-foreground sticky top-0 z-[1] border-b bg-[#fbfbfa] px-2 py-1.5 text-[0.64rem] font-medium tracking-[0.02em] uppercase">
-                Code
-              </span>
-              {snippetLines(item).map((line) => (
-                <Fragment key={`${item.id}-${line.number}`}>
-                  <span
-                    className={cn(
-                      "text-muted-foreground/75 border-border/40 border-b pr-3 text-right text-[0.72rem] leading-6 select-none",
-                      snippetLineTone(item, finding, line.number, "number"),
-                    )}
-                  >
-                    {line.number}
-                  </span>
-                  <code
-                    className={cn(
-                      "border-border/40 border-b px-3 text-[0.72rem] leading-6 whitespace-pre",
-                      snippetLineTone(item, finding, line.number, "code"),
-                    )}
-                  >
-                    {line.text || " "}
-                  </code>
-                </Fragment>
-              ))}
+            <div className="flex shrink-0 items-center gap-1.5">
+              <Badge variant="outline">{item.kind}</Badge>
+              {item.line_window?.start_line || item.start_line ? (
+                <Badge variant="secondary">
+                  L{item.line_window?.start_line ?? item.start_line}
+                </Badge>
+              ) : null}
             </div>
+          </div>
+          <div className="max-h-[420px] overflow-auto bg-white [scrollbar-gutter:stable_both-edges] [scrollbar-width:thin]">
+            <SyntaxCodeBlock
+              className="rounded-none border-0 bg-white"
+              code={item.code_snippet ?? ""}
+              language={languageForFilePath(
+                item.path || finding.primary_path || "",
+              )}
+              lineNumbers
+              startLine={item.line_window?.start_line ?? item.start_line ?? 1}
+            />
           </div>
         </div>
       ))}
@@ -8456,49 +8527,31 @@ function detailedFindingDraftComment(
       : "",
   ];
   if (evidenceItems.length > 0) {
-    lines.push("#### Evidence");
+    lines.push("#### Evidence and code excerpts");
     for (const item of evidenceItems.slice(0, 5)) {
       lines.push(
-        `- ${item.title} (${formatEvidenceLocation(item)}): ${item.summary}`,
+        `- **${item.title}** (${formatEvidenceLocation(item)}, ${Math.round(
+          item.confidence * 100,
+        )}%): ${item.summary}`,
       );
+      if (item.code_snippet?.trim()) {
+        const language = languageForFilePath(item.path || "");
+        lines.push("");
+        lines.push(`\`\`\`${language}`);
+        lines.push(snippetPreview(item.code_snippet, 12));
+        lines.push("```");
+        lines.push("");
+      }
     }
     lines.push("");
   }
   lines.push(
     "_Generated by cocode from the merged multi-agent review; please verify the cited lines before publishing._",
   );
-  return lines.filter((line) => line !== "").join("\n");
-}
-
-function snippetLines(item: EvidenceItem) {
-  const startLine = item.line_window?.start_line ?? item.start_line ?? 1;
-  return (item.code_snippet ?? "")
-    .split("\n")
-    .slice(0, MAX_CODE_LINES_RENDERED)
-    .map((text, index) => ({ number: startLine + index, text }));
-}
-
-function snippetLineTone(
-  item: EvidenceItem,
-  finding: Finding,
-  lineNumber: number,
-  part: "code" | "number",
-) {
-  const startLine = finding.primary_start_line || item.start_line || 0;
-  const endLine = finding.primary_end_line || item.end_line || startLine;
-  const highlighted =
-    startLine > 0 && lineNumber >= startLine && lineNumber <= endLine;
-  if (!highlighted) {
-    return part === "code" ? "bg-white" : "bg-[#fbfbfa]";
-  }
-  if (item.kind === "counter" || item.kind === "test") {
-    return part === "code"
-      ? "bg-amber-50 text-amber-950"
-      : "bg-amber-50 text-amber-800";
-  }
-  return part === "code"
-    ? "bg-emerald-50 text-emerald-950"
-    : "bg-emerald-50 text-emerald-800";
+  return lines
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function prioritizedEvidenceItems(items: EvidenceItem[]) {
@@ -8838,8 +8891,45 @@ function evidenceMapNodePath(node: EvidenceMapNode) {
   return node.deep_link?.path ?? node.path ?? "";
 }
 
+function evidenceMapFlowNodeTitle(node: EvidenceMapNode) {
+  const label = evidenceMapReadableNodeLabel(node);
+  const path = evidenceMapNodePath(node);
+  if (path && evidenceMapLabelLooksLikeLocation(label, path)) {
+    return formatCompactEvidenceNodeLocation(node, 2);
+  }
+  return label;
+}
+
+function evidenceMapGraphNodeTitle(node: EvidenceMapNode) {
+  const label = evidenceMapReadableNodeLabel(node);
+  const path = evidenceMapNodePath(node);
+  if (path && evidenceMapLabelLooksLikeLocation(label, path)) {
+    return formatCompactEvidenceNodeLocation(node, 1);
+  }
+  return label;
+}
+
+function evidenceMapGraphNodeMeta(node: EvidenceMapNode) {
+  const path = evidenceMapNodePath(node);
+  if (path) {
+    return formatCompactEvidenceNodeLocation(node, 2);
+  }
+  return evidenceMapNodeMeta(node);
+}
+
+function evidenceMapLabelLooksLikeLocation(label: string, path: string) {
+  return (
+    label.includes(path) ||
+    label.includes("/") ||
+    /(?:^|\s)[\w.-]+\.[A-Za-z0-9]+(?::L?\d+)?/.test(label)
+  );
+}
+
 function evidenceMapReadableNodeLabel(node: EvidenceMapNode) {
   const label = evidenceMapNodeLabel(node).trim();
+  if (looksLikeStructuredEnvelopeLabel(label)) {
+    return node.kind.replaceAll("_", " ");
+  }
   if (/^potential counter-evidence at\b/i.test(label)) {
     if (node.kind === "test") {
       return "Related test check";
@@ -8859,6 +8949,23 @@ function evidenceMapReadableNodeLabel(node: EvidenceMapNode) {
     return label;
   }
   return node.kind.replaceAll("_", " ");
+}
+
+function looksLikeStructuredEnvelopeLabel(label: string) {
+  const trimmed = label.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    return true;
+  }
+  return (
+    trimmed.includes('"type"') ||
+    trimmed.includes('"event"') ||
+    trimmed.includes('"hook_name"') ||
+    trimmed.includes('"hook_event"') ||
+    trimmed.includes('"session_id"')
+  );
 }
 
 function evidenceMapChangedNodeRank(
@@ -8896,21 +9003,6 @@ function evidenceMapCheckNodeRank(kind: string) {
     default:
       return 8;
   }
-}
-
-function evidenceMapGraphRefs(
-  selection: EvidenceMapSelection | null,
-): EvidenceMapGraphRef[] {
-  if (!selection) {
-    return [];
-  }
-  if (selection.kind === "node") {
-    return [{ node_id: selection.id }];
-  }
-  if (selection.kind === "edge") {
-    return [{ edge_id: selection.id }];
-  }
-  return [{ call_path_id: selection.id }];
 }
 
 function evidenceMapNodeLabel(node: EvidenceMapNode) {
@@ -9011,12 +9103,15 @@ function buildEvidenceMapLayout(map: EvidenceMapResponse): EvidenceMapLayout {
   for (const [column, columnNodes] of [...columns.entries()].sort(
     ([left], [right]) => left - right,
   )) {
-    const verticalOffset = Math.max(0, (maxRows - columnNodes.length) * 62);
+    const verticalOffset = Math.max(
+      0,
+      ((maxRows - columnNodes.length) * EVIDENCE_MAP_ROW_GAP) / 2,
+    );
     for (const [index, node] of columnNodes.entries()) {
       positioned.push({
         node,
         x: 64 + column * EVIDENCE_MAP_COLUMN_GAP,
-        y: 56 + verticalOffset + index * 124,
+        y: 56 + verticalOffset + index * EVIDENCE_MAP_ROW_GAP,
       });
     }
   }
@@ -9111,11 +9206,47 @@ function formatEvidenceNodeLocation(node: EvidenceMapNode) {
   return `${path}${node.start_line ? `:L${formatLineRange(node.start_line, node.end_line)}` : ""}`;
 }
 
+function formatCompactEvidenceNodeLocation(
+  node: EvidenceMapNode,
+  maxSegments = 2,
+) {
+  const path = node.deep_link?.path ?? node.path;
+  if (!path) {
+    return node.kind.replaceAll("_", " ");
+  }
+  return `${compactPathForDisplay(path, maxSegments)}${node.start_line ? `:L${formatLineRange(node.start_line, node.end_line)}` : ""}`;
+}
+
 function formatEvidenceRefLocation(item: EvidenceMapPanelEvidenceRef) {
   if (!item.path) {
     return item.kind;
   }
   return `${item.path}${item.start_line ? `:L${formatLineRange(item.start_line, item.end_line)}` : ""}`;
+}
+
+function formatCompactEvidenceRefLocation(
+  item: EvidenceMapPanelEvidenceRef,
+  maxSegments = 2,
+) {
+  if (!item.path) {
+    return item.kind;
+  }
+  return `${compactPathForDisplay(item.path, maxSegments)}${item.start_line ? `:L${formatLineRange(item.start_line, item.end_line)}` : ""}`;
+}
+
+function compactEvidencePanelTitle(item: EvidenceMapPanelEvidenceRef) {
+  if (!item.path) {
+    return item.title;
+  }
+  const compactLocation = formatCompactEvidenceRefLocation(item, 2);
+  const location = formatEvidenceRefLocation(item);
+  if (item.title.includes(location)) {
+    return item.title.replace(location, compactLocation);
+  }
+  if (item.title.includes(item.path)) {
+    return item.title.replace(item.path, compactPathForDisplay(item.path, 2));
+  }
+  return item.title;
 }
 
 function formatCallPathStepLocation(step: EvidenceMapCallPathStep) {
@@ -9138,6 +9269,19 @@ function shortPath(path: string) {
     return path;
   }
   return `${parts.at(-3)}/${parts.at(-2)}/${parts.at(-1)}`;
+}
+
+function compactPathForDisplay(path: string, maxSegments = 2) {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  if (parts.length <= maxSegments) {
+    return path;
+  }
+  return `.../${parts.slice(-maxSegments).join("/")}`;
+}
+
+function pathLeafForDisplay(path: string) {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts.at(-1) ?? path;
 }
 
 function truncate(value: string, maxLength: number) {

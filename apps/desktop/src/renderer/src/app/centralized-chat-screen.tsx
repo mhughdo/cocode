@@ -110,15 +110,18 @@ export function CentralizedChatScreen({
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const shouldStickToBottomRef = useRef(true);
 
+  const agentByConfigID = useMemo(
+    () =>
+      agentConfigs.status === "success"
+        ? new Map(agentConfigs.data.map((agent) => [agent.id, agent]))
+        : new Map<string, AgentConfig>(),
+    [agentConfigs],
+  );
   const sessionAgentEntries = useMemo(() => {
-    if (agentConfigs.status !== "success") {
-      return [];
-    }
-    const byID = new Map(agentConfigs.data.map((agent) => [agent.id, agent]));
     return session.agents
       .filter((assignment) => assignment.enabled)
       .map((assignment) => {
-        const agent = byID.get(assignment.agent_config_id);
+        const agent = agentByConfigID.get(assignment.agent_config_id);
         return agent ? { agent, assignment } : null;
       })
       .filter(
@@ -127,7 +130,7 @@ export function CentralizedChatScreen({
         ): entry is { agent: AgentConfig; assignment: ReviewSessionAgent } =>
           Boolean(entry),
       );
-  }, [agentConfigs, session.agents]);
+  }, [agentByConfigID, session.agents]);
   const orchestratorAgent = useMemo(() => {
     return (
       sessionAgentEntries.find((entry) => isOrchestratorEntry(entry))?.agent ??
@@ -139,6 +142,10 @@ export function CentralizedChatScreen({
       sessionAgentEntries
         .filter((entry) => !isOrchestratorEntry(entry))
         .map((entry) => entry.agent),
+    [sessionAgentEntries],
+  );
+  const allSessionAgents = useMemo(
+    () => sessionAgentEntries.map((entry) => entry.agent),
     [sessionAgentEntries],
   );
   const askTargetOptions = useMemo<ChatAskTargetOption[]>(
@@ -314,9 +321,10 @@ export function CentralizedChatScreen({
         : effectiveAskTargetID;
     setPendingAgentMessages(
       pendingChatMessages({
-        agents,
+        agentByConfigID,
         audience,
         responder: selectedResponder,
+        sessionAgents: session.agents,
         threadID: thread.status === "success" ? thread.data.thread.id : "",
       }),
     );
@@ -391,7 +399,7 @@ export function CentralizedChatScreen({
             <div className="flex flex-col gap-3">
               {displayedMessages.map((item) => (
                 <ChatMessageCard
-                  agent={agentByID(agents, item.agent_config_id)}
+                  agent={agentByID(allSessionAgents, item.agent_config_id)}
                   events={
                     item.agent_run_id
                       ? (eventsByRunID.get(item.agent_run_id) ?? [])
@@ -496,9 +504,6 @@ function withLiveAgentRunMessages({
   summary: Loadable<ReviewSessionSummary>;
   threadID: string;
 }) {
-  if (summary.status !== "success") {
-    return messages;
-  }
   const existingRunIDs = new Set(
     messages
       .map((message) => message.agent_run_id)
@@ -518,7 +523,15 @@ function withLiveAgentRunMessages({
     eventsByRunID.set(event.agent_run_id, runEvents);
   }
   const liveMessages: ChatMessage[] = [];
-  for (const run of summary.data.agent_runs ?? []) {
+  const representedAgentConfigIDs = new Set(
+    messages
+      .map((message) => message.agent_config_id)
+      .filter((id): id is string => Boolean(id)),
+  );
+  const summaryRuns =
+    summary.status === "success" ? (summary.data.agent_runs ?? []) : [];
+  for (const run of summaryRuns) {
+    representedAgentConfigIDs.add(run.agent_config_id);
     if (existingRunIDs.has(run.id) || !isLiveAgentRun(run)) {
       continue;
     }
@@ -548,44 +561,107 @@ function withLiveAgentRunMessages({
       updated_at: timestamp,
     });
   }
-  return [...messages, ...liveMessages];
+  const plannedMessages: ChatMessage[] = [];
+  if (["queued", "running"].includes(session.status)) {
+    const now = session.updated_at || new Date().toISOString();
+    for (const assignment of session.agents) {
+      if (!assignment.enabled) {
+        continue;
+      }
+      if (representedAgentConfigIDs.has(assignment.agent_config_id)) {
+        continue;
+      }
+      const agent = agentByConfigID.get(assignment.agent_config_id);
+      if (agent && isOrchestratorEntry({ agent, assignment })) {
+        continue;
+      }
+      if (!agent && isOrchestratorAssignment(assignment)) {
+        continue;
+      }
+      const label = agent
+        ? compactAgentLabel(agent)
+        : assignment.role
+          ? compactRoleLabel(assignment.role)
+          : "Reviewer";
+      plannedMessages.push({
+        id: `planned-${session.id}-${assignment.agent_config_id}`,
+        thread_id: threadID,
+        author_type: "agent",
+        author_display_name: label,
+        agent_config_id: assignment.agent_config_id,
+        body: `${label} is queued for an execution slot.`,
+        status: "streaming",
+        metadata: { local: true, planned: true, agent_run_status: "queued" },
+        created_at: now,
+        updated_at: now,
+      });
+    }
+  }
+  return [...messages, ...liveMessages, ...plannedMessages];
 }
 
 function pendingChatMessages({
-  agents,
+  agentByConfigID,
   audience,
   responder,
+  sessionAgents,
   threadID,
 }: {
-  agents: AgentConfig[];
+  agentByConfigID: Map<string, AgentConfig>;
   audience: ChatAudience;
   responder: ChatResponderOption;
+  sessionAgents: ReviewSessionAgent[];
   threadID: string;
 }): ChatMessage[] {
   const now = new Date().toISOString();
-  if (audience === "all_agents" && agents.length > 0) {
-    return agents.map((agent) => ({
-      id: `pending-${agent.id}-${now}`,
-      thread_id: threadID,
-      author_type: "agent",
-      author_display_name: compactAgentLabel(agent),
-      agent_config_id: agent.id,
-      body: `${compactAgentLabel(agent)} is reading the review context and preparing an answer.`,
-      status: "streaming",
-      metadata: { local: true, pending: true },
-      created_at: now,
-      updated_at: now,
-    }));
+  const labelForAssignment = (assignment: ReviewSessionAgent) => {
+    const agent = agentByConfigID.get(assignment.agent_config_id);
+    if (agent) {
+      return compactAgentLabel(agent);
+    }
+    if (assignment.role) {
+      return compactRoleLabel(assignment.role);
+    }
+    return "Reviewer";
+  };
+  if (audience === "all_agents") {
+    const reviewers = sessionAgents.filter(
+      (assignment) =>
+        assignment.enabled && !isOrchestratorAssignment(assignment),
+    );
+    if (reviewers.length > 0) {
+      return reviewers.map((assignment) => {
+        const label = labelForAssignment(assignment);
+        return {
+          id: `pending-${assignment.id}-${now}`,
+          thread_id: threadID,
+          author_type: "agent",
+          author_display_name: label,
+          agent_config_id: assignment.agent_config_id,
+          body: `${label} is reading the review context and preparing an answer.`,
+          status: "streaming",
+          metadata: { local: true, pending: true },
+          created_at: now,
+          updated_at: now,
+        };
+      });
+    }
   }
   if (audience === "selected_agent" && responder.agentConfigId) {
+    const assignment = sessionAgents.find(
+      (item) => item.agent_config_id === responder.agentConfigId,
+    );
     return [
       {
         id: `pending-${responder.agentConfigId}-${now}`,
         thread_id: threadID,
         author_type: "agent",
-        author_display_name: responder.label,
+        author_display_name:
+          (assignment ? labelForAssignment(assignment) : "") || responder.label,
         agent_config_id: responder.agentConfigId,
-        body: `${responder.label} is reading the review context and preparing an answer.`,
+        body: `${
+          (assignment ? labelForAssignment(assignment) : "") || responder.label
+        } is reading the review context and preparing an answer.`,
         status: "streaming",
         metadata: { local: true, pending: true },
         created_at: now,
@@ -627,9 +703,8 @@ function liveAgentRunBody(
   if (modelOutput) {
     return modelOutput.trim();
   }
-  const toolCall = lastNonEmpty(runtimeSummary.toolCalls);
-  if (toolCall) {
-    return `**Tool call**\n\n\`\`\`text\n${toolCall.trim()}\n\`\`\``;
+  if (runtimeSummary.toolCalls.length > 0) {
+    return `${label} is using tools and checking evidence. Open the trace to inspect live commands and diagnostics.`;
   }
   if (run.status === "queued") {
     return `${label} is queued and waiting for an execution slot.`;
@@ -1239,16 +1314,25 @@ function compactAgentLabel(agent: AgentConfig) {
     .trim();
 }
 
+function compactRoleLabel(value: string) {
+  return value
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 function isOrchestratorEntry({
-  agent,
   assignment,
 }: {
   agent: AgentConfig;
   assignment: ReviewSessionAgent;
 }) {
-  const role = `${assignment.role} ${agent.role}`.toLowerCase();
-  const name = agent.name.toLowerCase();
-  return role.includes("orchestrator") || name.includes("orchestrator");
+  return isOrchestratorAssignment(assignment);
+}
+
+function isOrchestratorAssignment(assignment: ReviewSessionAgent) {
+  return assignment.role.toLowerCase().includes("orchestrator");
 }
 
 function agentByID(agents: AgentConfig[], id?: string) {

@@ -215,8 +215,8 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 		}
 		agentManager = &agentrun.Manager{
 			Runner:                  runner,
-			MaxConcurrent:           2,
-			MaxConcurrentPerSession: 2,
+			MaxConcurrent:           config.AgentRunMaxConcurrent,
+			MaxConcurrentPerSession: config.AgentRunMaxConcurrentPerSession,
 		}
 		reviewWorkflow = &orchestrator.Service{
 			Queries:        queries,

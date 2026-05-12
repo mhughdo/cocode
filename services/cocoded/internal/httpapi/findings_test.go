@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
@@ -71,5 +72,23 @@ func TestFilterFindingsSupportsAgentFileAndQuery(t *testing.T) {
 	}
 	if filtered[0].ID != "finding_auth" {
 		t.Fatalf("filtered[0].ID = %q, want finding_auth", filtered[0].ID)
+	}
+}
+
+func TestEvidenceSnippetFieldsReadsNestedAgentMetadata(t *testing.T) {
+	metadata := json.RawMessage(`{
+		"producer": "verifier_agent",
+		"agent_metadata": {
+			"code_snippet": "41: return db.cancelSubscription(request.params.subscriptionId)",
+			"line_window": {"start_line": 39, "end_line": 43}
+		}
+	}`)
+
+	snippet, window := evidenceSnippetFields(metadata)
+	if snippet == "" || window == nil {
+		t.Fatalf("snippet = %q, window = %+v", snippet, window)
+	}
+	if window.StartLine != 39 || window.EndLine != 43 {
+		t.Fatalf("window = %+v, want 39-43", window)
 	}
 }

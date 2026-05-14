@@ -59,6 +59,23 @@ func TestDeduplicateMergesNearbySamePathClaims(t *testing.T) {
 	}
 }
 
+func TestDeduplicateMergesNearbySameCodeIdentifierClaims(t *testing.T) {
+	t.Parallel()
+
+	candidates := []dbgen.FindingCandidate{
+		candidate("c1", "correctness", "blocker", 0.85, "Nil pointer dereference in pickTokenPrice if prices[1] is nil", "internal/app/aggregatedposition/fetcher/kyberdata/kem_rewards.go", 196, 207, "changed_file_1", "fp_one"),
+		candidate("c2", "correctness", "medium", 0.85, "Reward price enrichment can panic when pickTokenPrice averages a one-sided price response", "internal/app/aggregatedposition/fetcher/kyberdata/kem_rewards.go", 207, 208, "changed_file_1", "fp_two"),
+		candidate("c3", "correctness", "medium", 0.6, "Reward tokens disappear from the response when GetPrices omits a token", "internal/app/aggregatedposition/fetcher/kyberdata/kem_rewards.go", 384, 390, "changed_file_1", "fp_three"),
+	}
+	clusters := Deduplicate(candidates)
+	if len(clusters) != 2 {
+		t.Fatalf("clusters = %+v", clusters)
+	}
+	if len(clusters[0].Candidates) != 2 || len(clusters[1].Candidates) != 1 {
+		t.Fatalf("clusters = %+v", clusters)
+	}
+}
+
 func TestDeduplicateDoesNotMergeDissimilarOverlap(t *testing.T) {
 	t.Parallel()
 

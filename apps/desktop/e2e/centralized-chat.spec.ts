@@ -215,20 +215,25 @@ test("routes a centralized chat follow-up to a selected CLI reviewer", async ({
     expect(
       Math.abs((chatBounds?.x ?? 0) - (findingsBounds?.x ?? 0)),
     ).toBeLessThanOrEqual(16);
+    const firstFindingRow = findingsBoard
+      .locator('[data-testid^="finding-row-"]')
+      .first();
+    await expect(firstFindingRow).toBeVisible();
+    await firstFindingRow.click({ position: { x: 12, y: 12 } });
     await expect(
-      page.getByRole("heading", {
-        name: "Repository update permissions now allow members to mutate settings.",
-      }),
+      findingsBoard
+        .getByText(
+          "Repository update permissions now allow members to mutate settings.",
+          { exact: true },
+        )
+        .first(),
     ).toBeVisible();
-    await expect(page.getByLabel("Draft GitHub comment")).toBeVisible();
-    await expect(page.getByLabel("Draft GitHub comment")).toHaveValue(
+    await expect(findingsBoard.getByLabel("Draft GitHub comment")).toBeVisible();
+    await expect(findingsBoard.getByLabel("Draft GitHub comment")).toHaveValue(
       /Please keep repository settings updates admin-only\./,
     );
-    await page
-      .getByRole("button", {
-        exact: true,
-        name: "Accept Repository update permissions now allow members to mutate settings.",
-      })
+    await findingsBoard
+      .getByRole("button", { exact: true, name: "Accept" })
       .click();
     await expect(page.getByText("Accepted saved")).toBeVisible();
 
@@ -255,16 +260,17 @@ test("routes a centralized chat follow-up to a selected CLI reviewer", async ({
       page.getByText("Found one deterministic branch comparison issue.").last(),
     ).toBeVisible({ timeout: 20_000 });
 
-    await page.getByRole("button", { name: "Evidence map" }).click();
+    await page.getByRole("button", { name: "Evidence map" }).first().click();
     await expect(
       page.getByRole("heading", { name: "Evidence Map" }),
     ).toBeVisible();
     await expect(page.getByText("Evidence flow")).toBeVisible();
     await expect(page.getByText("Changed code").nth(1)).toBeVisible();
+    await expect(page.getByText("Selected location")).toBeVisible();
+    await expect(page.getByText("Source file")).toBeVisible();
     await expect(
-      page.getByText("Finding claim", { exact: true }),
+      page.getByText("Related evidence", { exact: true }),
     ).toBeVisible();
-    await expect(page.getByText("Evidence checks")).toBeVisible();
 
     await page.getByRole("button", { name: "Findings" }).click();
     await expect(page.getByLabel("Review findings board")).toBeVisible();

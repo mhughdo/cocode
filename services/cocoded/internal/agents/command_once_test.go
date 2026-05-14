@@ -217,6 +217,64 @@ func TestCommandOnceDriverReportsExitFailure(t *testing.T) {
 	}
 }
 
+func TestCommandOnceDriverRetriesTransientRateLimit(t *testing.T) {
+	t.Parallel()
+
+	statePath := filepath.Join(t.TempDir(), "attempts")
+	command := writeFakeCommand(t, `#!/bin/sh
+state="$1"
+attempt=0
+if [ -f "$state" ]; then
+  attempt=$(/bin/cat "$state")
+fi
+attempt=$((attempt + 1))
+printf '%s' "$attempt" > "$state"
+if [ "$attempt" -eq 1 ]; then
+  printf "statusText: 'Too Many Requests'\nstatus: 429\n" >&2
+  exit 1
+fi
+printf 'review ok after retry\n'
+`)
+	connection := openCommandOnce(t, ConnectionConfig{
+		AdapterID:        "agent_1",
+		Kind:             AdapterCLINonInteractive,
+		Command:          command,
+		Args:             []string{statePath},
+		WorkingDirectory: t.TempDir(),
+		Metadata: map[string]any{
+			"retry_max_attempts":     2,
+			"retry_initial_delay_ms": 0,
+			"retry_max_delay_ms":     0,
+		},
+	})
+
+	events, err := connection.SendTask(context.Background(), baseCommandTask())
+	if err != nil {
+		t.Fatalf("SendTask() error = %v", err)
+	}
+	got := collectCommandEvents(t, events)
+
+	if stdout := outputText(got, "stdout"); !strings.Contains(stdout, "review ok after retry") {
+		t.Fatalf("stdout = %q", stdout)
+	}
+	if stderr := outputText(got, "stderr"); !strings.Contains(stderr, "Too Many Requests") {
+		t.Fatalf("stderr = %q", stderr)
+	}
+	retryEvents := 0
+	for _, event := range got {
+		if event.Type == EventProgress && strings.Contains(event.Message, "retrying attempt 2 of 2") {
+			retryEvents++
+		}
+	}
+	if retryEvents != 1 {
+		t.Fatalf("events = %+v, want one retry progress event", got)
+	}
+	terminal := got[len(got)-1]
+	if terminal.Type != EventCompleted || terminal.ExitCode == nil || *terminal.ExitCode != 0 {
+		t.Fatalf("terminal event = %+v, want completed after retry", terminal)
+	}
+}
+
 func TestCommandOnceDriverReportsTimeout(t *testing.T) {
 	t.Parallel()
 

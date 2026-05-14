@@ -15,8 +15,11 @@ import (
 )
 
 const (
-	defaultCommandStdoutLimit int64 = 1 << 20
-	defaultCommandStderrLimit int64 = 1 << 20
+	defaultCommandStdoutLimit       int64 = 1 << 20
+	defaultCommandStderrLimit       int64 = 1 << 20
+	defaultCommandRetryAttempts           = 3
+	defaultCommandRetryInitialDelay       = 3 * time.Second
+	defaultCommandRetryMaxDelay           = 15 * time.Second
 )
 
 type CommandOnceDriver struct{}
@@ -108,24 +111,6 @@ func (c *CommandOnceConnection) runTask(ctx context.Context, task AgentTask, eve
 	runCtx, cancel := commandContext(ctx, task.Limits)
 	defer cancel()
 
-	delivery, err := c.preparePrompt(task)
-	if err != nil {
-		events <- promptFailedEvent(task.RunID, err)
-		return
-	}
-	defer delivery.cleanup()
-
-	events <- AgentEvent{
-		Type:    EventStarted,
-		RunID:   task.RunID,
-		At:      time.Now().UTC(),
-		Message: "command started",
-	}
-
-	stdoutLimit := outputLimit(task.Limits.MaxStdoutBytes, defaultCommandStdoutLimit)
-	stderrLimit := outputLimit(task.Limits.MaxStderrBytes, defaultCommandStderrLimit)
-	stdout := newStreamingOutput(runCtx, task.RunID, "stdout", stdoutLimit, events)
-	stderr := newStreamingOutput(runCtx, task.RunID, "stderr", stderrLimit, events)
 	env, cleanupEnv, err := PrepareCommandRuntimeEnvironment(c.config.Command, c.config.Env)
 	if err != nil {
 		events <- failedEvent(task.RunID, err, "")
@@ -138,7 +123,48 @@ func (c *CommandOnceConnection) runTask(ctx context.Context, task AgentTask, eve
 		events <- failedEvent(task.RunID, err, "")
 		return
 	}
-	cmd := exec.CommandContext(runCtx, command, delivery.args...)
+
+	retryPolicy := commandRetryPolicyFromMetadata(c.config.Metadata)
+	for attempt := 1; attempt <= retryPolicy.maxAttempts; attempt++ {
+		delivery, err := c.preparePrompt(task)
+		if err != nil {
+			events <- promptFailedEvent(task.RunID, err)
+			return
+		}
+		completed, terminal := c.runCommandAttempt(runCtx, task, command, env, delivery, attempt, events)
+		delivery.cleanup()
+		if completed {
+			return
+		}
+		if terminal.Type == EventCanceled || !shouldRetryCommandFailure(terminal, attempt, retryPolicy.maxAttempts) {
+			events <- terminal
+			return
+		}
+		delay := retryPolicy.delay(attempt)
+		events <- commandRetryEvent(task.RunID, terminal, attempt+1, retryPolicy.maxAttempts, delay)
+		if !sleepCommandRetry(runCtx, delay) {
+			events <- canceledEvent(task.RunID, runCtx.Err())
+			return
+		}
+	}
+}
+
+func (c *CommandOnceConnection) runCommandAttempt(ctx context.Context, task AgentTask, command string, env map[string]string, delivery commandPromptDelivery, attempt int, events chan<- AgentEvent) (bool, AgentEvent) {
+	events <- AgentEvent{
+		Type:    EventStarted,
+		RunID:   task.RunID,
+		At:      time.Now().UTC(),
+		Message: "command started",
+		Metadata: map[string]any{
+			"attempt": attempt,
+		},
+	}
+
+	stdoutLimit := outputLimit(task.Limits.MaxStdoutBytes, defaultCommandStdoutLimit)
+	stderrLimit := outputLimit(task.Limits.MaxStderrBytes, defaultCommandStderrLimit)
+	stdout := newStreamingOutput(ctx, task.RunID, "stdout", stdoutLimit, events)
+	stderr := newStreamingOutput(ctx, task.RunID, "stderr", stderrLimit, events)
+	cmd := exec.CommandContext(ctx, command, delivery.args...)
 	if c.config.WorkingDirectory != "" {
 		cmd.Dir = c.config.WorkingDirectory
 	}
@@ -147,16 +173,14 @@ func (c *CommandOnceConnection) runTask(ctx context.Context, task AgentTask, eve
 	cmd.Stderr = stderr
 	cmd.Stdin = delivery.stdin
 
-	err = cmd.Run()
+	err := cmd.Run()
 	stdout.Flush()
 	stderr.Flush()
 	if err != nil {
-		if runCtx.Err() != nil {
-			events <- canceledEvent(task.RunID, runCtx.Err())
-			return
+		if ctx.Err() != nil {
+			return false, canceledEvent(task.RunID, ctx.Err())
 		}
-		events <- failedEvent(task.RunID, err, stderr.String())
-		return
+		return false, failedEvent(task.RunID, err, strings.Join([]string{stdout.String(), stderr.String()}, "\n"))
 	}
 	exitCode := 0
 	events <- AgentEvent{
@@ -165,6 +189,112 @@ func (c *CommandOnceConnection) runTask(ctx context.Context, task AgentTask, eve
 		At:       time.Now().UTC(),
 		Message:  "command completed",
 		ExitCode: &exitCode,
+		Metadata: map[string]any{
+			"attempt": attempt,
+		},
+	}
+	return true, AgentEvent{}
+}
+
+type commandRetryPolicy struct {
+	maxAttempts  int
+	initialDelay time.Duration
+	maxDelay     time.Duration
+}
+
+func commandRetryPolicyFromMetadata(metadata map[string]any) commandRetryPolicy {
+	maxAttempts := int(metadataInt64Default(metadata, "retry_max_attempts", defaultCommandRetryAttempts))
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	initialDelayMs := metadataInt64Default(metadata, "retry_initial_delay_ms", int64(defaultCommandRetryInitialDelay/time.Millisecond))
+	if initialDelayMs < 0 {
+		initialDelayMs = 0
+	}
+	maxDelayMs := metadataInt64Default(metadata, "retry_max_delay_ms", int64(defaultCommandRetryMaxDelay/time.Millisecond))
+	if maxDelayMs < initialDelayMs {
+		maxDelayMs = initialDelayMs
+	}
+	return commandRetryPolicy{
+		maxAttempts:  maxAttempts,
+		initialDelay: time.Duration(initialDelayMs) * time.Millisecond,
+		maxDelay:     time.Duration(maxDelayMs) * time.Millisecond,
+	}
+}
+
+func (p commandRetryPolicy) delay(attempt int) time.Duration {
+	if attempt <= 0 || p.initialDelay <= 0 {
+		return 0
+	}
+	delay := p.initialDelay
+	for index := 1; index < attempt; index++ {
+		delay *= 2
+		if delay >= p.maxDelay {
+			return p.maxDelay
+		}
+	}
+	if delay > p.maxDelay {
+		return p.maxDelay
+	}
+	return delay
+}
+
+func shouldRetryCommandFailure(event AgentEvent, attempt int, maxAttempts int) bool {
+	if attempt >= maxAttempts || event.Type != EventFailed {
+		return false
+	}
+	text := strings.ToLower(strings.Join([]string{event.ErrorCode, event.Error, event.Message}, "\n"))
+	return containsTransientCLIError(text)
+}
+
+func containsTransientCLIError(text string) bool {
+	text = strings.ToLower(text)
+	return strings.Contains(text, "429") ||
+		strings.Contains(text, "too many requests") ||
+		strings.Contains(text, "rate limit") ||
+		strings.Contains(text, "rate_limit") ||
+		strings.Contains(text, "resource_exhausted") ||
+		strings.Contains(text, "quota exceeded") ||
+		strings.Contains(text, "temporarily unavailable") ||
+		strings.Contains(text, "service unavailable") ||
+		strings.Contains(text, "server overloaded") ||
+		strings.Contains(text, "status 503") ||
+		strings.Contains(text, "status code 503") ||
+		strings.Contains(text, "status 502") ||
+		strings.Contains(text, "status code 502") ||
+		strings.Contains(text, "status 504") ||
+		strings.Contains(text, "status code 504")
+}
+
+func commandRetryEvent(runID string, cause AgentEvent, nextAttempt int, maxAttempts int, delay time.Duration) AgentEvent {
+	return AgentEvent{
+		Type:    EventProgress,
+		RunID:   runID,
+		At:      time.Now().UTC(),
+		Message: fmt.Sprintf("transient CLI error; retrying attempt %d of %d", nextAttempt, maxAttempts),
+		Error:   strings.TrimSpace(cause.Error),
+		Metadata: map[string]any{
+			"attempt":        nextAttempt,
+			"max_attempts":   maxAttempts,
+			"delay_ms":       delay.Milliseconds(),
+			"retryable":      true,
+			"retry_cause":    cause.ErrorCode,
+			"retry_cause_at": cause.At.Format(time.RFC3339Nano),
+		},
+	}
+}
+
+func sleepCommandRetry(ctx context.Context, delay time.Duration) bool {
+	if delay <= 0 {
+		return true
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 

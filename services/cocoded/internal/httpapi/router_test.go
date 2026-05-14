@@ -323,19 +323,21 @@ func TestAgentPresetsEndpointIncludesBuiltInCLIs(t *testing.T) {
 	codex := findAgentPreset(t, presets, "codex-cli")
 	if codex.ID == "" ||
 		codex.Command != "codex" ||
-		len(codex.Args) != 12 ||
+		len(codex.Args) != 14 ||
 		codex.Args[0] != "-a" ||
 		codex.Args[1] != "never" ||
 		codex.Args[2] != "exec" ||
 		codex.Args[3] != "--json" ||
 		codex.Args[4] != "--sandbox" ||
-		codex.Args[5] != "read-only" ||
-		codex.Args[6] != "--skip-git-repo-check" ||
-		codex.Args[7] != "--ephemeral" ||
-		codex.Args[8] != "--ignore-rules" ||
-		codex.Args[9] != "--color" ||
-		codex.Args[10] != "never" ||
-		codex.Args[11] != "-" ||
+		codex.Args[5] != "workspace-write" ||
+		codex.Args[6] != "--add-dir" ||
+		codex.Args[7] != agents.CLIRuntimeBaseDir() ||
+		codex.Args[8] != "--skip-git-repo-check" ||
+		codex.Args[9] != "--ephemeral" ||
+		codex.Args[10] != "--ignore-rules" ||
+		codex.Args[11] != "--color" ||
+		codex.Args[12] != "never" ||
+		codex.Args[13] != "-" ||
 		codex.OutputMode != agents.OutputJSONL ||
 		codex.ModelLabel != "default" ||
 		!codex.Capabilities.CanCancel ||
@@ -1626,11 +1628,22 @@ func TestReviewSessionChatThreadEndpointSyncsWorkflowProgress(t *testing.T) {
 		ReviewSessionID: nullableString(session.ID),
 		Type:            "ReviewSessionCompleted",
 		Level:           "info",
-		Sequence:        3,
+		Sequence:        4,
 		PayloadJson:     `{"status":"completed"}`,
 		CreatedAt:       "2026-05-03T00:12:00Z",
 	}); err != nil {
 		t.Fatalf("CreateEvent(completed) error = %v", err)
+	}
+	if _, err := queries.CreateEvent(ctx, dbgen.CreateEventParams{
+		ID:              "event_verify_started",
+		ReviewSessionID: nullableString(session.ID),
+		Type:            "WorkflowPhaseStarted",
+		Level:           "info",
+		Sequence:        3,
+		PayloadJson:     `{"phase":"verify_findings"}`,
+		CreatedAt:       "2026-05-03T00:11:00Z",
+	}); err != nil {
+		t.Fatalf("CreateEvent(verify phase) error = %v", err)
 	}
 	if _, err := queries.CreateAgentRun(ctx, dbgen.CreateAgentRunParams{
 		ID:              "agent_run_chat_progress",
@@ -1675,6 +1688,7 @@ func TestReviewSessionChatThreadEndpointSyncsWorkflowProgress(t *testing.T) {
 	for _, want := range []string{
 		"Review queued.",
 		"Agent review started.",
+		"Orchestrator is re-checking each finding against code evidence and counter-evidence.",
 		"agent_config_chat did not emit answer text.",
 		"Early findings are in.",
 		"Missing authorization check on invoice export.",
@@ -2050,6 +2064,117 @@ func TestFindingDetailEndpointHydratesEvidenceSnippetFromRepository(t *testing.T
 		item.LineWindow.StartLine != 1 ||
 		item.LineWindow.EndLine < 4 {
 		t.Fatalf("hydrated evidence = %+v", item)
+	}
+}
+
+func TestFindingDetailEndpointSynthesizesPrimarySnippetFromFindingAnchor(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	repoPath := t.TempDir()
+	writeHTTPAPIRepoFile(t, repoPath, "src/server.js", strings.Join([]string{
+		"export function createBillingRouter({ db }) {",
+		"  return {",
+		"    cancelSubscription(request) {",
+		"      return db.cancelSubscription(request.params.subscriptionId);",
+		"    },",
+		"  };",
+		"}",
+	}, "\n"))
+	createHTTPAPISnapshotAt(t, queries, repoPath)
+	createHTTPAPIAgentConfig(t, queries, "agent_config_primary_snippet", "primary_reviewer", 1)
+	createHTTPAPIReviewSessionRow(t, queries, "review_session_primary_snippet", []string{"agent_config_primary_snippet"})
+	if _, err := queries.CreateFinding(context.Background(), dbgen.CreateFindingParams{
+		ID:                 "finding_primary_snippet",
+		ReviewSessionID:    "review_session_primary_snippet",
+		CanonicalClaim:     "Subscription cancellation bypasses authorization.",
+		Category:           "security",
+		Severity:           "high",
+		Confidence:         0.91,
+		VerificationStatus: "verified",
+		DecisionStatus:     "needs_triage",
+		PrimaryPath:        nullableString("src/server.js"),
+		PrimaryStartLine:   sql.NullInt64{Int64: 4, Valid: true},
+		PrimaryEndLine:     sql.NullInt64{Int64: 4, Valid: true},
+		EvidenceSummary:    nullableString("The changed route calls the database directly."),
+		SuggestedFix:       nullableString("Require admin authorization before calling the database."),
+		Fingerprint:        "primary-snippet",
+		FirstSeenAt:        "2026-05-03T00:20:00Z",
+		UpdatedAt:          "2026-05-03T00:20:00Z",
+	}); err != nil {
+		t.Fatalf("CreateFinding(primary snippet) error = %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/findings/finding_primary_snippet", nil)
+	request.Header.Set("X-Cocode-Token", "test-token")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, body = %s", response.Code, response.Body.String())
+	}
+	detail := decodeFindingDetailResponse(t, response.Body.Bytes())
+	if len(detail.EvidenceItems) != 1 {
+		t.Fatalf("evidence items = %+v, want synthesized primary item", detail.EvidenceItems)
+	}
+	item := detail.EvidenceItems[0]
+	if item.ID != "finding_primary_snippet:primary-code" ||
+		item.Kind != "supporting" ||
+		item.Path != "src/server.js" ||
+		item.Summary != "The changed route calls the database directly." ||
+		!strings.Contains(item.CodeSnippet, "cancelSubscription") ||
+		item.LineWindow == nil ||
+		item.LineWindow.StartLine != 1 ||
+		item.LineWindow.EndLine < 4 ||
+		len(detail.EvidenceGroups.Supporting) != 1 {
+		t.Fatalf("synthesized evidence = %+v, groups = %+v", item, detail.EvidenceGroups)
+	}
+}
+
+func TestFindingDetailEndpointClampsStalePrimarySnippetLine(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	repoPath := t.TempDir()
+	writeHTTPAPIRepoFile(t, repoPath, "src/server.js", strings.Join([]string{
+		"first line",
+		"second line",
+		"last line",
+	}, "\n"))
+	createHTTPAPISnapshotAt(t, queries, repoPath)
+	createHTTPAPIAgentConfig(t, queries, "agent_config_stale_primary", "primary_reviewer", 1)
+	createHTTPAPIReviewSessionRow(t, queries, "review_session_stale_primary", []string{"agent_config_stale_primary"})
+	if _, err := queries.CreateFinding(context.Background(), dbgen.CreateFindingParams{
+		ID:                 "finding_stale_primary",
+		ReviewSessionID:    "review_session_stale_primary",
+		CanonicalClaim:     "Reported line moved beyond the current file.",
+		Category:           "correctness",
+		Severity:           "medium",
+		Confidence:         0.7,
+		VerificationStatus: "needs_human",
+		DecisionStatus:     "needs_triage",
+		PrimaryPath:        nullableString("src/server.js"),
+		PrimaryStartLine:   sql.NullInt64{Int64: 99, Valid: true},
+		PrimaryEndLine:     sql.NullInt64{Int64: 99, Valid: true},
+		Fingerprint:        "stale-primary-snippet",
+		FirstSeenAt:        "2026-05-03T00:20:00Z",
+		UpdatedAt:          "2026-05-03T00:20:00Z",
+	}); err != nil {
+		t.Fatalf("CreateFinding(stale primary) error = %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/findings/finding_stale_primary", nil)
+	request.Header.Set("X-Cocode-Token", "test-token")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, body = %s", response.Code, response.Body.String())
+	}
+	detail := decodeFindingDetailResponse(t, response.Body.Bytes())
+	if len(detail.EvidenceItems) != 1 {
+		t.Fatalf("evidence items = %+v, want synthesized primary item", detail.EvidenceItems)
+	}
+	item := detail.EvidenceItems[0]
+	if !strings.Contains(item.CodeSnippet, "3: last line") ||
+		item.LineWindow == nil ||
+		item.LineWindow.StartLine != 1 ||
+		item.LineWindow.EndLine != 3 {
+		t.Fatalf("stale primary evidence = %+v", item)
 	}
 }
 

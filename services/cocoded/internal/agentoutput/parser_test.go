@@ -42,6 +42,20 @@ func TestParseInvalidJSONFallsBackToText(t *testing.T) {
 	}
 }
 
+func TestParseJSONAutoDetectsDelimitedStream(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte("{\"type\":\"thread.started\"}\n{\"type\":\"result\",\"result\":\"done\"}\n")
+	parsed := Parse(raw, agents.OutputJSON)
+	if !parsed.Structured ||
+		parsed.Mode != agents.OutputJSONL ||
+		len(parsed.Documents) != 2 ||
+		len(parsed.Diagnostics) != 1 ||
+		parsed.Diagnostics[0].Code != "output_mode_autodetected" {
+		t.Fatalf("parsed = %+v", parsed)
+	}
+}
+
 func TestParseJSONLReturnsDocuments(t *testing.T) {
 	t.Parallel()
 
@@ -56,6 +70,22 @@ func TestParseJSONLReturnsDocuments(t *testing.T) {
 	}
 	assertJSONField(t, parsed.Documents[0], "event", "finding")
 	assertJSONField(t, parsed.Documents[1], "event", "done")
+}
+
+func TestExtractCandidatesSkipsObjectShapedStreamEvents(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"partial"}}}
+{"type":"result","result":"{\"findings\":[{\"claim\":\"missing guard\",\"category\":\"security\",\"severity\":\"high\",\"confidence\":0.8,\"locations\":[{\"path\":\"src/server.js\",\"start_line\":10,\"end_line\":10,\"side\":\"RIGHT\"}],\"evidence\":[{\"kind\":\"changed_code\",\"title\":\"unguarded call\",\"summary\":\"the handler calls the database without a guard\"}]}]}"}
+`)
+	parsed := Parse(raw, agents.OutputJSONL)
+	result := ExtractCandidates(parsed)
+	if len(result.Diagnostics) != 0 {
+		t.Fatalf("Diagnostics = %+v", result.Diagnostics)
+	}
+	if len(result.Candidates) != 1 || result.Candidates[0].Claim != "missing guard" {
+		t.Fatalf("Candidates = %+v", result.Candidates)
+	}
 }
 
 func TestParseNDJSONAllowsMixedLogLines(t *testing.T) {

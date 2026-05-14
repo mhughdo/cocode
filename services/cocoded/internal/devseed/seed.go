@@ -82,6 +82,9 @@ func Seed(ctx context.Context, database *sql.DB, options Options) (Result, error
 	if err != nil {
 		return Result{}, fmt.Errorf("resolve workspace root: %w", err)
 	}
+	if err := writeSeedRepositoryFiles(workspaceRoot); err != nil {
+		return Result{}, err
+	}
 
 	if _, err := database.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
 		return Result{}, fmt.Errorf("enable foreign keys: %w", err)
@@ -379,6 +382,83 @@ func resetSeedRows(ctx context.Context, tx *sql.Tx) error {
 		}
 	}
 	return nil
+}
+
+func writeSeedRepositoryFiles(workspaceRoot string) error {
+	files := map[string]string{
+		"apps/api/src/routes/repositories.ts":      seedRepositoryRouteFile(),
+		"apps/api/src/middleware/auth.ts":          seedAuthMiddlewareFile(),
+		"apps/api/src/routes/repositories.test.ts": seedRepositoryRouteTestFile(),
+	}
+	for path, content := range files {
+		target := filepath.Join(workspaceRoot, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return fmt.Errorf("create seed source directory for %s: %w", path, err)
+		}
+		if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
+			return fmt.Errorf("write seed source file %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+func seedRepositoryRouteFile() string {
+	lines := make([]string, 130)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("// repository route context line %03d", i+1)
+	}
+	lines[0] = "import { FastifyInstance } from 'fastify';"
+	lines[1] = "import { requireWorkspaceMember } from '../middleware/auth';"
+	lines[2] = "import { repositoryService } from '../services/repository-service';"
+	lines[82] = "export async function registerRepositoryRoutes(router: FastifyInstance) {"
+	lines[83] = "  router.get('/repositories/:id/settings', requireWorkspaceMember, async (request, reply) => {"
+	lines[84] = "    return reply.send(await repositoryService.readSettings(request.params.id));"
+	lines[85] = "  });"
+	lines[86] = "  router.patch('/repositories/:id/settings', requireWorkspaceMember, async (request, reply) => {"
+	lines[87] = "    await repositoryService.updateSettings(request.params.id, request.body);"
+	lines[88] = "    return reply.send({ ok: true });"
+	lines[89] = "  });"
+	lines[90] = ""
+	lines[91] = "  router.post('/repositories/:id/archive', requireWorkspaceMember, async (request, reply) => {"
+	lines[92] = "    await repositoryService.archive(request.params.id);"
+	lines[93] = "    return reply.code(202).send({ ok: true });"
+	lines[94] = "  });"
+	lines[111] = "}"
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func seedAuthMiddlewareFile() string {
+	lines := make([]string, 48)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("// auth middleware context line %03d", i+1)
+	}
+	lines[0] = "export function requireWorkspaceMember(request, reply, next) {"
+	lines[1] = "  if (!request.workspaceRole) {"
+	lines[2] = "    return reply.code(401).send({ error: 'member required' });"
+	lines[3] = "  }"
+	lines[4] = "  return next();"
+	lines[5] = "}"
+	lines[21] = "export function requireWorkspaceAdmin(request, reply, next) {"
+	lines[22] = "  if (!request.workspaceRole?.includes('admin')) {"
+	lines[23] = "    return reply.code(403).send({ error: 'admin required' });"
+	lines[24] = "  }"
+	lines[25] = "  return next();"
+	lines[26] = "}"
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func seedRepositoryRouteTestFile() string {
+	lines := make([]string, 100)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("// repository route test context line %03d", i+1)
+	}
+	lines[70] = "it('allows repository members to read settings', async () => {"
+	lines[71] = "  await expect(readSettings(member)).resolves.toMatchObject({ ok: true });"
+	lines[72] = "});"
+	lines[74] = "it('allows an admin to update settings', async () => {"
+	lines[75] = "  await expect(updateSettings(admin)).resolves.toMatchObject({ ok: true });"
+	lines[76] = "});"
+	return strings.Join(lines, "\n") + "\n"
 }
 
 func insertAgentConfigs(ctx context.Context, tx *sql.Tx, ts func(time.Duration) string) error {
@@ -690,8 +770,8 @@ INSERT INTO finding_candidates(
 		fp              string
 		merged          int
 	}{
-		{"seed_finding_auth_guard", "Repository settings updates miss the workspace admin guard.", "security", "high", 0.92, "verified", "accepted", "apps/api/src/routes/repositories.ts", 87, 112, "The route reaches repositoryService.updateSettings after member authentication, while requireWorkspaceAdmin exists but is not mounted on the mutation path.", "No counter-evidence found in route tests; existing tests cover happy path and member reads only.", "Mount requireWorkspaceAdmin on the PATCH route and add a member-denied regression test.", "This mutation appears reachable to workspace members. Please require workspace admin permissions before saving repository settings.", "auth-guard-missing", 2},
-		{"seed_finding_renderer_budget", "Renderer preview can load the full diff payload without a display budget.", "reliability", "medium", 0.74, "plausible", "undecided", "apps/desktop/src/renderer/src/app/App.tsx", 244, 284, "The preview list renders long evidence and diff-like text inline, which can crowd the findings board on smaller windows.", "The detail view can still hold full text, so this is a UI ergonomics risk rather than data loss.", "Clamp board preview text and keep complete evidence in the detail panel.", "Consider limiting finding preview copy so large diffs do not crowd the board.", "renderer-budget", 1},
+		{"seed_finding_auth_guard", "Repository settings updates miss the workspace admin guard.", "security", "high", 0.92, "verified", "accepted", "apps/api/src/routes/repositories.ts", 87, 112, "The route reaches repositoryService.updateSettings after member authentication, while requireWorkspaceAdmin exists but is not mounted on the mutation path.", "No verified contradiction was found. Route tests cover happy path and member reads only, so they remain verification leads rather than counter-evidence.", "Mount requireWorkspaceAdmin on the PATCH route and add a member-denied regression test.", "This mutation appears reachable to workspace members. Please require workspace admin permissions before saving repository settings.", "auth-guard-missing", 2},
+		{"seed_finding_renderer_budget", "Renderer preview can load the full diff payload without a display budget.", "reliability", "medium", 0.74, "plausible", "undecided", "apps/desktop/src/renderer/src/app/App.tsx", 244, 284, "The preview list renders long evidence and diff-like text inline, which can crowd the findings board on smaller windows.", "The detail view can hold complete content, but that does not refute the crowded preview claim; treat it as related UI context.", "Clamp board preview text and keep complete evidence in the detail panel.", "Consider limiting finding preview copy so large diffs do not crowd the board.", "renderer-budget", 1},
 		{"seed_finding_false_positive", "Theme selection might not persist after app restart.", "ux", "low", 0.38, "likely_false_positive", "dismissed", "apps/desktop/src/renderer/src/app/App.tsx", 40, 65, "A static scan did not find persistence in the component itself.", "The theme provider owns persistence outside this component, so the component-level finding is not actionable.", nil, nil, "theme-persistence", 1},
 	}
 	for _, finding := range findings {
@@ -792,11 +872,11 @@ func insertEvidence(ctx context.Context, tx *sql.Tx, ts func(time.Duration) stri
 		conf       float64
 		metadata   string
 	}{
-		{"seed_evidence_auth_route", "seed_finding_auth_guard", "supporting", "Mutation route reaches settings write", "PATCH /repositories/:id/settings calls repositoryService.updateSettings after member auth without mounting requireWorkspaceAdmin.", "apps/api/src/routes/repositories.ts", 87, 112, "seed_artifact_evidence_auth", 0.94, `{"seeded":true,"node":"seed_node_changed_route"}`},
-		{"seed_evidence_auth_middleware", "seed_finding_auth_guard", "supporting", "Admin middleware exists but is unused", "requireWorkspaceAdmin is available in auth middleware but is not connected to the settings route.", "apps/api/src/middleware/auth.ts", 22, 40, nil, 0.86, `{"seeded":true,"node":"seed_node_admin_guard"}`},
-		{"seed_evidence_auth_tests", "seed_finding_auth_guard", "missing", "No member-denied mutation test", "Route tests exercise successful updates and member reads, but there is no assertion that a non-admin member receives 403 for writes.", "apps/api/src/routes/repositories.test.ts", 1, 96, nil, 0.79, `{"seeded":true,"node":"seed_node_missing_test"}`},
+		{"seed_evidence_auth_route", "seed_finding_auth_guard", "supporting", "Mutation route reaches settings write", "PATCH /repositories/:id/settings calls repositoryService.updateSettings after member auth without mounting requireWorkspaceAdmin.", "apps/api/src/routes/repositories.ts", 87, 112, "seed_artifact_evidence_auth", 0.94, `{"seeded":true,"node":"seed_node_changed_route","code_snippet":"router.patch('/repositories/:id/settings', requireWorkspaceMember, async (request, reply) => {\n  await repositoryService.updateSettings(request.params.id, request.body);\n  return reply.send({ ok: true });\n});","line_window":{"start_line":87,"end_line":90}}`},
+		{"seed_evidence_auth_middleware", "seed_finding_auth_guard", "supporting", "Admin middleware exists but is unused", "requireWorkspaceAdmin is available in auth middleware but is not connected to the settings route.", "apps/api/src/middleware/auth.ts", 22, 40, nil, 0.86, `{"seeded":true,"node":"seed_node_admin_guard","code_snippet":"export function requireWorkspaceAdmin(request, reply, next) {\n  if (!request.workspaceRole?.includes('admin')) {\n    return reply.code(403).send({ error: 'admin required' });\n  }\n  return next();\n}","line_window":{"start_line":22,"end_line":27}}`},
+		{"seed_evidence_auth_tests", "seed_finding_auth_guard", "missing", "No member-denied mutation test", "Route tests exercise successful updates and member reads, but there is no assertion that a non-admin member receives 403 for writes.", "apps/api/src/routes/repositories.test.ts", 1, 96, nil, 0.79, `{"seeded":true,"node":"seed_node_missing_test","code_snippet":"it('allows repository members to read settings', async () => {\n  await expect(readSettings(member)).resolves.toMatchObject({ ok: true });\n});\n\n// No test covers PATCH /repositories/:id/settings for a non-admin member.","line_window":{"start_line":72,"end_line":76}}`},
 		{"seed_evidence_budget_preview", "seed_finding_renderer_budget", "supporting", "Finding preview renders long text inline", "The findings board preview combines claim, evidence summary, and draft text without a fixed preview budget.", "apps/desktop/src/renderer/src/app/App.tsx", 244, 284, nil, 0.72, `{"seeded":true}`},
-		{"seed_evidence_budget_counter", "seed_finding_renderer_budget", "counter", "Detail panel can hold complete content", "Full evidence can remain available in the detail surface, so the board only needs a concise preview.", "apps/desktop/src/renderer/src/app/App.tsx", 286, 330, nil, 0.62, `{"seeded":true}`},
+		{"seed_evidence_budget_counter", "seed_finding_renderer_budget", "search", "Detail panel can hold complete content", "Full evidence can remain available in the detail surface, so the board only needs a concise preview.", "apps/desktop/src/renderer/src/app/App.tsx", 286, 330, nil, 0.62, `{"seeded":true}`},
 		{"seed_evidence_theme_provider", "seed_finding_false_positive", "counter", "Theme provider owns persistence", "Theme persistence is handled at provider level, so the component-level static warning is not actionable.", "apps/desktop/src/renderer/src/app/providers.tsx", 12, 42, nil, 0.81, `{"seeded":true}`},
 	}
 	for _, item := range items {
@@ -831,7 +911,7 @@ INSERT INTO evidence_items(
 	}{
 		{"seed_graph_auth_guard", "seed_finding_auth_guard", "ready", `{"direction":"LR","pinned":["seed_node_changed_route","seed_node_missing_guard"]}`, "Route, middleware, and test evidence show a missing admin guard on the write path."},
 		{"seed_graph_renderer_budget", "seed_finding_renderer_budget", "ready", `{"direction":"TB","pinned":["seed_node_budget_board"]}`, "Preview content is plausible board clutter; detail view is the counterweight."},
-		{"seed_graph_theme", "seed_finding_false_positive", "ready", `{"direction":"LR"}`, "Counter-evidence indicates the static theme warning is not actionable."},
+		{"seed_graph_theme", "seed_finding_false_positive", "ready", `{"direction":"LR"}`, "A verified contradiction indicates the static theme warning is not actionable."},
 	}
 	for _, graph := range graphs {
 		if _, err := tx.ExecContext(ctx, `
@@ -868,7 +948,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		{"seed_node_missing_guard", "seed_graph_auth_guard", "missing_guard", "Admin guard not mounted", nil, nil, nil, nil, nil, 0.9, `{"x":420,"y":180}`},
 		{"seed_node_missing_test", "seed_graph_auth_guard", "test", "Missing member-denied test", "apps/api/src/routes/repositories.test.ts", nil, 1, 96, "seed_evidence_auth_tests", 0.79, `{"x":420,"y":280}`},
 		{"seed_node_budget_board", "seed_graph_renderer_budget", "changed_code", "Finding board preview", "apps/desktop/src/renderer/src/app/App.tsx", "FindingsBoard", 244, 284, "seed_evidence_budget_preview", 0.72, `{"x":160,"y":140}`},
-		{"seed_node_budget_detail", "seed_graph_renderer_budget", "counter_evidence", "Detail view holds full text", "apps/desktop/src/renderer/src/app/App.tsx", "FindingDetail", 286, 330, "seed_evidence_budget_counter", 0.62, `{"x":460,"y":140}`},
+		{"seed_node_budget_detail", "seed_graph_renderer_budget", "related_code", "Detail view holds full text", "apps/desktop/src/renderer/src/app/App.tsx", "FindingDetail", 286, 330, "seed_evidence_budget_counter", 0.62, `{"x":460,"y":140}`},
 		{"seed_node_theme_provider", "seed_graph_theme", "counter_evidence", "Theme provider persistence", "apps/desktop/src/renderer/src/app/providers.tsx", "ThemeProvider", 12, 42, "seed_evidence_theme_provider", 0.81, `{"x":180,"y":120}`},
 	}
 	for _, node := range nodes {
@@ -907,7 +987,7 @@ INSERT INTO evidence_nodes(
 		{"seed_edge_route_missing_guard", "seed_graph_auth_guard", "seed_node_changed_route", "seed_node_missing_guard", "missing_guard", "observed", "mutation lacks guard", 0.91, `{"seeded":true}`},
 		{"seed_edge_admin_guard_protects", "seed_graph_auth_guard", "seed_node_admin_guard", "seed_node_changed_route", "protects", "missing", "should protect this route", 0.84, `{"seeded":true}`},
 		{"seed_edge_test_supports", "seed_graph_auth_guard", "seed_node_missing_test", "seed_node_missing_guard", "supports", "observed", "test gap supports risk", 0.78, `{"seeded":true}`},
-		{"seed_edge_detail_counter", "seed_graph_renderer_budget", "seed_node_budget_detail", "seed_node_budget_board", "contradicts", "observed", "full text can live outside preview", 0.62, `{"seeded":true}`},
+		{"seed_edge_detail_counter", "seed_graph_renderer_budget", "seed_node_budget_detail", "seed_node_budget_board", "supports", "observed", "detail keeps full text available", 0.62, `{"seeded":true}`},
 		{"seed_edge_theme_counter", "seed_graph_theme", "seed_node_theme_provider", "seed_node_theme_provider", "contradicts", "observed", "provider owns persistence", 0.81, `{"seeded":true}`},
 	}
 	for _, edge := range edges {

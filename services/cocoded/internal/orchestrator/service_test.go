@@ -200,6 +200,133 @@ func TestWorkflowRunsFakeAgentEndToEnd(t *testing.T) {
 	}
 }
 
+func TestRefineCodeLocationRangeFindsSpecificIssueLineNearBroadRange(t *testing.T) {
+	t.Parallel()
+
+	repoRoot := t.TempDir()
+	path := "internal/app/aggregatedposition/fetcher/kyberdata/kem_rewards.go"
+	if err := os.MkdirAll(filepath.Join(repoRoot, filepath.Dir(path)), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	source := strings.Join([]string{
+		"package kyberdata",
+		"",
+		"func addNormalizedAddress(addresses map[string]struct{}, tokenAddress string) {",
+		"\tnormalized := strings.ToLower(strings.TrimSpace(tokenAddress))",
+		"\tif normalized == \"\" {",
+		"\t\treturn",
+		"\t}",
+		"\taddresses[normalized] = struct{}{}",
+		"}",
+		"",
+		"func pickTokenPrice(prices *[2]*float64) float64 {",
+		"\tif prices == nil {",
+		"\t\treturn 0",
+		"\t}",
+		"\tif prices[0] != nil && *prices[0] > 0 {",
+		"\t\treturn (float64(*prices[0]) + float64(*prices[1])) / float64(2)",
+		"\t}",
+		"\treturn 0",
+		"}",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(repoRoot, filepath.FromSlash(path)), []byte(source), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	start, end := refineCodeLocationRange(
+		repoRoot,
+		path,
+		4,
+		15,
+		"Nil pointer dereference in pickTokenPrice if prices[1] is nil",
+		"The issue is the average-price branch dereferencing prices[1] after checking prices[0].",
+	)
+	if start != 15 || end != 16 {
+		t.Fatalf("refineCodeLocationRange() = %d-%d, want 15-16", start, end)
+	}
+}
+
+func TestWorkflowRunsSelectedOrchestratorAsReviewerBeforeCuration(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	env.Driver.stdout = `{
+		"summary": "orchestrator reviewed code",
+		"findings": [
+			{
+				"claim": "Repository settings update misses an admin guard",
+				"category": "security",
+				"severity": "high",
+				"confidence": 0.91,
+				"locations": [{"path":"src/new.go","start_line":3,"end_line":3,"side":"RIGHT"}],
+				"evidence": [{"title":"route reaches mutation","summary":"The orchestrator review pass found that the changed route reaches the settings mutation without an admin guard.","kind":"changed_code"}],
+				"suggested_fix": "Mount requireWorkspaceAdmin before the mutation."
+			}
+		]
+	}`
+	createOrchestratorCLIConfig(t, env, "agent_config_orchestrator_review")
+	session := createWorkflowSession(t, env, "review_session_orchestrator_reviews_then_curates", StatusDraft)
+	if _, err := env.Queries.CreateReviewSessionAgent(context.Background(), dbgen.CreateReviewSessionAgentParams{
+		ID:                   "review_session_agent_orchestrator_review",
+		ReviewSessionID:      session.ID,
+		AgentConfigID:        "agent_config_orchestrator_review",
+		Role:                 "orchestrator",
+		RunOrder:             0,
+		Enabled:              1,
+		SettingsOverrideJson: "{}",
+	}); err != nil {
+		t.Fatalf("CreateReviewSessionAgent(orchestrator) error = %v", err)
+	}
+	if _, err := env.Service.Transition(context.Background(), session.ID, StatusQueued); err != nil {
+		t.Fatalf("Transition(draft -> queued) error = %v", err)
+	}
+	if err := env.Service.Run(context.Background(), session.ID); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	runs, err := env.Queries.ListAgentRunsBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListAgentRunsBySession() error = %v", err)
+	}
+	if len(runs) < 2 {
+		t.Fatalf("agent runs = %+v", runs)
+	}
+	phases := map[string]bool{}
+	orchestratorReviewRunID := ""
+	for _, run := range runs {
+		if run.AgentConfigID != "agent_config_orchestrator_review" {
+			continue
+		}
+		var metadata map[string]any
+		if err := json.Unmarshal([]byte(run.MetadataJson), &metadata); err != nil {
+			t.Fatalf("decode run metadata: %v", err)
+		}
+		if phase, ok := metadata["phase"].(string); ok {
+			phases[phase] = true
+			if phase == PhaseRunAgents {
+				orchestratorReviewRunID = run.ID
+			}
+		}
+	}
+	if !phases[PhaseRunAgents] || !phases[PhaseDeduplicate] || !phases[PhaseVerifyFindings] {
+		t.Fatalf("orchestrator should review and then orchestrate, phases = %+v runs = %+v", phases, runs)
+	}
+	candidates, err := env.Queries.ListFindingCandidatesBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListFindingCandidatesBySession() error = %v", err)
+	}
+	hasOrchestratorCandidate := false
+	for _, candidate := range candidates {
+		if candidate.AgentRunID == orchestratorReviewRunID {
+			hasOrchestratorCandidate = true
+			break
+		}
+	}
+	if !hasOrchestratorCandidate {
+		t.Fatalf("orchestrator review candidates = %+v", candidates)
+	}
+}
+
 func TestSanitizeCommandArgsRepairsStaleClaudeToolsFlag(t *testing.T) {
 	args := agents.SanitizeCommandArgs("claude", []string{
 		"-p",
@@ -255,7 +382,7 @@ func TestWorkflowPersistsStructuredFindingCandidates(t *testing.T) {
 				"severity": "high",
 				"confidence": 0.91,
 				"locations": [{"path":"src/new.go","start_line":3,"end_line":3,"side":"RIGHT"}],
-				"evidence": [{"title":"handler is reachable","summary":"the changed function can be called without an admin guard"}],
+				"evidence": [{"title":"handler is reachable","summary":"the changed function can be called without an admin guard","kind":"changed_code"}],
 				"suggested_fix": "Require admin before mutation.",
 				"draft_comment": "Please require admin permission before mutating settings."
 			}
@@ -285,7 +412,7 @@ func TestWorkflowPersistsStructuredFindingCandidates(t *testing.T) {
 		candidate.PrimaryStartLine.Int64 != 3 ||
 		!candidate.RawArtifactID.Valid ||
 		!candidate.Fingerprint.Valid ||
-		!strings.Contains(candidate.EvidenceJson, `"kind":"unknown"`) {
+		!strings.Contains(candidate.EvidenceJson, `"kind":"changed_code"`) {
 		t.Fatalf("candidate = %+v", candidate)
 	}
 
@@ -460,6 +587,159 @@ func TestWorkflowUsesOptionalDedupeHook(t *testing.T) {
 		t.Fatalf("ListByReviewSession() error = %v", err)
 	}
 	assertEventTypes(t, events, []string{"FindingDedupeRefined", "FindingMerged", "FindingDeduplicated"})
+}
+
+func TestWorkflowUsesSelectedOrchestratorForDedupeCuration(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	createOrchestratorCLIConfig(t, env, "agent_config_dedupe_curator")
+	session := createWorkflowSession(t, env, "review_session_orchestrator_dedupe", StatusDraft)
+	if _, err := env.Queries.CreateReviewSessionAgent(context.Background(), dbgen.CreateReviewSessionAgentParams{
+		ID:                   "review_session_agent_dedupe_curator",
+		ReviewSessionID:      session.ID,
+		AgentConfigID:        "agent_config_dedupe_curator",
+		Role:                 "orchestrator",
+		RunOrder:             0,
+		Enabled:              1,
+		SettingsOverrideJson: "{}",
+	}); err != nil {
+		t.Fatalf("CreateReviewSessionAgent(orchestrator) error = %v", err)
+	}
+	createWorkflowCandidate(t, env, session.ID, "candidate_nil_a", "pickTokenPrice dereferences prices[1] without a nil check, causing a runtime panic", "correctness", "high", 0.85, "internal/app/aggregatedposition/fetcher/kyberdata/kem_rewards.go", 207, 208, "fp_nil_a")
+	createWorkflowCandidate(t, env, session.ID, "candidate_nil_b", "Missing nil check for prices[1] in pickTokenPrice can panic when the second price is absent", "correctness", "high", 0.82, "internal/app/aggregatedposition/fetcher/kyberdata/kem_rewards.go", 203, 208, "fp_nil_b")
+	createWorkflowCandidate(t, env, session.ID, "candidate_order", "Reward amounts are returned in nondeterministic map iteration order", "correctness", "medium", 0.77, "internal/app/aggregatedposition/fetcher/kyberdata/kem_rewards.go", 218, 234, "fp_order")
+	env.Driver.stdout = `{
+		"clusters": [
+			{
+				"candidate_ids": ["candidate_nil_a", "candidate_nil_b"],
+				"canonical_claim": "pickTokenPrice dereferences prices[1] without a nil check when only one price is present",
+				"category": "correctness",
+				"severity": "high",
+				"confidence": 0.88,
+				"verification_status": "verified",
+				"primary_location": {"path":"internal/app/aggregatedposition/fetcher/kyberdata/kem_rewards.go","start_line":207,"end_line":208,"side":"RIGHT"},
+				"evidence_summary": "The average branch checks prices[0] but dereferences prices[1] without proving it is non-nil.",
+				"counter_evidence_summary": "No direct contradiction was verified. Related guards and tests are checks, not refutations.",
+				"supporting_evidence": [
+					{"title":"Nil check misses prices[1]","summary":"Line 207 only checks prices[0], then line 208 dereferences prices[1].","path":"internal/app/aggregatedposition/fetcher/kyberdata/kem_rewards.go","start_line":207,"end_line":208,"confidence":0.9}
+				],
+				"related_context": [
+					{"kind":"counter","title":"Nearby guard mention is only a lead","summary":"This guard mention needs comparison and does not refute the prices[1] dereference.","path":"internal/app/api_route.go","start_line":101,"end_line":103,"refutes_claim":false,"confidence":0.4}
+				],
+				"relationship_evidence": [
+					{"title":"fetchRewardTokenInfo reaches pickTokenPrice","summary":"gopls call_hierarchy shows fetchRewardTokenInfo calls pickTokenPrice while enriching KEM rewards, so wallet reward data can trigger this branch.","path":"internal/app/aggregatedposition/fetcher/kyberdata/fetcher.go","start_line":345,"end_line":345,"relationship":"caller","confidence":0.78}
+				],
+				"suggested_fix": "Check prices[1] for nil before averaging.",
+				"dedupe_reason": "Both candidates describe the same nil-safety failure in pickTokenPrice."
+			},
+			{
+				"candidate_ids": ["candidate_order"],
+				"canonical_claim": "Reward amount output order depends on map iteration",
+				"category": "correctness",
+				"severity": "medium",
+				"confidence": 0.77,
+				"verification_status": "plausible",
+				"primary_location": {"path":"internal/app/aggregatedposition/fetcher/kyberdata/kem_rewards.go","start_line":218,"end_line":234,"side":"RIGHT"},
+				"evidence_summary": "The loop iterates a map before appending results.",
+				"counter_evidence_summary": "No direct contradiction was verified.",
+				"supporting_evidence": [
+					{"title":"Map iteration appends results","summary":"The changed loop appends output while ranging over a map.","path":"internal/app/aggregatedposition/fetcher/kyberdata/kem_rewards.go","start_line":218,"end_line":234,"confidence":0.75}
+				],
+				"dedupe_reason": "Distinct ordering issue."
+			}
+		]
+	}`
+
+	if err := env.Service.deduplicateFindings(context.Background(), session); err != nil {
+		t.Fatalf("deduplicateFindings() error = %v", err)
+	}
+
+	findings, err := env.Queries.ListFindingsBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListFindingsBySession() error = %v", err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("findings = %+v", findings)
+	}
+	var nilFinding dbgen.Finding
+	for _, finding := range findings {
+		if strings.Contains(finding.CanonicalClaim, "prices[1]") {
+			nilFinding = finding
+			break
+		}
+	}
+	if nilFinding.ID == "" ||
+		nilFinding.MergedFromCount != 2 ||
+		nilFinding.VerificationStatus != evidence.StatusVerified ||
+		nilFinding.PrimaryStartLine.Int64 != 207 ||
+		!strings.Contains(nullableTestValue(nilFinding.EvidenceSummary), "average branch") ||
+		!strings.Contains(nullableTestValue(nilFinding.CounterEvidenceSummary), "No direct contradiction") {
+		t.Fatalf("nil finding = %+v", nilFinding)
+	}
+	items, err := env.Queries.ListEvidenceItemsByFinding(context.Background(), nilFinding.ID)
+	if err != nil {
+		t.Fatalf("ListEvidenceItemsByFinding() error = %v", err)
+	}
+	if countWorkflowEvidenceKind(items, evidence.KindSupporting) != 1 ||
+		countWorkflowEvidenceKind(items, evidence.KindStaticAnalysis) != 1 ||
+		countWorkflowEvidenceKind(items, evidence.KindSearch) != 1 ||
+		countWorkflowEvidenceKind(items, evidence.KindCounter) != 0 {
+		t.Fatalf("curated evidence items = %+v", items)
+	}
+	if prompt := env.Driver.lastPrompt(); !strings.Contains(prompt, "orchestrator-curator") ||
+		!strings.Contains(prompt, "Every input candidate id must appear exactly once") ||
+		!strings.Contains(prompt, "gopls call_hierarchy") {
+		t.Fatalf("curator prompt missing contract:\n%s", prompt)
+	}
+	events, err := env.Events.ListByReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListByReviewSession() error = %v", err)
+	}
+	assertEventTypes(t, events, []string{
+		"ContextBundleCreated",
+		"AgentOutputParsed",
+		"FindingDedupeRefined",
+		"FindingMerged",
+		"FindingDeduplicated",
+	})
+	refined := eventPayloadByType(t, events, "FindingDedupeRefined")
+	if refined["refiner"] != "orchestrator" || refined["curated_findings"].(float64) != 2 {
+		t.Fatalf("refined event = %+v", refined)
+	}
+}
+
+func TestParseFindingCuratorOutputReadsWrappedTextJSON(t *testing.T) {
+	t.Parallel()
+
+	candidates := []dbgen.FindingCandidate{{
+		ID:               "candidate_wrapped",
+		Category:         "correctness",
+		Severity:         "high",
+		Confidence:       0.8,
+		Claim:            "Wrapped curation candidate",
+		PrimaryPath:      nullableTestString("src/server.go"),
+		PrimaryStartLine: sql.NullInt64{Int64: 10, Valid: true},
+		PrimaryEndLine:   sql.NullInt64{Int64: 10, Valid: true},
+		Fingerprint:      nullableTestString("wrapped-fingerprint"),
+	}}
+	raw := []byte(`{"type":"thread.started","thread_id":"thread_1"}
+{"type":"item.completed","item":{"id":"item_30","type":"agent_message","text":"{\"clusters\":[{\"candidate_ids\":[\"candidate_wrapped\"],\"canonical_claim\":\"Curated wrapped claim\",\"verification_status\":\"verified\",\"primary_location\":{\"path\":\"src/server.go\",\"start_line\":10,\"end_line\":10},\"supporting_evidence\":[{\"title\":\"Issue line\",\"summary\":\"Exact line supports the claim\",\"path\":\"src/server.go\",\"start_line\":10,\"end_line\":10}]}]}"}}
+{"type":"turn.completed"}`)
+
+	result, err := parseFindingCuratorOutput(raw, candidates)
+	if err != nil {
+		t.Fatalf("parseFindingCuratorOutput() error = %v", err)
+	}
+	if len(result.Clusters) != 1 || len(result.Curated) != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+	curated := result.Curated[clusterKey(result.Clusters[0])]
+	if curated.CanonicalClaim != "Curated wrapped claim" ||
+		curated.VerificationStatus != evidence.StatusVerified ||
+		len(curated.Evidence) != 1 {
+		t.Fatalf("curated = %+v", curated)
+	}
 }
 
 func TestWorkflowRejectsInvalidDedupeHookOutput(t *testing.T) {
@@ -820,7 +1100,7 @@ func TestVerifyFindingsRunsVerifierCLIWithFindingContext(t *testing.T) {
 		!updated.EvidenceSummary.Valid ||
 		!strings.Contains(updated.EvidenceSummary.String, "Verifier confirmed") ||
 		!updated.CounterEvidenceSummary.Valid ||
-		!strings.Contains(updated.CounterEvidenceSummary.String, "human review") {
+		!strings.Contains(updated.CounterEvidenceSummary.String, "verification leads rather than counter-evidence") {
 		t.Fatalf("updated finding = %+v", updated)
 	}
 	items, err := env.Queries.ListEvidenceItemsByFinding(context.Background(), finding.ID)
@@ -835,7 +1115,7 @@ func TestVerifyFindingsRunsVerifierCLIWithFindingContext(t *testing.T) {
 		}
 		if strings.Contains(item.MetadataJson, `"producer":"verifier_agent"`) {
 			verifierItems++
-			if item.Kind != evidence.KindCounter || item.Path.String != "src/new.go" || item.StartLine.Int64 != 3 {
+			if item.Kind != evidence.KindSearch || item.Path.String != "src/new.go" || item.StartLine.Int64 != 3 {
 				t.Fatalf("verifier evidence item = %+v", item)
 			}
 		}
@@ -861,11 +1141,12 @@ func TestVerifyFindingsRunsVerifierCLIWithFindingContext(t *testing.T) {
 	if len(bundles) != 1 || bundles[0].Scope != string(contextbundle.ScopeFinding) {
 		t.Fatalf("context bundles = %+v", bundles)
 	}
-	if prompt := env.Driver.lastPrompt(); !strings.Contains(prompt, "You are a verifier agent") ||
+	if prompt := env.Driver.lastPrompt(); !strings.Contains(prompt, "orchestrator-verifier") ||
 		!strings.Contains(prompt, "Finding ID: finding_verifier_cli") ||
 		!strings.Contains(prompt, "Context Bundle") ||
 		!strings.Contains(prompt, "UNTRUSTED_FINDING_DATA") ||
-		!strings.Contains(prompt, "untrusted evidence only") {
+		!strings.Contains(prompt, "untrusted evidence only") ||
+		!strings.Contains(prompt, "gopls call_hierarchy") {
 		t.Fatalf("verifier prompt missing scoped context:\n%s", prompt)
 	}
 	events, err := env.Events.ListByReviewSession(context.Background(), session.ID)
@@ -878,6 +1159,195 @@ func TestVerifyFindingsRunsVerifierCLIWithFindingContext(t *testing.T) {
 		"AgentOutputParsed",
 		"VerifierAgentVerificationCompleted",
 	})
+}
+
+func TestVerifyFindingsUsesSelectedOrchestratorAsCurator(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	createOrchestratorCLIConfig(t, env, "agent_config_orchestrator")
+	env.Driver.stdout = `{
+		"verification_status": "verified",
+		"evidence_summary": "Orchestrator confirmed the changed handler is reachable from the exported route.",
+		"counter_evidence_summary": "No direct contradiction was found; related guards are only verification leads.",
+		"evidence": [
+			{
+				"kind": "static_analysis",
+				"title": "Call hierarchy links route to handler",
+				"summary": "gopls call hierarchy shows the exported route invokes the changed handler before authorization checks run.",
+				"path": "src/new.go",
+				"start_line": 3,
+				"end_line": 3,
+				"confidence": 0.82
+			}
+		]
+	}`
+	session := createWorkflowSession(t, env, "review_session_orchestrator_curator", StatusDraft)
+	if _, err := env.Queries.CreateReviewSessionAgent(context.Background(), dbgen.CreateReviewSessionAgentParams{
+		ID:                   "review_session_agent_orchestrator_curator",
+		ReviewSessionID:      session.ID,
+		AgentConfigID:        "agent_config_orchestrator",
+		Role:                 "orchestrator",
+		RunOrder:             0,
+		Enabled:              1,
+		SettingsOverrideJson: "{}",
+	}); err != nil {
+		t.Fatalf("CreateReviewSessionAgent(orchestrator) error = %v", err)
+	}
+	finding := createWorkflowFinding(t, env, session.ID, "finding_orchestrator_curator")
+	repository, err := env.Queries.GetRepository(context.Background(), session.RepositoryID)
+	if err != nil {
+		t.Fatalf("GetRepository() error = %v", err)
+	}
+
+	if err := env.Service.verifyFindings(context.Background(), session, repository); err != nil {
+		t.Fatalf("verifyFindings() error = %v", err)
+	}
+
+	updated, err := env.Queries.GetFinding(context.Background(), finding.ID)
+	if err != nil {
+		t.Fatalf("GetFinding() error = %v", err)
+	}
+	if updated.VerificationStatus != evidence.StatusVerified ||
+		!strings.Contains(nullableTestValue(updated.EvidenceSummary), "Orchestrator confirmed") {
+		t.Fatalf("updated finding = %+v", updated)
+	}
+	runs, err := env.Queries.ListAgentRunsBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListAgentRunsBySession() error = %v", err)
+	}
+	if len(runs) != 1 || runs[0].AgentConfigID != "agent_config_orchestrator" || runs[0].Role != "verifier" {
+		t.Fatalf("runs = %+v", runs)
+	}
+	items, err := env.Queries.ListEvidenceItemsByFinding(context.Background(), finding.ID)
+	if err != nil {
+		t.Fatalf("ListEvidenceItemsByFinding() error = %v", err)
+	}
+	if countWorkflowEvidenceKind(items, evidence.KindStaticAnalysis) != 1 {
+		t.Fatalf("expected static analysis evidence from orchestrator, got %+v", items)
+	}
+}
+
+func TestVerifyFindingsPreservesCuratedEvidenceStory(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	createVerifierCLIConfig(t, env, "agent_config_verifier_preserve_curated")
+	env.Driver.stdout = `{
+		"verification_status": "verified",
+		"evidence_summary": "Verifier generic overwrite should not replace curated story.",
+		"counter_evidence_summary": "Verifier generic counter overwrite should not replace curated contradiction summary.",
+		"evidence": [
+			{
+				"kind": "supporting",
+				"title": "Verifier extra source window",
+				"summary": "Verifier confirmed the same changed line but did not add a contradiction.",
+				"path": "src/new.go",
+				"start_line": 3,
+				"end_line": 3,
+				"confidence": 0.7
+			}
+		]
+	}`
+	session := createWorkflowSession(t, env, "review_session_preserve_curated_story", StatusDraft)
+	finding := createWorkflowFinding(t, env, session.ID, "finding_preserve_curated_story")
+	if _, err := env.Queries.UpdateFindingVerificationEvidence(context.Background(), dbgen.UpdateFindingVerificationEvidenceParams{
+		VerificationStatus:     evidence.StatusPlausible,
+		EvidenceSummary:        nullableTestString("Curated support story: line 3 reaches the changed handler through the exported route."),
+		CounterEvidenceSummary: nullableTestString("Curated contradiction story: no direct contradiction was verified; related guards remain verification leads."),
+		UpdatedAt:              "2026-05-03T00:10:00Z",
+		ID:                     finding.ID,
+	}); err != nil {
+		t.Fatalf("UpdateFindingVerificationEvidence() error = %v", err)
+	}
+	if _, err := env.Queries.CreateEvidenceItem(context.Background(), dbgen.CreateEvidenceItemParams{
+		ID:           "evidence_curated_preserve_story",
+		FindingID:    finding.ID,
+		Kind:         evidence.KindStaticAnalysis,
+		Title:        "Curated route-to-handler relationship",
+		Summary:      "The orchestrator verified that the exported route reaches the changed handler and that no cited guard directly refutes the finding.",
+		Path:         nullableTestString("src/new.go"),
+		StartLine:    sql.NullInt64{Int64: 3, Valid: true},
+		EndLine:      sql.NullInt64{Int64: 3, Valid: true},
+		Confidence:   0.83,
+		MetadataJson: `{"producer":"orchestrator_curator","relationship":"caller","source":"dedupe_curation"}`,
+		CreatedAt:    "2026-05-03T00:10:01Z",
+	}); err != nil {
+		t.Fatalf("CreateEvidenceItem(curated) error = %v", err)
+	}
+	repository, err := env.Queries.GetRepository(context.Background(), session.RepositoryID)
+	if err != nil {
+		t.Fatalf("GetRepository() error = %v", err)
+	}
+
+	if err := env.Service.verifyFindings(context.Background(), session, repository); err != nil {
+		t.Fatalf("verifyFindings() error = %v", err)
+	}
+
+	updated, err := env.Queries.GetFinding(context.Background(), finding.ID)
+	if err != nil {
+		t.Fatalf("GetFinding() error = %v", err)
+	}
+	if updated.VerificationStatus != evidence.StatusPlausible ||
+		!strings.Contains(nullableTestValue(updated.EvidenceSummary), "Curated support story") ||
+		!strings.Contains(nullableTestValue(updated.CounterEvidenceSummary), "Curated contradiction story") {
+		t.Fatalf("curated story was overwritten: %+v", updated)
+	}
+	items, err := env.Queries.ListEvidenceItemsByFinding(context.Background(), finding.ID)
+	if err != nil {
+		t.Fatalf("ListEvidenceItemsByFinding() error = %v", err)
+	}
+	curatedItems := 0
+	verifierItems := 0
+	localItems := 0
+	for _, item := range items {
+		if strings.Contains(item.MetadataJson, `"producer":"orchestrator_curator"`) {
+			curatedItems++
+		}
+		if strings.Contains(item.MetadataJson, `"producer":"verifier_agent"`) {
+			verifierItems++
+		}
+		if strings.Contains(item.MetadataJson, `"producer":"local_verifier"`) {
+			localItems++
+		}
+	}
+	if curatedItems != 1 || verifierItems != 1 || localItems == 0 {
+		t.Fatalf("evidence producer counts curated=%d verifier=%d local=%d items=%+v", curatedItems, verifierItems, localItems, items)
+	}
+}
+
+func TestVerifierCounterEvidenceKindRequiresDirectContradiction(t *testing.T) {
+	t.Parallel()
+
+	weak := verifierAgentEvidence{
+		Kind:    "counter",
+		Title:   "Nearby guard-like call",
+		Summary: "RequireAdmin appears in the scoped context, but this needs comparison and does not refute the claim.",
+		Path:    "src/auth.go",
+	}
+	if got := normalizeVerifierEvidenceKind(weak); got != evidence.KindSearch {
+		t.Fatalf("weak counter kind = %s, want %s", got, evidence.KindSearch)
+	}
+
+	testLead := verifierAgentEvidence{
+		Kind:    "counter",
+		Title:   "Related test mentions admin",
+		Summary: "The test mentions admin but does not refute the changed route claim.",
+		Path:    "test/server.test.js",
+	}
+	if got := normalizeVerifierEvidenceKind(testLead); got != evidence.KindTest {
+		t.Fatalf("test lead kind = %s, want %s", got, evidence.KindTest)
+	}
+
+	strong := verifierAgentEvidence{
+		Kind:    "counter",
+		Title:   "Admin guard already enforced before handler",
+		Summary: "The router denies members before this handler, so this directly refutes the claim.",
+		Path:    "src/router.go",
+	}
+	if got := normalizeVerifierEvidenceKind(strong); got != evidence.KindCounter {
+		t.Fatalf("strong counter kind = %s, want %s", got, evidence.KindCounter)
+	}
 }
 
 func TestVerifyFindingsKeepsLocalEvidenceWhenVerifierCLIFails(t *testing.T) {
@@ -1175,6 +1645,64 @@ func createWorkflowFinding(t *testing.T, env workflowEnv, sessionID string, id s
 	return finding
 }
 
+func createWorkflowCandidate(t *testing.T, env workflowEnv, sessionID string, id string, claim string, category string, severity string, confidence float64, path string, startLine int64, endLine int64, fingerprint string) dbgen.FindingCandidate {
+	t.Helper()
+
+	locations, err := json.Marshal([]map[string]any{{
+		"path":       path,
+		"start_line": startLine,
+		"end_line":   endLine,
+		"side":       "RIGHT",
+	}})
+	if err != nil {
+		t.Fatalf("marshal locations: %v", err)
+	}
+	evidenceJSON, err := json.Marshal([]map[string]any{{
+		"title":      "Agent evidence",
+		"summary":    claim,
+		"kind":       "supporting",
+		"path":       path,
+		"start_line": startLine,
+		"end_line":   endLine,
+	}})
+	if err != nil {
+		t.Fatalf("marshal evidence: %v", err)
+	}
+	runID := "agent_run_" + id
+	if _, err := env.Queries.CreateAgentRun(context.Background(), dbgen.CreateAgentRunParams{
+		ID:              runID,
+		ReviewSessionID: sessionID,
+		AgentConfigID:   "agent_config_1",
+		Status:          agentrun.RunStatusSucceeded,
+		Role:            "primary_reviewer",
+		StartedAt:       nullableTestString("2026-05-03T00:08:00Z"),
+		CompletedAt:     nullableTestString("2026-05-03T00:08:30Z"),
+		MetadataJson:    "{}",
+	}); err != nil {
+		t.Fatalf("CreateAgentRun(%s) error = %v", runID, err)
+	}
+	candidate, err := env.Queries.CreateFindingCandidate(context.Background(), dbgen.CreateFindingCandidateParams{
+		ID:               id,
+		ReviewSessionID:  sessionID,
+		AgentRunID:       runID,
+		Category:         category,
+		Severity:         severity,
+		Confidence:       confidence,
+		Claim:            claim,
+		PrimaryPath:      nullableTestString(path),
+		PrimaryStartLine: sql.NullInt64{Int64: startLine, Valid: true},
+		PrimaryEndLine:   sql.NullInt64{Int64: endLine, Valid: true},
+		LocationsJson:    string(locations),
+		EvidenceJson:     string(evidenceJSON),
+		Fingerprint:      nullableTestString(fingerprint),
+		CreatedAt:        "2026-05-03T00:09:00Z",
+	})
+	if err != nil {
+		t.Fatalf("CreateFindingCandidate(%s) error = %v", id, err)
+	}
+	return candidate
+}
+
 func createVerifierCLIConfig(t *testing.T, env workflowEnv, id string) {
 	t.Helper()
 
@@ -1196,6 +1724,39 @@ func createVerifierCLIConfig(t *testing.T, env workflowEnv, id string) {
 	}); err != nil {
 		t.Fatalf("CreateAgentConfig(verifier) error = %v", err)
 	}
+}
+
+func createOrchestratorCLIConfig(t *testing.T, env workflowEnv, id string) {
+	t.Helper()
+
+	if _, err := env.Queries.CreateAgentConfig(context.Background(), dbgen.CreateAgentConfigParams{
+		ID:               id,
+		Name:             "Fake Orchestrator",
+		Role:             "orchestrator",
+		AdapterKind:      string(agents.AdapterCLINonInteractive),
+		Command:          nullableTestString("fake-orchestrator"),
+		ArgsJson:         "[]",
+		CwdMode:          "repo_root",
+		EnvAllowlistJson: "[]",
+		OutputMode:       string(agents.OutputJSON),
+		CapabilitiesJson: `{"supports_json":true,"can_read":true,"output_modes":["json"]}`,
+		SettingsJson:     `{"prompt_delivery":"stdin","timeout_seconds":30}`,
+		Enabled:          1,
+		CreatedAt:        "2026-05-03T00:04:30Z",
+		UpdatedAt:        "2026-05-03T00:04:30Z",
+	}); err != nil {
+		t.Fatalf("CreateAgentConfig(orchestrator) error = %v", err)
+	}
+}
+
+func countWorkflowEvidenceKind(items []dbgen.EvidenceItem, kind string) int {
+	count := 0
+	for _, item := range items {
+		if item.Kind == kind {
+			count++
+		}
+	}
+	return count
 }
 
 func assertEventTypes(t *testing.T, events []dbgen.Event, want []string) {
@@ -1352,4 +1913,11 @@ func (d *workflowDriver) stdoutText() string {
 
 func nullableTestString(value string) sql.NullString {
 	return sql.NullString{String: value, Valid: true}
+}
+
+func nullableTestValue(value sql.NullString) string {
+	if !value.Valid {
+		return ""
+	}
+	return value.String
 }

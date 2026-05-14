@@ -30,6 +30,7 @@ cat <<'JSON'
         {
           "title": "Mutation route reaches updateSettings after member authentication only",
           "summary": "The route updates repository settings without requiring workspace admin privileges.",
+          "kind": "changed_code",
           "path": "apps/api/src/routes/repositories.ts",
           "start_line": 87,
           "end_line": 112
@@ -42,4 +43,3 @@ cat <<'JSON'
   ]
 }
 JSON
-

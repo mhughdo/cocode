@@ -151,6 +151,13 @@ func (s *Service) verifyFinding(ctx context.Context, repoRoot string, index chan
 	result.counter += counter.counter
 	result.counterEvidenceSummary = counter.counterEvidenceSummary
 	result.status = assignVerificationStatus(finding, result.supporting, result.counter, result.missing)
+	hasCuratedEvidence, err := s.hasOrchestratorCuratedEvidence(ctx, finding.ID)
+	if err != nil {
+		return findingEvidenceResult{}, err
+	}
+	result.status = mergeCuratedVerificationStatus(finding.VerificationStatus, result.status, result.counter, hasCuratedEvidence)
+	result.evidenceSummary = mergeCuratedVerificationSummary(nullableStringValue(finding.EvidenceSummary), result.evidenceSummary, hasCuratedEvidence)
+	result.counterEvidenceSummary = mergeCuratedCounterEvidenceSummary(nullableStringValue(finding.CounterEvidenceSummary), result.counterEvidenceSummary, result.counter, hasCuratedEvidence)
 
 	now := s.now().Format(time.RFC3339Nano)
 	if _, err := s.Queries.UpdateFindingVerificationEvidence(ctx, dbgen.UpdateFindingVerificationEvidenceParams{
@@ -282,9 +289,9 @@ func (s *Service) attachCounterEvidence(ctx context.Context, repoRoot string, fi
 	profile := classifyRuleProfile(finding)
 	terms := counterEvidenceTerms(finding, profile)
 	seen := map[string]struct{}{}
-	result := findingEvidenceResult{counterEvidenceSummary: "No counter-evidence found by local search."}
+	result := findingEvidenceResult{counterEvidenceSummary: "No verified contradiction found by local search. Related tests and context are tracked separately and do not weaken the finding by themselves."}
 	for _, term := range terms {
-		if result.counter >= defaultCounterEvidenceLimit {
+		if result.created >= defaultCounterEvidenceLimit {
 			break
 		}
 		matches, err := searcher.Search(ctx, SearchOptions{
@@ -295,13 +302,13 @@ func (s *Service) attachCounterEvidence(ctx context.Context, repoRoot string, fi
 			OutputLimit: defaultSearchOutputLimit,
 		})
 		if err != nil {
-			return findingEvidenceResult{}, fmt.Errorf("search counter-evidence for finding %s: %w", finding.ID, err)
+			return findingEvidenceResult{}, fmt.Errorf("search verification leads for finding %s: %w", finding.ID, err)
 		}
 		for _, match := range matches {
-			if result.counter >= defaultCounterEvidenceLimit {
+			if result.created >= defaultCounterEvidenceLimit {
 				break
 			}
-			if !looksLikeCounterEvidence(match) {
+			if !looksLikeRelatedEvidenceLead(match, finding, profile) {
 				continue
 			}
 			key := match.Path + ":" + fmt.Sprint(match.Line)
@@ -309,12 +316,9 @@ func (s *Service) attachCounterEvidence(ctx context.Context, repoRoot string, fi
 				continue
 			}
 			seen[key] = struct{}{}
-			kind := KindCounter
-			if isLikelyTestPath(match.Path) {
-				kind = KindTest
-			}
-			title := counterEvidenceTitle(kind, match)
-			summary := counterEvidenceSummary(kind, profile, term, match)
+			kind := relatedEvidenceKind(match)
+			title := relatedEvidenceTitle(kind, match)
+			summary := relatedEvidenceSummary(kind, profile, term, match)
 			codeSnippet := fmt.Sprintf("%d: %s", match.Line, strings.TrimSpace(match.Text))
 			lineWindow := map[string]any{
 				"start_line": match.Line,
@@ -339,7 +343,7 @@ func (s *Service) attachCounterEvidence(ctx context.Context, repoRoot string, fi
 				Confidence: 0.6,
 				Metadata: mustMetadata(map[string]any{
 					"producer":     "local_verifier",
-					"source":       "counter_evidence_search",
+					"source":       "related_evidence_search",
 					"rule":         profile.ID,
 					"search_term":  term,
 					"line_window":  lineWindow,
@@ -350,11 +354,13 @@ func (s *Service) attachCounterEvidence(ctx context.Context, repoRoot string, fi
 				return findingEvidenceResult{}, err
 			}
 			result.created++
-			result.counter++
+			if kind == KindCounter {
+				result.counter++
+			}
 		}
 	}
 	if result.counter > 0 {
-		result.counterEvidenceSummary = fmt.Sprintf("%d possible guard, config, or test signal(s) need comparison against the changed path before the finding is accepted or dismissed.", result.counter)
+		result.counterEvidenceSummary = fmt.Sprintf("%d verified contradiction item(s) challenge this finding and need comparison against the changed path.", result.counter)
 	}
 	return result, nil
 }
@@ -403,11 +409,24 @@ func firstSnippetLineInRange(snippet string, startLine int64, endLine int64) str
 		if fallback == "" && candidate != "" {
 			fallback = candidate
 		}
-		if lineNumber >= startLine && lineNumber <= endLine && candidate != "" {
+		if lineNumber >= startLine && lineNumber <= endLine && informativeSnippetLine(candidate) {
 			return sentenceTrim(candidate)
 		}
 	}
 	return sentenceTrim(fallback)
+}
+
+func informativeSnippetLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false
+	}
+	switch line {
+	case "{", "}", "},", "};", ")", "),", "];":
+		return false
+	default:
+		return true
+	}
 }
 
 func parseNumberedSnippetLine(line string) (int64, string, bool) {
@@ -434,14 +453,21 @@ func sentenceTrim(value string) string {
 	return value
 }
 
-func counterEvidenceTitle(kind string, match SearchMatch) string {
+func relatedEvidenceKind(match SearchMatch) string {
+	if isLikelyTestPath(match.Path) {
+		return KindTest
+	}
+	return KindSearch
+}
+
+func relatedEvidenceTitle(kind string, match SearchMatch) string {
 	if kind == KindTest {
 		return fmt.Sprintf("Related test signal at %s:%d", match.Path, match.Line)
 	}
-	return fmt.Sprintf("Possible guard or config signal at %s:%d", match.Path, match.Line)
+	return fmt.Sprintf("Verification lead at %s:%d", match.Path, match.Line)
 }
 
-func counterEvidenceSummary(kind string, profile ruleProfile, term string, match SearchMatch) string {
+func relatedEvidenceSummary(kind string, profile ruleProfile, term string, match SearchMatch) string {
 	location := fmt.Sprintf("%s:%d", match.Path, match.Line)
 	trimmed := strings.TrimSpace(match.Text)
 	if len(trimmed) > 180 {
@@ -450,7 +476,7 @@ func counterEvidenceSummary(kind string, profile ruleProfile, term string, match
 	if kind == KindTest {
 		return fmt.Sprintf("Related test search found %q at %s. Use this to check whether tests cover the claim or encode the same behavior. Matched line: `%s`.", term, location, trimmed)
 	}
-	return fmt.Sprintf("Possible %s counter-signal found %q at %s. Treat this as a lead for an existing guard/config path and compare it with the changed code before dismissing the finding. Matched line: `%s`.", profile.DisplayName, term, location, trimmed)
+	return fmt.Sprintf("Related %s context matched %q at %s. This is a verification lead, not verified counter-evidence; compare it with the changed code before using it to dismiss the finding. Matched line: `%s`.", profile.DisplayName, term, location, trimmed)
 }
 
 func (s *Service) createEvidenceItem(ctx context.Context, findingID string, item Item) (dbgen.EvidenceItem, error) {
@@ -495,6 +521,51 @@ func isLocalVerifierEvidence(raw string) bool {
 		return false
 	}
 	return metadata["producer"] == "local_verifier"
+}
+
+func (s *Service) hasOrchestratorCuratedEvidence(ctx context.Context, findingID string) (bool, error) {
+	items, err := s.Queries.ListEvidenceItemsByFinding(ctx, findingID)
+	if err != nil {
+		return false, fmt.Errorf("list evidence items for curated narrative check: %w", err)
+	}
+	for _, item := range items {
+		if isOrchestratorCuratorEvidence(item.MetadataJson) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func isOrchestratorCuratorEvidence(raw string) bool {
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(raw), &metadata); err != nil {
+		return false
+	}
+	return metadata["producer"] == "orchestrator_curator"
+}
+
+func mergeCuratedVerificationStatus(existing string, next string, directCounterEvidence int, hasCuratedEvidence bool) string {
+	if !hasCuratedEvidence || strings.TrimSpace(existing) == "" || existing == StatusUnverified {
+		return next
+	}
+	if directCounterEvidence > 0 && next == StatusLikelyFalsePositive {
+		return next
+	}
+	return existing
+}
+
+func mergeCuratedVerificationSummary(existing string, next string, hasCuratedEvidence bool) string {
+	if hasCuratedEvidence && strings.TrimSpace(existing) != "" {
+		return existing
+	}
+	return next
+}
+
+func mergeCuratedCounterEvidenceSummary(existing string, next string, directCounterEvidence int, hasCuratedEvidence bool) string {
+	if hasCuratedEvidence && directCounterEvidence == 0 && strings.TrimSpace(existing) != "" {
+		return existing
+	}
+	return next
 }
 
 func assignVerificationStatus(finding dbgen.Finding, supporting int, counter int, missing int) string {
@@ -570,12 +641,71 @@ func readSnippet(repoRoot string, relativePath string, startLine int64, endLine 
 	if err := scanner.Err(); err != nil {
 		return "", 0, 0, false, fmt.Errorf("read %s: %w", cleanPath, err)
 	}
+	if builder.Len() == 0 && line > 0 && windowStart > line {
+		clampedStart := line
+		clampedEnd := line
+		if endLine > startLine {
+			width := endLine - startLine
+			clampedStart = maxInt64(1, line-width)
+		}
+		return readSnippet(repoRoot, relativePath, clampedStart, clampedEnd, contextLines, maxBytes)
+	}
 	return strings.TrimRight(builder.String(), "\n"), windowStart, minInt64(windowEnd, line), truncated, nil
 }
 
 // ReadSnippet returns a bounded, line-numbered source window from a repository file.
 func ReadSnippet(repoRoot string, relativePath string, startLine int64, endLine int64, contextLines int, maxBytes int64) (string, int64, int64, bool, error) {
 	return readSnippet(repoRoot, relativePath, startLine, endLine, contextLines, maxBytes)
+}
+
+// ReadSourceFile returns a bounded full-file source view from a repository file.
+func ReadSourceFile(repoRoot string, relativePath string, maxBytes int64) (string, int64, bool, error) {
+	path, cleanPath, err := safeRepoFilePath(repoRoot, relativePath)
+	if err != nil {
+		return "", 0, false, err
+	}
+	stat, err := os.Stat(path)
+	if err != nil {
+		return "", 0, false, fmt.Errorf("inspect %s: %w", cleanPath, err)
+	}
+	if stat.IsDir() {
+		return "", 0, false, fmt.Errorf("%s is a directory", cleanPath)
+	}
+	if maxBytes <= 0 {
+		maxBytes = defaultSnippetBytes
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", 0, false, fmt.Errorf("open %s: %w", cleanPath, err)
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	var builder strings.Builder
+	var line int64
+	truncated := false
+	for scanner.Scan() {
+		line++
+		text := scanner.Text()
+		if !truncated {
+			nextLen := builder.Len() + len(text)
+			if builder.Len() > 0 {
+				nextLen++
+			}
+			if int64(nextLen) > maxBytes {
+				truncated = true
+			} else {
+				if builder.Len() > 0 {
+					builder.WriteByte('\n')
+				}
+				builder.WriteString(text)
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", 0, false, fmt.Errorf("read %s: %w", cleanPath, err)
+	}
+	return builder.String(), line, truncated, nil
 }
 
 func newChangedFileIndex(files []dbgen.ChangedFile) changedFileIndex {
@@ -600,6 +730,12 @@ func classifyRuleProfile(finding dbgen.Finding) ruleProfile {
 			DisplayName: "webhook validation",
 			Terms:       []string{"signature", "hmac", "verify", "validate", "secret", "webhook", "event type"},
 		}
+	case containsAny(text, "nil", "panic", "pointer", "dereference", "bounds", "index", "out of range"):
+		return ruleProfile{
+			ID:          "nil_safety",
+			DisplayName: "nil-safety",
+			Terms:       []string{"nil", "panic", "recover", "dereference", "out of range", "bounds"},
+		}
 	case containsAny(text, "test", "coverage", "assert", "regression"):
 		return ruleProfile{
 			ID:          "test_coverage",
@@ -612,7 +748,7 @@ func classifyRuleProfile(finding dbgen.Finding) ruleProfile {
 			DisplayName: "idempotency",
 			Terms:       []string{"idempotency", "unique", "retry", "idempotent", "constraint", "dedupe", "nonce"},
 		}
-	case containsAny(text, "auth", "admin", "permission", "authorize", "guard", "middleware", "role"):
+	case containsAny(text, "auth", "admin", "permission", "authorize", "middleware", "role"):
 		return ruleProfile{
 			ID:          "auth_guard",
 			DisplayName: "auth guard",
@@ -622,30 +758,31 @@ func classifyRuleProfile(finding dbgen.Finding) ruleProfile {
 		return ruleProfile{
 			ID:          "generic",
 			DisplayName: "evidence",
-			Terms:       []string{"validate", "guard", "test"},
+			Terms:       []string{"test"},
 		}
 	}
 }
 
 func counterEvidenceTerms(finding dbgen.Finding, profile ruleProfile) []string {
-	terms := make([]string, 0, 6)
-	for _, term := range profile.Terms {
-		addTerm(&terms, term)
-	}
+	const maxTerms = 10
+	terms := make([]string, 0, maxTerms)
 	if profile.ID != "generic" {
 		for _, token := range claimTokens(finding.CanonicalClaim) {
 			addTerm(&terms, token)
-			if len(terms) >= 6 {
-				break
+			if len(terms) >= maxTerms {
+				return terms
 			}
 		}
 	}
-	if finding.PrimaryPath.Valid {
+	if profile.ID != "generic" && finding.PrimaryPath.Valid {
 		base := strings.TrimSuffix(filepath.Base(filepath.ToSlash(finding.PrimaryPath.String)), filepath.Ext(finding.PrimaryPath.String))
 		addTerm(&terms, base)
 	}
-	if len(terms) > 6 {
-		terms = terms[:6]
+	for _, term := range profile.Terms {
+		addTerm(&terms, term)
+		if len(terms) >= maxTerms {
+			return terms
+		}
 	}
 	return terms
 }
@@ -686,7 +823,7 @@ func claimTokens(claim string) []string {
 	return tokens
 }
 
-func looksLikeCounterEvidence(match SearchMatch) bool {
+func looksLikeRelatedEvidenceLead(match SearchMatch, finding dbgen.Finding, profile ruleProfile) bool {
 	path := strings.ToLower(filepath.ToSlash(match.Path))
 	text := strings.ToLower(match.Text)
 	if isProjectMetadataPath(path) {
@@ -695,12 +832,64 @@ func looksLikeCounterEvidence(match SearchMatch) bool {
 	if isDocumentationPath(path) {
 		return false
 	}
+	related := matchRelatesToFinding(match, finding)
+	if profile.ID == "nil_safety" {
+		if !related {
+			return false
+		}
+		if isLikelyTestPath(path) {
+			return true
+		}
+		return containsAny(text, "nil", "panic", "recover", "dereference", "out of range", "bounds", "index")
+	}
+	if profile.ID == "generic" {
+		return related && isLikelyTestPath(path)
+	}
+	if !related && !matchesRuleProfile(text, path, profile) {
+		return false
+	}
 	if isLikelyTestPath(path) || strings.Contains(path, "auth") || strings.Contains(path, "guard") ||
 		strings.Contains(path, "middleware") || strings.Contains(path, "permission") || strings.Contains(path, "config") {
 		return true
 	}
 	for _, token := range []string{"require", "authorize", "permission", "auth", "guard", "verify", "signature", "validate", "test", "expect"} {
 		if strings.Contains(text, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchRelatesToFinding(match SearchMatch, finding dbgen.Finding) bool {
+	path := strings.ToLower(filepath.ToSlash(match.Path))
+	text := strings.ToLower(match.Text)
+	joined := path + " " + text
+	if finding.PrimaryPath.Valid {
+		primaryPath := strings.ToLower(cleanPathKey(finding.PrimaryPath.String))
+		if primaryPath != "" {
+			primaryDir := strings.TrimSuffix(filepath.ToSlash(filepath.Dir(primaryPath)), ".")
+			if path == primaryPath || (primaryDir != "" && primaryDir != "." && strings.HasPrefix(path, primaryDir+"/")) {
+				return true
+			}
+			base := strings.TrimSuffix(filepath.Base(primaryPath), filepath.Ext(primaryPath))
+			if len(base) >= 4 && strings.Contains(joined, strings.ToLower(base)) {
+				return true
+			}
+		}
+	}
+	for _, token := range claimTokens(finding.CanonicalClaim) {
+		if len(token) >= 4 && strings.Contains(joined, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesRuleProfile(text string, path string, profile ruleProfile) bool {
+	joined := strings.ToLower(path + " " + text)
+	for _, term := range profile.Terms {
+		term = strings.ToLower(strings.TrimSpace(term))
+		if len(term) >= 4 && strings.Contains(joined, term) {
 			return true
 		}
 	}

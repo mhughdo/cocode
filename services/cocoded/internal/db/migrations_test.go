@@ -139,6 +139,119 @@ CREATE TABLE review_session_agents (
 	}
 }
 
+func TestApplyAllowsEvidenceMapRouteNodeKinds(t *testing.T) {
+	t.Parallel()
+
+	database, err := Open(context.Background(), MemoryDatabase)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer database.Close()
+
+	const oldEvidenceMapSQL = `
+CREATE TABLE evidence_graphs (
+  id TEXT PRIMARY KEY
+);
+
+CREATE TABLE evidence_items (
+  id TEXT PRIMARY KEY
+);
+
+CREATE TABLE call_paths (
+  id TEXT PRIMARY KEY
+);
+
+CREATE TABLE evidence_nodes (
+  id TEXT PRIMARY KEY,
+  evidence_graph_id TEXT NOT NULL REFERENCES evidence_graphs(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK(kind IN ('changed_code','related_code','middleware','guard','handler','test','config','counter_evidence','missing_guard','unknown')),
+  label TEXT NOT NULL,
+  path TEXT,
+  symbol TEXT,
+  start_line INTEGER,
+  end_line INTEGER,
+  evidence_item_id TEXT REFERENCES evidence_items(id) ON DELETE SET NULL,
+  confidence REAL NOT NULL DEFAULT 0.5,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE evidence_edges (
+  id TEXT PRIMARY KEY,
+  evidence_graph_id TEXT NOT NULL REFERENCES evidence_graphs(id) ON DELETE CASCADE,
+  source_node_id TEXT NOT NULL REFERENCES evidence_nodes(id) ON DELETE CASCADE,
+  target_node_id TEXT NOT NULL REFERENCES evidence_nodes(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK(kind IN ('calls','mounts','protects','tests','supports','contradicts','missing_guard','imports','reads','writes','unknown')),
+  status TEXT NOT NULL DEFAULT 'observed',
+  label TEXT,
+  confidence REAL NOT NULL DEFAULT 0.5,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE call_path_steps (
+  id TEXT PRIMARY KEY,
+  call_path_id TEXT NOT NULL REFERENCES call_paths(id) ON DELETE CASCADE,
+  step_index INTEGER NOT NULL,
+  node_id TEXT REFERENCES evidence_nodes(id) ON DELETE SET NULL,
+  path TEXT,
+  start_line INTEGER,
+  end_line INTEGER,
+  label TEXT NOT NULL,
+  UNIQUE(call_path_id, step_index)
+);
+
+INSERT INTO evidence_graphs(id) VALUES ('graph_1');
+INSERT INTO call_paths(id) VALUES ('call_path_1');
+INSERT INTO evidence_nodes(id, evidence_graph_id, kind, label, metadata_json)
+VALUES
+  ('node_changed', 'graph_1', 'changed_code', 'Changed code', '{}'),
+  ('node_related', 'graph_1', 'related_code', 'Related code', '{}');
+INSERT INTO evidence_edges(id, evidence_graph_id, source_node_id, target_node_id, kind, metadata_json)
+VALUES ('edge_1', 'graph_1', 'node_changed', 'node_related', 'calls', '{}');
+INSERT INTO call_path_steps(id, call_path_id, step_index, node_id, label)
+VALUES ('step_1', 'call_path_1', 0, 'node_changed', 'Changed code');
+`
+	legacyMigrations := []Migration{
+		{Version: 1, Name: "schema_v1", SQL: oldEvidenceMapSQL},
+		{Version: 2, Name: "noop_2", SQL: "SELECT 1;"},
+		{Version: 3, Name: "noop_3", SQL: "SELECT 1;"},
+		{Version: 4, Name: "noop_4", SQL: "SELECT 1;"},
+		{Version: 5, Name: "noop_5", SQL: "SELECT 1;"},
+		{Version: 6, Name: "noop_6", SQL: "SELECT 1;"},
+	}
+	if err := Apply(context.Background(), database, legacyMigrations); err != nil {
+		t.Fatalf("Apply(legacy schema) error = %v", err)
+	}
+	if err := Apply(context.Background(), database, Migrations); err != nil {
+		t.Fatalf("Apply(current migrations) error = %v", err)
+	}
+
+	if _, err := database.ExecContext(
+		context.Background(),
+		"INSERT INTO evidence_nodes(id, evidence_graph_id, kind, label, metadata_json) VALUES (?, ?, ?, ?, '{}'), (?, ?, ?, ?, '{}')",
+		"node_route",
+		"graph_1",
+		"route",
+		"Route",
+		"node_entrypoint",
+		"graph_1",
+		"entrypoint",
+		"Entrypoint",
+	); err != nil {
+		t.Fatalf("insert route node kinds: %v", err)
+	}
+
+	var edgeCount int
+	if err := database.QueryRowContext(
+		context.Background(),
+		"SELECT COUNT(*) FROM evidence_edges WHERE id = 'edge_1'",
+	).Scan(&edgeCount); err != nil {
+		t.Fatalf("count migrated edges: %v", err)
+	}
+	if edgeCount != 1 {
+		t.Fatalf("migrated edge count = %d, want 1", edgeCount)
+	}
+}
+
 func TestApplyRepairsStaleClaudeToolsArgs(t *testing.T) {
 	t.Parallel()
 

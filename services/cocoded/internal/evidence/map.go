@@ -8,6 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,7 +29,15 @@ const (
 )
 
 const (
+	mapSourceContextLines    = 3
+	mapSourceMaxSnippetBytes = 8 * 1024
+	mapSourceMaxFileBytes    = 256 * 1024
+)
+
+const (
 	NodeChangedCode     = "changed_code"
+	NodeEntrypoint      = "entrypoint"
+	NodeRoute           = "route"
 	NodeRelatedCode     = "related_code"
 	NodeMiddleware      = "middleware"
 	NodeGuard           = "guard"
@@ -58,7 +69,7 @@ const (
 	defaultEvidenceMapItemLimit = 80
 	defaultCallPathStepLimit    = 8
 	goplsCallHierarchyLimit     = 4
-	goplsCallHierarchyTimeout   = 2 * time.Second
+	goplsCallHierarchyTimeout   = 8 * time.Second
 )
 
 type MapSummary struct {
@@ -129,6 +140,7 @@ type NodeView struct {
 	ID             string          `json:"id"`
 	Kind           string          `json:"kind"`
 	Label          string          `json:"label"`
+	Explanation    string          `json:"explanation,omitempty"`
 	Path           string          `json:"path,omitempty"`
 	Symbol         string          `json:"symbol,omitempty"`
 	StartLine      int64           `json:"start_line,omitempty"`
@@ -136,6 +148,11 @@ type NodeView struct {
 	EvidenceItemID string          `json:"evidence_item_id,omitempty"`
 	Confidence     float64         `json:"confidence"`
 	DeepLink       *NodeDeepLink   `json:"deep_link,omitempty"`
+	CodeSnippet    string          `json:"code_snippet,omitempty"`
+	LineWindow     *SourceWindow   `json:"line_window,omitempty"`
+	FileContent    string          `json:"file_content,omitempty"`
+	FileLineCount  int64           `json:"file_line_count,omitempty"`
+	FileTruncated  bool            `json:"file_truncated,omitempty"`
 	Metadata       json.RawMessage `json:"metadata"`
 }
 
@@ -146,32 +163,40 @@ type NodeDeepLink struct {
 	EndLine   int64  `json:"end_line,omitempty"`
 }
 
+type SourceWindow struct {
+	StartLine int64 `json:"start_line"`
+	EndLine   int64 `json:"end_line"`
+}
+
 type EdgeView struct {
-	ID         string          `json:"id"`
-	Source     string          `json:"source"`
-	Target     string          `json:"target"`
-	Kind       string          `json:"kind"`
-	Status     string          `json:"status"`
-	Label      string          `json:"label,omitempty"`
-	Confidence float64         `json:"confidence"`
-	Metadata   json.RawMessage `json:"metadata"`
+	ID          string          `json:"id"`
+	Source      string          `json:"source"`
+	Target      string          `json:"target"`
+	Kind        string          `json:"kind"`
+	Status      string          `json:"status"`
+	Label       string          `json:"label,omitempty"`
+	Explanation string          `json:"explanation,omitempty"`
+	Confidence  float64         `json:"confidence"`
+	Metadata    json.RawMessage `json:"metadata"`
 }
 
 type CallPathView struct {
 	ID         string             `json:"id"`
 	Label      string             `json:"label,omitempty"`
+	Summary    string             `json:"summary,omitempty"`
 	Confidence float64            `json:"confidence"`
 	Steps      []CallPathStepView `json:"steps"`
 }
 
 type CallPathStepView struct {
-	ID        string `json:"id,omitempty"`
-	NodeID    string `json:"node_id,omitempty"`
-	StepIndex int64  `json:"step_index"`
-	Path      string `json:"path,omitempty"`
-	StartLine int64  `json:"start_line,omitempty"`
-	EndLine   int64  `json:"end_line,omitempty"`
-	Label     string `json:"label"`
+	ID          string `json:"id,omitempty"`
+	NodeID      string `json:"node_id,omitempty"`
+	StepIndex   int64  `json:"step_index"`
+	Path        string `json:"path,omitempty"`
+	StartLine   int64  `json:"start_line,omitempty"`
+	EndLine     int64  `json:"end_line,omitempty"`
+	Label       string `json:"label"`
+	Explanation string `json:"explanation,omitempty"`
 }
 
 type LegendItem struct {
@@ -185,6 +210,7 @@ type MapPanel struct {
 	Severity               string                `json:"severity"`
 	VerificationStatus     string                `json:"verification_status"`
 	DecisionStatus         string                `json:"decision_status"`
+	ConnectionSummary      string                `json:"connection_summary,omitempty"`
 	EvidenceSummary        string                `json:"evidence_summary,omitempty"`
 	CounterEvidenceSummary string                `json:"counter_evidence_summary,omitempty"`
 	SuggestedFix           string                `json:"suggested_fix,omitempty"`
@@ -193,14 +219,19 @@ type MapPanel struct {
 }
 
 type MapPanelEvidenceRef struct {
-	ID         string  `json:"id"`
-	Kind       string  `json:"kind"`
-	Title      string  `json:"title"`
-	Summary    string  `json:"summary"`
-	Path       string  `json:"path,omitempty"`
-	StartLine  int64   `json:"start_line,omitempty"`
-	EndLine    int64   `json:"end_line,omitempty"`
-	Confidence float64 `json:"confidence"`
+	ID            string        `json:"id"`
+	Kind          string        `json:"kind"`
+	Title         string        `json:"title"`
+	Summary       string        `json:"summary"`
+	Path          string        `json:"path,omitempty"`
+	StartLine     int64         `json:"start_line,omitempty"`
+	EndLine       int64         `json:"end_line,omitempty"`
+	Confidence    float64       `json:"confidence"`
+	CodeSnippet   string        `json:"code_snippet,omitempty"`
+	LineWindow    *SourceWindow `json:"line_window,omitempty"`
+	FileContent   string        `json:"file_content,omitempty"`
+	FileLineCount int64         `json:"file_line_count,omitempty"`
+	FileTruncated bool          `json:"file_truncated,omitempty"`
 }
 
 type mapBuildPlan struct {
@@ -209,6 +240,11 @@ type mapBuildPlan struct {
 	layout                    map[string]any
 	missingReasons            []string
 	callPathUnavailableReason string
+	callHierarchyAttempted    bool
+	callHierarchyAvailable    bool
+	callHierarchyTarget       string
+	callHierarchyReason       string
+	connectionSummary         string
 	nodes                     []nodeSpec
 	edges                     []edgeSpec
 	callSteps                 []callStepSpec
@@ -282,18 +318,34 @@ func (s *Service) BuildSessionEvidenceMaps(ctx context.Context, session dbgen.Re
 }
 
 func (s *Service) LoadOrRebuildEvidenceMap(ctx context.Context, finding dbgen.Finding) (MapView, bool, error) {
-	view, err := s.LoadEvidenceMap(ctx, finding)
-	if err == nil {
+	if s == nil || s.Queries == nil {
+		return MapView{}, false, errors.New("evidence map queries are required")
+	}
+	graph, err := s.Queries.GetEvidenceGraphByFinding(ctx, finding.ID)
+	if err == nil && !evidenceGraphStaleForFinding(graph, finding) {
+		view, err := s.mapView(ctx, finding, graph)
+		if err != nil {
+			return MapView{}, false, err
+		}
 		return view, false, nil
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return MapView{}, false, err
 	}
-	view, err = s.RebuildEvidenceMap(ctx, finding)
+	view, err := s.RebuildEvidenceMap(ctx, finding)
 	if err != nil {
 		return MapView{}, false, err
 	}
 	return view, true, nil
+}
+
+func evidenceGraphStaleForFinding(graph dbgen.EvidenceGraph, finding dbgen.Finding) bool {
+	graphUpdated, graphErr := time.Parse(time.RFC3339Nano, graph.UpdatedAt)
+	findingUpdated, findingErr := time.Parse(time.RFC3339Nano, finding.UpdatedAt)
+	if graphErr != nil || findingErr != nil {
+		return false
+	}
+	return graphUpdated.Before(findingUpdated)
 }
 
 func (s *Service) LoadEvidenceMap(ctx context.Context, finding dbgen.Finding) (MapView, error) {
@@ -466,7 +518,11 @@ func buildBaseMapPlan(finding dbgen.Finding, items []dbgen.EvidenceItem) mapBuil
 			status:     EdgeStatusMissing,
 			label:      "Expected protection is missing",
 			confidence: clampConfidence(finding.Confidence),
-			metadata:   map[string]any{"source": "local_rule", "rule": missing.metadata["rule"]},
+			metadata: map[string]any{
+				"source":      "local_rule",
+				"rule":        missing.metadata["rule"],
+				"explanation": "The map could not verify the expected protection edge from the issue line to a guard.",
+			},
 		})
 	}
 	return plan
@@ -487,13 +543,22 @@ func finalizeMapPlan(finding dbgen.Finding, plan *mapBuildPlan) {
 	if len(plan.missingReasons) > 0 {
 		plan.status = GraphStatusPartial
 	}
+	plan.connectionSummary = evidenceMapConnectionSummary(finding, *plan)
 	plan.summary = mapSummaryText(finding, *plan)
 	plan.layout = map[string]any{
 		"direction":                    "LR",
 		"generated_by":                 "local_evidence_map_builder",
 		"missing_reasons":              plan.missingReasons,
 		"call_path_unavailable_reason": plan.callPathUnavailableReason,
-		"omitted_evidence_items":       plan.omittedEvidenceItems,
+		"connection_summary":           plan.connectionSummary,
+		"call_hierarchy": map[string]any{
+			"source":    "gopls",
+			"attempted": plan.callHierarchyAttempted,
+			"available": plan.callHierarchyAvailable,
+			"target":    plan.callHierarchyTarget,
+			"reason":    plan.callHierarchyReason,
+		},
+		"omitted_evidence_items": plan.omittedEvidenceItems,
 		"limits": map[string]any{
 			"evidence_items":  defaultEvidenceMapItemLimit,
 			"call_path_steps": defaultCallPathStepLimit,
@@ -504,6 +569,12 @@ func finalizeMapPlan(finding dbgen.Finding, plan *mapBuildPlan) {
 var (
 	goplsHierarchyRelationRE   = regexp.MustCompile(`^(caller|callee)\[\d+\]: .* from/to function (.+) in (.+):(\d+):`)
 	goplsHierarchyIdentifierRE = regexp.MustCompile(`^identifier: function (.+) in (.+):(\d+):`)
+	lookPathGopls              = exec.LookPath
+	runGoplsCallHierarchy      = func(ctx context.Context, goplsPath string, dir string, target string) ([]byte, error) {
+		command := exec.CommandContext(ctx, goplsPath, "call_hierarchy", target)
+		command.Dir = dir
+		return command.CombinedOutput()
+	}
 )
 
 type goplsHierarchyEntry struct {
@@ -519,14 +590,18 @@ func (s *Service) enrichMapPlanWithGopls(ctx context.Context, plan *mapBuildPlan
 	}
 	repoRoot := strings.TrimSpace(mapCtx.RepositoryLocalPath)
 	if repoRoot == "" {
+		plan.callHierarchyReason = "repository local path was not available for gopls"
 		return
 	}
 	primary := mapPlanNode(plan, plan.primaryNodeKey)
 	if primary == nil || primary.path == "" || primary.startLine <= 0 || filepath.Ext(primary.path) != ".go" {
+		plan.callHierarchyReason = "primary location is not a Go file with a line anchor"
 		return
 	}
-	goplsPath, err := exec.LookPath("gopls")
+	plan.callHierarchyAttempted = true
+	goplsPath, err := lookPathGopls("gopls")
 	if err != nil {
+		plan.callHierarchyReason = "gopls executable was not found"
 		return
 	}
 	targetPath := primary.path
@@ -537,10 +612,12 @@ func (s *Service) enrichMapPlanWithGopls(ctx context.Context, plan *mapBuildPlan
 	}
 	targetPath = filepath.ToSlash(targetPath)
 	if _, err := os.Stat(filepath.Join(repoRoot, filepath.FromSlash(targetPath))); err != nil {
+		plan.callHierarchyReason = "primary Go file was not found in the local repository"
 		return
 	}
 	moduleRoot, ok := findGoModuleRoot(repoRoot, targetPath)
 	if !ok {
+		plan.callHierarchyReason = "no Go module root was found for the primary file"
 		return
 	}
 	moduleTargetPath := targetPath
@@ -550,11 +627,21 @@ func (s *Service) enrichMapPlanWithGopls(ctx context.Context, plan *mapBuildPlan
 
 	commandCtx, cancel := context.WithTimeout(ctx, goplsCallHierarchyTimeout)
 	defer cancel()
-	target := fmt.Sprintf("%s:%d:1", moduleTargetPath, primary.startLine)
-	command := exec.CommandContext(commandCtx, goplsPath, "call_hierarchy", target)
-	command.Dir = moduleRoot
-	output, err := command.CombinedOutput()
-	if err != nil || commandCtx.Err() != nil {
+	targetLine, targetColumn := goCallHierarchyTarget(repoRoot, targetPath, primary.startLine)
+	target := fmt.Sprintf("%s:%d:%d", moduleTargetPath, targetLine, targetColumn)
+	plan.callHierarchyTarget = target
+	output, err := runGoplsCallHierarchy(commandCtx, goplsPath, moduleRoot, target)
+	if commandCtx.Err() != nil {
+		plan.callHierarchyReason = fmt.Sprintf("gopls call_hierarchy timed out after %s", goplsCallHierarchyTimeout)
+		return
+	}
+	if err != nil {
+		detail := strings.TrimSpace(string(output))
+		if detail != "" {
+			plan.callHierarchyReason = "gopls call_hierarchy failed: " + truncateText(detail, 180)
+		} else {
+			plan.callHierarchyReason = "gopls call_hierarchy returned no usable result"
+		}
 		return
 	}
 	identifier, entries := parseGoplsCallHierarchy(string(output), repoRoot)
@@ -564,8 +651,11 @@ func (s *Service) enrichMapPlanWithGopls(ctx context.Context, plan *mapBuildPlan
 		primary.metadata["gopls_call_hierarchy"] = true
 	}
 	if len(entries) == 0 {
+		plan.callHierarchyReason = "gopls found the symbol but no callers or callees"
 		return
 	}
+	plan.callHierarchyAvailable = true
+	plan.callHierarchyReason = ""
 	var callers, callees []goplsHierarchyEntry
 	for _, entry := range entries {
 		switch entry.direction {
@@ -588,7 +678,11 @@ func (s *Service) enrichMapPlanWithGopls(ctx context.Context, plan *mapBuildPlan
 			status:     EdgeStatusObserved,
 			label:      "calls changed code",
 			confidence: 0.78,
-			metadata:   map[string]any{"source": "gopls_call_hierarchy", "direction": "incoming"},
+			metadata: map[string]any{
+				"source":      "gopls_call_hierarchy",
+				"direction":   "incoming",
+				"explanation": fmt.Sprintf("%s calls into the issue function, so it is a likely entry point for reproducing or understanding the finding.", trimOrDefault(entry.symbol, "This function")),
+			},
 		})
 	}
 	for index, entry := range callees {
@@ -602,9 +696,55 @@ func (s *Service) enrichMapPlanWithGopls(ctx context.Context, plan *mapBuildPlan
 			status:     EdgeStatusObserved,
 			label:      "calls",
 			confidence: 0.72,
-			metadata:   map[string]any{"source": "gopls_call_hierarchy", "direction": "outgoing"},
+			metadata: map[string]any{
+				"source":      "gopls_call_hierarchy",
+				"direction":   "outgoing",
+				"explanation": fmt.Sprintf("The issue function calls %s, which helps explain the downstream behavior involved in the finding.", trimOrDefault(entry.symbol, "this function")),
+			},
 		})
 	}
+}
+
+func goCallHierarchyTarget(repoRoot string, targetPath string, line int64) (int64, int) {
+	targetAbs := filepath.Join(repoRoot, filepath.FromSlash(targetPath))
+	source, err := os.ReadFile(targetAbs)
+	if err != nil {
+		return line, 1
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, targetAbs, source, 0)
+	if err != nil {
+		return line, 1
+	}
+	var (
+		bestDecl *ast.FuncDecl
+		bestSpan int
+	)
+	ast.Inspect(file, func(node ast.Node) bool {
+		decl, ok := node.(*ast.FuncDecl)
+		if !ok || decl == nil || decl.Name == nil {
+			return true
+		}
+		start := fset.Position(decl.Pos()).Line
+		end := fset.Position(decl.End()).Line
+		if line < int64(start) || line > int64(end) {
+			return true
+		}
+		span := end - start
+		if bestDecl == nil || span < bestSpan {
+			bestDecl = decl
+			bestSpan = span
+		}
+		return true
+	})
+	if bestDecl == nil {
+		return line, 1
+	}
+	position := fset.Position(bestDecl.Name.Pos())
+	if position.Line <= 0 || position.Column <= 0 {
+		return line, 1
+	}
+	return int64(position.Line), position.Column
 }
 
 func mapPlanNode(plan *mapBuildPlan, key string) *nodeSpec {
@@ -617,6 +757,12 @@ func mapPlanNode(plan *mapBuildPlan, key string) *nodeSpec {
 }
 
 func goplsNodeSpec(key string, entry goplsHierarchyEntry, kind string) nodeSpec {
+	direction := "related function"
+	if entry.direction == "caller" {
+		direction = "caller"
+	} else if entry.direction == "callee" {
+		direction = "callee"
+	}
 	return nodeSpec{
 		key:        key,
 		kind:       kind,
@@ -627,8 +773,9 @@ func goplsNodeSpec(key string, entry goplsHierarchyEntry, kind string) nodeSpec 
 		endLine:    entry.line,
 		confidence: 0.75,
 		metadata: map[string]any{
-			"source":    "gopls_call_hierarchy",
-			"direction": entry.direction,
+			"source":      "gopls_call_hierarchy",
+			"direction":   entry.direction,
+			"explanation": fmt.Sprintf("gopls identified this %s of the issue function, showing how the finding connects to nearby code.", direction),
 		},
 	}
 }
@@ -668,25 +815,34 @@ func newGoplsHierarchyEntry(direction string, symbol string, path string, lineTe
 	if err != nil || line <= 0 {
 		return goplsHierarchyEntry{}, false
 	}
+	normalizedPath, ok := normalizeGoplsPath(path, repoRoot)
+	if !ok {
+		return goplsHierarchyEntry{}, false
+	}
 	return goplsHierarchyEntry{
 		direction: direction,
 		symbol:    strings.TrimSpace(symbol),
-		path:      normalizeGoplsPath(path, repoRoot),
+		path:      normalizedPath,
 		line:      line,
 	}, true
 }
 
-func normalizeGoplsPath(path string, repoRoot string) string {
+func normalizeGoplsPath(path string, repoRoot string) (string, bool) {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return ""
+		return "", false
 	}
 	if filepath.IsAbs(path) && repoRoot != "" {
 		if rel, err := filepath.Rel(repoRoot, path); err == nil && !isParentRelativePath(rel) {
-			return filepath.ToSlash(rel)
+			return filepath.ToSlash(rel), true
 		}
+		return "", false
 	}
-	return filepath.ToSlash(path)
+	normalized := filepath.ToSlash(path)
+	if normalized == "." || strings.HasPrefix(normalized, "../") {
+		return "", false
+	}
+	return normalized, true
 }
 
 func findGoModuleRoot(repoRoot string, targetPath string) (string, bool) {
@@ -754,8 +910,9 @@ func primaryNodeSpec(finding dbgen.Finding, primaryEvidence *dbgen.EvidenceItem)
 		endLine:    endLine,
 		confidence: clampConfidence(finding.Confidence),
 		metadata: map[string]any{
-			"source": "finding_location",
-			"role":   "primary",
+			"source":      "finding_location",
+			"role":        "primary",
+			"explanation": "This is the exact file and line range the finding is anchored to; other nodes should explain reachability, support, tests, or real contradictions around this location.",
 		},
 	}
 	if primaryEvidence != nil {
@@ -789,6 +946,7 @@ func evidenceNodeSpec(finding dbgen.Finding, item dbgen.EvidenceItem) nodeSpec {
 		"source":           "evidence_item",
 		"evidence_kind":    item.Kind,
 		"evidence_item_id": item.ID,
+		"explanation":      evidenceItemExplanation(item),
 	}
 	for _, key := range []string{"producer", "rule", "source"} {
 		if value := metadataString(item.MetadataJson, key); value != "" {
@@ -829,9 +987,13 @@ func evidenceEdgeSpec(item dbgen.EvidenceItem, primaryKey string, nodeKey string
 			targetKey:  primaryKey,
 			kind:       EdgeContradicts,
 			status:     EdgeStatusObserved,
-			label:      "counter-evidence",
+			label:      "verified contradiction",
 			confidence: clampConfidence(item.Confidence),
-			metadata:   map[string]any{"source": "evidence_item", "evidence_item_id": item.ID},
+			metadata: map[string]any{
+				"source":           "evidence_item",
+				"evidence_item_id": item.ID,
+				"explanation":      "This is treated as counter-evidence only because it claims to directly refute the finding, not merely because it matched a keyword nearby.",
+			},
 		}
 	case KindTest:
 		return edgeSpec{
@@ -842,7 +1004,11 @@ func evidenceEdgeSpec(item dbgen.EvidenceItem, primaryKey string, nodeKey string
 			status:     EdgeStatusObserved,
 			label:      "test coverage signal",
 			confidence: clampConfidence(item.Confidence),
-			metadata:   map[string]any{"source": "evidence_item", "evidence_item_id": item.ID},
+			metadata: map[string]any{
+				"source":           "evidence_item",
+				"evidence_item_id": item.ID,
+				"explanation":      "This test signal helps you check coverage or expected behavior; it does not automatically refute the finding.",
+			},
 		}
 	case KindMissing:
 		kind := EdgeSupports
@@ -861,9 +1027,55 @@ func evidenceEdgeSpec(item dbgen.EvidenceItem, primaryKey string, nodeKey string
 			status:     status,
 			label:      label,
 			confidence: clampConfidence(item.Confidence),
-			metadata:   map[string]any{"source": "evidence_item", "evidence_item_id": item.ID},
+			metadata: map[string]any{
+				"source":           "evidence_item",
+				"evidence_item_id": item.ID,
+				"explanation":      "This records a missing proof or missing relationship that still needs verification against the code path.",
+			},
 		}
-	case KindSupporting, KindSearch, KindAgent, KindStaticAnalysis, KindNeutral:
+	case KindSearch:
+		return edgeSpec{
+			key:        "lead:" + item.ID,
+			sourceKey:  nodeKey,
+			targetKey:  primaryKey,
+			kind:       EdgeSupports,
+			status:     EdgeStatusObserved,
+			label:      "verification lead",
+			confidence: clampConfidence(item.Confidence),
+			metadata: map[string]any{
+				"source":           "evidence_item",
+				"evidence_item_id": item.ID,
+				"explanation":      "This is a related lead to inspect. It is intentionally not labeled counter-evidence unless it directly disproves the claim.",
+			},
+		}
+	case KindStaticAnalysis:
+		relationship := strings.ToLower(strings.TrimSpace(metadataString(item.MetadataJson, "relationship")))
+		sourceKey := nodeKey
+		targetKey := primaryKey
+		label := "code relationship"
+		if relationship == "callee" || relationship == "downstream" {
+			sourceKey = primaryKey
+			targetKey = nodeKey
+			label = relationship
+		} else if relationship == "caller" || relationship == "entrypoint" {
+			label = relationship
+		}
+		return edgeSpec{
+			key:        "relationship:" + item.ID,
+			sourceKey:  sourceKey,
+			targetKey:  targetKey,
+			kind:       EdgeSupports,
+			status:     EdgeStatusObserved,
+			label:      label,
+			confidence: clampConfidence(item.Confidence),
+			metadata: map[string]any{
+				"source":           "evidence_item",
+				"evidence_item_id": item.ID,
+				"relationship":     relationship,
+				"explanation":      "This relationship evidence explains how the issue location connects to callers, callees, entry points, or downstream behavior.",
+			},
+		}
+	case KindSupporting, KindAgent, KindNeutral:
 		return edgeSpec{
 			key:        "support:" + item.ID,
 			sourceKey:  nodeKey,
@@ -872,7 +1084,11 @@ func evidenceEdgeSpec(item dbgen.EvidenceItem, primaryKey string, nodeKey string
 			status:     EdgeStatusObserved,
 			label:      "supports finding",
 			confidence: clampConfidence(item.Confidence),
-			metadata:   map[string]any{"source": "evidence_item", "evidence_item_id": item.ID},
+			metadata: map[string]any{
+				"source":           "evidence_item",
+				"evidence_item_id": item.ID,
+				"explanation":      "This evidence supports or contextualizes the primary issue location.",
+			},
 		}
 	default:
 		return edgeSpec{}
@@ -906,8 +1122,9 @@ func syntheticMissingRelationshipNode(finding dbgen.Finding, items []dbgen.Evide
 		label:      label,
 		confidence: clampConfidence(finding.Confidence),
 		metadata: map[string]any{
-			"source": "local_rule",
-			"rule":   profile.ID,
+			"source":      "local_rule",
+			"rule":        profile.ID,
+			"explanation": "The finding language implies an expected guard or validation relationship, but no verified relationship has been attached yet.",
 		},
 	}
 }
@@ -970,6 +1187,7 @@ func containsCallStep(steps []callStepSpec, nodeKey string) bool {
 }
 
 func (s *Service) mapView(ctx context.Context, finding dbgen.Finding, graph dbgen.EvidenceGraph) (MapView, error) {
+	repoRoot := s.mapRepositoryRoot(ctx, finding)
 	nodes, err := s.Queries.ListEvidenceNodesByGraph(ctx, graph.ID)
 	if err != nil {
 		return MapView{}, fmt.Errorf("list evidence map nodes: %w", err)
@@ -993,7 +1211,7 @@ func (s *Service) mapView(ctx context.Context, finding dbgen.Finding, graph dbge
 	nodeViews := make([]NodeView, 0, len(nodes))
 	visibleNodeIDs := map[string]struct{}{}
 	for _, node := range nodes {
-		view := nodeView(node)
+		view := nodeView(node, repoRoot)
 		if !shouldDisplayEvidenceMapNode(view) {
 			continue
 		}
@@ -1027,7 +1245,7 @@ func (s *Service) mapView(ctx context.Context, finding dbgen.Finding, graph dbge
 	if len(callPathViews) > 0 {
 		primaryCallPath = callPathViews[0].Steps
 	}
-	missingReasons, callPathReason := layoutReasons(layout)
+	missingReasons, callPathReason, connectionSummary := layoutNarrative(layout)
 	return MapView{
 		Graph: GraphView{
 			ID:              graph.ID,
@@ -1052,17 +1270,33 @@ func (s *Service) mapView(ctx context.Context, finding dbgen.Finding, graph dbge
 			Severity:               finding.Severity,
 			VerificationStatus:     finding.VerificationStatus,
 			DecisionStatus:         finding.DecisionStatus,
+			ConnectionSummary:      connectionSummary,
 			EvidenceSummary:        nullableStringValue(finding.EvidenceSummary),
 			CounterEvidenceSummary: nullableStringValue(finding.CounterEvidenceSummary),
 			SuggestedFix:           nullableStringValue(finding.SuggestedFix),
 			EvidenceCounts:         evidenceItemKindCounts(visibleEvidenceItems(items)),
-			Evidence:               panelEvidenceItems(visibleEvidenceItems(items)),
+			Evidence:               panelEvidenceItems(visibleEvidenceItems(items), repoRoot),
 		},
 		MissingReasons: missingReasons,
 	}, nil
 }
 
-func nodeView(row dbgen.EvidenceNode) NodeView {
+func (s *Service) mapRepositoryRoot(ctx context.Context, finding dbgen.Finding) string {
+	if s == nil || s.Queries == nil {
+		return ""
+	}
+	session, err := s.Queries.GetReviewSession(ctx, finding.ReviewSessionID)
+	if err != nil || strings.TrimSpace(session.RepositoryID) == "" {
+		return ""
+	}
+	repository, err := s.Queries.GetRepository(ctx, session.RepositoryID)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(repository.LocalPath)
+}
+
+func nodeView(row dbgen.EvidenceNode, repoRoot string) NodeView {
 	metadata := json.RawMessage(row.MetadataJson)
 	if len(metadata) == 0 || !json.Valid(metadata) {
 		metadata = json.RawMessage("{}")
@@ -1079,10 +1313,16 @@ func nodeView(row dbgen.EvidenceNode) NodeView {
 			EndLine:   endLine,
 		}
 	}
+	codeSnippet, lineWindow := sourcePreviewForLocation(repoRoot, path, startLine, endLine)
+	if strings.TrimSpace(codeSnippet) == "" {
+		codeSnippet, lineWindow = sourcePreviewFromMetadata(metadata, startLine, endLine)
+	}
+	fileContent, fileLineCount, fileTruncated := sourceFileForLocation(repoRoot, path)
 	return NodeView{
 		ID:             row.ID,
 		Kind:           row.Kind,
 		Label:          row.Label,
+		Explanation:    metadataJSONString(metadata, "explanation"),
 		Path:           path,
 		Symbol:         nullableStringValue(row.Symbol),
 		StartLine:      startLine,
@@ -1090,6 +1330,11 @@ func nodeView(row dbgen.EvidenceNode) NodeView {
 		EvidenceItemID: nullableStringValue(row.EvidenceItemID),
 		Confidence:     row.Confidence,
 		DeepLink:       deepLink,
+		CodeSnippet:    codeSnippet,
+		LineWindow:     lineWindow,
+		FileContent:    fileContent,
+		FileLineCount:  fileLineCount,
+		FileTruncated:  fileTruncated,
 		Metadata:       metadata,
 	}
 }
@@ -1100,14 +1345,15 @@ func edgeView(row dbgen.EvidenceEdge) EdgeView {
 		metadata = json.RawMessage("{}")
 	}
 	return EdgeView{
-		ID:         row.ID,
-		Source:     row.SourceNodeID,
-		Target:     row.TargetNodeID,
-		Kind:       row.Kind,
-		Status:     row.Status,
-		Label:      nullableStringValue(row.Label),
-		Confidence: row.Confidence,
-		Metadata:   metadata,
+		ID:          row.ID,
+		Source:      row.SourceNodeID,
+		Target:      row.TargetNodeID,
+		Kind:        row.Kind,
+		Status:      row.Status,
+		Label:       nullableStringValue(row.Label),
+		Explanation: metadataJSONString(metadata, "explanation"),
+		Confidence:  row.Confidence,
+		Metadata:    metadata,
 	}
 }
 
@@ -1115,18 +1361,20 @@ func callPathView(row dbgen.CallPath, steps []dbgen.CallPathStep) CallPathView {
 	view := CallPathView{
 		ID:         row.ID,
 		Label:      nullableStringValue(row.Label),
+		Summary:    callPathSummary(steps),
 		Confidence: row.Confidence,
 		Steps:      make([]CallPathStepView, 0, len(steps)),
 	}
 	for _, step := range steps {
 		view.Steps = append(view.Steps, CallPathStepView{
-			ID:        step.ID,
-			NodeID:    nullableStringValue(step.NodeID),
-			StepIndex: step.StepIndex,
-			Path:      nullableStringValue(step.Path),
-			StartLine: nullableInt64Value(step.StartLine),
-			EndLine:   nullableInt64Value(step.EndLine),
-			Label:     step.Label,
+			ID:          step.ID,
+			NodeID:      nullableStringValue(step.NodeID),
+			StepIndex:   step.StepIndex,
+			Path:        nullableStringValue(step.Path),
+			StartLine:   nullableInt64Value(step.StartLine),
+			EndLine:     nullableInt64Value(step.EndLine),
+			Label:       step.Label,
+			Explanation: callPathStepExplanation(step),
 		})
 	}
 	return view
@@ -1188,21 +1436,105 @@ func hierarchyItems(nodes []NodeView) []HierarchyItem {
 	return items
 }
 
-func panelEvidenceItems(items []dbgen.EvidenceItem) []MapPanelEvidenceRef {
+func panelEvidenceItems(items []dbgen.EvidenceItem, repoRoot string) []MapPanelEvidenceRef {
 	result := make([]MapPanelEvidenceRef, 0, len(items))
 	for _, item := range items {
+		metadata := json.RawMessage(item.MetadataJson)
+		if len(metadata) == 0 || !json.Valid(metadata) {
+			metadata = json.RawMessage("{}")
+		}
+		path := nullableStringValue(item.Path)
+		startLine := nullableInt64Value(item.StartLine)
+		endLine := nullableInt64Value(item.EndLine)
+		codeSnippet, lineWindow := sourcePreviewForLocation(repoRoot, path, startLine, endLine)
+		if strings.TrimSpace(codeSnippet) == "" {
+			codeSnippet, lineWindow = sourcePreviewFromMetadata(metadata, startLine, endLine)
+		}
+		fileContent, fileLineCount, fileTruncated := sourceFileForLocation(repoRoot, path)
 		result = append(result, MapPanelEvidenceRef{
-			ID:         item.ID,
-			Kind:       item.Kind,
-			Title:      item.Title,
-			Summary:    item.Summary,
-			Path:       nullableStringValue(item.Path),
-			StartLine:  nullableInt64Value(item.StartLine),
-			EndLine:    nullableInt64Value(item.EndLine),
-			Confidence: item.Confidence,
+			ID:            item.ID,
+			Kind:          item.Kind,
+			Title:         item.Title,
+			Summary:       item.Summary,
+			Path:          path,
+			StartLine:     startLine,
+			EndLine:       endLine,
+			Confidence:    item.Confidence,
+			CodeSnippet:   codeSnippet,
+			LineWindow:    lineWindow,
+			FileContent:   fileContent,
+			FileLineCount: fileLineCount,
+			FileTruncated: fileTruncated,
 		})
 	}
 	return result
+}
+
+func sourcePreviewForLocation(repoRoot string, path string, startLine int64, endLine int64) (string, *SourceWindow) {
+	if strings.TrimSpace(repoRoot) == "" || strings.TrimSpace(path) == "" || startLine <= 0 {
+		return "", nil
+	}
+	if endLine < startLine {
+		endLine = startLine
+	}
+	snippet, windowStart, windowEnd, _, err := ReadSnippet(
+		repoRoot,
+		path,
+		startLine,
+		endLine,
+		mapSourceContextLines,
+		mapSourceMaxSnippetBytes,
+	)
+	if err != nil || strings.TrimSpace(snippet) == "" {
+		return "", nil
+	}
+	return snippet, &SourceWindow{StartLine: windowStart, EndLine: windowEnd}
+}
+
+func sourceFileForLocation(repoRoot string, path string) (string, int64, bool) {
+	if strings.TrimSpace(repoRoot) == "" || strings.TrimSpace(path) == "" {
+		return "", 0, false
+	}
+	content, lineCount, truncated, err := ReadSourceFile(repoRoot, path, mapSourceMaxFileBytes)
+	if err != nil || strings.TrimSpace(content) == "" {
+		return "", 0, false
+	}
+	return content, lineCount, truncated
+}
+
+func sourcePreviewFromMetadata(metadata json.RawMessage, startLine int64, endLine int64) (string, *SourceWindow) {
+	if len(metadata) == 0 || !json.Valid(metadata) {
+		return "", nil
+	}
+	var payload struct {
+		CodeSnippet   string          `json:"code_snippet"`
+		AgentMetadata json.RawMessage `json:"agent_metadata"`
+		LineWindow    struct {
+			StartLine int64 `json:"start_line"`
+			EndLine   int64 `json:"end_line"`
+		} `json:"line_window"`
+	}
+	if err := json.Unmarshal(metadata, &payload); err != nil {
+		return "", nil
+	}
+	snippet := strings.TrimSpace(payload.CodeSnippet)
+	if snippet == "" {
+		return sourcePreviewFromMetadata(payload.AgentMetadata, startLine, endLine)
+	}
+	var window *SourceWindow
+	if payload.LineWindow.StartLine > 0 && payload.LineWindow.EndLine >= payload.LineWindow.StartLine {
+		window = &SourceWindow{
+			StartLine: payload.LineWindow.StartLine,
+			EndLine:   payload.LineWindow.EndLine,
+		}
+	} else if startLine > 0 {
+		windowEnd := endLine
+		if windowEnd < startLine {
+			windowEnd = startLine + int64(strings.Count(snippet, "\n"))
+		}
+		window = &SourceWindow{StartLine: startLine, EndLine: windowEnd}
+	}
+	return snippet, window
 }
 
 func boundedEvidenceItemsForGraph(items []dbgen.EvidenceItem, primary *dbgen.EvidenceItem) ([]dbgen.EvidenceItem, int) {
@@ -1283,15 +1615,15 @@ func evidenceMapKindRank(kind string) int {
 	switch kind {
 	case KindSupporting:
 		return 0
-	case KindCounter:
-		return 1
-	case KindTest:
-		return 2
-	case KindMissing:
-		return 3
-	case KindSearch:
-		return 4
 	case KindStaticAnalysis:
+		return 1
+	case KindCounter:
+		return 2
+	case KindTest:
+		return 3
+	case KindMissing:
+		return 4
+	case KindSearch:
 		return 5
 	case KindAgent:
 		return 6
@@ -1322,11 +1654,21 @@ func primaryEvidenceItem(finding dbgen.Finding, items []dbgen.EvidenceItem) *dbg
 func nodeKindForEvidence(item dbgen.EvidenceItem) string {
 	path := strings.ToLower(filepath.ToSlash(nullableStringValue(item.Path)))
 	text := strings.ToLower(strings.Join([]string{item.Title, item.Summary, path}, " "))
+	relationship := strings.ToLower(strings.TrimSpace(metadataString(item.MetadataJson, "relationship")))
 	switch item.Kind {
 	case KindCounter:
 		return NodeCounterEvidence
 	case KindTest:
 		return NodeTest
+	case KindStaticAnalysis:
+		switch relationship {
+		case "entrypoint":
+			return NodeEntrypoint
+		case "caller":
+			return NodeHandler
+		case "callee", "downstream":
+			return NodeRelatedCode
+		}
 	case KindMissing:
 		if containsAny(text, "guard", "auth", "permission", "middleware", "signature", "hmac", "webhook") {
 			return NodeMissingGuard
@@ -1340,7 +1682,9 @@ func nodeKindForEvidence(item dbgen.EvidenceItem) string {
 		return NodeMiddleware
 	case containsAny(path, "config", ".yaml", ".yml", ".toml", ".env") || containsAny(text, "config"):
 		return NodeConfig
-	case containsAny(path, "handler", "controller", "route", "routes") || containsAny(text, "handler", "route"):
+	case containsAny(path, "route", "routes") || containsAny(text, "route"):
+		return NodeRoute
+	case containsAny(path, "handler", "controller") || containsAny(text, "handler"):
 		return NodeHandler
 	case containsAny(path, "auth", "guard", "permission") || containsAny(text, "guard", "permission", "authorize"):
 		return NodeGuard
@@ -1369,6 +1713,72 @@ func mapSummaryText(finding dbgen.Finding, plan mapBuildPlan) string {
 	return fmt.Sprintf("Evidence map for %q with %d node(s), %d edge(s), and %d call path step(s).", claim, len(plan.nodes), len(plan.edges), len(plan.callSteps))
 }
 
+func evidenceMapConnectionSummary(finding dbgen.Finding, plan mapBuildPlan) string {
+	primary := mapPlanNode(&plan, plan.primaryNodeKey)
+	issue := "the issue line"
+	if primary != nil && primary.path != "" {
+		issue = lineLabel(primary.path, primary.startLine, primary.endLine)
+	}
+	callSteps := 0
+	for _, edge := range plan.edges {
+		if edge.kind == EdgeCalls {
+			callSteps++
+		}
+	}
+	checks := 0
+	contradictions := 0
+	tests := 0
+	for _, node := range plan.nodes {
+		switch node.kind {
+		case NodeCounterEvidence:
+			contradictions++
+			checks++
+		case NodeTest:
+			tests++
+			checks++
+		case NodeEntrypoint, NodeRoute, NodeGuard, NodeMiddleware, NodeConfig, NodeRelatedCode, NodeMissingGuard:
+			if node.key != plan.primaryNodeKey {
+				checks++
+			}
+		}
+	}
+	if callSteps > 0 {
+		return fmt.Sprintf("The map anchors the claim at %s, then uses gopls call hierarchy to show %d caller/callee relationship(s) and %d verification check(s).", issue, callSteps, checks)
+	}
+	if contradictions > 0 {
+		return fmt.Sprintf("The map anchors the claim at %s and highlights %d verified contradiction(s) to compare before accepting the finding.", issue, contradictions)
+	}
+	if tests > 0 || checks > 0 {
+		return fmt.Sprintf("The map anchors the claim at %s and separates %d related check(s) from true counter-evidence so they can be inspected without overstating them.", issue, checks)
+	}
+	claim := strings.TrimSpace(finding.CanonicalClaim)
+	if claim == "" {
+		claim = "this finding"
+	}
+	return fmt.Sprintf("The map is currently anchored at %s for %q, but no connected call hierarchy or related check has been verified yet.", issue, claim)
+}
+
+func evidenceItemExplanation(item dbgen.EvidenceItem) string {
+	switch item.Kind {
+	case KindSupporting:
+		return "This item supports the finding at the primary issue location."
+	case KindCounter:
+		return "This item is a verified contradiction only if it directly disproves reachability, behavior, or impact of the claim."
+	case KindTest:
+		return "This is a related test signal to inspect for expected behavior or missing coverage."
+	case KindSearch:
+		return "This is a verification lead from repository search, not counter-evidence by itself."
+	case KindMissing:
+		return "This records an absent proof or missing relationship that still needs code-path verification."
+	case KindStaticAnalysis:
+		return "This static-analysis signal adds context around the issue but should be checked against the exact code path."
+	case KindAgent:
+		return "This is reviewer-agent context attached to the finding."
+	default:
+		return "This item adds context to the evidence map."
+	}
+}
+
 func evidenceItemKindCounts(items []dbgen.EvidenceItem) map[string]int {
 	counts := map[string]int{
 		KindSupporting:     0,
@@ -1390,15 +1800,59 @@ func evidenceItemKindCounts(items []dbgen.EvidenceItem) map[string]int {
 	return counts
 }
 
-func layoutReasons(layout json.RawMessage) ([]string, string) {
+func callPathSummary(steps []dbgen.CallPathStep) string {
+	if len(steps) == 0 {
+		return ""
+	}
+	if len(steps) == 1 {
+		return fmt.Sprintf("Only %s is currently available in the call path.", callPathStepShortLabel(steps[0]))
+	}
+	return fmt.Sprintf("%s connects to %s across %d step(s).", callPathStepShortLabel(steps[0]), callPathStepShortLabel(steps[len(steps)-1]), len(steps))
+}
+
+func callPathStepExplanation(step dbgen.CallPathStep) string {
+	label := callPathStepShortLabel(step)
+	if step.StepIndex == 0 {
+		return fmt.Sprintf("%s is the issue anchor for this finding.", label)
+	}
+	return fmt.Sprintf("%s is connected to the issue anchor through the evidence graph or gopls call hierarchy.", label)
+}
+
+func callPathStepShortLabel(step dbgen.CallPathStep) string {
+	label := strings.TrimSpace(step.Label)
+	if label != "" {
+		return label
+	}
+	path := nullableStringValue(step.Path)
+	line := nullableInt64Value(step.StartLine)
+	if path != "" {
+		return lineLabel(path, line, nullableInt64Value(step.EndLine))
+	}
+	return "step"
+}
+
+func layoutNarrative(layout json.RawMessage) ([]string, string, string) {
 	var payload struct {
 		MissingReasons            []string `json:"missing_reasons"`
 		CallPathUnavailableReason string   `json:"call_path_unavailable_reason"`
+		ConnectionSummary         string   `json:"connection_summary"`
 	}
 	if err := json.Unmarshal(layout, &payload); err != nil {
-		return nil, ""
+		return nil, "", ""
 	}
-	return payload.MissingReasons, strings.TrimSpace(payload.CallPathUnavailableReason)
+	return payload.MissingReasons, strings.TrimSpace(payload.CallPathUnavailableReason), strings.TrimSpace(payload.ConnectionSummary)
+}
+
+func metadataJSONString(raw json.RawMessage, key string) string {
+	var payload map[string]any
+	if len(raw) == 0 || json.Unmarshal(raw, &payload) != nil {
+		return ""
+	}
+	value, ok := payload[key]
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
 }
 
 func metadataString(raw string, key string) string {
@@ -1415,11 +1869,12 @@ func metadataString(raw string, key string) string {
 
 func defaultLegend() []LegendItem {
 	return []LegendItem{
-		{Kind: NodeChangedCode, Label: "Changed code", Description: "Primary reviewed code location."},
+		{Kind: NodeChangedCode, Label: "Issue line", Description: "Primary reviewed code location where the finding is anchored."},
+		{Kind: NodeEntrypoint, Label: "Entrypoint", Description: "Caller or entry path that reaches the issue line."},
 		{Kind: NodeRelatedCode, Label: "Related code", Description: "Supporting repository context or evidence."},
 		{Kind: NodeGuard, Label: "Guard", Description: "Authentication, authorization, or validation guard."},
-		{Kind: NodeTest, Label: "Test", Description: "Test coverage signal."},
-		{Kind: NodeCounterEvidence, Label: "Counter-evidence", Description: "Evidence that weakens or contradicts the finding."},
+		{Kind: NodeTest, Label: "Test signal", Description: "Related tests to inspect before accepting or dismissing the finding."},
+		{Kind: NodeCounterEvidence, Label: "Verified contradiction", Description: "Evidence that directly weakens or contradicts the finding."},
 		{Kind: NodeMissingGuard, Label: "Missing guard", Description: "Expected guard or validation relationship is absent."},
 		{Kind: NodeUnknown, Label: "Unknown", Description: "Incomplete evidence or unavailable code relationship."},
 	}
@@ -1438,7 +1893,7 @@ func lineLabel(path string, startLine int64, endLine int64) string {
 
 func normalizeNodeKind(kind string) string {
 	switch strings.TrimSpace(kind) {
-	case NodeChangedCode, NodeRelatedCode, NodeMiddleware, NodeGuard, NodeHandler, NodeTest, NodeConfig, NodeCounterEvidence, NodeMissingGuard, NodeUnknown:
+	case NodeChangedCode, NodeEntrypoint, NodeRoute, NodeRelatedCode, NodeMiddleware, NodeGuard, NodeHandler, NodeTest, NodeConfig, NodeCounterEvidence, NodeMissingGuard, NodeUnknown:
 		return strings.TrimSpace(kind)
 	default:
 		return NodeUnknown
@@ -1468,6 +1923,13 @@ func trimOrDefault(value string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func truncateText(value string, limit int) string {
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	return strings.TrimSpace(value[:limit]) + "..."
 }
 
 func nullableInt64Value(value sql.NullInt64) int64 {

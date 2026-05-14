@@ -19,7 +19,6 @@ import {
   ClockIcon,
   Code2Icon,
   CopyIcon,
-  ExternalLinkIcon,
   FileSearchIcon,
   FileTextIcon,
   FolderOpenIcon,
@@ -97,13 +96,6 @@ import {
   type Loadable,
   type AskFindingQuestionResponse,
   type EvidenceItem,
-  type EvidenceMapCallPath,
-  type EvidenceMapCallPathStep,
-  type EvidenceMapEdge,
-  type EvidenceMapFinding,
-  type EvidenceMapHierarchyItem,
-  type EvidenceMapNode,
-  type EvidenceMapPanelEvidenceRef,
   type EvidenceMapResponse,
   type Finding,
   type FindingDetailResponse,
@@ -126,6 +118,7 @@ import {
   type ReviewSession,
   type SettingsExportPayload,
   type SettingsImportResponse,
+  type Snapshot,
   type Workspace,
 } from "@/lib/api";
 import { languageForFilePath } from "@/lib/syntax-highlighting";
@@ -141,7 +134,20 @@ import {
 } from "./agent-utils";
 import { CentralizedChatScreen } from "./centralized-chat-screen";
 import { MarkdownMessage, SyntaxCodeBlock } from "./markdown-message";
+import {
+  EvidenceMapInspectorPanel,
+  FindingsInspectorPanel,
+} from "./review-panels";
+import {
+  EvidenceMapGraphCanvas,
+  firstEvidenceMapSelection,
+  type EvidenceMapSelection,
+} from "./review-evidence-map";
 import { NewThreadScreen } from "./new-thread-screen";
+import {
+  ResizableRightPanelHandle,
+  useResizableRightPanel,
+} from "./resizable-right-panel";
 
 const MAX_SIDEBAR_SESSIONS = 12;
 const MAX_SEARCH_RESULTS = 5;
@@ -150,12 +156,8 @@ const MAX_REVIEW_EVENTS_PER_AGENT_RUN = 2500;
 const MAX_NON_AGENT_RUN_EVENTS = 1200;
 const MAX_AUDIT_ENTRIES_RENDERED = 120;
 const MAX_FINDINGS_RENDERED = 150;
-const EVIDENCE_MAP_NODE_WIDTH = 232;
-const EVIDENCE_MAP_NODE_HEIGHT = 104;
-const EVIDENCE_MAP_COLUMN_GAP = 300;
-const EVIDENCE_MAP_ROW_GAP = 136;
 const REVIEW_THREAD_TAB_CLASS =
-  "mt-4 min-h-0 overflow-y-auto pr-1 pl-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden";
+  "mt-4 flex min-h-0 flex-1 flex-col overflow-y-auto pr-1 pl-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden";
 const COMPOSER_RUNTIME_POLICIES = {
   quick: { max_tokens: 4_000, max_items: 40 },
   standard: { max_tokens: 8_000, max_items: 80 },
@@ -278,6 +280,17 @@ type FindingSeverityFilter =
   | "medium"
   | "low"
   | "info";
+type FindingDecisionSelectValue =
+  | "accepted"
+  | "dismissed"
+  | "deferred"
+  | "pending";
+type FindingDecisionMutation = "accepted" | "dismissed" | "deferred";
+type SetupNavContext = {
+  branch?: string;
+  subtitle?: string;
+  title?: string;
+};
 type ReviewRefreshState =
   | { status: "idle" }
   | { status: "refreshing" }
@@ -337,6 +350,10 @@ export function App() {
   >("idle");
   const [currentReviewSession, setCurrentReviewSession] =
     useState<ReviewSession | null>(null);
+  const [activeSnapshot, setActiveSnapshot] =
+    useState<Loadable<Snapshot>>(idleApiState());
+  const [setupNavContext, setSetupNavContext] =
+    useState<SetupNavContext | null>(null);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState("");
   const [activeRepositoryId, setActiveRepositoryId] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -558,7 +575,34 @@ export function App() {
     repositoryList.find((repository) => repository.id === activeRepositoryId) ??
     repositoryList[0];
   const activeSession = sessionList[0];
-  const displayedSession = currentReviewSession ?? activeSession;
+  const displayedSession =
+    currentReviewSession ?? (mainView === "review" ? activeSession : undefined);
+  const displayedSnapshot =
+    activeSnapshot.status === "success" ? activeSnapshot.data : undefined;
+
+  useEffect(() => {
+    const snapshotId = displayedSession?.snapshot_id;
+    let canceled = false;
+    void Promise.resolve().then(async () => {
+      if (!client || !snapshotId) {
+        if (!canceled) {
+          setActiveSnapshot(idleApiState());
+        }
+        return;
+      }
+
+      if (!canceled) {
+        setActiveSnapshot(loadingApiState());
+      }
+      const state = await loadApiResource(() => client.getSnapshot(snapshotId));
+      if (!canceled) {
+        setActiveSnapshot(state);
+      }
+    });
+    return () => {
+      canceled = true;
+    };
+  }, [client, displayedSession?.snapshot_id]);
 
   const handleSelectWorkspace = useCallback(
     (workspaceId: string) => {
@@ -568,6 +612,9 @@ export function App() {
       if (!client || !selectedWorkspace) {
         return;
       }
+      setCurrentReviewSession(null);
+      setSetupNavContext(null);
+      setMainView("new-thread");
       setActiveWorkspaceId(workspaceId);
       void loadWorkspaceDetails(client, selectedWorkspace);
     },
@@ -597,6 +644,8 @@ export function App() {
     }
 
     setAgentBootstrapState("loading");
+    setCurrentReviewSession(null);
+    setSetupNavContext(null);
     setActiveWorkspaceId(state.data.workspace.id);
     setActiveRepositoryId(state.data.repository.id);
     setRepositories(successApiState(state.data.repositories));
@@ -660,6 +709,7 @@ export function App() {
 
   const handleSelectReviewSession = useCallback((session: ReviewSession) => {
     setCurrentReviewSession(session);
+    setSetupNavContext(null);
     setMainView("review");
   }, []);
 
@@ -722,7 +772,10 @@ export function App() {
                 "Start from PR URL, local changes, or branch compare",
               shortcut: "N",
               icon: PlusIcon,
-              onSelect: () => setMainView("new-thread"),
+              onSelect: () => {
+                setCurrentReviewSession(null);
+                setMainView("new-thread");
+              },
             },
           ];
 
@@ -791,7 +844,10 @@ export function App() {
             onOpenRepository={handleOpenRepository}
             onOpenSearch={() => setSearchOpen(true)}
             onOpenAgentSettings={() => setMainView("agent-settings")}
-            onOpenNewThread={() => setMainView("new-thread")}
+            onOpenNewThread={() => {
+              setCurrentReviewSession(null);
+              setMainView("new-thread");
+            }}
             onDeleteReviewSession={handleDeleteReviewSession}
             onSelectReviewSession={handleSelectReviewSession}
             onSelectWorkspace={handleSelectWorkspace}
@@ -801,7 +857,9 @@ export function App() {
           <TopNav
             activeRepository={activeRepository}
             activeSession={displayedSession}
+            activeSnapshot={displayedSnapshot}
             activeWorkspace={activeWorkspace}
+            setupContext={setupNavContext}
           />
         }
         statusBanner={<AppConnectionNotice apiSession={apiSession} />}
@@ -813,8 +871,10 @@ export function App() {
             agentConfigs={agentConfigs}
             agentModelCatalogs={agentModelCatalogs}
             client={client}
+            onSetupContextChange={setSetupNavContext}
             onReviewStarted={(session) => {
               setCurrentReviewSession(session);
+              setSetupNavContext(null);
               setMainView("review");
               if (client) {
                 void refreshNavigation(client, session.workspace_id);
@@ -2986,23 +3046,35 @@ function Sidebar({
 function TopNav({
   activeRepository,
   activeSession,
+  activeSnapshot,
   activeWorkspace,
+  setupContext,
 }: {
   activeRepository?: Repository;
   activeSession?: ReviewSession;
+  activeSnapshot?: Snapshot;
   activeWorkspace?: Workspace;
+  setupContext?: SetupNavContext | null;
 }) {
   const repositoryLabel = activeRepository?.owner
     ? `${activeRepository.owner}/${activeRepository.name}`
     : (activeRepository?.name ??
       activeWorkspace?.name ??
       "No project selected");
-  const branchLabel =
-    activeSession?.status === "running"
-      ? "review/running"
-      : (activeRepository?.default_branch ?? "main");
-  const titleLabel = activeSession?.title ?? repositoryLabel;
-  const subtitleLabel = activeSession ? repositoryLabel : "Set up review";
+  const snapshotRepository = activeSnapshot
+    ? snapshotRepositoryLabel(activeSnapshot, repositoryLabel)
+    : repositoryLabel;
+  const branchLabel = activeSnapshot
+    ? snapshotBranchLabel(activeSnapshot, activeRepository)
+    : (setupContext?.branch ?? activeRepository?.default_branch ?? "main");
+  const titleLabel =
+    activeSnapshot?.pr_title ||
+    activeSession?.title ||
+    setupContext?.title ||
+    repositoryLabel;
+  const subtitleLabel = activeSession
+    ? snapshotRepository
+    : (setupContext?.subtitle ?? "Set up review");
 
   return (
     <div className="app-drag bg-surface-raised/96 flex h-[52px] shrink-0 items-center justify-between gap-4 border-b px-5 backdrop-blur">
@@ -3024,6 +3096,37 @@ function TopNav({
       </div>
     </div>
   );
+}
+
+function snapshotRepositoryLabel(snapshot: Snapshot, fallback: string) {
+  if (snapshot.owner && snapshot.repo) {
+    return `${snapshot.owner}/${snapshot.repo}`;
+  }
+  if (snapshot.repo) {
+    return snapshot.repo;
+  }
+  return fallback;
+}
+
+function snapshotBranchLabel(snapshot: Snapshot, repository?: Repository) {
+  const base = snapshot.base_ref?.trim();
+  const head = snapshot.head_ref?.trim();
+  if (base && head) {
+    return `${base}..${head}`;
+  }
+  if (head) {
+    return head;
+  }
+  if (base) {
+    return base;
+  }
+  if (snapshot.source_type === "local_changes") {
+    return repository?.default_branch ?? "working tree";
+  }
+  if (snapshot.pr_number) {
+    return `PR #${snapshot.pr_number}`;
+  }
+  return repository?.default_branch ?? "main";
 }
 
 function ReviewThread({
@@ -3228,6 +3331,7 @@ function ReviewThread({
                   finding={detailFinding}
                   onBack={() => setActiveTab("findings")}
                   onOpenEvidenceMap={openEvidenceMap}
+                  onOpenFollowUp={openFollowUp}
                 />
               ) : (
                 <EmptyState
@@ -4207,17 +4311,6 @@ function ReviewEventTimeline({
   );
 }
 
-function RunMetric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="border-border/70 rounded-lg border bg-white px-3 py-2 shadow-[0_1px_2px_rgb(17_18_20/0.02)]">
-      <div className="text-muted-foreground text-[11px] leading-4">{label}</div>
-      <div className="mt-1 truncate text-[15px] leading-5 font-semibold tabular-nums">
-        {value}
-      </div>
-    </div>
-  );
-}
-
 function ReviewFindingsBoard({
   client,
   findings,
@@ -4252,6 +4345,11 @@ function ReviewFindingsBoard({
   const [ruleMemorySuggestion, setRuleMemorySuggestion] = useState("");
   const [draftComment, setDraftComment] = useState("");
   const [boardReloadKey, setBoardReloadKey] = useState(0);
+  const inspectorPanel = useResizableRightPanel({
+    defaultWidth: 500,
+    maxWidth: 760,
+    minWidth: 360,
+  });
   const boardSessionId = session?.id;
   const [actionState, setActionState] = useState<{
     status: "idle" | "loading" | "success" | "error";
@@ -4333,25 +4431,6 @@ function ReviewFindingsBoard({
   }, [findings, hasFilters]);
 
   useEffect(() => {
-    if (boardFindings.status !== "success" || selectedFindingId) {
-      return;
-    }
-    const firstFinding = boardFindings.data.items[0];
-    if (!firstFinding) {
-      return;
-    }
-    let canceled = false;
-    queueMicrotask(() => {
-      if (!canceled) {
-        setSelectedFindingId(firstFinding.id);
-      }
-    });
-    return () => {
-      canceled = true;
-    };
-  }, [boardFindings, selectedFindingId]);
-
-  useEffect(() => {
     if (!client || !selectedFindingId) {
       let canceled = false;
       queueMicrotask(() => {
@@ -4422,13 +4501,8 @@ function ReviewFindingsBoard({
     (selectedDetail.status === "idle" || selectedDetail.status === "loading"
       ? selectedFindingFromList
       : undefined);
-  const selectedOutsideFilter = Boolean(
-    selectedFinding &&
-    listedFindings.length > 0 &&
-    !listedFindings.some((finding) => finding.id === selectedFinding.id),
-  );
   async function updateDecision(
-    decision: "accepted" | "dismissed",
+    decision: FindingDecisionMutation,
     finding = selectedFinding,
   ) {
     if (!client || !finding) {
@@ -4440,15 +4514,8 @@ function ReviewFindingsBoard({
     }
     const reason =
       decision === "dismissed"
-        ? dismissReason.trim()
-        : "accepted from findings board";
-    if (decision === "dismissed" && reason === "") {
-      setActionState({
-        status: "error",
-        message: "Dismissal needs a reason.",
-      });
-      return;
-    }
+        ? dismissReason.trim() || "dismissed from findings board"
+        : `${formatDecisionLabel(decision).toLowerCase()} from findings board`;
     setActionState({
       status: "loading",
       findingId: finding.id,
@@ -4615,40 +4682,14 @@ function ReviewFindingsBoard({
     );
   }
 
-  const stats =
-    listState.status === "success"
-      ? listState.data.stats
-      : findings.status === "success"
-        ? findings.data.stats
-        : undefined;
   const filterOptions =
     listState.status === "success" ? listState.data.filters : undefined;
 
   return (
     <section
       aria-label="Review findings board"
-      className="border-border/70 overflow-hidden rounded-xl border bg-white shadow-[0_1px_2px_rgb(17_18_20/0.03)]"
+      className="border-border/70 flex h-full min-h-[calc(100vh-220px)] min-w-0 flex-col overflow-hidden rounded-xl border bg-white shadow-[0_1px_2px_rgb(17_18_20/0.03)]"
     >
-      <div className="grid grid-cols-2 gap-3 border-b bg-[#fbfbfa] p-4 md:grid-cols-5">
-        <RunMetric label="Total" value={String(stats?.total ?? 0)} />
-        <RunMetric
-          label="Verified"
-          value={String(stats?.by_verification.verified ?? 0)}
-        />
-        <RunMetric
-          label="Needs triage"
-          value={String(stats?.needs_triage ?? 0)}
-        />
-        <RunMetric
-          label="Accepted"
-          value={String(stats?.by_decision.accepted ?? 0)}
-        />
-        <RunMetric
-          label="Dismissed"
-          value={String(stats?.by_decision.dismissed ?? 0)}
-        />
-      </div>
-
       <div className="flex flex-wrap items-center gap-2 border-b bg-white p-4">
         <div className="relative min-w-64 flex-[1.4]">
           <SearchIcon className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
@@ -4748,14 +4789,29 @@ function ReviewFindingsBoard({
         />
       )}
 
-      <div className="grid min-h-[560px] bg-white xl:grid-cols-[minmax(0,1.25fr)_minmax(360px,0.72fr)]">
-        <div className="min-w-0 border-r">
-          <div className="bg-surface/60 text-muted-foreground grid grid-cols-[88px_minmax(0,1.45fr)_minmax(118px,0.75fr)_112px_140px_110px] gap-3 border-b px-4 py-2 text-xs font-medium max-lg:hidden">
+      <div
+        style={selectedFinding ? inspectorPanel.gridStyle : undefined}
+        className={cn(
+          "grid min-h-0 flex-1 bg-white",
+          selectedFinding
+            ? "xl:grid-cols-[minmax(0,1fr)_minmax(360px,var(--right-panel-width))]"
+            : "grid-cols-1",
+        )}
+      >
+        <div className="min-w-0 overflow-auto [scrollbar-width:thin]">
+          <div
+            className={cn(
+              "bg-surface/60 text-muted-foreground grid gap-3 border-b px-4 py-2 text-xs font-medium max-lg:hidden",
+              selectedFinding
+                ? "grid-cols-[72px_minmax(0,1fr)_132px_72px]"
+                : "grid-cols-[72px_minmax(0,1.35fr)_minmax(96px,0.64fr)_132px_minmax(112px,0.64fr)_72px]",
+            )}
+          >
             <span>Severity</span>
             <span>Finding</span>
-            <span>Location</span>
+            {!selectedFinding ? <span>Location</span> : null}
             <span>Status</span>
-            <span>Source / agents</span>
+            {!selectedFinding ? <span>Source / agents</span> : null}
             <span>Confidence</span>
           </div>
           {listState.status === "loading" && (
@@ -4781,14 +4837,11 @@ function ReviewFindingsBoard({
               key={finding.id}
               actionState={actionState}
               finding={finding}
+              layout={selectedFinding ? "inspector" : "wide"}
               selected={finding.id === selectedFindingId}
-              onAccept={() => {
+              onDecisionChange={(decision) => {
                 setSelectedFindingId(finding.id);
-                void updateDecision("accepted", finding);
-              }}
-              onCopy={() => {
-                setSelectedFindingId(finding.id);
-                void copyFinding(finding);
+                void updateDecision(decision, finding);
               }}
               onOpenDetail={() => onOpenDetail(finding)}
               onSelect={() => setSelectedFindingId(finding.id)}
@@ -4801,262 +4854,49 @@ function ReviewFindingsBoard({
               </div>
             )}
         </div>
-
-        <div className="min-w-0 bg-[#fbfbfa] p-4">
-          {selectedDetail.status === "loading" && <LoadingRows rows={5} />}
-          {selectedDetail.status === "error" && (
-            <ErrorState
-              title="Finding detail unavailable"
-              description={selectedDetail.error.message}
+        {selectedFinding && (
+          <div className="relative min-w-0 border-t bg-[#fbfbfa] p-4 xl:border-t-0 xl:border-l">
+            <ResizableRightPanelHandle
+              onPointerDown={inspectorPanel.startResize}
             />
-          )}
-          {!selectedFinding &&
-            selectedDetail.status !== "loading" &&
-            selectedDetail.status !== "error" && (
-              <EmptyState
-                className="border-0"
-                title="No finding selected"
-                description="Select a finding to inspect evidence and actions."
-                icon={FileSearchIcon}
+            {selectedDetail.status === "error" ? (
+              <ErrorState
+                title="Finding detail unavailable"
+                description={selectedDetail.error.message}
+              />
+            ) : (
+              <FindingsInspectorPanel
+                actionState={{
+                  status: actionState.status,
+                  message: actionState.message,
+                }}
+                detail={
+                  selectedDetail.status === "success"
+                    ? selectedDetail.data
+                    : undefined
+                }
+                dismissalReason={dismissReason}
+                dismissalRuleSuggestion={ruleMemorySuggestion}
+                draftComment={draftComment}
+                finding={selectedFinding}
+                onAccept={() => void updateDecision("accepted")}
+                onCopyFixPacket={() => void copyFinding()}
+                onCopyPath={() => void copyFindingPath()}
+                onDismiss={() => void updateDecision("dismissed")}
+                onDismissReasonChange={setDismissReason}
+                onDismissalRuleSuggestionChange={setRuleMemorySuggestion}
+                onSaveDismissalRuleChange={setSaveDismissalRule}
+                onDraftCommentChange={setDraftComment}
+                onOpenDetail={() => onOpenDetail(selectedFinding)}
+                onOpenEvidenceMap={() => onOpenEvidenceMap(selectedFinding)}
+                onOpenFollowUp={() => onOpenFollowUp(selectedFinding)}
+                onSaveDraftComment={() => void saveDraftComment()}
+                saveDismissalRule={saveDismissalRule}
+                showSaveRule
               />
             )}
-          {selectedFinding && selectedDetail.status === "idle" && (
-            <EmptyState
-              className="border-0"
-              title="Finding detail pending"
-              description="Detailed evidence and actions load after selection."
-              icon={FileSearchIcon}
-            />
-          )}
-          {selectedFinding && selectedDetail.status === "success" && (
-            <div className="flex min-w-0 flex-col gap-4">
-              <div>
-                <div className="mb-3 flex flex-wrap items-center gap-2">
-                  <Badge
-                    variant={
-                      selectedFinding.severity === "high" ||
-                      selectedFinding.severity === "blocker"
-                        ? "destructive"
-                        : "secondary"
-                    }
-                  >
-                    {selectedFinding.severity}
-                  </Badge>
-                  <Badge variant="outline">
-                    {formatDecisionLabel(selectedFinding.decision_status)}
-                  </Badge>
-                  <Badge variant="secondary">
-                    {formatDecisionLabel(selectedFinding.verification_status)}
-                  </Badge>
-                  {selectedOutsideFilter && (
-                    <Badge variant="outline">Outside filter</Badge>
-                  )}
-                </div>
-                <h2 className="text-base leading-6 font-semibold">
-                  {selectedFinding.canonical_claim}
-                </h2>
-                <div className="text-muted-foreground mt-2 text-xs">
-                  {formatFindingLocation(selectedFinding)}
-                </div>
-              </div>
-
-              <AgentConsensusPanel
-                detail={selectedFindingDetail}
-                finding={selectedFinding}
-              />
-
-              <Tabs defaultValue="overview" className="gap-3">
-                <TabsList variant="line">
-                  <TabsTrigger value="overview">Overview</TabsTrigger>
-                  <TabsTrigger value="code">Code</TabsTrigger>
-                  <TabsTrigger value="evidence">Evidence</TabsTrigger>
-                </TabsList>
-
-                <TabsContent value="overview" className="flex flex-col gap-3">
-                  {selectedFinding.evidence_summary && (
-                    <div className="rounded-md border p-3">
-                      <div className="text-xs font-medium">Evidence</div>
-                      <p className="text-muted-foreground mt-2 text-sm leading-6">
-                        {selectedFinding.evidence_summary}
-                      </p>
-                    </div>
-                  )}
-
-                  {selectedFinding.counter_evidence_summary && (
-                    <div className="rounded-md border p-3">
-                      <div className="text-xs font-medium">
-                        Counter-evidence
-                      </div>
-                      <p className="text-muted-foreground mt-2 text-sm leading-6">
-                        {selectedFinding.counter_evidence_summary}
-                      </p>
-                    </div>
-                  )}
-
-                  {selectedFinding.suggested_fix && (
-                    <div className="rounded-md border p-3">
-                      <div className="text-xs font-medium">Suggested fix</div>
-                      <p className="text-muted-foreground mt-2 text-sm leading-6">
-                        {selectedFinding.suggested_fix}
-                      </p>
-                    </div>
-                  )}
-                </TabsContent>
-
-                <TabsContent value="code">
-                  <CodeSnippetViewer
-                    evidence={selectedFindingDetail?.evidence_items ?? []}
-                    finding={selectedFinding}
-                    onCopyPath={() => void copyFindingPath()}
-                  />
-                </TabsContent>
-
-                <TabsContent value="evidence">
-                  <EvidenceCardList detail={selectedFindingDetail} />
-                </TabsContent>
-              </Tabs>
-
-              <section className="bg-surface/40 rounded-md border p-3">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <div>
-                    <div className="text-sm font-semibold">
-                      Draft GitHub comment
-                    </div>
-                    <div className="text-muted-foreground mt-1 text-xs">
-                      This is what Copy uses for the selected finding.
-                    </div>
-                  </div>
-                  <Badge variant="outline">
-                    {selectedFindingDetail
-                      ? `${selectedFindingDetail.candidates.length} candidates`
-                      : `${selectedFinding.merged_from_count} merged`}
-                  </Badge>
-                </div>
-                <Textarea
-                  aria-label="Draft GitHub comment"
-                  className="min-h-40 font-mono text-xs leading-5"
-                  value={draftComment}
-                  onChange={(event) => setDraftComment(event.target.value)}
-                />
-                <div className="mt-2 flex justify-end">
-                  <Button
-                    disabled={actionState.status === "loading"}
-                    size="sm"
-                    variant="outline"
-                    onClick={() => void saveDraftComment()}
-                  >
-                    Save draft
-                  </Button>
-                </div>
-              </section>
-
-              <div className="border-border/70 bg-surface/45 rounded-md border p-3">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <div>
-                    <div className="text-sm font-semibold">Decision</div>
-                    <div className="text-muted-foreground mt-0.5 text-xs">
-                      Current state:{" "}
-                      {findingWorkflowStatusLabel(selectedFinding)}
-                    </div>
-                  </div>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    disabled={actionState.status === "loading"}
-                    size="sm"
-                    onClick={() => void updateDecision("accepted")}
-                  >
-                    <CheckIcon data-icon="inline-start" />
-                    Accept
-                  </Button>
-                  <Button
-                    disabled={actionState.status === "loading"}
-                    size="sm"
-                    variant="outline"
-                    onClick={() => void copyFinding()}
-                  >
-                    <CopyIcon data-icon="inline-start" />
-                    Copy fix packet
-                  </Button>
-                  <Button
-                    disabled={actionState.status === "loading"}
-                    size="sm"
-                    variant="outline"
-                    onClick={() => onOpenDetail(selectedFinding)}
-                  >
-                    <ExternalLinkIcon data-icon="inline-start" />
-                    Open full detail
-                  </Button>
-                  <Button
-                    disabled={actionState.status === "loading"}
-                    size="sm"
-                    variant="outline"
-                    onClick={() => onOpenEvidenceMap(selectedFinding)}
-                  >
-                    <MapIcon data-icon="inline-start" />
-                    Open evidence map
-                  </Button>
-                  <Button
-                    disabled={actionState.status === "loading"}
-                    size="sm"
-                    variant="outline"
-                    onClick={() => onOpenFollowUp(selectedFinding)}
-                  >
-                    <MessageSquareIcon data-icon="inline-start" />
-                    Follow-up
-                  </Button>
-                  <Button
-                    disabled={actionState.status === "loading"}
-                    size="sm"
-                    variant="outline"
-                    onClick={() => void updateDecision("dismissed")}
-                  >
-                    Dismiss
-                  </Button>
-                </div>
-                <details className="mt-3">
-                  <summary className="text-muted-foreground flex cursor-pointer list-none items-center justify-between gap-3 text-xs font-medium [&::-webkit-details-marker]:hidden">
-                    <span>Dismissal options</span>
-                    <ChevronDownIcon className="size-3.5" />
-                  </summary>
-                  <div className="mt-3 grid gap-2">
-                    <Input
-                      aria-label="Dismissal reason"
-                      placeholder="Dismissal reason"
-                      value={dismissReason}
-                      onChange={(event) => setDismissReason(event.target.value)}
-                    />
-                    <label className="flex items-center gap-2 text-sm">
-                      <Checkbox
-                        checked={saveDismissalRule}
-                        onCheckedChange={(checked) =>
-                          setSaveDismissalRule(checked === true)
-                        }
-                      />
-                      Save dismissal as local rule
-                    </label>
-                    {saveDismissalRule && (
-                      <Textarea
-                        aria-label="Review rule suggestion"
-                        className="min-h-20 text-sm"
-                        placeholder="Optional guidance. Defaults to the dismissal reason."
-                        value={ruleMemorySuggestion}
-                        onChange={(event) =>
-                          setRuleMemorySuggestion(event.target.value)
-                        }
-                      />
-                    )}
-                  </div>
-                </details>
-                {actionState.status === "success" && actionState.message && (
-                  <div className="text-muted-foreground mt-3 text-xs">
-                    {actionState.message}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
     </section>
   );
@@ -5367,18 +5207,48 @@ function GitHubPreviewPane({
 }: {
   state: Loadable<GitHubPreviewResponse>;
 }) {
+  const [copyState, setCopyState] = useState<
+    "idle" | "loading" | "copied" | "error"
+  >("idle");
   const comments =
     state.status === "success" ? (state.data.comments ?? []) : [];
   const warnings =
     state.status === "success" ? (state.data.warnings ?? []) : [];
 
+  async function copyReviewPreview() {
+    if (state.status !== "success") {
+      return;
+    }
+    setCopyState("loading");
+    const copied = await loadApiResource(async () => {
+      if (!window.cocode?.writeClipboard) {
+        throw new Error("Clipboard bridge is unavailable");
+      }
+      await window.cocode.writeClipboard(
+        formatGitHubPreviewClipboard(state.data),
+      );
+    });
+    setCopyState(copied.status === "success" ? "copied" : "error");
+  }
+
   return (
-    <section className="rounded-lg border">
-      <div className="border-b px-4 py-3">
-        <div className="text-sm font-medium">GitHub review preview</div>
-        <div className="text-muted-foreground mt-1 text-xs">
-          Review body, inline comments, warnings, and checklist.
+    <section className="overflow-hidden rounded-lg border bg-[#f6f8fa]">
+      <div className="flex items-start justify-between gap-3 border-b bg-white px-4 py-3">
+        <div>
+          <div className="text-sm font-medium">GitHub review preview</div>
+          <div className="text-muted-foreground mt-1 text-xs">
+            Review body, inline comments, warnings, and checklist.
+          </div>
         </div>
+        <Button
+          disabled={state.status !== "success" || copyState === "loading"}
+          size="sm"
+          variant="outline"
+          onClick={() => void copyReviewPreview()}
+        >
+          <CopyIcon data-icon="inline-start" />
+          {copyState === "copied" ? "Copied" : "Copy review"}
+        </Button>
       </div>
       {state.status === "idle" && (
         <EmptyState
@@ -5400,48 +5270,33 @@ function GitHubPreviewPane({
         <ScrollArea className="h-[620px]">
           <div className="flex flex-col gap-4 p-4">
             <GitHubPreviewChecklistView preview={state.data} />
-            <div className="rounded-md border p-3">
-              <div className="mb-2 text-xs font-medium">Review body</div>
-              <p className="text-muted-foreground text-sm leading-6 whitespace-pre-wrap">
-                {state.data.body}
-              </p>
-            </div>
-            <div>
+            <GitHubReviewBodyPreview body={state.data.body} />
+            <section>
               <div className="mb-2 flex items-center justify-between gap-2">
                 <div className="text-sm font-medium">Inline comments</div>
                 <Badge variant="outline">{comments.length}</Badge>
               </div>
-              <div className="flex flex-col gap-2">
-                {comments.map((comment) => (
-                  <div
-                    key={comment.finding_id}
-                    className="rounded-md border p-3"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="truncate text-sm font-medium">
-                        {comment.path || "Summary comment"}
-                      </span>
-                      <Badge
-                        className="shrink-0"
-                        variant={comment.unanchored ? "destructive" : "outline"}
-                      >
-                        {comment.unanchored ? "unanchored" : "anchored"}
-                      </Badge>
-                    </div>
-                    <p className="text-muted-foreground mt-2 text-sm leading-6 whitespace-pre-wrap">
-                      {comment.body}
-                    </p>
-                    {comment.warning && (
-                      <p className="text-destructive mt-2 text-xs">
-                        {comment.warning}
-                      </p>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
+              {comments.length === 0 ? (
+                <EmptyState
+                  className="border bg-white"
+                  title="No inline comments"
+                  description="This preview will publish as a summary review."
+                  icon={MessageSquareIcon}
+                />
+              ) : (
+                <div className="relative ml-3 flex flex-col gap-4 border-l-2 border-[#d0d7de] pl-5">
+                  {comments.map((comment, index) => (
+                    <GitHubInlineCommentPreview
+                      key={`${comment.finding_id}:${comment.path ?? "summary"}:${comment.line ?? index}`}
+                      comment={comment}
+                      index={index}
+                    />
+                  ))}
+                </div>
+              )}
+            </section>
             {warnings.length > 0 && (
-              <div>
+              <section>
                 <div className="mb-2 text-sm font-medium">Warnings</div>
                 <div className="flex flex-col gap-2">
                   {warnings.map((warning) => (
@@ -5458,13 +5313,131 @@ function GitHubPreviewPane({
                     </div>
                   ))}
                 </div>
-              </div>
+              </section>
             )}
           </div>
         </ScrollArea>
       )}
     </section>
   );
+}
+
+function GitHubReviewBodyPreview({ body }: { body: string }) {
+  return (
+    <article className="overflow-hidden rounded-lg border border-[#d0d7de] bg-white shadow-[0_1px_2px_rgba(31,35,40,0.04)]">
+      <div className="flex items-center justify-between gap-3 border-b border-[#d0d7de] bg-[#f6f8fa] px-4 py-3">
+        <div className="min-w-0">
+          <span className="font-semibold">cocode</span>
+          <Badge className="ml-2" variant="outline">
+            Bot
+          </Badge>
+          <span className="text-muted-foreground ml-2">left a review</span>
+        </div>
+        <span className="text-muted-foreground font-mono text-lg leading-none">
+          ...
+        </span>
+      </div>
+      <div className="px-4 py-4">
+        <div className="mb-2 text-xs font-medium">Review body</div>
+        <MarkdownMessage className="text-sm leading-6" content={body} />
+      </div>
+    </article>
+  );
+}
+
+function GitHubInlineCommentPreview({
+  comment,
+  index,
+}: {
+  comment: GitHubPreviewResponse["comments"][number];
+  index: number;
+}) {
+  return (
+    <article className="relative overflow-hidden rounded-lg border border-[#d0d7de] bg-white shadow-[0_1px_2px_rgba(31,35,40,0.04)] before:absolute before:top-5 before:-left-[27px] before:h-2 before:w-2 before:rounded-full before:border-2 before:border-[#d0d7de] before:bg-white">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#d0d7de] bg-[#f6f8fa] px-3 py-2 text-sm">
+        <div className="min-w-0">
+          <span className="font-mono text-xs font-semibold">
+            {formatGitHubCommentLocation(comment)}
+          </span>
+          {comment.line ? (
+            <span className="text-muted-foreground ml-2 text-xs">
+              comment on line {comment.line}
+            </span>
+          ) : null}
+        </div>
+        <Badge variant={comment.unanchored ? "destructive" : "outline"}>
+          {comment.unanchored ? "unanchored" : "anchored"}
+        </Badge>
+      </div>
+      <div className="px-4 py-3">
+        <div className="mb-2 flex items-center gap-2 text-xs">
+          <span className="font-semibold">cocode</span>
+          <Badge variant="outline">Bot</Badge>
+          <span className="text-muted-foreground">
+            inline draft {index + 1}
+          </span>
+        </div>
+        <MarkdownMessage className="text-sm leading-6" content={comment.body} />
+        {comment.warning && (
+          <p className="text-destructive mt-3 text-xs leading-5 [overflow-wrap:anywhere] break-words">
+            {comment.warning}
+          </p>
+        )}
+      </div>
+    </article>
+  );
+}
+
+function formatGitHubCommentLocation(
+  comment: GitHubPreviewResponse["comments"][number],
+) {
+  if (!comment.path) {
+    return "Summary comment";
+  }
+  if (comment.line) {
+    return `${comment.path}:L${comment.line}`;
+  }
+  if (comment.position) {
+    return `${comment.path}:position ${comment.position}`;
+  }
+  return comment.path;
+}
+
+function formatGitHubPreviewClipboard(preview: GitHubPreviewResponse) {
+  const lines = [
+    "GitHub review body",
+    "",
+    preview.body.trim(),
+    "",
+    "Inline comments",
+    "",
+  ];
+  if (preview.comments.length === 0) {
+    lines.push("No inline comments.", "");
+  } else {
+    preview.comments.forEach((comment, index) => {
+      lines.push(`${index + 1}. ${formatGitHubCommentLocation(comment)}`);
+      lines.push(
+        comment.unanchored ? "Status: unanchored" : "Status: anchored",
+      );
+      if (comment.warning) {
+        lines.push(`Warning: ${comment.warning}`);
+      }
+      lines.push("", comment.body.trim(), "");
+    });
+  }
+  if (preview.warnings.length > 0) {
+    lines.push("Warnings", "");
+    preview.warnings.forEach((warning, index) => {
+      lines.push(
+        `${index + 1}. ${warning.path || warning.finding_id}: ${warning.message}`,
+      );
+    });
+  }
+  return `${lines
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()}\n`;
 }
 
 function GitHubPreviewChecklistView({
@@ -5561,10 +5534,6 @@ function CopyPacketPreviewPane({
   );
 }
 
-function evidenceItemsOrEmpty(items?: EvidenceItem[] | null): EvidenceItem[] {
-  return Array.isArray(items) ? items : [];
-}
-
 function FindingDetailScreen({
   agentConfigs,
   client,
@@ -5572,6 +5541,7 @@ function FindingDetailScreen({
   finding,
   onBack,
   onOpenEvidenceMap,
+  onOpenFollowUp,
 }: {
   agentConfigs: Loadable<AgentConfig[]>;
   client: ApiClient | null;
@@ -5579,6 +5549,7 @@ function FindingDetailScreen({
   finding: Finding;
   onBack: () => void;
   onOpenEvidenceMap: (finding: Finding) => void;
+  onOpenFollowUp: (finding: Finding) => void;
 }) {
   const [detailState, setDetailState] =
     useState<Loadable<FindingDetailResponse>>(loadingApiState());
@@ -5588,6 +5559,8 @@ function FindingDetailScreen({
   const [question, setQuestion] = useState("");
   const [selectedAgentId, setSelectedAgentId] = useState("");
   const [dismissReason, setDismissReason] = useState("");
+  const [saveDismissalRule, setSaveDismissalRule] = useState(false);
+  const [ruleMemorySuggestion, setRuleMemorySuggestion] = useState("");
   const [actionState, setActionState] =
     useState<Loadable<FindingDetailResponse | AskFindingQuestionResponse>>(
       idleApiState(),
@@ -5629,21 +5602,15 @@ function FindingDetailScreen({
   const detail =
     detailState.status === "success" ? detailState.data : undefined;
   const activeFinding = detail?.finding ?? finding;
-  const supportingEvidence = evidenceItemsOrEmpty(
-    detail?.evidence_groups?.supporting,
-  );
-  const counterEvidence = evidenceItemsOrEmpty(
-    detail?.evidence_groups?.counter,
-  );
-  const missingEvidence = evidenceItemsOrEmpty(
-    detail?.evidence_groups?.missing,
-  );
-  const testEvidence = evidenceItemsOrEmpty(detail?.evidence_groups?.test);
-  const searchEvidence = evidenceItemsOrEmpty(detail?.evidence_groups?.search);
   const runtimeEvents = useMemo(
     () => followUpRuntimeEvents(events, activeFinding.id),
     [activeFinding.id, events],
   );
+  const inspectorPanel = useResizableRightPanel({
+    defaultWidth: 500,
+    maxWidth: 760,
+    minWidth: 360,
+  });
   const agents = agentConfigs.status === "success" ? agentConfigs.data : [];
   const followUpAgents = agents.filter(
     (agent) => agent.enabled && !agent.capabilities.can_write,
@@ -5666,12 +5633,18 @@ function FindingDetailScreen({
           decision === "dismissed"
             ? dismissReason.trim()
             : "accepted from finding detail",
+        rule_memory_suggestion:
+          decision === "dismissed" && saveDismissalRule
+            ? ruleMemorySuggestion.trim() || dismissReason.trim()
+            : undefined,
       }),
     );
     setActionState(state);
     if (state.status === "success") {
       setDetailState(state);
       setDismissReason("");
+      setSaveDismissalRule(false);
+      setRuleMemorySuggestion("");
     }
   }
 
@@ -5779,334 +5752,118 @@ function FindingDetailScreen({
         />
       )}
       {detail && (
-        <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(340px,0.72fr)] 2xl:grid-cols-[minmax(0,1.05fr)_minmax(320px,0.72fr)_320px]">
-          <section className="cocode-panel min-w-0 overflow-hidden">
-            <div className="border-b px-4 py-3">
-              <div className="text-sm font-semibold">Changed file</div>
-              <div className="text-muted-foreground mt-1 font-mono text-xs break-all">
-                {activeFinding.primary_path || "No primary file"}
+        <div
+          className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(360px,var(--right-panel-width))]"
+          style={inspectorPanel.gridStyle}
+        >
+          <div className="flex min-w-0 flex-col gap-4">
+            <section className="cocode-panel min-w-0 overflow-hidden">
+              <div className="border-b px-4 py-3">
+                <div className="text-sm font-semibold">Issue location</div>
+                <div className="text-muted-foreground mt-1 font-mono text-xs break-all">
+                  {activeFinding.primary_path || "No primary file"}
+                </div>
               </div>
-            </div>
-            <div className="p-4">
-              <CodeSnippetViewer
-                evidence={detail.evidence_items}
-                finding={activeFinding}
-                onCopyPath={() => {
-                  void window.cocode?.writeClipboard?.(
-                    formatFindingLocation(activeFinding),
-                  );
-                }}
-              />
-            </div>
-          </section>
+              <div className="p-4">
+                <CodeSnippetViewer
+                  evidence={detail.evidence_items}
+                  finding={activeFinding}
+                  onCopyPath={() => {
+                    void window.cocode?.writeClipboard?.(
+                      formatFindingLocation(activeFinding),
+                    );
+                  }}
+                />
+              </div>
+            </section>
 
-          <section className="flex min-w-0 flex-col gap-3">
-            <FindingExplanationCard
-              counterEvidence={[...counterEvidence, ...missingEvidence]}
+            <section className="cocode-panel">
+              <div className="border-b px-4 py-3">
+                <div className="text-sm font-semibold">Finding thread</div>
+                <div className="text-muted-foreground mt-1 text-xs">
+                  Ask scoped questions and keep the answers attached to this
+                  finding.
+                </div>
+              </div>
+              {threadState.status === "loading" && <LoadingRows rows={3} />}
+              {threadState.status === "error" && (
+                <ErrorState
+                  className="m-4"
+                  title="Finding thread unavailable"
+                  description={threadState.error.message}
+                />
+              )}
+              {threadState.status === "success" && (
+                <FollowUpMessages messages={threadState.data.messages} />
+              )}
+              <AgentRuntimeTrace
+                events={runtimeEvents}
+                loading={actionState.status === "loading"}
+              />
+              <MessageComposer
+                agents={followUpAgents}
+                backendDetail="Uses finding evidence and prior thread messages."
+                defaultMode="finding follow-up"
+                disabled={!client}
+                onQuestionChange={setQuestion}
+                onSelectedAgentIdChange={setSelectedAgentId}
+                onSubmit={(nextQuestion, options) =>
+                  askQuestion(
+                    nextQuestion,
+                    options.contextPolicy,
+                    options.agentConfigId,
+                  )
+                }
+                question={question}
+                selectedAgentId={selectedAgentId}
+                submitting={actionState.status === "loading"}
+              />
+            </section>
+          </div>
+
+          <div className="relative min-w-0">
+            <ResizableRightPanelHandle
+              onPointerDown={inspectorPanel.startResize}
+            />
+            <FindingsInspectorPanel
+              actionState={{
+                status:
+                  actionState.status === "error" ? "error" : actionState.status,
+                message:
+                  actionState.status === "error"
+                    ? actionState.error.message
+                    : actionState.status === "success"
+                      ? "Changes saved"
+                      : undefined,
+              }}
               detail={detail}
+              dismissalReason={dismissReason}
+              dismissalRuleSuggestion={ruleMemorySuggestion}
+              draftComment={draftComment}
               finding={activeFinding}
-              supportingEvidence={supportingEvidence}
-              testEvidence={testEvidence}
+              onAccept={() => void updateDecision("accepted")}
+              onCopyFixPacket={() => void copyDraftComment()}
+              onCopyPath={() => {
+                void window.cocode?.writeClipboard?.(
+                  formatFindingLocation(activeFinding),
+                );
+              }}
+              onDismiss={() => void updateDecision("dismissed")}
+              onDismissReasonChange={setDismissReason}
+              onDismissalRuleSuggestionChange={setRuleMemorySuggestion}
+              onSaveDismissalRuleChange={setSaveDismissalRule}
+              onDraftCommentChange={setDraftComment}
+              onOpenEvidenceMap={() => onOpenEvidenceMap(activeFinding)}
+              onOpenFollowUp={() => onOpenFollowUp(activeFinding)}
+              onSaveDraftComment={() => void saveDraftComment()}
+              saveDismissalRule={saveDismissalRule}
+              showSaveRule
             />
-            <EvidenceNarrativeCard
-              title="Supporting evidence"
-              items={supportingEvidence}
-              fallback={activeFinding.evidence_summary}
-            />
-            <EvidenceNarrativeCard
-              title="Counter-evidence"
-              items={[...counterEvidence, ...missingEvidence]}
-              fallback={activeFinding.counter_evidence_summary}
-            />
-            <EvidenceNarrativeCard
-              title="Related tests"
-              items={[...testEvidence, ...searchEvidence]}
-              fallback="No related test signal was found for this finding."
-            />
-            {activeFinding.suggested_fix && (
-              <div className="cocode-panel p-4">
-                <div className="text-sm font-semibold">Suggested fix</div>
-                <p className="text-muted-foreground mt-2 text-sm leading-6">
-                  {activeFinding.suggested_fix}
-                </p>
-              </div>
-            )}
-            <AgentConsensusPanel detail={detail} finding={activeFinding} />
-          </section>
-
-          <aside className="flex min-w-0 flex-col gap-3 xl:col-span-2 2xl:col-span-1">
-            <div className="cocode-panel p-4">
-              <div className="mb-3 text-sm font-semibold">Finding details</div>
-              <FindingDetailFacts finding={activeFinding} detail={detail} />
-            </div>
-            <div className="cocode-panel p-4">
-              <div className="mb-3 text-sm font-semibold">Update status</div>
-              <div className="grid gap-2">
-                <div className="text-muted-foreground rounded-md border bg-[#fbfbfa] px-3 py-2 text-xs">
-                  Current state: {findingWorkflowStatusLabel(activeFinding)}
-                </div>
-                <Button
-                  disabled={actionState.status === "loading"}
-                  onClick={() => void updateDecision("accepted")}
-                >
-                  <CheckIcon data-icon="inline-start" />
-                  Accept finding
-                </Button>
-                <details>
-                  <summary className="text-muted-foreground flex cursor-pointer list-none items-center justify-between rounded-md border bg-white px-3 py-2 text-xs font-medium [&::-webkit-details-marker]:hidden">
-                    <span>Dismissal reason</span>
-                    <ChevronDownIcon className="size-3.5" />
-                  </summary>
-                  <Input
-                    aria-label="Dismissal reason"
-                    className="mt-2"
-                    placeholder="Why is this not actionable?"
-                    value={dismissReason}
-                    onChange={(event) => setDismissReason(event.target.value)}
-                  />
-                </details>
-                <Button
-                  disabled={actionState.status === "loading"}
-                  variant="outline"
-                  onClick={() => void updateDecision("dismissed")}
-                >
-                  Dismiss finding
-                </Button>
-              </div>
-            </div>
-            <div className="cocode-panel p-4">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <div className="text-sm font-semibold">
-                  Draft GitHub comment
-                </div>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => void copyDraftComment()}
-                >
-                  <CopyIcon data-icon="inline-start" />
-                  Copy
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => void saveDraftComment()}
-                >
-                  Save
-                </Button>
-              </div>
-              <Textarea
-                aria-label="Detailed draft GitHub comment"
-                className="max-h-80 min-h-44 resize-y overflow-auto font-mono text-xs leading-5 [scrollbar-width:thin]"
-                value={draftComment}
-                onChange={(event) => setDraftComment(event.target.value)}
-              />
-            </div>
-            {actionState.status === "error" && (
-              <ErrorState
-                title="Finding action failed"
-                description={actionState.error.message}
-              />
-            )}
-          </aside>
-        </div>
-      )}
-
-      <section className="cocode-panel">
-        <div className="border-b px-4 py-3">
-          <div className="text-sm font-semibold">Finding thread</div>
-          <div className="text-muted-foreground mt-1 text-xs">
-            Ask scoped questions and keep the answers attached to this finding.
           </div>
         </div>
-        {threadState.status === "loading" && <LoadingRows rows={3} />}
-        {threadState.status === "error" && (
-          <ErrorState
-            className="m-4"
-            title="Finding thread unavailable"
-            description={threadState.error.message}
-          />
-        )}
-        {threadState.status === "success" && (
-          <FollowUpMessages messages={threadState.data.messages} />
-        )}
-        <AgentRuntimeTrace
-          events={runtimeEvents}
-          loading={actionState.status === "loading"}
-        />
-        <MessageComposer
-          agents={followUpAgents}
-          backendDetail="Uses finding evidence and prior thread messages."
-          defaultMode="finding follow-up"
-          disabled={!client}
-          onQuestionChange={setQuestion}
-          onSelectedAgentIdChange={setSelectedAgentId}
-          onSubmit={(nextQuestion, options) =>
-            askQuestion(
-              nextQuestion,
-              options.contextPolicy,
-              options.agentConfigId,
-            )
-          }
-          question={question}
-          selectedAgentId={selectedAgentId}
-          submitting={actionState.status === "loading"}
-        />
-      </section>
-    </div>
-  );
-}
-
-function FindingExplanationCard({
-  counterEvidence,
-  detail,
-  finding,
-  supportingEvidence,
-  testEvidence,
-}: {
-  counterEvidence: EvidenceItem[];
-  detail: FindingDetailResponse;
-  finding: Finding;
-  supportingEvidence: EvidenceItem[];
-  testEvidence: EvidenceItem[];
-}) {
-  const primary = primaryEvidenceItem(detail.evidence_items, finding);
-  const supporting = primary ?? supportingEvidence[0];
-  const counter =
-    counterEvidence.find((item) => item.kind !== "missing") ??
-    counterEvidence[0];
-  const test = testEvidence[0];
-  const observedCode = supporting?.code_snippet
-    ? firstMeaningfulSnippetLine(supporting.code_snippet)
-    : "";
-  const sourceCount = Math.max(
-    detail.candidates.length,
-    finding.merged_from_count,
-  );
-  const content = [
-    `**Claim.** ${finding.canonical_claim}`,
-    "",
-    finding.primary_path
-      ? `**Primary location.** \`${formatFindingLocation(finding)}\``
-      : "**Primary location.** No changed-file anchor has been verified yet.",
-    "",
-    supporting
-      ? `**What grounds it.** ${supporting.summary} ${formatEvidenceLocationMarkdown(supporting)}`
-      : `**What grounds it.** ${
-          finding.evidence_summary ||
-          "The finding needs a refreshed evidence pass before it has a concrete supporting code window."
-        }`,
-    observedCode ? `**Observed code.** \`${observedCode}\`` : "",
-    "",
-    counter
-      ? `**What might weaken it.** ${counter.summary} ${formatEvidenceLocationMarkdown(counter)}`
-      : "**What might weaken it.** No concrete counter-evidence has been attached yet.",
-    "",
-    test
-      ? `**Related tests.** ${test.summary} ${formatEvidenceLocationMarkdown(test)}`
-      : "**Related tests.** No related test signal is attached yet.",
-    "",
-    finding.suggested_fix ? `**Suggested fix.** ${finding.suggested_fix}` : "",
-    sourceCount > 0
-      ? `**Agent signal.** ${sourceCount} reviewer signal${sourceCount === 1 ? "" : "s"} contributed to this merged finding.`
-      : "",
-  ].filter(Boolean);
-
-  return (
-    <div className="cocode-panel p-4">
-      <div className="text-sm font-semibold">Detailed explanation</div>
-      <MarkdownMessage className="mt-3" content={content.join("\n")} />
-    </div>
-  );
-}
-
-function EvidenceNarrativeCard({
-  fallback,
-  items,
-  title,
-}: {
-  fallback?: string;
-  items: EvidenceItem[];
-  title: string;
-}) {
-  return (
-    <div className="cocode-panel p-4">
-      <div className="text-sm font-semibold">{title}</div>
-      {items.length > 0 ? (
-        <div className="mt-3 flex flex-col gap-3">
-          {items.slice(0, 5).map((item) => (
-            <article
-              className="border-border/70 bg-surface/40 min-w-0 rounded-lg border p-3"
-              key={item.id}
-            >
-              <div className="flex min-w-0 flex-wrap items-center gap-2">
-                <Badge variant={evidenceBadgeVariant(item.kind)}>
-                  {formatDecisionLabel(item.kind)}
-                </Badge>
-                <Badge variant="outline">
-                  {Math.round(item.confidence * 100)}%
-                </Badge>
-                {item.path && (
-                  <span className="text-muted-foreground min-w-0 truncate font-mono text-xs">
-                    {formatEvidenceLocation(item)}
-                  </span>
-                )}
-              </div>
-              <div className="mt-2 text-sm font-medium break-words">
-                {item.title}
-              </div>
-              <MarkdownMessage
-                className="text-muted-foreground mt-1"
-                content={item.summary}
-              />
-              {item.code_snippet?.trim() ? (
-                <div className="mt-3 overflow-hidden rounded-md border bg-white">
-                  <SyntaxCodeBlock
-                    className="max-h-56 overflow-auto rounded-none border-0 bg-white text-xs"
-                    code={snippetPreview(item.code_snippet, 14)}
-                    language={languageForFilePath(item.path || "")}
-                    lineNumbers
-                    startLine={
-                      item.line_window?.start_line ?? item.start_line ?? 1
-                    }
-                  />
-                </div>
-              ) : null}
-            </article>
-          ))}
-          {items.length > 5 && (
-            <div className="text-muted-foreground text-xs">
-              {items.length - 5} more evidence item
-              {items.length - 5 === 1 ? "" : "s"} omitted from this summary.
-            </div>
-          )}
-        </div>
-      ) : (
-        <p className="text-muted-foreground mt-2 text-sm leading-6">
-          {fallback || "No stored evidence for this section yet."}
-        </p>
       )}
     </div>
   );
-}
-
-function primaryEvidenceItem(items: EvidenceItem[], finding: Finding) {
-  const normalizedPrimaryPath = finding.primary_path?.trim();
-  const candidates = prioritizedEvidenceItems(items).filter((item) => {
-    if (!item.code_snippet?.trim()) {
-      return false;
-    }
-    if (normalizedPrimaryPath && item.path === normalizedPrimaryPath) {
-      return true;
-    }
-    return item.kind === "supporting";
-  });
-  return candidates[0];
-}
-
-function formatEvidenceLocationMarkdown(item: EvidenceItem) {
-  const location = formatEvidenceLocation(item);
-  return location && location !== item.kind ? `(\`${location}\`)` : "";
 }
 
 function snippetPreview(snippet: string, maxLines: number) {
@@ -6117,18 +5874,84 @@ function snippetPreview(snippet: string, maxLines: number) {
   return `${lines.slice(0, maxLines).join("\n")}\n...`;
 }
 
-function firstMeaningfulSnippetLine(snippet: string) {
-  const line = snippet
-    .split(/\r?\n/)
-    .map((candidate) => candidate.replace(/^\s*\d+:\s?/, "").trim())
-    .find((candidate) => candidate.length > 0);
-  return truncate(line || "", 160);
+function evidenceCodeSnippet(item: EvidenceItem) {
+  const direct = item.code_snippet?.trim();
+  if (direct) {
+    return item.code_snippet ?? "";
+  }
+  return metadataCodeSnippet(item.metadata);
+}
+
+function metadataCodeSnippet(metadata: unknown): string {
+  const payload = metadataObject(metadata);
+  if (!payload) {
+    return "";
+  }
+  const snippet = payload.code_snippet;
+  if (typeof snippet === "string" && snippet.trim()) {
+    return snippet;
+  }
+  return metadataCodeSnippet(payload.agent_metadata);
+}
+
+function evidenceLineWindow(item: EvidenceItem) {
+  if (
+    item.line_window &&
+    item.line_window.start_line > 0 &&
+    item.line_window.end_line >= item.line_window.start_line
+  ) {
+    return item.line_window;
+  }
+  return metadataLineWindow(item.metadata);
+}
+
+function metadataLineWindow(metadata: unknown) {
+  const payload = metadataObject(metadata);
+  if (!payload) {
+    return undefined;
+  }
+  const lineWindow = metadataObject(payload.line_window);
+  const startLine = numberValue(lineWindow?.start_line);
+  const endLine = numberValue(lineWindow?.end_line);
+  if (startLine > 0 && endLine >= startLine) {
+    return { start_line: startLine, end_line: endLine };
+  }
+  return metadataLineWindow(payload.agent_metadata);
+}
+
+function metadataObject(value: unknown): Record<string, unknown> | undefined {
+  if (!value) {
+    return undefined;
+  }
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return metadataObject(parsed);
+    } catch {
+      return undefined;
+    }
+  }
+  if (typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return undefined;
+}
+
+function numberValue(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
 }
 
 function prioritizedCodeSnippetItems(items: EvidenceItem[], finding: Finding) {
   const primaryPath = finding.primary_path?.trim();
   return prioritizedEvidenceItems(items)
-    .filter((item) => item.code_snippet?.trim())
+    .filter((item) => evidenceCodeSnippet(item))
     .sort((left, right) => {
       const leftPrimary = primaryPath && left.path === primaryPath ? 1 : 0;
       const rightPrimary = primaryPath && right.path === primaryPath ? 1 : 0;
@@ -6148,35 +5971,6 @@ function prioritizedCodeSnippetItems(items: EvidenceItem[], finding: Finding) {
       }
       return 0;
     });
-}
-
-function FindingDetailFacts({
-  detail,
-  finding,
-}: {
-  detail: FindingDetailResponse;
-  finding: Finding;
-}) {
-  const rows = [
-    ["Finding ID", finding.id],
-    ["Severity", formatDecisionLabel(finding.severity)],
-    ["Status", formatDecisionLabel(finding.verification_status)],
-    ["Decision", formatDecisionLabel(finding.decision_status)],
-    ["Agents", String(detail.candidates.length || finding.merged_from_count)],
-    ["Confidence", `${Math.round(finding.confidence * 100)}%`],
-    ["First seen", formatShortDate(finding.first_seen_at)],
-    ["Updated", formatShortDate(finding.updated_at)],
-  ];
-  return (
-    <dl className="grid gap-3 text-sm">
-      {rows.map(([label, value]) => (
-        <div className="grid grid-cols-[90px_minmax(0,1fr)] gap-3" key={label}>
-          <dt className="text-muted-foreground">{label}</dt>
-          <dd className="min-w-0 text-right font-medium break-all">{value}</dd>
-        </div>
-      ))}
-    </dl>
-  );
 }
 
 function FindingFollowUpScreen({
@@ -6507,7 +6301,7 @@ function FindingFollowUpScreen({
                       {item.title}
                     </span>
                     <Badge variant={evidenceBadgeVariant(item.kind)}>
-                      {item.kind}
+                      {evidenceKindDisplayLabel(item.kind)}
                     </Badge>
                   </div>
                   <div className="text-muted-foreground mt-1 text-xs">
@@ -6594,24 +6388,6 @@ function payloadString(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-type EvidenceMapSelection =
-  | { kind: "node"; id: string }
-  | { kind: "edge"; id: string }
-  | { kind: "call_path"; id: string };
-
-interface PositionedEvidenceMapNode {
-  node: EvidenceMapNode;
-  x: number;
-  y: number;
-}
-
-interface EvidenceMapLayout {
-  nodes: PositionedEvidenceMapNode[];
-  nodeById: Map<string, PositionedEvidenceMapNode>;
-  width: number;
-  height: number;
-}
-
 function EvidenceMapScreen({
   activeRepository,
   client,
@@ -6628,7 +6404,6 @@ function EvidenceMapScreen({
   const [selection, setSelection] = useState<EvidenceMapSelection | null>(null);
   const [actionMessage, setActionMessage] = useState("");
   const [isRebuilding, setIsRebuilding] = useState(false);
-  const [isOpeningEditor, setIsOpeningEditor] = useState(false);
 
   useEffect(() => {
     let canceled = false;
@@ -6673,6 +6448,7 @@ function EvidenceMapScreen({
     map && selection?.kind === "call_path"
       ? map.call_paths.find((path) => path.id === selection.id)
       : undefined;
+  const displayFinding = map?.finding ?? finding;
 
   async function rebuildMap() {
     if (!client) {
@@ -6696,35 +6472,8 @@ function EvidenceMapScreen({
     );
   }
 
-  async function openSelectedInEditor() {
-    const target = evidenceMapOpenTarget(
-      selectedNode,
-      selectedCallPath,
-      activeRepository,
-    );
-    if (!target) {
-      setActionMessage("Select a node or call path step with a file path.");
-      return;
-    }
-    if (!window.cocode?.openFile) {
-      setActionMessage("Editor bridge is unavailable.");
-      return;
-    }
-    setIsOpeningEditor(true);
-    setActionMessage("");
-    const state = await loadApiResource(() => window.cocode!.openFile(target));
-    setIsOpeningEditor(false);
-    setActionMessage(
-      state.status === "success"
-        ? "Opened in editor"
-        : state.status === "error"
-          ? state.error.message
-          : "Open failed",
-    );
-  }
-
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex h-full min-h-[calc(100vh-220px)] min-w-0 flex-col gap-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-muted-foreground mb-2 flex items-center gap-2 text-xs">
@@ -6733,8 +6482,8 @@ function EvidenceMapScreen({
             <span className="text-foreground">Evidence Map</span>
           </div>
           <h2 className="text-2xl leading-8 font-semibold">Evidence Map</h2>
-          <p className="text-muted-foreground mt-1 max-w-3xl truncate text-sm">
-            {finding.canonical_claim}
+          <p className="text-muted-foreground mt-1 max-w-3xl break-words text-sm">
+            {displayFinding.canonical_claim}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -6764,14 +6513,8 @@ function EvidenceMapScreen({
         />
       )}
       {map && (
-        <div className="cocode-panel evidence-map-layout min-h-0 min-w-0 overflow-hidden lg:h-[min(760px,calc(100vh-240px))]">
-          <EvidenceMapHierarchyPane
-            hierarchy={map.hierarchy}
-            selection={selection}
-            onSelect={setSelection}
-          />
-
-          <div className="bg-background flex min-h-0 min-w-0 flex-col">
+        <div className="cocode-panel evidence-map-layout min-h-0 min-w-0 flex-1 overflow-hidden">
+          <div className="flex min-h-0 min-w-0 flex-col bg-white">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
               <div className="flex min-w-0 flex-wrap items-center gap-2">
                 <span className="mr-1 text-sm font-semibold">
@@ -6784,9 +6527,10 @@ function EvidenceMapScreen({
                 </Badge>
                 <Badge variant="secondary">{map.nodes.length} nodes</Badge>
                 <Badge variant="secondary">{map.edges.length} edges</Badge>
-                {map.missing_reasons && map.missing_reasons.length > 0 && (
+                {map.call_paths.length > 0 && (
                   <Badge variant="outline">
-                    {map.missing_reasons.length} missing
+                    {map.call_paths.length} call path
+                    {map.call_paths.length === 1 ? "" : "s"}
                   </Badge>
                 )}
               </div>
@@ -6805,873 +6549,24 @@ function EvidenceMapScreen({
               />
             )}
 
-            <div className="min-h-0 flex-1 overflow-y-auto [scrollbar-width:thin]">
+            <div className="min-h-0 flex-1 overflow-hidden">
               <EvidenceMapGraphCanvas
                 map={map}
                 selection={selection}
                 onSelect={setSelection}
               />
-
-              <details className="border-t bg-white" open>
-                <summary className="text-muted-foreground flex cursor-pointer list-none items-center justify-between px-4 py-3 text-sm font-medium [&::-webkit-details-marker]:hidden">
-                  <span>Signal summary</span>
-                  <ChevronDownIcon className="size-4" />
-                </summary>
-                <EvidenceMapNarrativeFlow
-                  map={map}
-                  selection={selection}
-                  onSelect={setSelection}
-                />
-              </details>
-
-              <details className="border-t bg-white">
-                <summary className="text-muted-foreground flex cursor-pointer list-none items-center justify-between px-4 py-3 text-sm font-medium [&::-webkit-details-marker]:hidden">
-                  <span>Call path</span>
-                  <Badge variant="outline">{map.call_paths.length} paths</Badge>
-                </summary>
-                <EvidenceMapCallPathPanel
-                  map={map}
-                  selection={selection}
-                  onSelect={setSelection}
-                />
-              </details>
             </div>
           </div>
 
-          <EvidenceMapRightPanel
-            activeRepository={activeRepository}
-            isOpeningEditor={isOpeningEditor}
+          <EvidenceMapInspectorPanel
+            activeRepositoryPath={activeRepository?.local_path}
             map={map}
-            onOpenEditor={() => void openSelectedInEditor()}
             selectedCallPath={selectedCallPath}
             selectedEdge={selectedEdge}
             selectedNode={selectedNode}
-            selection={selection}
           />
         </div>
       )}
-    </div>
-  );
-}
-
-function EvidenceMapHierarchyPane({
-  hierarchy,
-  onSelect,
-  selection,
-}: {
-  hierarchy: EvidenceMapHierarchyItem[];
-  onSelect: (selection: EvidenceMapSelection) => void;
-  selection: EvidenceMapSelection | null;
-}) {
-  return (
-    <aside className="bg-surface/60 min-h-0 min-w-0 border-b lg:border-r lg:border-b-0">
-      <div className="border-b px-4 py-3">
-        <div className="text-base font-semibold">Code hierarchy</div>
-        <div className="text-muted-foreground mt-1 text-xs">
-          {hierarchy.length} locations
-        </div>
-      </div>
-      <ScrollArea className="h-full min-w-0">
-        <div className="flex flex-col gap-1 p-2">
-          {hierarchy.map((item) => {
-            const targetNodeId = item.node_ids[0];
-            const selected =
-              selection?.kind === "node" &&
-              Boolean(targetNodeId) &&
-              selection.id === targetNodeId;
-            return (
-              <button
-                key={`${item.path}:${item.start_line ?? 0}:${item.kind}`}
-                className={cn(
-                  "hover:bg-surface-raised flex min-w-0 flex-col items-start overflow-hidden rounded-md border border-transparent px-3 py-2 text-left text-sm transition-colors",
-                  selected &&
-                    "border-primary/30 bg-surface-raised shadow-[0_1px_2px_oklch(0.2_0.02_255/0.04)]",
-                )}
-                disabled={!targetNodeId}
-                title={item.path}
-                type="button"
-                onClick={() => {
-                  if (targetNodeId) {
-                    onSelect({ kind: "node", id: targetNodeId });
-                  }
-                }}
-              >
-                <span className="w-full truncate font-medium">
-                  {pathLeafForDisplay(item.path)}
-                </span>
-                <span className="text-muted-foreground mt-1 flex max-w-full flex-wrap items-center gap-2 text-xs break-all">
-                  <span>{item.kind.replaceAll("_", " ")}</span>
-                  {item.start_line ? (
-                    <span>
-                      L{formatLineRange(item.start_line, item.end_line)}
-                    </span>
-                  ) : null}
-                </span>
-              </button>
-            );
-          })}
-          {hierarchy.length === 0 && (
-            <EmptyState
-              className="border-0 px-3 py-8"
-              title="No hierarchy"
-              description="No code locations are available for this graph."
-              icon={FileSearchIcon}
-            />
-          )}
-        </div>
-      </ScrollArea>
-    </aside>
-  );
-}
-
-function EvidenceMapNarrativeFlow({
-  map,
-  onSelect,
-  selection,
-}: {
-  map: EvidenceMapResponse;
-  onSelect: (selection: EvidenceMapSelection) => void;
-  selection: EvidenceMapSelection | null;
-}) {
-  const story = useMemo(() => evidenceMapNarrativeStory(map), [map]);
-
-  return (
-    <div className="min-h-[300px] min-w-0 flex-1 overflow-auto bg-[#fbfbfa] p-4 [scrollbar-width:thin]">
-      <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3">
-        <EvidenceMapFlowColumn
-          caption="Step 1"
-          description="The changed location that grounds the finding."
-          nodes={story.changed}
-          onSelect={onSelect}
-          selection={selection}
-          title="Changed code"
-          tone="green"
-        />
-        <EvidenceMapClaimColumn
-          finding={map.finding}
-          summary={story.claimSummary}
-        />
-        <EvidenceMapFlowColumn
-          caption="Step 3"
-          description="Signals that support, test, or challenge the claim."
-          nodes={story.checks}
-          onSelect={onSelect}
-          selection={selection}
-          title="Evidence checks"
-          tone="amber"
-        />
-      </div>
-
-      <div className="mt-4 grid gap-3 md:grid-cols-3">
-        <EvidenceMapInsightCard
-          label="Confidence"
-          value={`${Math.round(map.finding.confidence * 100)}%`}
-          detail={`${formatDecisionLabel(map.finding.severity)} severity`}
-        />
-        <EvidenceMapInsightCard
-          label="Evidence"
-          value={`${story.supportingCount}`}
-          detail="supporting signal(s)"
-        />
-        <EvidenceMapInsightCard
-          label="Counter checks"
-          value={`${story.counterCount}`}
-          detail="test or counter signal(s)"
-        />
-      </div>
-
-      {story.omittedNodes > 0 && (
-        <p className="text-muted-foreground mt-3 text-xs">
-          Grouped {story.omittedNodes} lower-signal duplicate node
-          {story.omittedNodes === 1 ? "" : "s"} so the flow stays readable.
-        </p>
-      )}
-    </div>
-  );
-}
-
-function EvidenceMapFlowColumn({
-  caption,
-  description,
-  nodes,
-  onSelect,
-  selection,
-  title,
-  tone,
-}: {
-  caption: string;
-  description: string;
-  nodes: EvidenceMapNode[];
-  onSelect: (selection: EvidenceMapSelection) => void;
-  selection: EvidenceMapSelection | null;
-  title: string;
-  tone: "amber" | "green";
-}) {
-  return (
-    <section className="border-border/70 flex min-h-[220px] min-w-0 flex-col overflow-hidden rounded-xl border bg-white p-3 shadow-[0_1px_2px_rgb(17_18_20/0.03)]">
-      <div className="text-muted-foreground text-[0.7rem] font-medium tracking-wide uppercase">
-        {caption}
-      </div>
-      <div className="mt-1 text-base font-semibold">{title}</div>
-      <p className="text-muted-foreground mt-1 text-xs leading-5">
-        {description}
-      </p>
-      <div className="mt-3 flex flex-1 flex-col gap-2">
-        {nodes.map((node) => (
-          <EvidenceMapFlowNode
-            key={node.id}
-            node={node}
-            selected={selection?.kind === "node" && selection.id === node.id}
-            tone={tone}
-            onSelect={() => onSelect({ kind: "node", id: node.id })}
-          />
-        ))}
-        {nodes.length === 0 && (
-          <div className="text-muted-foreground flex flex-1 items-center justify-center rounded-lg border border-dashed p-4 text-center text-xs leading-5">
-            No focused node is available for this step.
-          </div>
-        )}
-      </div>
-    </section>
-  );
-}
-
-function EvidenceMapClaimColumn({
-  finding,
-  summary,
-}: {
-  finding: EvidenceMapFinding;
-  summary: string;
-}) {
-  return (
-    <section className="border-foreground/15 flex min-h-[220px] min-w-0 flex-col overflow-hidden rounded-xl border bg-white p-4 shadow-[0_1px_2px_rgb(17_18_20/0.03)]">
-      <div className="text-muted-foreground text-[0.7rem] font-medium tracking-wide uppercase">
-        Step 2
-      </div>
-      <div className="mt-1 text-base font-semibold">Finding claim</div>
-      <p className="mt-3 text-[0.92rem] leading-6 font-semibold [overflow-wrap:anywhere] break-words">
-        {finding.canonical_claim}
-      </p>
-      <p className="text-muted-foreground mt-3 text-xs leading-5 [overflow-wrap:anywhere] break-words">
-        {summary ||
-          "This is the merged reviewer claim. The surrounding cards show the source and the checks that make it credible."}
-      </p>
-      <div className="mt-auto flex flex-wrap gap-2 pt-4">
-        <Badge variant="default">{formatDecisionLabel(finding.severity)}</Badge>
-        <Badge variant="secondary">
-          {formatDecisionLabel(finding.verification_status)}
-        </Badge>
-      </div>
-    </section>
-  );
-}
-
-function EvidenceMapFlowNode({
-  node,
-  onSelect,
-  selected,
-  tone,
-}: {
-  node: EvidenceMapNode;
-  onSelect: () => void;
-  selected: boolean;
-  tone: "amber" | "green";
-}) {
-  return (
-    <button
-      className={cn(
-        "flex min-w-0 cursor-pointer flex-col items-start overflow-hidden rounded-lg border px-3 py-2 text-left transition-colors",
-        tone === "green" &&
-          "border-emerald-200 bg-emerald-50/55 hover:bg-emerald-50",
-        tone === "amber" && "border-amber-200 bg-amber-50/55 hover:bg-amber-50",
-        selected &&
-          "border-foreground bg-white shadow-[0_1px_3px_rgb(17_18_20/0.12)]",
-      )}
-      title={`${evidenceMapReadableNodeLabel(node)}\n${formatEvidenceNodeLocation(node)}`}
-      type="button"
-      onClick={onSelect}
-    >
-      <span className="line-clamp-2 w-full text-[0.82rem] leading-5 font-semibold [overflow-wrap:anywhere] break-words">
-        {evidenceMapFlowNodeTitle(node)}
-      </span>
-      <span className="text-muted-foreground mt-1 line-clamp-1 w-full font-mono text-[0.68rem] break-all">
-        {formatCompactEvidenceNodeLocation(node, 2)}
-      </span>
-      <span className="text-muted-foreground mt-2 flex w-full items-center justify-between gap-2 text-[0.7rem]">
-        <span>{node.kind.replaceAll("_", " ")}</span>
-        <span>{Math.round(node.confidence * 100)}%</span>
-      </span>
-    </button>
-  );
-}
-
-function EvidenceMapInsightCard({
-  detail,
-  label,
-  value,
-}: {
-  detail: string;
-  label: string;
-  value: string;
-}) {
-  return (
-    <div className="border-border/70 rounded-lg border bg-white px-3 py-2.5">
-      <div className="text-muted-foreground text-xs">{label}</div>
-      <div className="mt-1 text-lg font-semibold">{value}</div>
-      <div className="text-muted-foreground mt-0.5 text-xs">{detail}</div>
-    </div>
-  );
-}
-
-export function EvidenceMapGraphCanvas({
-  map,
-  onSelect,
-  selection,
-}: {
-  map: EvidenceMapResponse;
-  onSelect: (selection: EvidenceMapSelection) => void;
-  selection: EvidenceMapSelection | null;
-}) {
-  const focusedMap = useMemo(() => focusedEvidenceMap(map), [map]);
-  const layout = useMemo(
-    () => buildEvidenceMapLayout(focusedMap),
-    [focusedMap],
-  );
-
-  if (focusedMap.nodes.length === 0) {
-    return (
-      <div className="bg-surface/30 flex min-h-[360px] min-w-0 flex-1 items-center justify-center">
-        <EmptyState
-          className="border-0"
-          title="No graph nodes"
-          description="The graph builder did not return renderable nodes for this finding."
-          icon={MapIcon}
-        />
-      </div>
-    );
-  }
-
-  return (
-    <div className="evidence-map-canvas min-h-[420px] min-w-0 flex-1 overflow-auto [scrollbar-width:thin]">
-      <svg
-        aria-label="Evidence Map graph"
-        className="block min-h-[420px]"
-        height={layout.height}
-        role="img"
-        viewBox={`0 0 ${layout.width} ${layout.height}`}
-        width={layout.width}
-      >
-        <defs>
-          <filter
-            id="evidence-map-node-shadow"
-            x="-12%"
-            y="-24%"
-            width="124%"
-            height="148%"
-          >
-            <feDropShadow
-              dx="0"
-              dy="8"
-              floodColor="oklch(0.2 0.02 255)"
-              floodOpacity="0.08"
-              stdDeviation="7"
-            />
-          </filter>
-          <marker
-            id="evidence-map-arrow"
-            markerHeight="7"
-            markerWidth="7"
-            orient="auto"
-            refX="6"
-            refY="3.5"
-          >
-            <path d="M0,0 L7,3.5 L0,7 Z" className="fill-muted-foreground" />
-          </marker>
-        </defs>
-        {[
-          { label: "Changed code", x: 64 },
-          { label: "Finding", x: 64 + EVIDENCE_MAP_COLUMN_GAP },
-          { label: "Checks", x: 64 + EVIDENCE_MAP_COLUMN_GAP * 2 },
-        ].map((heading) => (
-          <text
-            key={heading.label}
-            className="fill-muted-foreground text-[11px] font-semibold"
-            x={heading.x}
-            y="28"
-          >
-            {heading.label}
-          </text>
-        ))}
-        {focusedMap.edges.map((edge) => {
-          const source = layout.nodeById.get(edge.source);
-          const target = layout.nodeById.get(edge.target);
-          if (!source || !target) {
-            return null;
-          }
-          const selected =
-            selection?.kind === "edge" && selection.id === edge.id;
-          const sameColumn = Math.abs(source.x - target.x) < 12;
-          const sourceX = sameColumn
-            ? source.x + EVIDENCE_MAP_NODE_WIDTH / 2
-            : source.x + EVIDENCE_MAP_NODE_WIDTH;
-          const sourceY = sameColumn
-            ? source.y + EVIDENCE_MAP_NODE_HEIGHT
-            : source.y + EVIDENCE_MAP_NODE_HEIGHT / 2;
-          const targetX = sameColumn
-            ? target.x + EVIDENCE_MAP_NODE_WIDTH / 2
-            : target.x;
-          const targetY = sameColumn
-            ? target.y
-            : target.y + EVIDENCE_MAP_NODE_HEIGHT / 2;
-          const control = Math.max(76, Math.abs(targetX - sourceX) / 2);
-          const path = sameColumn
-            ? `M ${sourceX} ${sourceY} L ${targetX} ${targetY}`
-            : `M ${sourceX} ${sourceY} C ${sourceX + control} ${sourceY}, ${
-                targetX - control
-              } ${targetY}, ${targetX} ${targetY}`;
-          return (
-            <g
-              key={edge.id}
-              className="cursor-pointer"
-              role="button"
-              tabIndex={0}
-              onClick={() => onSelect({ kind: "edge", id: edge.id })}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  onSelect({ kind: "edge", id: edge.id });
-                }
-              }}
-            >
-              <path
-                className={cn(
-                  "stroke-muted-foreground/45 fill-none",
-                  selected && "stroke-primary",
-                  edge.status === "missing" && "stroke-destructive",
-                )}
-                d={path}
-                markerEnd="url(#evidence-map-arrow)"
-                strokeDasharray={edge.status === "missing" ? "7 5" : undefined}
-                strokeWidth={selected ? 2.6 : 1.6}
-              />
-              {edge.status === "missing" && (
-                <text
-                  className="fill-destructive text-[22px] font-semibold"
-                  x={(sourceX + targetX) / 2}
-                  y={(sourceY + targetY) / 2 + 7}
-                >
-                  x
-                </text>
-              )}
-            </g>
-          );
-        })}
-
-        {layout.nodes.map(({ node, x, y }) => {
-          const selected =
-            selection?.kind === "node" && selection.id === node.id;
-          const label = evidenceMapGraphNodeTitle(node);
-          const labelLines = wrapSvgLabel(label, 24).slice(0, 3);
-          const location = formatEvidenceNodeLocation(node);
-          const title = `${evidenceMapReadableNodeLabel(node)}${location ? `\n${location}` : ""}`;
-          const style = evidenceMapNodeStyle(node.kind);
-          return (
-            <g
-              key={node.id}
-              className="cursor-pointer"
-              role="button"
-              tabIndex={0}
-              transform={`translate(${x}, ${y})`}
-              onClick={() => onSelect({ kind: "node", id: node.id })}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  onSelect({ kind: "node", id: node.id });
-                }
-              }}
-            >
-              <title>{title}</title>
-              <rect
-                className={cn(style.surface, selected && style.selected)}
-                height={EVIDENCE_MAP_NODE_HEIGHT}
-                filter="url(#evidence-map-node-shadow)"
-                rx="8"
-                strokeWidth={selected ? 2.4 : 1.2}
-                width={EVIDENCE_MAP_NODE_WIDTH}
-              />
-              <rect
-                className={style.bar}
-                height="4"
-                rx="1.5"
-                width={EVIDENCE_MAP_NODE_WIDTH - 22}
-                x="11"
-                y="9"
-              />
-              <text className="fill-foreground text-[12px] font-semibold">
-                {labelLines.map((line, index) => (
-                  <tspan key={`${node.id}:${index}`} x="12" y={30 + index * 15}>
-                    {line}
-                  </tspan>
-                ))}
-              </text>
-              <text className="fill-muted-foreground text-[10px]">
-                <tspan x="12" y={EVIDENCE_MAP_NODE_HEIGHT - 14}>
-                  {truncate(evidenceMapGraphNodeMeta(node), 27)}
-                </tspan>
-                <tspan
-                  x={EVIDENCE_MAP_NODE_WIDTH - 54}
-                  y={EVIDENCE_MAP_NODE_HEIGHT - 14}
-                >
-                  {Math.round(node.confidence * 100)}%
-                </tspan>
-              </text>
-            </g>
-          );
-        })}
-      </svg>
-    </div>
-  );
-}
-
-function EvidenceMapCallPathPanel({
-  map,
-  onSelect,
-  selection,
-}: {
-  map: EvidenceMapResponse;
-  onSelect: (selection: EvidenceMapSelection) => void;
-  selection: EvidenceMapSelection | null;
-}) {
-  return (
-    <div className="bg-surface/35 border-t px-4 py-3">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <div className="text-sm font-semibold">Call path</div>
-        <Badge variant="outline">{map.call_paths.length} paths</Badge>
-      </div>
-      {map.call_paths.length > 0 ? (
-        <div className="flex gap-2 overflow-x-auto pb-1">
-          {map.call_paths.map((path) => (
-            <button
-              key={path.id}
-              className={cn(
-                "hover:bg-surface-raised bg-background flex min-w-[240px] flex-col items-start rounded-md border px-3 py-2.5 text-left transition-colors",
-                selection?.kind === "call_path" &&
-                  selection.id === path.id &&
-                  "border-primary bg-primary/[0.03]",
-              )}
-              type="button"
-              onClick={() => onSelect({ kind: "call_path", id: path.id })}
-            >
-              <span className="truncate text-sm font-medium">
-                {path.label || "Evidence path"}
-              </span>
-              <span className="text-muted-foreground mt-1 text-xs">
-                {path.steps.length} steps / {Math.round(path.confidence * 100)}%
-              </span>
-              <span className="text-muted-foreground mt-2 line-clamp-2 text-xs">
-                {path.steps.map((step) => step.label).join(" -> ")}
-              </span>
-            </button>
-          ))}
-        </div>
-      ) : (
-        <EmptyState
-          className="border-0 p-2"
-          title="No call path"
-          description={
-            map.call_path_unavailable_reason ||
-            "No readable call path is available."
-          }
-          icon={MapIcon}
-        />
-      )}
-    </div>
-  );
-}
-
-function EvidenceMapRightPanel({
-  activeRepository,
-  isOpeningEditor,
-  map,
-  onOpenEditor,
-  selectedCallPath,
-  selectedEdge,
-  selectedNode,
-  selection,
-}: {
-  activeRepository?: Repository;
-  isOpeningEditor: boolean;
-  map: EvidenceMapResponse;
-  onOpenEditor: () => void;
-  selectedCallPath?: EvidenceMapCallPath;
-  selectedEdge?: EvidenceMapEdge;
-  selectedNode?: EvidenceMapNode;
-  selection: EvidenceMapSelection | null;
-}) {
-  const openTarget = evidenceMapOpenTarget(
-    selectedNode,
-    selectedCallPath,
-    activeRepository,
-  );
-
-  return (
-    <aside className="evidence-map-right-panel bg-surface/60 min-h-0 max-w-full min-w-0 overflow-hidden border-t lg:border-t-0 lg:border-l">
-      <ScrollArea className="h-full min-w-0">
-        <div className="flex max-w-full min-w-0 flex-col gap-4 p-4">
-          <div className="bg-background max-w-full min-w-0 overflow-hidden rounded-md border p-3">
-            <div className="mb-2 text-sm font-semibold">Why this matters</div>
-            <p className="text-muted-foreground max-w-full text-sm leading-6 [overflow-wrap:anywhere] break-words [word-break:break-word]">
-              {map.panel.evidence_summary ||
-                map.graph.summary ||
-                `Evidence map for "${map.panel.claim}" with ${map.nodes.length} node(s) and ${map.edges.length} edge(s).`}
-            </p>
-            <div className="mt-4 border-t pt-4">
-              <div className="mb-2 text-sm font-semibold">
-                Evidence highlights
-              </div>
-              <div className="flex flex-col gap-2">
-                {map.panel.evidence.slice(0, 4).map((item) => (
-                  <div
-                    key={item.id}
-                    className="grid max-w-full min-w-0 grid-cols-[18px_minmax(0,1fr)] gap-2 overflow-hidden text-sm"
-                  >
-                    <CheckIcon className="text-success mt-0.5 size-3.5" />
-                    <div className="max-w-full min-w-0 overflow-hidden">
-                      <div
-                        className="line-clamp-2 max-w-full font-medium [overflow-wrap:anywhere] break-words [word-break:break-word]"
-                        title={item.title}
-                      >
-                        {compactEvidencePanelTitle(item)}
-                      </div>
-                      <div
-                        className="text-muted-foreground mt-0.5 max-w-full text-xs break-all"
-                        title={formatEvidenceRefLocation(item)}
-                      >
-                        {formatCompactEvidenceRefLocation(item, 2)}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-                {map.panel.evidence.length === 0 && (
-                  <p className="text-muted-foreground text-sm">
-                    No stored evidence highlights yet.
-                  </p>
-                )}
-              </div>
-            </div>
-            <div className="mt-4 border-t pt-4">
-              <div className="mb-2 text-sm font-semibold">Interpretation</div>
-              <p className="text-muted-foreground max-w-full text-sm leading-6 [overflow-wrap:anywhere] break-words [word-break:break-word]">
-                {map.graph.summary ||
-                  "Follow the solid path for reachable code and the dashed red edge for the missing or disputed guard."}
-              </p>
-            </div>
-            <div className="mt-4 border-t pt-4">
-              <div className="mb-2 text-sm font-semibold">
-                Suggested remediation
-              </div>
-              <p className="text-muted-foreground max-w-full text-sm leading-6 [overflow-wrap:anywhere] break-words [word-break:break-word]">
-                {map.panel.suggested_fix ||
-                  map.finding.suggested_fix ||
-                  "Review the selected path, restore the missing guard when the path is reachable, or document the existing control that makes the finding safe."}
-              </p>
-            </div>
-          </div>
-
-          <div className="bg-background max-w-full min-w-0 overflow-hidden rounded-md border p-3">
-            <div className="mb-2 text-sm font-semibold">Selected context</div>
-            <SelectedEvidenceMapDetail
-              edge={selectedEdge}
-              node={selectedNode}
-              callPath={selectedCallPath}
-              selection={selection}
-            />
-            <Button
-              className="mt-3 w-full justify-start"
-              disabled={!openTarget || isOpeningEditor}
-              size="sm"
-              variant="outline"
-              onClick={onOpenEditor}
-            >
-              <ExternalLinkIcon data-icon="inline-start" />
-              Open in editor
-            </Button>
-          </div>
-
-          <div className="bg-background max-w-full min-w-0 overflow-hidden rounded-md border p-3">
-            <EvidenceMapLegend map={map} />
-          </div>
-
-          {map.panel.evidence.length > 0 && (
-            <div className="bg-background max-w-full min-w-0 overflow-hidden rounded-md border p-3">
-              <div className="mb-2 text-sm font-semibold">Evidence bundle</div>
-              <div className="flex flex-col gap-2">
-                {map.panel.evidence.slice(0, 8).map((item) => (
-                  <div
-                    key={item.id}
-                    className="bg-surface/35 max-w-full min-w-0 overflow-hidden rounded-md border p-3"
-                  >
-                    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
-                      <span
-                        className="line-clamp-2 text-sm font-medium [overflow-wrap:anywhere] break-words [word-break:break-word]"
-                        title={item.title}
-                      >
-                        {compactEvidencePanelTitle(item)}
-                      </span>
-                      <Badge
-                        className="shrink-0"
-                        variant={evidenceBadgeVariant(item.kind)}
-                      >
-                        {item.kind}
-                      </Badge>
-                    </div>
-                    <div
-                      className="text-muted-foreground mt-1 text-xs break-all"
-                      title={formatEvidenceRefLocation(item)}
-                    >
-                      {formatCompactEvidenceRefLocation(item, 3)}
-                    </div>
-                    <p className="text-muted-foreground mt-2 line-clamp-3 max-w-full text-sm leading-6 [overflow-wrap:anywhere] break-words [word-break:break-word]">
-                      {item.summary}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      </ScrollArea>
-    </aside>
-  );
-}
-
-function SelectedEvidenceMapDetail({
-  callPath,
-  edge,
-  node,
-  selection,
-}: {
-  callPath?: EvidenceMapCallPath;
-  edge?: EvidenceMapEdge;
-  node?: EvidenceMapNode;
-  selection: EvidenceMapSelection | null;
-}) {
-  if (node) {
-    return (
-      <div className="bg-surface/35 max-w-full min-w-0 overflow-hidden rounded-md border p-3">
-        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
-          <span className="min-w-0 text-sm font-medium [overflow-wrap:anywhere] break-words [word-break:break-word]">
-            {node.label}
-          </span>
-          <Badge className="max-w-28 shrink-0 break-words" variant="outline">
-            {node.kind.replaceAll("_", " ")}
-          </Badge>
-        </div>
-        <div className="text-muted-foreground mt-2 text-xs break-all">
-          {formatEvidenceNodeLocation(node)}
-        </div>
-        {node.symbol && (
-          <div className="text-muted-foreground mt-2 text-sm [overflow-wrap:anywhere] break-words">
-            Symbol: {node.symbol}
-          </div>
-        )}
-        <div className="text-muted-foreground mt-2 text-sm">
-          Confidence {Math.round(node.confidence * 100)}%
-        </div>
-      </div>
-    );
-  }
-
-  if (edge) {
-    return (
-      <div className="bg-surface/35 max-w-full min-w-0 overflow-hidden rounded-md border p-3">
-        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
-          <span className="min-w-0 text-sm font-medium [overflow-wrap:anywhere] break-words [word-break:break-word]">
-            {edge.label || edge.kind.replaceAll("_", " ")}
-          </span>
-          <Badge
-            variant={edge.status === "missing" ? "destructive" : "outline"}
-          >
-            {edge.status}
-          </Badge>
-        </div>
-        <div className="text-muted-foreground mt-2 text-sm leading-6 [overflow-wrap:anywhere] break-all">
-          {edge.source} {"->"} {edge.target}
-        </div>
-        <div className="text-muted-foreground mt-2 text-sm">
-          Confidence {Math.round(edge.confidence * 100)}%
-        </div>
-      </div>
-    );
-  }
-
-  if (callPath) {
-    return (
-      <div className="bg-surface/35 max-w-full min-w-0 overflow-hidden rounded-md border p-3">
-        <div className="text-sm font-medium [overflow-wrap:anywhere] break-words [word-break:break-word]">
-          {callPath.label || "Evidence path"}
-        </div>
-        <div className="text-muted-foreground mt-2 text-sm">
-          Confidence {Math.round(callPath.confidence * 100)}%
-        </div>
-        <div className="mt-3 flex flex-col gap-2">
-          {callPath.steps.map((step) => (
-            <div
-              key={`${step.step_index}:${step.label}`}
-              className="min-w-0 text-sm [overflow-wrap:anywhere] break-words"
-            >
-              <span className="text-muted-foreground mr-2">
-                {step.step_index + 1}.
-              </span>
-              <span className="[overflow-wrap:anywhere] [word-break:break-word]">
-                {step.label}
-              </span>
-              {step.path && (
-                <div className="text-muted-foreground ml-6 text-xs break-all">
-                  {formatCallPathStepLocation(step)}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="text-muted-foreground bg-surface/35 min-w-0 rounded-md border p-3 text-sm [overflow-wrap:anywhere] break-words">
-      {selection
-        ? "The selected graph item is no longer available."
-        : "Select a node, edge, or call path to inspect it."}
-    </div>
-  );
-}
-
-function EvidenceMapLegend({ map }: { map: EvidenceMapResponse }) {
-  return (
-    <div>
-      <div className="mb-2 text-sm font-semibold">Legend</div>
-      <div className="flex flex-col gap-2">
-        {map.legend.map((item) => (
-          <div
-            key={item.kind}
-            className="bg-surface/35 max-w-full min-w-0 overflow-hidden rounded-md border p-3"
-          >
-            <div className="text-sm font-medium [overflow-wrap:anywhere] break-words">
-              {item.label}
-            </div>
-            <p className="text-muted-foreground mt-1 text-xs leading-5 [overflow-wrap:anywhere] break-words [word-break:break-word]">
-              {item.description}
-            </p>
-          </div>
-        ))}
-        {map.legend.length === 0 && (
-          <EmptyState
-            className="border-0 p-2"
-            title="No legend"
-            description="No legend entries are available for this graph."
-            icon={MapIcon}
-          />
-        )}
-      </div>
     </div>
   );
 }
@@ -7679,8 +6574,8 @@ function EvidenceMapLegend({ map }: { map: EvidenceMapResponse }) {
 export function FindingCard({
   actionState,
   finding,
-  onAccept,
-  onCopy,
+  layout = "wide",
+  onDecisionChange,
   onOpenDetail,
   onSelect,
   selected,
@@ -7691,8 +6586,8 @@ export function FindingCard({
     action?: string;
   };
   finding: Finding;
-  onAccept: () => void;
-  onCopy: () => void;
+  layout?: "wide" | "inspector";
+  onDecisionChange: (decision: FindingDecisionMutation) => void;
   onOpenDetail: () => void;
   onSelect: () => void;
   selected: boolean;
@@ -7701,22 +6596,27 @@ export function FindingCard({
     actionState.status === "loading" && actionState.findingId === finding.id;
   const confidence = `${Math.round(finding.confidence * 100)}%`;
   const sourceAgents = finding.source_agents ?? [];
+  const selectRow = (target: EventTarget | null) => {
+    if (
+      target instanceof HTMLElement &&
+      target.closest("button,select,a,input,textarea,[role='button']")
+    ) {
+      return;
+    }
+    onSelect();
+  };
   return (
     <div
       className={cn(
-        "grid w-full cursor-pointer grid-cols-1 gap-3 border-b border-l-2 border-l-transparent px-4 py-3 text-left transition-colors last:border-b-0 hover:bg-[#fbfbfa] lg:grid-cols-[88px_minmax(0,1.45fr)_minmax(118px,0.75fr)_112px_140px_110px]",
+        "grid w-full cursor-pointer grid-cols-1 gap-3 border-b border-l-2 border-l-transparent px-4 py-3 text-left transition-colors last:border-b-0 hover:bg-[#fbfbfa]",
+        layout === "inspector"
+          ? "lg:grid-cols-[72px_minmax(0,1fr)_132px_72px]"
+          : "lg:grid-cols-[72px_minmax(0,1.35fr)_minmax(96px,0.64fr)_132px_minmax(112px,0.64fr)_72px]",
         selected && "border-l-foreground bg-[#f7f7f5]",
       )}
       aria-selected={selected}
-      onClick={onSelect}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onSelect();
-        }
-      }}
-      role="button"
-      tabIndex={0}
+      data-testid={`finding-row-${finding.id}`}
+      onClick={(event) => selectRow(event.target)}
     >
       <div className="flex min-w-0 items-start gap-2 lg:block">
         <Badge
@@ -7734,7 +6634,7 @@ export function FindingCard({
       </div>
       <div className="min-w-0">
         <button
-          className="focus-visible:ring-ring line-clamp-1 cursor-pointer rounded-sm text-left text-sm font-semibold underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+          className="focus-visible:ring-ring block w-full max-w-full min-w-0 cursor-pointer truncate rounded-sm text-left text-sm font-semibold underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
           type="button"
           onClick={(event) => {
             event.stopPropagation();
@@ -7744,38 +6644,17 @@ export function FindingCard({
           {finding.canonical_claim}
         </button>
         {finding.evidence_summary && (
-          <div className="text-muted-foreground mt-1 line-clamp-2 text-xs leading-5">
+          <div className="text-muted-foreground mt-1 line-clamp-2 text-xs leading-5 [overflow-wrap:anywhere] break-words">
             {finding.evidence_summary}
           </div>
         )}
-        <div className="mt-2 flex flex-wrap gap-1 lg:hidden">
-          <Button
-            disabled={pending}
-            size="sm"
-            variant="ghost"
-            onClick={(event) => {
-              event.stopPropagation();
-              onAccept();
-            }}
-          >
-            <CheckIcon data-icon="inline-start" />
-            Accept
-          </Button>
-          <Button
-            disabled={pending}
-            size="sm"
-            variant="ghost"
-            onClick={(event) => {
-              event.stopPropagation();
-              onCopy();
-            }}
-          >
-            <CopyIcon data-icon="inline-start" />
-            Copy
-          </Button>
-        </div>
       </div>
-      <div className="text-muted-foreground min-w-0 text-xs lg:pt-0.5">
+      <div
+        className={cn(
+          "text-muted-foreground min-w-0 text-xs lg:pt-0.5",
+          layout === "inspector" && "lg:hidden",
+        )}
+      >
         <div className="truncate font-mono">
           {finding.primary_path || "no location"}
         </div>
@@ -7784,17 +6663,43 @@ export function FindingCard({
         ) : null}
       </div>
       <div className="flex min-w-0 items-start lg:pt-0.5">
-        <Badge variant={findingStatusBadgeVariant(finding)}>
-          {findingWorkflowStatusLabel(finding)}
-        </Badge>
+        <NativeSelect
+          aria-label={`Set status for ${finding.canonical_claim}`}
+          className="w-full min-w-0"
+          disabled={pending}
+          size="sm"
+          value={findingDecisionSelectValue(finding)}
+          onChange={(event) => {
+            event.stopPropagation();
+            const decision = findingDecisionMutationFromValue(
+              event.target.value,
+            );
+            if (decision) {
+              onDecisionChange(decision);
+            }
+          }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <NativeSelectOption value="pending" disabled>
+            Needs triage
+          </NativeSelectOption>
+          <NativeSelectOption value="accepted">Accepted</NativeSelectOption>
+          <NativeSelectOption value="dismissed">Dismissed</NativeSelectOption>
+          <NativeSelectOption value="deferred">Deferred</NativeSelectOption>
+        </NativeSelect>
       </div>
-      <div className="min-w-0 lg:pt-0.5">
+      <div
+        className={cn(
+          "min-w-0 lg:pt-0.5",
+          layout === "inspector" && "lg:hidden",
+        )}
+      >
         {sourceAgents.length > 0 ? (
           <div className="flex min-w-0 flex-col gap-1">
-            <div className="line-clamp-1 text-xs font-medium">
+            <div className="truncate text-xs font-medium">
               {sourceAgentSummary(sourceAgents)}
             </div>
-            <div className="text-muted-foreground line-clamp-1 text-[11px]">
+            <div className="text-muted-foreground truncate text-[11px]">
               {sourceAgents.length} signal
               {sourceAgents.length === 1 ? "" : "s"}
             </div>
@@ -7803,39 +6708,36 @@ export function FindingCard({
           <span className="text-muted-foreground text-xs">No agent source</span>
         )}
       </div>
-      <div className="flex min-w-0 items-start justify-between gap-2 lg:justify-end">
+      <div className="flex min-w-0 items-start justify-start gap-2 lg:justify-end">
         <div className="text-muted-foreground pt-1 text-xs tabular-nums">
           {confidence}
-        </div>
-        <div className="hidden shrink-0 items-center gap-1 lg:flex">
-          <Button
-            aria-label={`Accept ${finding.canonical_claim}`}
-            disabled={pending}
-            size="icon-sm"
-            variant="ghost"
-            onClick={(event) => {
-              event.stopPropagation();
-              onAccept();
-            }}
-          >
-            <CheckIcon />
-          </Button>
-          <Button
-            aria-label={`Copy draft comment for ${finding.canonical_claim}`}
-            disabled={pending}
-            size="icon-sm"
-            variant="ghost"
-            onClick={(event) => {
-              event.stopPropagation();
-              onCopy();
-            }}
-          >
-            <CopyIcon />
-          </Button>
         </div>
       </div>
     </div>
   );
+}
+
+function findingDecisionSelectValue(
+  finding: Finding,
+): FindingDecisionSelectValue {
+  const decision = finding.decision_status.trim();
+  if (
+    decision === "accepted" ||
+    decision === "dismissed" ||
+    decision === "deferred"
+  ) {
+    return decision;
+  }
+  return "pending";
+}
+
+function findingDecisionMutationFromValue(
+  value: string,
+): FindingDecisionMutation | null {
+  if (value === "accepted" || value === "dismissed" || value === "deferred") {
+    return value;
+  }
+  return null;
 }
 
 function sourceAgentSummary(sources: FindingSourceAgent[]) {
@@ -7854,101 +6756,6 @@ function sourceAgentSummary(sources: FindingSourceAgent[]) {
   return `${labels.slice(0, 2).join(", ")} +${labels.length - 2}`;
 }
 
-function findingWorkflowStatusLabel(finding: Finding) {
-  if (finding.decision_status) {
-    return formatDecisionLabel(finding.decision_status);
-  }
-  return "Needs Triage";
-}
-
-function findingStatusBadgeVariant(
-  finding: Finding,
-): "default" | "secondary" | "outline" | "destructive" {
-  if (["accepted", "published", "copied"].includes(finding.decision_status)) {
-    return "default";
-  }
-  if (finding.decision_status === "dismissed") {
-    return "secondary";
-  }
-  if (
-    ["likely_false_positive", "duplicate", "not_actionable"].includes(
-      finding.verification_status,
-    )
-  ) {
-    return "secondary";
-  }
-  if (
-    finding.verification_status === "needs_human" ||
-    finding.verification_status === "unverified"
-  ) {
-    return "outline";
-  }
-  return "outline";
-}
-
-function AgentConsensusPanel({
-  detail,
-  finding,
-}: {
-  detail?: FindingDetailResponse;
-  finding: Finding;
-}) {
-  const candidates = detail?.candidates ?? [];
-  const aligned = candidates.filter(
-    (candidate) =>
-      candidate.severity === finding.severity &&
-      candidate.category === finding.category,
-  ).length;
-  const total = candidates.length || finding.merged_from_count || 1;
-  const agreement = total > 0 ? Math.round((aligned / total) * 100) : 0;
-
-  return (
-    <div className="rounded-md border p-3">
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <div className="text-xs font-medium">Agent consensus</div>
-        <Badge variant="outline">{total} signals</Badge>
-      </div>
-      <div className="grid grid-cols-3 gap-2">
-        <RunMetric label="Agreement" value={`${agreement}%`} />
-        <RunMetric
-          label="Severity"
-          value={formatDecisionLabel(finding.severity)}
-        />
-        <RunMetric
-          label="Confidence"
-          value={`${Math.round(finding.confidence * 100)}%`}
-        />
-      </div>
-      {candidates.length > 0 && (
-        <div className="mt-3 flex flex-col gap-2">
-          {candidates.slice(0, 3).map((candidate) => (
-            <div
-              key={candidate.id}
-              className="bg-surface flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-xs"
-            >
-              <CircleIcon
-                className={cn(
-                  "size-3",
-                  candidate.severity === finding.severity
-                    ? "text-success"
-                    : "text-warning",
-                )}
-              />
-              <span className="truncate font-medium">
-                {candidate.agent_name || candidate.agent_run_id}
-              </span>
-              <Badge variant="secondary">{candidate.severity}</Badge>
-              <span className="text-muted-foreground">
-                {Math.round(candidate.confidence * 100)}%
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 export function CodeSnippetViewer({
   evidence,
   finding,
@@ -7958,18 +6765,18 @@ export function CodeSnippetViewer({
   finding: Finding;
   onCopyPath: () => void;
 }) {
-  const snippets = prioritizedCodeSnippetItems(evidence, finding).slice(0, 4);
+  const primaryPath = finding.primary_path?.trim();
+  const snippets = prioritizedCodeSnippetItems(evidence, finding)
+    .filter((item) => item.path && item.path === primaryPath)
+    .slice(0, 1);
 
   if (snippets.length === 0) {
     const lineNumber = finding.primary_start_line || 1;
     const path = finding.primary_path || formatFindingLocation(finding);
-    const evidenceLocations = prioritizedEvidenceItems(evidence)
-      .filter((item) => item.path)
-      .slice(0, 4);
     return (
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between gap-2">
-          <div className="text-xs font-medium">Changed code</div>
+          <div className="text-xs font-medium">Primary code</div>
           <Button size="sm" variant="outline" onClick={onCopyPath}>
             <CopyIcon data-icon="inline-start" />
             Copy path
@@ -7986,25 +6793,8 @@ export function CodeSnippetViewer({
           <div className="p-3">
             <p className="text-muted-foreground text-sm leading-6">
               No code window is attached yet. Refresh or rebuild evidence to
-              hydrate snippets from the cited repository path.
+              hydrate the exact location.
             </p>
-            {evidenceLocations.length > 0 && (
-              <div className="mt-3 flex flex-col gap-2">
-                {evidenceLocations.map((item) => (
-                  <div
-                    className="flex min-w-0 items-center justify-between gap-2 rounded-md border bg-[#fbfbfa] px-3 py-2"
-                    key={item.id}
-                  >
-                    <span className="min-w-0 truncate font-mono text-xs">
-                      {formatEvidenceLocation(item)}
-                    </span>
-                    <Badge variant={evidenceBadgeVariant(item.kind)}>
-                      {formatDecisionLabel(item.kind)}
-                    </Badge>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
         </div>
       </div>
@@ -8014,43 +6804,49 @@ export function CodeSnippetViewer({
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2">
-        <div className="text-xs font-medium">Changed code</div>
+        <div className="text-xs font-medium">Primary code</div>
         <Button size="sm" variant="outline" onClick={onCopyPath}>
           <CopyIcon data-icon="inline-start" />
           Copy path
         </Button>
       </div>
-      {snippets.map((item) => (
-        <div
-          key={item.id}
-          className="border-border/70 overflow-hidden rounded-lg border bg-white shadow-[0_1px_2px_rgb(17_18_20/0.03)]"
-        >
-          <div className="border-border/60 flex items-center justify-between gap-2 border-b bg-[#fbfbfa] px-3 py-2">
-            <span className="truncate font-mono text-xs">
-              {item.path || formatFindingLocation(finding)}
-            </span>
-            <div className="flex shrink-0 items-center gap-1.5">
-              <Badge variant="outline">{item.kind}</Badge>
-              {item.line_window?.start_line || item.start_line ? (
-                <Badge variant="secondary">
-                  L{item.line_window?.start_line ?? item.start_line}
+      {snippets.map((item) => {
+        const codeSnippet = evidenceCodeSnippet(item);
+        const lineWindow = evidenceLineWindow(item);
+        return (
+          <div
+            key={item.id}
+            className="border-border/70 overflow-hidden rounded-lg border bg-white shadow-[0_1px_2px_rgb(17_18_20/0.03)]"
+          >
+            <div className="border-border/60 flex items-center justify-between gap-2 border-b bg-[#fbfbfa] px-3 py-2">
+              <span className="truncate font-mono text-xs">
+                {item.path || formatFindingLocation(finding)}
+              </span>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <Badge variant="outline">
+                  {evidenceKindDisplayLabel(item.kind)}
                 </Badge>
-              ) : null}
+                {lineWindow?.start_line || item.start_line ? (
+                  <Badge variant="secondary">
+                    L{lineWindow?.start_line ?? item.start_line}
+                  </Badge>
+                ) : null}
+              </div>
+            </div>
+            <div className="max-h-[420px] overflow-auto bg-white [scrollbar-gutter:stable_both-edges] [scrollbar-width:thin]">
+              <SyntaxCodeBlock
+                className="rounded-none border-0 bg-white"
+                code={codeSnippet}
+                language={languageForFilePath(
+                  item.path || finding.primary_path || "",
+                )}
+                lineNumbers
+                startLine={lineWindow?.start_line ?? item.start_line ?? 1}
+              />
             </div>
           </div>
-          <div className="max-h-[420px] overflow-auto bg-white [scrollbar-gutter:stable_both-edges] [scrollbar-width:thin]">
-            <SyntaxCodeBlock
-              className="rounded-none border-0 bg-white"
-              code={item.code_snippet ?? ""}
-              language={languageForFilePath(
-                item.path || finding.primary_path || "",
-              )}
-              lineNumbers
-              startLine={item.line_window?.start_line ?? item.start_line ?? 1}
-            />
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -8085,7 +6881,9 @@ export function EvidenceCardList({
                 {item.path ? formatEvidenceLocation(item) : item.kind}
               </div>
             </div>
-            <Badge variant={evidenceBadgeVariant(item.kind)}>{item.kind}</Badge>
+            <Badge variant={evidenceBadgeVariant(item.kind)}>
+              {evidenceKindDisplayLabel(item.kind)}
+            </Badge>
           </div>
           <p className="text-muted-foreground line-clamp-3 text-sm leading-6">
             {item.summary}
@@ -8518,7 +7316,7 @@ function detailedFindingDraftComment(
       "The review agents flagged this changed path as needing human triage.",
     "",
     finding.counter_evidence_summary
-      ? ["#### Counter-evidence", finding.counter_evidence_summary, ""].join(
+      ? ["#### Verification checks", finding.counter_evidence_summary, ""].join(
           "\n",
         )
       : "",
@@ -8534,11 +7332,12 @@ function detailedFindingDraftComment(
           item.confidence * 100,
         )}%): ${item.summary}`,
       );
-      if (item.code_snippet?.trim()) {
+      const codeSnippet = evidenceCodeSnippet(item);
+      if (codeSnippet) {
         const language = languageForFilePath(item.path || "");
         lines.push("");
         lines.push(`\`\`\`${language}`);
-        lines.push(snippetPreview(item.code_snippet, 12));
+        lines.push(snippetPreview(codeSnippet, 12));
         lines.push("```");
         lines.push("");
       }
@@ -8556,7 +7355,8 @@ function detailedFindingDraftComment(
 
 function prioritizedEvidenceItems(items: EvidenceItem[]) {
   const rank: Record<string, number> = {
-    supporting: 6,
+    supporting: 7,
+    static_analysis: 6,
     counter: 5,
     missing: 4,
     test: 3,
@@ -8589,678 +7389,31 @@ function evidenceBadgeVariant(kind: string) {
   if (kind === "counter" || kind === "missing") {
     return "destructive";
   }
-  if (kind === "supporting" || kind === "test") {
+  if (kind === "supporting" || kind === "test" || kind === "static_analysis") {
     return "secondary";
   }
   return "outline";
 }
 
-function firstEvidenceMapSelection(
-  map: EvidenceMapResponse,
-): EvidenceMapSelection | null {
-  const callPathNode = map.call_path.find((step) => step.node_id)?.node_id;
-  const primaryNode =
-    map.nodes.find((node) => node.kind === "changed_code")?.id ??
-    callPathNode ??
-    map.nodes[0]?.id;
-  if (primaryNode) {
-    return { kind: "node", id: primaryNode };
-  }
-  if (map.edges[0]) {
-    return { kind: "edge", id: map.edges[0].id };
-  }
-  if (map.call_paths[0]) {
-    return { kind: "call_path", id: map.call_paths[0].id };
-  }
-  return null;
-}
-
-function evidenceMapNarrativeStory(map: EvidenceMapResponse): {
-  changed: EvidenceMapNode[];
-  checks: EvidenceMapNode[];
-  claimSummary: string;
-  supportingCount: number;
-  counterCount: number;
-  omittedNodes: number;
-} {
-  const nodes = dedupeEvidenceMapNodes(map.nodes);
-  const primaryPath = map.finding.primary_path;
-  const changedKinds = new Set([
-    "changed_code",
-    "handler",
-    "route",
-    "entrypoint",
-  ]);
-  const changed = nodes
-    .filter(
-      (node) =>
-        changedKinds.has(node.kind) ||
-        Boolean(primaryPath && evidenceMapNodePath(node) === primaryPath),
-    )
-    .sort(
-      (left, right) =>
-        evidenceMapChangedNodeRank(left, primaryPath) -
-          evidenceMapChangedNodeRank(right, primaryPath) ||
-        right.confidence - left.confidence,
-    )
-    .slice(0, 3);
-  const focusedChanged =
-    changed.length > 0 ? changed : nodes.length > 0 ? [nodes[0]] : [];
-  const changedIDs = new Set(focusedChanged.map((node) => node.id));
-  const checks = selectEvidenceMapChecks(
-    nodes.filter((node) => !changedIDs.has(node.id)),
-  );
-  const visibleIDs = new Set(
-    [...focusedChanged, ...checks].map((node) => node.id),
-  );
-  const evidenceCounts = map.panel.evidence_counts ?? {};
-  const supportingCount =
-    evidenceCounts.supporting ??
-    evidenceCounts.changed_code ??
-    map.panel.evidence.filter((item) =>
-      ["supporting", "changed_code", "agent", "static_analysis"].includes(
-        item.kind,
-      ),
-    ).length;
-  const counterCount =
-    evidenceCounts.counter ??
-    map.panel.evidence.filter((item) =>
-      ["counter", "missing", "test", "counter_evidence"].includes(item.kind),
-    ).length;
-  return {
-    changed: focusedChanged,
-    checks,
-    claimSummary:
-      map.panel.evidence_summary ||
-      map.finding.evidence_summary ||
-      map.graph.summary ||
-      "",
-    supportingCount,
-    counterCount,
-    omittedNodes: Math.max(0, nodes.length - visibleIDs.size),
-  };
-}
-
-function focusedEvidenceMap(map: EvidenceMapResponse): EvidenceMapResponse {
-  const story = evidenceMapNarrativeStory(map);
-  const claimNode = evidenceMapClaimNode(map);
-  const focusedNodes = dedupeEvidenceMapNodes([
-    ...story.changed.slice(0, 2),
-    claimNode,
-    ...story.checks,
-  ]);
-  const synthesizedEdges = synthesizeFocusedEvidenceEdges(focusedNodes, []);
-  return {
-    ...map,
-    nodes: focusedNodes,
-    edges: synthesizedEdges,
-  };
-}
-
-function selectEvidenceMapChecks(nodes: EvidenceMapNode[]) {
-  const ranked = [...nodes].sort(
-    (left, right) =>
-      evidenceMapCheckNodeRank(left.kind) -
-        evidenceMapCheckNodeRank(right.kind) ||
-      right.confidence - left.confidence,
-  );
-  const selected: EvidenceMapNode[] = [];
-  const seenGroups = new Set<string>();
-  for (const node of ranked) {
-    const group = [
-      evidenceMapCheckGroup(node.kind),
-      evidenceMapNodePath(node),
-    ].join(":");
-    if (seenGroups.has(group)) {
-      continue;
-    }
-    selected.push(node);
-    seenGroups.add(group);
-    if (selected.length >= 3) {
-      break;
-    }
-  }
-  if (selected.length < 3) {
-    for (const node of ranked) {
-      if (selected.some((item) => item.id === node.id)) {
-        continue;
-      }
-      selected.push(node);
-      if (selected.length >= 3) {
-        break;
-      }
-    }
-  }
-  return selected;
-}
-
-function evidenceMapCheckGroup(kind: string) {
+function evidenceKindDisplayLabel(kind: string) {
   switch (kind) {
-    case "missing_guard":
-      return "missing_guard";
+    case "counter":
+      return "Verified contradiction";
+    case "missing":
+      return "Missing evidence";
+    case "search":
+      return "Verification lead";
     case "test":
-      return "test";
-    case "counter_evidence":
-      return "counter";
+      return "Test signal";
+    case "supporting":
+      return "Supporting";
     case "static_analysis":
-      return "static";
+      return "Code relationship";
+    case "agent":
+      return "Agent note";
     default:
-      return kind;
+      return formatDecisionLabel(kind);
   }
-}
-
-function evidenceMapClaimNode(map: EvidenceMapResponse): EvidenceMapNode {
-  return {
-    id: `finding_claim_${map.finding.id}`,
-    kind: "finding_claim",
-    label: map.finding.canonical_claim,
-    confidence: map.finding.confidence,
-    metadata: { synthetic: true, finding_id: map.finding.id },
-  };
-}
-
-function synthesizeFocusedEvidenceEdges(
-  nodes: EvidenceMapNode[],
-  existing: EvidenceMapEdge[],
-) {
-  if (nodes.length <= 1) {
-    return [];
-  }
-  const existingKeys = new Set(
-    existing.map((edge) => `${edge.source}->${edge.target}`),
-  );
-  const claim = nodes.find((node) => node.kind === "finding_claim");
-  const changedNodes = nodes.filter((node) =>
-    ["entrypoint", "route", "handler", "changed_code"].includes(node.kind),
-  );
-  const primary = changedNodes[changedNodes.length - 1] ?? nodes[0];
-  const edges: EvidenceMapEdge[] = [];
-
-  for (let index = 1; index < changedNodes.length; index += 1) {
-    const source = changedNodes[index - 1];
-    const target = changedNodes[index];
-    const key = `${source.id}->${target.id}`;
-    if (existingKeys.has(key)) {
-      continue;
-    }
-    edges.push(syntheticEvidenceEdge(source.id, target.id, "reachable path"));
-    existingKeys.add(key);
-  }
-
-  if (claim) {
-    for (const source of changedNodes.slice(-1)) {
-      const key = `${source.id}->${claim.id}`;
-      if (!existingKeys.has(key)) {
-        edges.push(syntheticEvidenceEdge(source.id, claim.id, "grounds claim"));
-        existingKeys.add(key);
-      }
-    }
-    for (const node of nodes) {
-      if (node.id === claim.id || changedNodes.includes(node)) {
-        continue;
-      }
-      const key = `${claim.id}->${node.id}`;
-      if (existingKeys.has(key)) {
-        continue;
-      }
-      edges.push(
-        syntheticEvidenceEdge(
-          claim.id,
-          node.id,
-          evidenceMapFocusedEdgeLabel(node),
-          node.kind === "missing_guard" ? "missing" : "supported",
-        ),
-      );
-      existingKeys.add(key);
-    }
-    return edges;
-  }
-
-  for (const node of nodes) {
-    if (!primary || node.id === primary.id || changedNodes.includes(node)) {
-      continue;
-    }
-    const key = `${primary.id}->${node.id}`;
-    if (existingKeys.has(key)) {
-      continue;
-    }
-    edges.push(
-      syntheticEvidenceEdge(
-        primary.id,
-        node.id,
-        evidenceMapFocusedEdgeLabel(node),
-        node.kind === "missing_guard" ? "missing" : "supported",
-      ),
-    );
-    existingKeys.add(key);
-  }
-  return edges;
-}
-
-function syntheticEvidenceEdge(
-  source: string,
-  target: string,
-  label: string,
-  status = "supported",
-): EvidenceMapEdge {
-  return {
-    id: `focus_${source}_${target}_${label.replace(/\W+/g, "_")}`,
-    source,
-    target,
-    kind: status === "missing" ? "missing_guard" : "evidence_flow",
-    status,
-    label,
-    confidence: 0.75,
-    metadata: { synthetic: true },
-  };
-}
-
-function evidenceMapFocusedEdgeLabel(node: EvidenceMapNode) {
-  switch (node.kind) {
-    case "missing_guard":
-      return "missing guard";
-    case "test":
-      return "test signal";
-    case "counter_evidence":
-      return "counter check";
-    case "static_analysis":
-      return "static signal";
-    default:
-      return "evidence";
-  }
-}
-
-function dedupeEvidenceMapNodes(nodes: EvidenceMapNode[]) {
-  const byKey = new Map<string, EvidenceMapNode>();
-  for (const node of nodes) {
-    const key = [
-      node.kind,
-      evidenceMapNodePath(node),
-      node.start_line ?? node.deep_link?.start_line ?? "",
-      evidenceMapReadableNodeLabel(node).toLowerCase(),
-    ].join(":");
-    const existing = byKey.get(key);
-    if (!existing || node.confidence > existing.confidence) {
-      byKey.set(key, node);
-    }
-  }
-  return [...byKey.values()];
-}
-
-function evidenceMapNodePath(node: EvidenceMapNode) {
-  return node.deep_link?.path ?? node.path ?? "";
-}
-
-function evidenceMapFlowNodeTitle(node: EvidenceMapNode) {
-  const label = evidenceMapReadableNodeLabel(node);
-  const path = evidenceMapNodePath(node);
-  if (path && evidenceMapLabelLooksLikeLocation(label, path)) {
-    return formatCompactEvidenceNodeLocation(node, 2);
-  }
-  return label;
-}
-
-function evidenceMapGraphNodeTitle(node: EvidenceMapNode) {
-  const label = evidenceMapReadableNodeLabel(node);
-  const path = evidenceMapNodePath(node);
-  if (path && evidenceMapLabelLooksLikeLocation(label, path)) {
-    return formatCompactEvidenceNodeLocation(node, 1);
-  }
-  return label;
-}
-
-function evidenceMapGraphNodeMeta(node: EvidenceMapNode) {
-  const path = evidenceMapNodePath(node);
-  if (path) {
-    return formatCompactEvidenceNodeLocation(node, 2);
-  }
-  return evidenceMapNodeMeta(node);
-}
-
-function evidenceMapLabelLooksLikeLocation(label: string, path: string) {
-  return (
-    label.includes(path) ||
-    label.includes("/") ||
-    /(?:^|\s)[\w.-]+\.[A-Za-z0-9]+(?::L?\d+)?/.test(label)
-  );
-}
-
-function evidenceMapReadableNodeLabel(node: EvidenceMapNode) {
-  const label = evidenceMapNodeLabel(node).trim();
-  if (looksLikeStructuredEnvelopeLabel(label)) {
-    return node.kind.replaceAll("_", " ");
-  }
-  if (/^potential counter-evidence at\b/i.test(label)) {
-    if (node.kind === "test") {
-      return "Related test check";
-    }
-    return "Possible counter-evidence";
-  }
-  if (/^counter-evidence/i.test(label)) {
-    return "Counter-evidence check";
-  }
-  if (/^missing guard/i.test(label)) {
-    return "Missing guard";
-  }
-  if (node.kind === "missing_guard" && label) {
-    return `Missing guard: ${label}`;
-  }
-  if (label) {
-    return label;
-  }
-  return node.kind.replaceAll("_", " ");
-}
-
-function looksLikeStructuredEnvelopeLabel(label: string) {
-  const trimmed = label.trim();
-  if (!trimmed) {
-    return false;
-  }
-  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-    return true;
-  }
-  return (
-    trimmed.includes('"type"') ||
-    trimmed.includes('"event"') ||
-    trimmed.includes('"hook_name"') ||
-    trimmed.includes('"hook_event"') ||
-    trimmed.includes('"session_id"')
-  );
-}
-
-function evidenceMapChangedNodeRank(
-  node: EvidenceMapNode,
-  primaryPath: string | undefined,
-) {
-  const nodePath = evidenceMapNodePath(node);
-  if (primaryPath && nodePath === primaryPath) {
-    return 0;
-  }
-  switch (node.kind) {
-    case "changed_code":
-      return 1;
-    case "handler":
-      return 2;
-    case "route":
-      return 3;
-    case "entrypoint":
-      return 4;
-    default:
-      return 9;
-  }
-}
-
-function evidenceMapCheckNodeRank(kind: string) {
-  switch (kind) {
-    case "missing_guard":
-      return 0;
-    case "counter_evidence":
-      return 1;
-    case "test":
-      return 2;
-    case "static_analysis":
-      return 3;
-    default:
-      return 8;
-  }
-}
-
-function evidenceMapNodeLabel(node: EvidenceMapNode) {
-  if (node.label.trim()) {
-    return node.label;
-  }
-  if (node.kind === "missing_guard") {
-    return "Missing guard";
-  }
-  if (node.kind === "counter_evidence") {
-    return "Counter-evidence";
-  }
-  if (node.kind === "changed_code") {
-    return "Changed code";
-  }
-  if (node.kind === "finding_claim") {
-    return "Finding claim";
-  }
-  if (node.kind === "test") {
-    return "Related test";
-  }
-  return node.label;
-}
-
-function evidenceMapNodeMeta(node: EvidenceMapNode) {
-  const path = node.deep_link?.path ?? node.path;
-  if (path) {
-    return shortPath(path);
-  }
-  return node.kind.replaceAll("_", " ");
-}
-
-function evidenceMapNodeStyle(kind: string) {
-  switch (kind) {
-    case "finding_claim":
-      return {
-        surface: "fill-background stroke-foreground/55",
-        selected: "stroke-foreground",
-        bar: "fill-foreground/80",
-      };
-    case "missing_guard":
-      return {
-        surface: "fill-destructive/5 stroke-destructive/70",
-        selected: "stroke-destructive",
-        bar: "fill-destructive/80",
-      };
-    case "counter_evidence":
-    case "test":
-      return {
-        surface: "fill-warning/10 stroke-warning/70",
-        selected: "stroke-warning",
-        bar: "fill-warning/80",
-      };
-    case "entrypoint":
-    case "route":
-      return {
-        surface: "fill-primary/5 stroke-primary/55",
-        selected: "stroke-primary",
-        bar: "fill-primary/80",
-      };
-    case "handler":
-    case "changed_code":
-      return {
-        surface: "fill-success/10 stroke-success/60",
-        selected: "stroke-success",
-        bar: "fill-success/80",
-      };
-    default:
-      return {
-        surface: "fill-background stroke-border",
-        selected: "stroke-primary",
-        bar: "fill-muted-foreground/80",
-      };
-  }
-}
-
-function buildEvidenceMapLayout(map: EvidenceMapResponse): EvidenceMapLayout {
-  const positioned: PositionedEvidenceMapNode[] = [];
-  const columns = new Map<number, EvidenceMapNode[]>();
-  for (const node of map.nodes) {
-    const column = evidenceMapColumnForKind(node.kind);
-    const columnNodes = columns.get(column) ?? [];
-    columnNodes.push(node);
-    columns.set(column, columnNodes);
-  }
-  for (const columnNodes of columns.values()) {
-    columnNodes.sort(
-      (left, right) =>
-        evidenceMapSideNodeRank(left.kind) -
-          evidenceMapSideNodeRank(right.kind) ||
-        right.confidence - left.confidence,
-    );
-  }
-  const maxRows = Math.max(
-    1,
-    ...[...columns.values()].map((nodes) => nodes.length),
-  );
-  for (const [column, columnNodes] of [...columns.entries()].sort(
-    ([left], [right]) => left - right,
-  )) {
-    const verticalOffset = Math.max(
-      0,
-      ((maxRows - columnNodes.length) * EVIDENCE_MAP_ROW_GAP) / 2,
-    );
-    for (const [index, node] of columnNodes.entries()) {
-      positioned.push({
-        node,
-        x: 64 + column * EVIDENCE_MAP_COLUMN_GAP,
-        y: 56 + verticalOffset + index * EVIDENCE_MAP_ROW_GAP,
-      });
-    }
-  }
-
-  const maxX = positioned.reduce(
-    (current, item) => Math.max(current, item.x),
-    0,
-  );
-  const maxY = positioned.reduce(
-    (current, item) => Math.max(current, item.y),
-    0,
-  );
-  const width = Math.max(620, maxX + EVIDENCE_MAP_NODE_WIDTH + 96);
-  const height = Math.max(440, maxY + EVIDENCE_MAP_NODE_HEIGHT + 80);
-  const nodeById = new Map(positioned.map((node) => [node.node.id, node]));
-  return { nodes: positioned, nodeById, width, height };
-}
-
-function evidenceMapColumnForKind(kind: string) {
-  switch (kind) {
-    case "entrypoint":
-    case "route":
-    case "handler":
-    case "changed_code":
-      return 0;
-    case "finding_claim":
-      return 1;
-    case "missing_guard":
-    case "test":
-    case "counter_evidence":
-    case "static_analysis":
-      return 2;
-    default:
-      return 2;
-  }
-}
-
-function evidenceMapSideNodeRank(kind: string) {
-  switch (kind) {
-    case "missing_guard":
-      return 0;
-    case "counter_evidence":
-      return 1;
-    case "test":
-      return 2;
-    default:
-      return 3;
-  }
-}
-
-function evidenceMapOpenTarget(
-  node: EvidenceMapNode | undefined,
-  callPath: EvidenceMapCallPath | undefined,
-  repository: Repository | undefined,
-): { filePath: string; line?: number; column?: number } | null {
-  const nodePath = node?.deep_link?.path ?? node?.path;
-  if (nodePath) {
-    return {
-      filePath: resolveRepositoryFilePath(repository, nodePath),
-      line: node?.deep_link?.start_line ?? node?.start_line,
-    };
-  }
-  const step = callPath?.steps.find((candidate) => Boolean(candidate.path));
-  if (!step?.path) {
-    return null;
-  }
-  return {
-    filePath: resolveRepositoryFilePath(repository, step.path),
-    line: step.start_line,
-  };
-}
-
-function resolveRepositoryFilePath(
-  repository: Repository | undefined,
-  filePath: string,
-) {
-  if (/^(?:\/|[A-Za-z]:[\\/])/.test(filePath)) {
-    return filePath;
-  }
-  const root = repository?.local_path?.replace(/\/+$/, "");
-  if (!root) {
-    return filePath;
-  }
-  return `${root}/${filePath.replace(/^\/+/, "")}`;
-}
-
-function formatEvidenceNodeLocation(node: EvidenceMapNode) {
-  const path = node.deep_link?.path ?? node.path;
-  if (!path) {
-    return node.kind.replaceAll("_", " ");
-  }
-  return `${path}${node.start_line ? `:L${formatLineRange(node.start_line, node.end_line)}` : ""}`;
-}
-
-function formatCompactEvidenceNodeLocation(
-  node: EvidenceMapNode,
-  maxSegments = 2,
-) {
-  const path = node.deep_link?.path ?? node.path;
-  if (!path) {
-    return node.kind.replaceAll("_", " ");
-  }
-  return `${compactPathForDisplay(path, maxSegments)}${node.start_line ? `:L${formatLineRange(node.start_line, node.end_line)}` : ""}`;
-}
-
-function formatEvidenceRefLocation(item: EvidenceMapPanelEvidenceRef) {
-  if (!item.path) {
-    return item.kind;
-  }
-  return `${item.path}${item.start_line ? `:L${formatLineRange(item.start_line, item.end_line)}` : ""}`;
-}
-
-function formatCompactEvidenceRefLocation(
-  item: EvidenceMapPanelEvidenceRef,
-  maxSegments = 2,
-) {
-  if (!item.path) {
-    return item.kind;
-  }
-  return `${compactPathForDisplay(item.path, maxSegments)}${item.start_line ? `:L${formatLineRange(item.start_line, item.end_line)}` : ""}`;
-}
-
-function compactEvidencePanelTitle(item: EvidenceMapPanelEvidenceRef) {
-  if (!item.path) {
-    return item.title;
-  }
-  const compactLocation = formatCompactEvidenceRefLocation(item, 2);
-  const location = formatEvidenceRefLocation(item);
-  if (item.title.includes(location)) {
-    return item.title.replace(location, compactLocation);
-  }
-  if (item.title.includes(item.path)) {
-    return item.title.replace(item.path, compactPathForDisplay(item.path, 2));
-  }
-  return item.title;
-}
-
-function formatCallPathStepLocation(step: EvidenceMapCallPathStep) {
-  if (!step.path) {
-    return "No file location";
-  }
-  return `${step.path}${step.start_line ? `:L${formatLineRange(step.start_line, step.end_line)}` : ""}`;
-}
-
-function formatLineRange(startLine: number, endLine?: number) {
-  if (endLine && endLine !== startLine) {
-    return `${startLine}-L${endLine}`;
-  }
-  return String(startLine);
 }
 
 function shortPath(path: string) {
@@ -9271,70 +7424,11 @@ function shortPath(path: string) {
   return `${parts.at(-3)}/${parts.at(-2)}/${parts.at(-1)}`;
 }
 
-function compactPathForDisplay(path: string, maxSegments = 2) {
-  const parts = path.split(/[\\/]/).filter(Boolean);
-  if (parts.length <= maxSegments) {
-    return path;
-  }
-  return `.../${parts.slice(-maxSegments).join("/")}`;
-}
-
-function pathLeafForDisplay(path: string) {
-  const parts = path.split(/[\\/]/).filter(Boolean);
-  return parts.at(-1) ?? path;
-}
-
 function truncate(value: string, maxLength: number) {
   if (value.length <= maxLength) {
     return value;
   }
   return `${value.slice(0, Math.max(0, maxLength - 3))}...`;
-}
-
-function formatShortDate(value: string) {
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) {
-    return value;
-  }
-  return new Date(timestamp).toLocaleString([], {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
-
-function wrapSvgLabel(value: string, maxLineLength: number) {
-  const words = value
-    .split(/\s+/)
-    .filter(Boolean)
-    .flatMap((word) => splitLongWord(word, maxLineLength));
-  const lines: string[] = [];
-  let current = "";
-  for (const word of words) {
-    const next = current ? `${current} ${word}` : word;
-    if (next.length > maxLineLength && current) {
-      lines.push(current);
-      current = word;
-      continue;
-    }
-    current = next;
-  }
-  if (current) {
-    lines.push(current);
-  }
-  return lines.length > 0 ? lines : [value];
-}
-
-function splitLongWord(word: string, maxLineLength: number) {
-  if (word.length <= maxLineLength) {
-    return [word];
-  }
-  const chunks: string[] = [];
-  for (let index = 0; index < word.length; index += maxLineLength) {
-    chunks.push(word.slice(index, index + maxLineLength));
-  }
-  return chunks;
 }
 
 function useDebouncedValue<T>(value: T, delayMs: number): T {

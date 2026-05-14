@@ -29,7 +29,19 @@ func Parse(content []byte, mode agents.OutputMode) ParsedOutput {
 	}
 	switch mode {
 	case agents.OutputJSON:
-		return parseJSON(content)
+		parsed := parseJSON(content)
+		if parsed.Structured {
+			return parsed
+		}
+		delimited := parseDelimitedJSON(content, agents.OutputJSONL)
+		if delimited.Structured {
+			delimited.Diagnostics = append([]Diagnostic{{
+				Code:    "output_mode_autodetected",
+				Message: "requested json output parsed as delimited JSON stream",
+			}}, delimited.Diagnostics...)
+			return delimited
+		}
+		return parsed
 	case agents.OutputJSONL, agents.OutputNDJSON:
 		return parseDelimitedJSON(content, mode)
 	default:

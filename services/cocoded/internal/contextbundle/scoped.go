@@ -423,7 +423,7 @@ func findingPromptMaterialItem(bundleID string, session dbgen.ReviewSession, sna
 		builder.WriteString("\n")
 	}
 	if finding.CounterEvidenceSummary.Valid && strings.TrimSpace(finding.CounterEvidenceSummary.String) != "" {
-		builder.WriteString("\nCounter-evidence summary:\n")
+		builder.WriteString("\nVerification checks summary:\n")
 		builder.WriteString(strings.TrimSpace(finding.CounterEvidenceSummary.String))
 		builder.WriteString("\n")
 	}

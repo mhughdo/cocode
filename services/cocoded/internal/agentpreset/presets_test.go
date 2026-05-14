@@ -20,19 +20,21 @@ func TestCodexCLIPreset(t *testing.T) {
 		!preset.Capabilities.SupportsOutputMode(agents.OutputJSONL) {
 		t.Fatalf("preset = %+v", preset)
 	}
-	if len(preset.Args) != 12 ||
+	if len(preset.Args) != 14 ||
 		preset.Args[0] != "-a" ||
 		preset.Args[1] != "never" ||
 		preset.Args[2] != "exec" ||
 		preset.Args[3] != "--json" ||
 		preset.Args[4] != "--sandbox" ||
-		preset.Args[5] != "read-only" ||
-		preset.Args[6] != "--skip-git-repo-check" ||
-		preset.Args[7] != "--ephemeral" ||
-		preset.Args[8] != "--ignore-rules" ||
-		preset.Args[9] != "--color" ||
-		preset.Args[10] != "never" ||
-		preset.Args[11] != "-" {
+		preset.Args[5] != "workspace-write" ||
+		preset.Args[6] != "--add-dir" ||
+		preset.Args[7] != agents.CLIRuntimeBaseDir() ||
+		preset.Args[8] != "--skip-git-repo-check" ||
+		preset.Args[9] != "--ephemeral" ||
+		preset.Args[10] != "--ignore-rules" ||
+		preset.Args[11] != "--color" ||
+		preset.Args[12] != "never" ||
+		preset.Args[13] != "-" {
 		t.Fatalf("preset args = %+v", preset.Args)
 	}
 	if !containsString(preset.EnvAllowlist, "PATH") ||

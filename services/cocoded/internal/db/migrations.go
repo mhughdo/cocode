@@ -10,9 +10,10 @@ import (
 )
 
 type Migration struct {
-	Version int
-	Name    string
-	SQL     string
+	Version        int
+	Name           string
+	SQL            string
+	RequiredTables []string
 }
 
 func Apply(ctx context.Context, database *sql.DB, migrations []Migration) error {
@@ -47,8 +48,14 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		if applied[migration.Version] {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, migration.SQL); err != nil {
-			return fmt.Errorf("apply migration %d %s: %w", migration.Version, migration.Name, err)
+		shouldApply, err := migrationRequiredTablesExist(ctx, tx, migration.RequiredTables)
+		if err != nil {
+			return fmt.Errorf("check migration %d %s requirements: %w", migration.Version, migration.Name, err)
+		}
+		if shouldApply {
+			if _, err := tx.ExecContext(ctx, migration.SQL); err != nil {
+				return fmt.Errorf("apply migration %d %s: %w", migration.Version, migration.Name, err)
+			}
 		}
 		if _, err := tx.ExecContext(
 			ctx,
@@ -65,6 +72,23 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		return fmt.Errorf("commit migrations: %w", err)
 	}
 	return nil
+}
+
+func migrationRequiredTablesExist(ctx context.Context, tx *sql.Tx, tables []string) (bool, error) {
+	for _, table := range tables {
+		var count int
+		if err := tx.QueryRowContext(
+			ctx,
+			"SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = ?",
+			table,
+		).Scan(&count); err != nil {
+			return false, err
+		}
+		if count == 0 {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func appliedVersions(ctx context.Context, tx *sql.Tx) (map[int]bool, error) {
@@ -100,6 +124,11 @@ func validateMigrations(migrations []Migration) error {
 		}
 		if migration.SQL == "" {
 			return fmt.Errorf("migration %d %s has empty sql", migration.Version, migration.Name)
+		}
+		for _, table := range migration.RequiredTables {
+			if table == "" {
+				return fmt.Errorf("migration %d %s has empty required table", migration.Version, migration.Name)
+			}
 		}
 		if seen[migration.Version] {
 			return fmt.Errorf("duplicate migration version %d", migration.Version)

@@ -208,6 +208,41 @@ describe("summarizeRuntimeTraceEvents", () => {
     expect(summary.output.join("\n")).not.toContain("step_finish");
   });
 
+  it("unwraps raw OpenCode JSONL envelopes into readable trace items", () => {
+    const summary = summarizeRuntimeTraceEvents([
+      outputLine(
+        '{"type":"step_start","timestamp":1778670841962,"sessionID":"ses_1","part":{"type":"step-start"}}',
+      ),
+      outputLine(
+        '{"type":"reasoning","timestamp":1778671216996,"sessionID":"ses_1","part":{"type":"reasoning","text":"I checked the requested branch diff and auth-sensitive routes."}}',
+      ),
+      outputLine(
+        '{"type":"tool_use","timestamp":1778671217000,"sessionID":"ses_1","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"git diff main..feature/auth-bug"},"output":"diff --git a/src/server.js b/src/server.js"}}}',
+      ),
+      outputLine(
+        '{"type":"text","timestamp":1778671217001,"sessionID":"ses_1","part":{"type":"text","text":"Found a missing admin check in cancelSubscription."}}',
+      ),
+      outputLine(
+        '{"type":"step_finish","timestamp":1778671246703,"sessionID":"ses_1","part":{"type":"step-finish","reason":"stop","tokens":{"total":61440},"cost":0.1183798}}',
+      ),
+    ]);
+
+    expect(summary.reasoning).toEqual([
+      "I checked the requested branch diff and auth-sensitive routes.",
+    ]);
+    expect(summary.output).toEqual([
+      "Found a missing admin check in cancelSubscription.",
+    ]);
+    expect(summary.toolCalls.join("\n")).toContain(
+      "git diff main..feature/auth-bug",
+    );
+    expect(summary.toolCalls.join("\n")).toContain("status: completed");
+    expect(summary.lifecycle.join("\n")).toContain("OpenCode step started");
+    expect(summary.lifecycle.join("\n")).toContain("tokens: 61440");
+    expect(summary.lifecycle.join("\n")).toContain("cost: 0.1183798");
+    expect(summary.output.join("\n")).not.toContain('"type":"text"');
+  });
+
   it("formats structured finding JSON as readable model output", () => {
     const summary = summarizeRuntimeTraceEvents([
       output({

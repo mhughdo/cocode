@@ -660,6 +660,7 @@ export interface EvidenceMapNode {
   id: string;
   kind: string;
   label: string;
+  explanation?: string;
   path?: string;
   symbol?: string;
   start_line?: number;
@@ -667,6 +668,11 @@ export interface EvidenceMapNode {
   evidence_item_id?: string;
   confidence: number;
   deep_link?: EvidenceMapNodeDeepLink;
+  code_snippet?: string;
+  line_window?: { start_line: number; end_line: number };
+  file_content?: string;
+  file_line_count?: number;
+  file_truncated?: boolean;
   metadata: unknown;
 }
 
@@ -677,6 +683,7 @@ export interface EvidenceMapEdge {
   kind: string;
   status: string;
   label?: string;
+  explanation?: string;
   confidence: number;
   metadata: unknown;
 }
@@ -689,11 +696,13 @@ export interface EvidenceMapCallPathStep {
   start_line?: number;
   end_line?: number;
   label: string;
+  explanation?: string;
 }
 
 export interface EvidenceMapCallPath {
   id: string;
   label?: string;
+  summary?: string;
   confidence: number;
   steps: EvidenceMapCallPathStep[];
 }
@@ -713,6 +722,11 @@ export interface EvidenceMapPanelEvidenceRef {
   start_line?: number;
   end_line?: number;
   confidence: number;
+  code_snippet?: string;
+  line_window?: { start_line: number; end_line: number };
+  file_content?: string;
+  file_line_count?: number;
+  file_truncated?: boolean;
 }
 
 export interface EvidenceMapPanel {
@@ -720,6 +734,7 @@ export interface EvidenceMapPanel {
   severity: string;
   verification_status: string;
   decision_status: string;
+  connection_summary?: string;
   evidence_summary?: string;
   counter_evidence_summary?: string;
   suggested_fix?: string;
@@ -1144,6 +1159,16 @@ export class ApiClient {
     return this.post<Snapshot>(
       "/api/pr-snapshots/from-local-changes",
       body,
+      options,
+    );
+  }
+
+  getSnapshot(
+    snapshotId: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.get<Snapshot>(
+      `/api/pr-snapshots/${encodeURIComponent(snapshotId)}`,
       options,
     );
   }

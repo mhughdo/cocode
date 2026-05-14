@@ -219,8 +219,8 @@ func writeMarkdownFinding(builder *strings.Builder, finding Finding, options Opt
 		builder.WriteString("\n")
 	}
 	if options.IncludeCounterEvidence {
-		builder.WriteString("Counter-evidence:\n")
-		writeMarkdownEvidence(builder, counterEvidence(finding.Evidence), options)
+		builder.WriteString("Verification checks:\n")
+		writeMarkdownEvidence(builder, verificationCheckEvidence(finding.Evidence), options)
 		builder.WriteString("\n")
 	}
 	builder.WriteString("Expected fix:\n")
@@ -291,7 +291,7 @@ func renderXMLish(input Input, options Options) string {
 			writeXMLEvidence(&builder, "evidence", supportingEvidence(finding.Evidence), options)
 		}
 		if options.IncludeCounterEvidence {
-			writeXMLEvidence(&builder, "counter_evidence", counterEvidence(finding.Evidence), options)
+			writeXMLEvidence(&builder, "verification_checks", verificationCheckEvidence(finding.Evidence), options)
 		}
 		builder.WriteString("    </finding>\n")
 	}
@@ -354,7 +354,7 @@ func renderJSON(input Input, options Options) (string, error) {
 			item["evidence"] = jsonEvidence(supportingEvidence(finding.Evidence), options)
 		}
 		if options.IncludeCounterEvidence {
-			item["counter_evidence"] = jsonEvidence(counterEvidence(finding.Evidence), options)
+			item["verification_checks"] = jsonEvidence(verificationCheckEvidence(finding.Evidence), options)
 		}
 		findings = append(findings, item)
 	}
@@ -419,8 +419,8 @@ func renderCompact(input Input, options Options) string {
 			builder.WriteByte('\n')
 		}
 		if options.IncludeCounterEvidence {
-			builder.WriteString("   Counter: ")
-			builder.WriteString(compactEvidence(counterEvidence(finding.Evidence), options))
+			builder.WriteString("   Verification checks: ")
+			builder.WriteString(compactEvidence(verificationCheckEvidence(finding.Evidence), options))
 			builder.WriteByte('\n')
 		}
 	}
@@ -467,11 +467,11 @@ func supportingEvidence(items []EvidenceItem) []EvidenceItem {
 	return filtered
 }
 
-func counterEvidence(items []EvidenceItem) []EvidenceItem {
+func verificationCheckEvidence(items []EvidenceItem) []EvidenceItem {
 	filtered := make([]EvidenceItem, 0, len(items))
 	for _, item := range items {
 		switch strings.ToLower(strings.TrimSpace(item.Kind)) {
-		case "counter", "missing":
+		case "counter", "missing", "test", "search":
 			filtered = append(filtered, item)
 		}
 	}

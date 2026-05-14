@@ -106,6 +106,81 @@ func TestExtractAnswerHandlesNestedCLIEventWrappers(t *testing.T) {
 	}
 }
 
+func TestExtractAnswerPrefersStructuredFindingsOverProgressText(t *testing.T) {
+	t.Parallel()
+
+	findingsPayload, err := json.Marshal(`{"findings":[{"claim":"reward matching can collide without wallet key","severity":"high","category":"correctness","locations":[{"path":"internal/rewards.go","start_line":42,"end_line":45,"side":"RIGHT"}],"evidence":[{"kind":"changed_code","title":"Changed reward lookup","summary":"The new lookup only keys by chain ID and token ID."}],"suggested_fix":"Include wallet address in the reward matching key."}]}`)
+	if err != nil {
+		t.Fatalf("Marshal findings payload error = %v", err)
+	}
+	parsed := ParseAuto([]byte(strings.Join([]string{
+		`{"type":"item.completed","item":{"type":"agent_message","text":"The main behavior question I'm checking is whether reward matching has enough keys."}}`,
+		`{"type":"text","part":{"type":"text","text":` + string(findingsPayload) + `}}`,
+		`{"type":"item.completed","item":{"type":"agent_message","text":"I am double-checking the position model."}}`,
+		"",
+	}, "\n")))
+
+	answer := ExtractAnswer(parsed)
+	for _, want := range []string{
+		"Findings (1)",
+		"reward matching can collide without wallet key",
+		"internal/rewards.go:42-45",
+	} {
+		if !strings.Contains(answer.Content, want) {
+			t.Fatalf("Content = %q, missing %q", answer.Content, want)
+		}
+	}
+	if strings.Contains(answer.Content, "main behavior question") {
+		t.Fatalf("Content = %q, still preferred progress text", answer.Content)
+	}
+}
+
+func TestExtractAnswerPrefersStructuredFindingsOverNonPrefixProgressText(t *testing.T) {
+	t.Parallel()
+
+	findingsPayload, err := json.Marshal(`{"findings":[{"claim":"pickTokenPrice dereferences prices[1] without checking it","severity":"high","category":"correctness","locations":[{"path":"internal/kem_rewards.go","start_line":208,"end_line":208,"side":"RIGHT"}]}]}`)
+	if err != nil {
+		t.Fatalf("Marshal findings payload error = %v", err)
+	}
+	parsed := ParseAuto([]byte(strings.Join([]string{
+		`{"type":"item.completed","item":{"type":"agent_message","text":"The risky line is real in the checkout; I am checking the producer path now."}}`,
+		`{"type":"text","part":{"type":"text","text":` + string(findingsPayload) + `}}`,
+		"",
+	}, "\n")))
+
+	answer := ExtractAnswer(parsed)
+	if !strings.Contains(answer.Content, "Findings (1)") ||
+		!strings.Contains(answer.Content, "pickTokenPrice dereferences prices[1]") ||
+		strings.Contains(answer.Content, "risky line is real") {
+		t.Fatalf("Content = %q", answer.Content)
+	}
+}
+
+func TestExtractAnswerKeepsExplicitSummaryOverStructuredFindings(t *testing.T) {
+	t.Parallel()
+
+	parsed := ParseAuto([]byte(`{
+		"summary": "Found one deterministic fixture issue.",
+		"findings": [
+			{
+				"claim": "Repository settings updates can run without an admin permission check.",
+				"severity": "high",
+				"category": "security",
+				"primary_path": "apps/api/src/routes/repositories.ts",
+				"primary_start_line": 87,
+				"evidence": [
+					{"summary": "The route updates repository settings without requiring workspace admin privileges."}
+				]
+			}
+		]
+	}`))
+
+	answer := ExtractAnswer(parsed)
+	if answer.Content != "Found one deterministic fixture issue." {
+		t.Fatalf("Content = %q", answer.Content)
+	}
+}
+
 func TestExtractAnswerDoesNotExposeUnrecognizedStructuredJSON(t *testing.T) {
 	t.Parallel()
 
@@ -182,5 +257,60 @@ func TestExtractAnswerFormatsStructuredFindings(t *testing.T) {
 		if !strings.Contains(answer.Content, want) {
 			t.Fatalf("Content = %q, missing %q", answer.Content, want)
 		}
+	}
+}
+
+func TestExtractAnswerFormatsStructuredFindingsFromProviderStreams(t *testing.T) {
+	t.Parallel()
+
+	codexPayload, err := json.Marshal(`{"findings":[{"claim":"cancelSubscription lacks admin authorization","severity":"high","category":"security","locations":[{"path":"src/server.js","start_line":10,"end_line":11,"side":"RIGHT"}],"evidence":[{"kind":"code","title":"Changed route","summary":"The route calls db.cancelSubscription without requireAdmin.","path":"src/server.js","start_line":10,"end_line":11}]}]}`)
+	if err != nil {
+		t.Fatalf("Marshal codex payload error = %v", err)
+	}
+	geminiPayload, err := json.Marshal("```json\n" + `{"findings":[{"claim":"exportInvoices lacks admin authorization","severity":"critical","category":"security","locations":[{"path":"src/server.js","start_line":17,"end_line":18,"side":"RIGHT"}],"evidence":[{"kind":"diff","title":"Changed export route","summary":"The route calls db.exportInvoices without requireAdmin.","path":"src/server.js","start_line":17,"end_line":18}]}]}` + "\n```")
+	if err != nil {
+		t.Fatalf("Marshal gemini payload error = %v", err)
+	}
+	claudePayload, err := json.Marshal("```json\n" + `{"findings":[{"claim":"deleteAccount lacks owner validation","severity":"high","category":"security","locations":[{"path":"src/server.js","start_line":25,"end_line":26,"side":"RIGHT"}],"evidence":[{"kind":"diff_hunk","title":"Changed delete route","summary":"The route deletes an account without checking ownership.","path":"src/server.js","start_line":25,"end_line":26}]}]}` + "\n```")
+	if err != nil {
+		t.Fatalf("Marshal claude payload error = %v", err)
+	}
+
+	tests := []struct {
+		name string
+		raw  []byte
+		want string
+	}{
+		{
+			name: "codex agent message text",
+			raw:  []byte(`{"type":"item.completed","item":{"type":"agent_message","text":` + string(codexPayload) + `}}`),
+			want: "cancelSubscription lacks admin authorization",
+		},
+		{
+			name: "gemini response fenced json",
+			raw:  []byte(`{"response":` + string(geminiPayload) + `}`),
+			want: "exportInvoices lacks admin authorization",
+		},
+		{
+			name: "claude stream message content",
+			raw: []byte(strings.Join([]string{
+				`{"type":"system","subtype":"init"}`,
+				`{"type":"assistant","message":{"type":"message","role":"assistant","content":[{"type":"text","text":` + string(claudePayload) + `}]}}`,
+				"",
+			}, "\n")),
+			want: "deleteAccount lacks owner validation",
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			answer := ExtractAnswer(ParseAuto(test.raw))
+			if !strings.Contains(answer.Content, "Findings (1)") || !strings.Contains(answer.Content, test.want) {
+				t.Fatalf("Content = %q", answer.Content)
+			}
+		})
 	}
 }

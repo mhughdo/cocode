@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,7 +18,7 @@ func TestRebuildEvidenceMapPersistsGraphNodesEdgesAndCallPath(t *testing.T) {
 	env := setupEvidenceEnv(t)
 	finding := createEvidenceFinding(t, env.Queries, testFindingParams("finding_map", "Settings mutation lacks admin guard", "security", "high", 0.91))
 	createMapEvidenceItem(t, env, "evidence_map_primary", finding.ID, KindSupporting, "Changed route", "Primary location is changed.", "src/handler.go", 4, 4, 0.92, `{"producer":"local_verifier","source":"primary_location"}`)
-	createMapEvidenceItem(t, env, "evidence_map_counter", finding.ID, KindCounter, "Admin guard exists", "RequireAdmin exists in auth middleware.", "src/auth.go", 3, 3, 0.62, `{"producer":"local_verifier","source":"counter_evidence_search","rule":"auth_guard"}`)
+	createMapEvidenceItem(t, env, "evidence_map_counter", finding.ID, KindCounter, "Admin guard wraps handler", "RequireAdmin is mounted before this handler, directly refuting reachability by members.", "src/auth.go", 3, 3, 0.62, `{"producer":"local_verifier","source":"direct_contradiction","rule":"auth_guard"}`)
 	createMapEvidenceItem(t, env, "evidence_map_test", finding.ID, KindTest, "Admin route test", "A related route test mentions admin access.", "src/handler_test.go", 9, 9, 0.58, `{"producer":"local_verifier","source":"counter_evidence_search","rule":"auth_guard"}`)
 
 	view, err := env.Service.RebuildEvidenceMap(context.Background(), finding)
@@ -46,6 +47,23 @@ func TestRebuildEvidenceMapPersistsGraphNodesEdgesAndCallPath(t *testing.T) {
 	if len(view.Hierarchy) != 3 || view.Hierarchy[0].Path != "src/auth.go" {
 		t.Fatalf("hierarchy = %+v", view.Hierarchy)
 	}
+	if view.Nodes[0].CodeSnippet == "" || view.Nodes[0].LineWindow == nil {
+		t.Fatalf("expected node source preview, nodes = %+v", view.Nodes)
+	}
+	if view.Nodes[0].FileContent == "" ||
+		view.Nodes[0].FileLineCount == 0 ||
+		view.Nodes[0].FileTruncated {
+		t.Fatalf("expected node full-file source, nodes = %+v", view.Nodes)
+	}
+	if len(view.Panel.Evidence) == 0 || view.Panel.Evidence[0].CodeSnippet == "" || view.Panel.Evidence[0].LineWindow == nil {
+		t.Fatalf("expected panel evidence source preview, panel = %+v", view.Panel.Evidence)
+	}
+	if len(view.Panel.Evidence) == 0 ||
+		view.Panel.Evidence[0].FileContent == "" ||
+		view.Panel.Evidence[0].FileLineCount == 0 ||
+		view.Panel.Evidence[0].FileTruncated {
+		t.Fatalf("expected panel evidence full-file source, panel = %+v", view.Panel.Evidence)
+	}
 
 	loaded, err := env.Service.LoadEvidenceMap(context.Background(), finding)
 	if err != nil {
@@ -56,13 +74,74 @@ func TestRebuildEvidenceMapPersistsGraphNodesEdgesAndCallPath(t *testing.T) {
 	}
 }
 
+func TestLoadOrRebuildEvidenceMapRebuildsStaleGraphAfterFindingUpdate(t *testing.T) {
+	t.Parallel()
+
+	env := setupEvidenceEnv(t)
+	finding := createEvidenceFinding(t, env.Queries, testFindingParams("finding_stale_map", "Settings mutation lacks admin guard", "security", "high", 0.91))
+	createMapEvidenceItem(t, env, "evidence_stale_primary", finding.ID, KindSupporting, "Changed route", "Primary location is changed.", "src/handler.go", 4, 4, 0.92, `{"producer":"orchestrator_curator","source":"primary_location"}`)
+	if _, err := env.Service.RebuildEvidenceMap(context.Background(), finding); err != nil {
+		t.Fatalf("RebuildEvidenceMap() error = %v", err)
+	}
+	updated, err := env.Queries.UpdateFindingVerificationEvidence(context.Background(), dbgen.UpdateFindingVerificationEvidenceParams{
+		VerificationStatus:     StatusVerified,
+		EvidenceSummary:        nullableTestString("Orchestrator refined this finding after the first map was built."),
+		CounterEvidenceSummary: nullableTestString("No direct contradiction was verified."),
+		UpdatedAt:              "2026-05-03T00:20:00Z",
+		ID:                     finding.ID,
+	})
+	if err != nil {
+		t.Fatalf("UpdateFindingVerificationEvidence() error = %v", err)
+	}
+
+	view, rebuilt, err := env.Service.LoadOrRebuildEvidenceMap(context.Background(), updated)
+	if err != nil {
+		t.Fatalf("LoadOrRebuildEvidenceMap() error = %v", err)
+	}
+	if !rebuilt || !strings.Contains(view.Panel.EvidenceSummary, "Orchestrator refined") {
+		t.Fatalf("rebuilt=%v panel=%+v", rebuilt, view.Panel)
+	}
+}
+
+func TestSourcePreviewFromMetadataUsesNestedAgentSnippet(t *testing.T) {
+	t.Parallel()
+
+	snippet, window := sourcePreviewFromMetadata(json.RawMessage(`{
+		"producer":"orchestrator_curator",
+		"agent_metadata":{
+			"code_snippet":"if prices[1] != nil {\n  return *prices[1]\n}",
+			"line_window":{"start_line":211,"end_line":213}
+		}
+	}`), 211, 211)
+	if !strings.Contains(snippet, "prices[1]") ||
+		window == nil ||
+		window.StartLine != 211 ||
+		window.EndLine != 213 {
+		t.Fatalf("snippet=%q window=%+v", snippet, window)
+	}
+}
+
+func TestReadSourceFileReturnsBoundedFullFile(t *testing.T) {
+	t.Parallel()
+
+	repoRoot := t.TempDir()
+	writeEvidenceRepoFile(t, repoRoot, "src/server.js", "first\nsecond\nthird\n")
+	content, lineCount, truncated, err := ReadSourceFile(repoRoot, "src/server.js", 1024)
+	if err != nil {
+		t.Fatalf("ReadSourceFile() error = %v", err)
+	}
+	if content != "first\nsecond\nthird" || lineCount != 3 || truncated {
+		t.Fatalf("content=%q lineCount=%d truncated=%v", content, lineCount, truncated)
+	}
+}
+
 func TestRebuildEvidenceMapOmitsProjectMetadataEvidence(t *testing.T) {
 	t.Parallel()
 
 	env := setupEvidenceEnv(t)
 	finding := createEvidenceFinding(t, env.Queries, testFindingParams("finding_metadata_map", "Invoice export lacks admin guard", "security", "high", 0.9))
 	createMapEvidenceItem(t, env, "evidence_metadata_primary", finding.ID, KindSupporting, "Changed export", "Primary location is changed.", "src/server.js", 19, 19, 0.9, `{"producer":"local_verifier","source":"primary_location"}`)
-	createMapEvidenceItem(t, env, "evidence_metadata_manifest", finding.ID, KindCounter, "Package test script", "Manifest mentions a test script.", "package.json", 1, 1, 0.6, `{"producer":"local_verifier","source":"counter_evidence_search","rule":"auth_guard"}`)
+	createMapEvidenceItem(t, env, "evidence_metadata_manifest", finding.ID, KindSearch, "Package test script", "Manifest mentions a test script.", "package.json", 1, 1, 0.6, `{"producer":"local_verifier","source":"related_context","rule":"auth_guard"}`)
 	createMapEvidenceItem(t, env, "evidence_metadata_test", finding.ID, KindTest, "Authorization test", "A related test mentions admin access.", "test/server.test.js", 7, 7, 0.6, `{"producer":"local_verifier","source":"counter_evidence_search","rule":"auth_guard"}`)
 
 	view, err := env.Service.RebuildEvidenceMap(context.Background(), finding)
@@ -81,6 +160,30 @@ func TestRebuildEvidenceMapOmitsProjectMetadataEvidence(t *testing.T) {
 		view.Panel.EvidenceCounts[KindTest] != 1 ||
 		view.Panel.EvidenceCounts[KindCounter] != 0 {
 		t.Fatalf("useful evidence was not preserved: nodes=%+v panel=%+v", view.Nodes, view.Panel)
+	}
+}
+
+func TestRebuildEvidenceMapUsesCuratedRelationshipDirection(t *testing.T) {
+	t.Parallel()
+
+	env := setupEvidenceEnv(t)
+	finding := createEvidenceFinding(t, env.Queries, testFindingParams("finding_relationship_map", "pickTokenPrice can panic", "reliability", "high", 0.9))
+	createMapEvidenceItem(t, env, "evidence_relationship_primary", finding.ID, KindSupporting, "Unsafe average branch", "The changed line dereferences prices[1].", "internal/kem_rewards.go", 208, 208, 0.95, `{"producer":"orchestrator_curator","source":"primary_location"}`)
+	createMapEvidenceItem(t, env, "evidence_relationship_entry", finding.ID, KindStaticAnalysis, "Reward token info calls price picker", "fetchRewardTokenInfo passes price slots into pickTokenPrice.", "internal/fetcher.go", 373, 389, 0.94, `{"producer":"orchestrator_curator","relationship":"caller"}`)
+	createMapEvidenceItem(t, env, "evidence_relationship_downstream", finding.ID, KindStaticAnalysis, "Reward conversion consumes the result", "Reward conversion uses the selected price downstream.", "internal/rewards.go", 228, 237, 0.82, `{"producer":"orchestrator_curator","relationship":"downstream"}`)
+
+	view, err := env.Service.RebuildEvidenceMap(context.Background(), finding)
+	if err != nil {
+		t.Fatalf("RebuildEvidenceMap() error = %v", err)
+	}
+	if !hasMapNode(view.Nodes, NodeHandler, "internal/fetcher.go") ||
+		!hasMapNode(view.Nodes, NodeRelatedCode, "internal/rewards.go") ||
+		!hasMapEdgeLabel(view.Edges, "caller") ||
+		!hasMapEdgeLabel(view.Edges, "downstream") {
+		t.Fatalf("view nodes=%+v edges=%+v", view.Nodes, view.Edges)
+	}
+	if !strings.Contains(view.Panel.ConnectionSummary, "related check") {
+		t.Fatalf("connection summary = %q", view.Panel.ConnectionSummary)
 	}
 }
 
@@ -156,6 +259,146 @@ callee[1]: ranges 45:8-31 in /repo/internal/handlers.go from/to function CancelS
 		entries[1].path != "internal/auth.go" ||
 		entries[1].line != 11 {
 		t.Fatalf("callee = %+v", entries[1])
+	}
+}
+
+func TestParseGoplsCallHierarchyDropsExternalLibraryEntries(t *testing.T) {
+	t.Parallel()
+
+	output := `identifier: function pickTokenPrice in /repo/internal/kem_rewards.go:203:6-20
+callee[0]: ranges 204:12-19 in /repo/internal/kem_rewards.go from/to function ToLower in /opt/homebrew/Cellar/go/libexec/src/strings/strings.go:727:6-12
+caller[0]: ranges 12:4-18 in /repo/internal/fetcher.go from/to function fetchRewardTokenInfo in /repo/internal/fetcher.go:10:6-20`
+
+	_, entries := parseGoplsCallHierarchy(output, "/repo")
+	if len(entries) != 1 ||
+		entries[0].symbol != "fetchRewardTokenInfo" ||
+		entries[0].path != "internal/fetcher.go" {
+		t.Fatalf("entries = %+v", entries)
+	}
+}
+
+func TestGoCallHierarchyTargetFindsEnclosingFunction(t *testing.T) {
+	t.Parallel()
+
+	repoRoot := t.TempDir()
+	path := filepath.Join(repoRoot, "internal", "app", "aggregatedposition", "fetcher", "kyberdata")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	source := []byte(`package kyberdata
+
+func pickTokenPrice(prices *[2]*float64) float64 {
+	if prices == nil {
+		return 0
+	}
+	if prices[0] != nil && *prices[0] > 0 {
+		return (float64(*prices[0]) + float64(*prices[1])) / float64(2)
+	}
+	return 0
+}
+`)
+	filePath := filepath.Join(path, "kem_rewards.go")
+	if err := os.WriteFile(filePath, source, 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	line, column := goCallHierarchyTarget(
+		repoRoot,
+		"internal/app/aggregatedposition/fetcher/kyberdata/kem_rewards.go",
+		7,
+	)
+	if line != 3 || column <= 0 {
+		t.Fatalf("goCallHierarchyTarget() = %d:%d, want 3:>0", line, column)
+	}
+}
+
+func TestRebuildEvidenceMapWithContextUsesGoplsCallHierarchyTarget(t *testing.T) {
+	env := setupEvidenceEnv(t)
+	repoRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoRoot, "go.mod"), []byte("module example.com/repo\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(go.mod) error = %v", err)
+	}
+	sourceDir := filepath.Join(repoRoot, "internal", "app", "aggregatedposition", "fetcher", "kyberdata")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(sourceDir) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "kem_rewards.go"), []byte(`package kyberdata
+
+func pickTokenPrice(prices *[2]*float64) float64 {
+	if prices == nil {
+		return 0
+	}
+	if prices[0] != nil && *prices[0] > 0 {
+		return (float64(*prices[0]) + float64(*prices[1])) / float64(2)
+	}
+	return 0
+}
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile(kem_rewards.go) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "fetcher.go"), []byte(`package kyberdata
+
+func fetchRewardTokenInfo(prices *[2]*float64) float64 {
+	return pickTokenPrice(prices)
+}
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile(fetcher.go) error = %v", err)
+	}
+	originalLookPathGopls := lookPathGopls
+	originalRunGoplsCallHierarchy := runGoplsCallHierarchy
+	var seenTarget string
+	var seenDir string
+	lookPathGopls = func(name string) (string, error) {
+		if name == "gopls" {
+			return "/test/bin/gopls", nil
+		}
+		return originalLookPathGopls(name)
+	}
+	runGoplsCallHierarchy = func(_ context.Context, goplsPath string, dir string, target string) ([]byte, error) {
+		if goplsPath != "/test/bin/gopls" {
+			t.Fatalf("gopls path = %q", goplsPath)
+		}
+		seenTarget = target
+		seenDir = dir
+		return []byte(fmt.Sprintf(`caller[0]: ranges 4:9-23 in %[1]s/internal/app/aggregatedposition/fetcher/kyberdata/fetcher.go from/to function fetchRewardTokenInfo in %[1]s/internal/app/aggregatedposition/fetcher/kyberdata/fetcher.go:3:6-26
+identifier: function pickTokenPrice in %[1]s/internal/app/aggregatedposition/fetcher/kyberdata/kem_rewards.go:3:6-20
+`, repoRoot)), nil
+	}
+	t.Cleanup(func() {
+		lookPathGopls = originalLookPathGopls
+		runGoplsCallHierarchy = originalRunGoplsCallHierarchy
+	})
+
+	finding := createEvidenceFinding(t, env.Queries, testFindingParams("finding_gopls_map", "pickTokenPrice dereferences prices[1]", "correctness", "high", 0.85))
+	finding.PrimaryPath = nullableTestString("internal/app/aggregatedposition/fetcher/kyberdata/kem_rewards.go")
+	finding.PrimaryStartLine = nullableTestInt64(7)
+	finding.PrimaryEndLine = nullableTestInt64(8)
+	createMapEvidenceItem(t, env, "evidence_gopls_primary", finding.ID, KindSupporting, "Changed average", "The changed line dereferences prices[1].", "internal/app/aggregatedposition/fetcher/kyberdata/kem_rewards.go", 7, 8, 0.85, `{"producer":"local_verifier","source":"primary_location"}`)
+
+	view, err := env.Service.RebuildEvidenceMapWithContext(context.Background(), finding, MapContext{RepositoryLocalPath: repoRoot})
+	if err != nil {
+		t.Fatalf("RebuildEvidenceMapWithContext() error = %v", err)
+	}
+	if !strings.Contains(seenTarget, "kem_rewards.go:3:6") || seenDir != repoRoot {
+		t.Fatalf("gopls target = %q dir = %q, want enclosing function identifier at module root", seenTarget, seenDir)
+	}
+	if !hasMapNode(view.Nodes, NodeHandler, "internal/app/aggregatedposition/fetcher/kyberdata/fetcher.go") ||
+		len(view.CallPaths) == 0 ||
+		!strings.Contains(view.Panel.ConnectionSummary, "gopls call hierarchy") {
+		t.Fatalf("view = %+v", view)
+	}
+	var layout struct {
+		CallHierarchy struct {
+			Attempted bool   `json:"attempted"`
+			Available bool   `json:"available"`
+			Target    string `json:"target"`
+		} `json:"call_hierarchy"`
+	}
+	if err := json.Unmarshal(view.Graph.Layout, &layout); err != nil {
+		t.Fatalf("Unmarshal(layout) error = %v", err)
+	}
+	if !layout.CallHierarchy.Attempted || !layout.CallHierarchy.Available || !strings.Contains(layout.CallHierarchy.Target, "kem_rewards.go:3:6") {
+		t.Fatalf("layout = %+v", layout)
 	}
 }
 
@@ -235,6 +478,15 @@ func hasMapNode(nodes []NodeView, kind string, path string) bool {
 func hasMapEdge(edges []EdgeView, kind string, status string) bool {
 	for _, edge := range edges {
 		if edge.Kind == kind && edge.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMapEdgeLabel(edges []EdgeView, label string) bool {
+	for _, edge := range edges {
+		if edge.Label == label {
 			return true
 		}
 	}

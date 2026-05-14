@@ -161,15 +161,20 @@ func NormalizeCLIEnvironment(command string, env map[string]string) map[string]s
 
 func PrepareCommandRuntimeEnvironment(command string, env map[string]string) (map[string]string, func(), error) {
 	normalized := NormalizeCLIEnvironment(command, env)
-	if commandPolicyName(command) != "gemini" {
-		return normalized, func() {}, nil
-	}
-
-	prepared, cleanup, err := prepareGeminiRuntimeEnvironment(normalized)
+	runtimeEnv, cleanupRuntime, err := prepareCLIToolRuntimeEnvironment(command, normalized)
 	if err != nil {
 		return nil, nil, err
 	}
-	return prepared, cleanup, nil
+	if commandPolicyName(command) != "gemini" {
+		return runtimeEnv, cleanupRuntime, nil
+	}
+
+	prepared, cleanupGemini, err := prepareGeminiRuntimeEnvironment(runtimeEnv)
+	if err != nil {
+		cleanupRuntime()
+		return nil, nil, err
+	}
+	return prepared, cleanupAll(cleanupRuntime, cleanupGemini), nil
 }
 
 func ResolveCommandExecutable(command string) (string, error) {
@@ -210,6 +215,79 @@ func ResolveCommandExecutableWithEnv(command string, env map[string]string) (str
 		}
 	}
 	return "", exec.ErrNotFound
+}
+
+func CLIRuntimeBaseDir() string {
+	if base := strings.TrimSpace(os.Getenv("COCODE_AGENT_RUNTIME_DIR")); base != "" {
+		return base
+	}
+	if runtime.GOOS == "windows" {
+		return filepath.Join(os.TempDir(), "cocode-agent-runtime")
+	}
+	return "/tmp/cocode-agent-runtime"
+}
+
+func prepareCLIToolRuntimeEnvironment(command string, env map[string]string) (map[string]string, func(), error) {
+	commandName := commandPolicyName(command)
+	switch commandName {
+	case "claude", "codex", "gemini", "opencode":
+	default:
+		return env, func() {}, nil
+	}
+	base := CLIRuntimeBaseDir()
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		return nil, nil, fmt.Errorf("create CLI runtime base: %w", err)
+	}
+	runDir, err := os.MkdirTemp(base, commandName+"-*")
+	if err != nil {
+		return nil, nil, fmt.Errorf("create CLI runtime dir: %w", err)
+	}
+	cleanup := func() {
+		_ = os.RemoveAll(runDir)
+	}
+	cacheDir := filepath.Join(runDir, "cache")
+	goCacheDir := filepath.Join(cacheDir, "go-build")
+	goplsCacheDir := filepath.Join(cacheDir, "gopls")
+	for _, dir := range []string{cacheDir, goCacheDir, goplsCacheDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			cleanup()
+			return nil, nil, fmt.Errorf("create CLI cache dir: %w", err)
+		}
+	}
+	out := make(map[string]string, len(env)+12)
+	for key, value := range env {
+		out[key] = value
+	}
+	out["TMPDIR"] = runDir
+	out["TMP"] = runDir
+	out["TEMP"] = runDir
+	out["XDG_CACHE_HOME"] = cacheDir
+	out["GOCACHE"] = goCacheDir
+	out["GOPLSCACHE"] = goplsCacheDir
+	if strings.TrimSpace(out["GOTOOLCHAIN"]) == "" {
+		out["GOTOOLCHAIN"] = "auto"
+	}
+	if home := strings.TrimSpace(out["HOME"]); home != "" && strings.TrimSpace(out["GOENV_ROOT"]) == "" {
+		goenvRoot := filepath.Join(home, ".goenv")
+		if info, err := os.Stat(goenvRoot); err == nil && info.IsDir() {
+			out["GOENV_ROOT"] = goenvRoot
+		}
+	}
+	if runtime.GOOS == "darwin" {
+		out["DARWIN_USER_TEMP_DIR"] = runDir
+		out["DARWIN_USER_CACHE_DIR"] = cacheDir
+	}
+	return out, cleanup, nil
+}
+
+func cleanupAll(cleanups ...func()) func() {
+	return func() {
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			if cleanups[i] != nil {
+				cleanups[i]()
+			}
+		}
+	}
 }
 
 const geminiIsolatedContextFileName = "COCODE_EMPTY_CONTEXT.md"
@@ -642,6 +720,9 @@ func normalizeCLIPath(value string, home string) string {
 		seen[dir] = struct{}{}
 		parts = append(parts, dir)
 	}
+	if home != "" {
+		addPreferredGoToolDirs(add, home)
+	}
 	for _, dir := range filepath.SplitList(value) {
 		add(dir)
 	}
@@ -690,6 +771,17 @@ func normalizeCLIPath(value string, home string) string {
 		}
 	}
 	return strings.Join(parts, string(os.PathListSeparator))
+}
+
+func addPreferredGoToolDirs(add func(string), home string) {
+	matches, err := filepath.Glob(filepath.Join(home, "go", "*", "bin"))
+	if err == nil {
+		sort.Sort(sort.Reverse(sort.StringSlice(matches)))
+		for _, match := range matches {
+			addIfDirExists(add, match)
+		}
+	}
+	addIfDirExists(add, filepath.Join(home, ".goenv", "shims"))
 }
 
 func addIfDirExists(add func(string), dir string) {

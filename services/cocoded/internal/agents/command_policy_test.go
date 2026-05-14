@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -148,6 +149,79 @@ func TestNormalizeCLIEnvironmentDefaultsTerminalForKnownCLIs(t *testing.T) {
 		unknown["NO_COLOR"] != "" ||
 		unknown["FORCE_COLOR"] != "" {
 		t.Fatalf("NormalizeCLIEnvironment(unknown) = %#v", unknown)
+	}
+}
+
+func TestNormalizeCLIEnvironmentPrefersCurrentGoToolBins(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	currentGoBin := filepath.Join(home, "go", "1.26.1", "bin")
+	legacyGoBin := filepath.Join(home, "go", "bin")
+	goenvShims := filepath.Join(home, ".goenv", "shims")
+	for _, dir := range []string{currentGoBin, legacyGoBin, goenvShims} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("MkdirAll(%s) error = %v", dir, err)
+		}
+	}
+
+	got := NormalizeCLIEnvironment("codex", map[string]string{
+		"HOME": home,
+		"PATH": strings.Join([]string{legacyGoBin, "/bin"}, string(os.PathListSeparator)),
+	})
+	parts := filepath.SplitList(got["PATH"])
+	currentIndex := slices.Index(parts, currentGoBin)
+	legacyIndex := slices.Index(parts, legacyGoBin)
+	goenvIndex := slices.Index(parts, goenvShims)
+	if currentIndex < 0 || legacyIndex < 0 || goenvIndex < 0 {
+		t.Fatalf("PATH = %q, want current Go bin, legacy Go bin, and goenv shims", got["PATH"])
+	}
+	if currentIndex > legacyIndex {
+		t.Fatalf("PATH = %q, want versioned Go tool bin before legacy GOPATH bin", got["PATH"])
+	}
+}
+
+func TestPrepareCommandRuntimeEnvironmentAddsWritableToolCaches(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("COCODE_AGENT_RUNTIME_DIR", base)
+	home := t.TempDir()
+	goenvRoot := filepath.Join(home, ".goenv")
+	if err := os.MkdirAll(goenvRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll(goenv root) error = %v", err)
+	}
+
+	got, cleanup, err := PrepareCommandRuntimeEnvironment("codex", map[string]string{
+		"HOME": home,
+		"PATH": "/bin",
+		"TERM": "",
+	})
+	if err != nil {
+		t.Fatalf("PrepareCommandRuntimeEnvironment(codex) error = %v", err)
+	}
+	runDir := got["TMPDIR"]
+	if runDir == "" || !strings.HasPrefix(runDir, base+string(os.PathSeparator)) {
+		t.Fatalf("TMPDIR = %q, want per-run dir under %q", runDir, base)
+	}
+	for _, key := range []string{"TMP", "TEMP", "XDG_CACHE_HOME", "GOCACHE", "GOPLSCACHE"} {
+		if got[key] == "" {
+			t.Fatalf("%s was not set in runtime env: %#v", key, got)
+		}
+		if _, err := os.Stat(got[key]); err != nil {
+			t.Fatalf("runtime env %s path %q stat error = %v", key, got[key], err)
+		}
+	}
+	if got["GOTOOLCHAIN"] != "auto" {
+		t.Fatalf("GOTOOLCHAIN = %q, want auto", got["GOTOOLCHAIN"])
+	}
+	if got["GOENV_ROOT"] != goenvRoot {
+		t.Fatalf("GOENV_ROOT = %q, want %q", got["GOENV_ROOT"], goenvRoot)
+	}
+	if runtime.GOOS == "darwin" && (got["DARWIN_USER_TEMP_DIR"] != runDir || got["DARWIN_USER_CACHE_DIR"] == "") {
+		t.Fatalf("darwin runtime dirs = %#v", got)
+	}
+	cleanup()
+	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
+		t.Fatalf("runtime dir stat after cleanup = %v, want missing", err)
 	}
 }
 

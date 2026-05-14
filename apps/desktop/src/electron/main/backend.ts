@@ -120,6 +120,8 @@ function extendedBackendPath(currentPath: string | undefined): string {
     join(home, ".bun", "bin"),
     join(home, ".cargo", "bin"),
     join(home, ".foundry", "bin"),
+    join(home, ".goenv", "shims"),
+    join(home, ".goenv", "bin"),
     join(home, "go", "bin"),
     "/opt/homebrew/bin",
     "/opt/homebrew/sbin",

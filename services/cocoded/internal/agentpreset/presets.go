@@ -50,7 +50,7 @@ func CodexCLI() Preset {
 		Role:           "primary_reviewer",
 		AdapterKind:    agents.AdapterCLINonInteractive,
 		Command:        "codex",
-		Args:           []string{"-a", "never", "exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", "--color", "never", "-"},
+		Args:           []string{"-a", "never", "exec", "--json", "--sandbox", "workspace-write", "--add-dir", agents.CLIRuntimeBaseDir(), "--skip-git-repo-check", "--ephemeral", "--ignore-rules", "--color", "never", "-"},
 		CWDMode:        "repo_root",
 		EnvAllowlist:   append([]string{}, baseCLIEnvAllowlist...),
 		OutputMode:     agents.OutputJSONL,

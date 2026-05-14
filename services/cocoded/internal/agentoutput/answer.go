@@ -34,10 +34,48 @@ func ExtractAnswer(parsed ParsedOutput) Answer {
 			answer.Content = structured
 		}
 	}
+	if parsed.Structured {
+		if structured := structuredFindingsSummary(parsed); structured != "" && shouldPreferStructuredFindings(answer.Content) {
+			answer.Content = structured
+		}
+	}
 	if strings.TrimSpace(answer.Content) == "" && !parsed.Structured {
 		answer.Content = strings.TrimSpace(parsed.Text)
 	}
 	return answer
+}
+
+func shouldPreferStructuredFindings(content string) bool {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return true
+	}
+	return !looksLikeFindingsAnswer(content) && !looksLikeReviewResultAnswer(content)
+}
+
+func looksLikeFindingsAnswer(content string) bool {
+	content = strings.ToLower(strings.TrimSpace(content))
+	return strings.Contains(content, "## findings") ||
+		strings.Contains(content, "findings (") ||
+		strings.Contains(content, "- **severity:**") ||
+		strings.Contains(content, "severity:") && strings.Contains(content, "location:")
+}
+
+func looksLikeReviewResultAnswer(content string) bool {
+	content = strings.ToLower(strings.TrimSpace(content))
+	if content == "" {
+		return false
+	}
+	if strings.Contains(content, "no findings") ||
+		strings.Contains(content, "no actionable findings") ||
+		strings.Contains(content, "no issues found") {
+		return true
+	}
+	return strings.Contains(content, "found") &&
+		(strings.Contains(content, "finding") ||
+			strings.Contains(content, "issue") ||
+			strings.Contains(content, "bug") ||
+			strings.Contains(content, "defect"))
 }
 
 func structuredFindingsSummary(parsed ParsedOutput) string {
@@ -86,7 +124,7 @@ func formatCandidateSummary(candidate Candidate, index int) string {
 		lines = append(lines, "- **Draft comment:** "+truncateCandidateText(comment, 400))
 	}
 	if request := strings.TrimSpace(candidate.CounterEvidenceRequest); request != "" {
-		lines = append(lines, "- **Counter evidence:** "+truncateCandidateText(request, 300))
+		lines = append(lines, "- **What would disprove it:** "+truncateCandidateText(request, 300))
 	}
 	return strings.Join(lines, "\n")
 }

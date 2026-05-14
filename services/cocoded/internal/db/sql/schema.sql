@@ -380,7 +380,7 @@ CREATE TABLE evidence_graphs (
 CREATE TABLE evidence_nodes (
   id TEXT PRIMARY KEY,
   evidence_graph_id TEXT NOT NULL REFERENCES evidence_graphs(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL CHECK(kind IN ('changed_code','related_code','middleware','guard','handler','test','config','counter_evidence','missing_guard','unknown')),
+  kind TEXT NOT NULL CHECK(kind IN ('changed_code','entrypoint','route','related_code','middleware','guard','handler','test','config','counter_evidence','missing_guard','unknown')),
   label TEXT NOT NULL,
   path TEXT,
   symbol TEXT,

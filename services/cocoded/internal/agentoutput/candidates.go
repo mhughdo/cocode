@@ -72,6 +72,7 @@ func (c *Candidate) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
+	hasExplicitEvidence := jsonObjectHasField(data, "evidence")
 	claim := firstNonEmpty(raw.Claim, raw.Title, raw.Message, raw.Description, raw.Body)
 	category := firstNonEmpty(raw.Category, inferCandidateCategory(claim, raw.Description, raw.Body, raw.Message, raw.Recommendation))
 	topPath := firstNonEmpty(raw.Path, raw.File, raw.Filename)
@@ -125,11 +126,20 @@ func (c *Candidate) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if len(evidence) == 0 {
+	if len(evidence) == 0 && !hasExplicitEvidence {
 		evidence = synthesizedEvidence(claim, raw.Description, raw.Body, raw.Message, raw.Recommendation, topPath, topStartLine, topEndLine)
 	}
 	c.Evidence = evidence
 	return nil
+}
+
+func jsonObjectHasField(data []byte, field string) bool {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return false
+	}
+	_, ok := object[field]
+	return ok
 }
 
 type CandidateLocation struct {
@@ -756,12 +766,13 @@ type structuredDocument struct {
 	Findings   json.RawMessage `json:"findings"`
 	Finding    json.RawMessage `json:"finding"`
 	Candidate  json.RawMessage `json:"candidate"`
+	Message    json.RawMessage `json:"message"`
 	Response   json.RawMessage `json:"response"`
 	Result     json.RawMessage `json:"result"`
 	Item       json.RawMessage `json:"item"`
 	Part       json.RawMessage `json:"part"`
 	Type       string          `json:"type"`
-	Event      string          `json:"event"`
+	Event      json.RawMessage `json:"event"`
 	SchemaName string          `json:"schema_version"`
 }
 
@@ -783,6 +794,8 @@ func candidatesFromDocument(document json.RawMessage, documentIndex int) ([]Cand
 		return candidateFromRaw(envelope.Candidate, documentIndex, 1)
 	case looksLikeCandidate(envelope):
 		return candidateFromRaw(document, documentIndex, 1)
+	case len(envelope.Message) > 0:
+		return candidatesFromWrappedMessage(envelope.Message, documentIndex)
 	case len(envelope.Response) > 0:
 		return candidatesFromWrappedText(envelope.Response, documentIndex, "response")
 	case len(envelope.Result) > 0:
@@ -794,6 +807,48 @@ func candidatesFromDocument(document json.RawMessage, documentIndex int) ([]Cand
 	default:
 		return nil, nil
 	}
+}
+
+func candidatesFromWrappedMessage(raw json.RawMessage, documentIndex int) ([]Candidate, []Diagnostic) {
+	if text, ok := rawJSONString(raw); ok {
+		return extractCandidatesFromWrappedText(text)
+	}
+	var wrapper struct {
+		Type    string          `json:"type"`
+		Text    string          `json:"text"`
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		return nil, []Diagnostic{documentDiagnostic(documentIndex, "invalid_message_wrapper", err.Error())}
+	}
+	if strings.TrimSpace(wrapper.Text) != "" {
+		return extractCandidatesFromWrappedText(wrapper.Text)
+	}
+	if len(wrapper.Content) == 0 || string(wrapper.Content) == "null" {
+		return nil, nil
+	}
+	var text string
+	if err := json.Unmarshal(wrapper.Content, &text); err == nil {
+		return extractCandidatesFromWrappedText(text)
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(wrapper.Content, &parts); err != nil {
+		return nil, nil
+	}
+	candidates := []Candidate{}
+	diagnostics := []Diagnostic{}
+	for _, part := range parts {
+		if !allowsCandidateTextWrapper("part", part.Type) || strings.TrimSpace(part.Text) == "" {
+			continue
+		}
+		extracted, extractedDiagnostics := extractCandidatesFromWrappedText(part.Text)
+		candidates = append(candidates, extracted...)
+		diagnostics = append(diagnostics, extractedDiagnostics...)
+	}
+	return candidates, diagnostics
 }
 
 func candidatesFromWrappedObjectText(raw json.RawMessage, documentIndex int, field string) ([]Candidate, []Diagnostic) {
@@ -815,7 +870,7 @@ func candidatesFromWrappedObjectText(raw json.RawMessage, documentIndex int, fie
 
 func shouldSkipMachineEnvelope(envelope structuredDocument) bool {
 	typ := strings.ToLower(strings.TrimSpace(envelope.Type))
-	event := strings.ToLower(strings.TrimSpace(envelope.Event))
+	event := machineEventName(envelope.Event)
 	switch typ {
 	case "system", "thread.started", "turn.started", "turn.completed", "item.started", "response.created", "response.in_progress", "response.completed", "stream_event", "message_start", "message_delta", "message_stop", "content_block_start", "content_block_delta", "content_block_stop":
 		return true
@@ -825,6 +880,24 @@ func shouldSkipMachineEnvelope(envelope structuredDocument) bool {
 		return true
 	}
 	return false
+}
+
+func machineEventName(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return strings.ToLower(strings.TrimSpace(text))
+	}
+	var object struct {
+		Type  string `json:"type"`
+		Event string `json:"event"`
+	}
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(firstNonEmpty(object.Type, object.Event)))
 }
 
 func allowsCandidateTextWrapper(field string, wrapperType string) bool {
@@ -964,10 +1037,32 @@ func normalizeCandidate(candidate Candidate) Candidate {
 		evidence := &candidate.Evidence[index]
 		evidence.Title = strings.TrimSpace(evidence.Title)
 		evidence.Summary = strings.TrimSpace(evidence.Summary)
-		evidence.Kind = strings.ToLower(firstNonEmpty(strings.TrimSpace(evidence.Kind), "unknown"))
+		evidence.Kind = normalizeEvidenceKind(evidence.Kind)
 		evidence.Path = strings.TrimSpace(evidence.Path)
 	}
 	return candidate
+}
+
+func normalizeEvidenceKind(kind string) string {
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	kind = strings.ReplaceAll(kind, "-", "_")
+	kind = strings.ReplaceAll(kind, " ", "_")
+	switch kind {
+	case "":
+		return "unknown"
+	case "code", "source", "source_code", "source_reference", "source_code_reference", "code_reference", "repository_code", "reference_code", "supporting_code", "changed", "change", "changed_file", "diff", "diff_hunk", "patch", "added_code", "removed_code", "modified_code":
+		return "changed_code"
+	case "related", "context", "related_context", "related_file":
+		return "related_code"
+	case "tests", "test_code", "test_signal", "unit_test", "integration_test":
+		return "test"
+	case "configuration", "config_file", "settings":
+		return "config"
+	case "counter", "contradiction", "refutation", "disproof":
+		return "counter_evidence"
+	default:
+		return kind
+	}
 }
 
 func validateCandidate(candidate Candidate, documentIndex int, findingIndex int) []Diagnostic {
@@ -990,6 +1085,12 @@ func validateCandidate(candidate Candidate, documentIndex int, findingIndex int)
 	}
 	if candidate.Confidence < 0 || candidate.Confidence > 1 {
 		diagnostics = append(diagnostics, findingDiagnostic(documentIndex, findingIndex, "invalid_confidence", "confidence must be between 0 and 1"))
+	}
+	if len(candidate.Locations) == 0 {
+		diagnostics = append(diagnostics, findingDiagnostic(documentIndex, findingIndex, "missing_location", "at least one exact file/line location is required"))
+	}
+	if len(candidate.Evidence) == 0 {
+		diagnostics = append(diagnostics, findingDiagnostic(documentIndex, findingIndex, "missing_evidence", "at least one evidence item is required"))
 	}
 	for index, location := range candidate.Locations {
 		if location.Path == "" {

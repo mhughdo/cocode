@@ -409,6 +409,10 @@ func (s Service) syncReviewProgressMessages(ctx context.Context, session dbgen.R
 	if err != nil {
 		return err
 	}
+	messages, err = s.removeHiddenReviewAgentRunMessages(ctx, messages)
+	if err != nil {
+		return err
+	}
 	seenEvents := map[string]bool{}
 	seenRuns := map[string]bool{}
 	hasFindingsDigest := false
@@ -439,9 +443,11 @@ func (s Service) syncReviewProgressMessages(ctx context.Context, session dbgen.R
 	}
 	appendProgress := func(event dbgen.Event, progress progressMessage) error {
 		metadata, err := json.Marshal(map[string]any{
-			"answer_source":       "review_progress",
-			"progress_event_id":   event.ID,
-			"progress_event_type": event.Type,
+			"answer_source":             "review_progress",
+			"progress_event_created_at": event.CreatedAt,
+			"progress_event_id":         event.ID,
+			"progress_event_sequence":   event.Sequence,
+			"progress_event_type":       event.Type,
 		})
 		if err != nil {
 			return fmt.Errorf("encode progress metadata: %w", err)
@@ -484,7 +490,7 @@ func (s Service) syncReviewProgressMessages(ctx context.Context, session dbgen.R
 		return fmt.Errorf("list agent runs for chat: %w", err)
 	}
 	for _, run := range runs {
-		if seenRuns[run.ID] || strings.EqualFold(strings.TrimSpace(run.Role), "chat") || !terminalAgentRunStatus(run.Status) {
+		if seenRuns[run.ID] || shouldHideReviewAgentRunFromChat(run) || !terminalAgentRunStatus(run.Status) {
 			continue
 		}
 		config, err := s.Queries.GetAgentConfig(ctx, run.AgentConfigID)
@@ -496,9 +502,11 @@ func (s Service) syncReviewProgressMessages(ctx context.Context, session dbgen.R
 		}
 		body, status, answer := s.reviewAgentRunMessage(ctx, run, config)
 		messageMetadata := map[string]any{
-			"answer_source":       "review_agent_run",
-			"review_agent_run_id": run.ID,
-			"agent_status":        run.Status,
+			"agent_status":                  run.Status,
+			"answer_source":                 "review_agent_run",
+			"review_agent_run_completed_at": nullableStringValue(run.CompletedAt),
+			"review_agent_run_id":           run.ID,
+			"review_agent_run_started_at":   nullableStringValue(run.StartedAt),
 		}
 		if reasoning := strings.TrimSpace(answer.ReasoningSummary); reasoning != "" {
 			messageMetadata["reasoning_summary"] = truncateEventPreview(reasoning)
@@ -1204,7 +1212,7 @@ func (s Service) sessionReviewerAgentConfigs(ctx context.Context, reviewSessionI
 }
 
 func (s Service) enabledSessionAgentCount(ctx context.Context, reviewSessionID string) (int, error) {
-	configs, err := s.sessionAgentConfigs(ctx, reviewSessionID)
+	configs, err := s.sessionReviewerAgentConfigs(ctx, reviewSessionID)
 	return len(configs), err
 }
 
@@ -1475,6 +1483,14 @@ func reviewProgressMessage(event dbgen.Event) (progressMessage, bool) {
 			status:      MessageStatusCompleted,
 		}, true
 	case "WorkflowPhaseStarted":
+		if message, ok := orchestratorPhaseStartMessage(stringValue(payload["phase"])); ok {
+			return progressMessage{
+				authorType:  AuthorOrchestrator,
+				displayName: "Orchestrator",
+				body:        message,
+				status:      MessageStatusCompleted,
+			}, true
+		}
 		return progressMessage{
 			authorType:  AuthorSystem,
 			displayName: "System",
@@ -1617,6 +1633,42 @@ func (s Service) readRunArtifactText(ctx context.Context, artifactID sql.NullStr
 	return text, text != ""
 }
 
+func (s Service) removeHiddenReviewAgentRunMessages(ctx context.Context, messages []Message) ([]Message, error) {
+	if s.Database == nil || s.Queries == nil || len(messages) == 0 {
+		return messages, nil
+	}
+	visible := messages[:0]
+	for _, message := range messages {
+		runID := strings.TrimSpace(message.AgentRunID)
+		if runID == "" {
+			metadata := messageMetadata(message.Metadata)
+			if metadataRunID, ok := metadata["review_agent_run_id"].(string); ok {
+				runID = strings.TrimSpace(metadataRunID)
+			}
+		}
+		if runID == "" {
+			visible = append(visible, message)
+			continue
+		}
+		run, err := s.Queries.GetAgentRun(ctx, runID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				visible = append(visible, message)
+				continue
+			}
+			return nil, fmt.Errorf("read agent run for chat cleanup: %w", err)
+		}
+		if !shouldHideReviewAgentRunFromChat(run) {
+			visible = append(visible, message)
+			continue
+		}
+		if _, err := s.Database.ExecContext(ctx, `DELETE FROM chat_messages WHERE id = ?`, message.ID); err != nil {
+			return nil, fmt.Errorf("delete hidden internal agent message: %w", err)
+		}
+	}
+	return visible, nil
+}
+
 func findingsDigestMessage(findings []dbgen.Finding) string {
 	lines := []string{"Early findings are in. Here are the top items so far:"}
 	limit := minInt(len(findings), 3)
@@ -1639,6 +1691,17 @@ func terminalAgentRunStatus(status string) bool {
 	default:
 		return false
 	}
+}
+
+func shouldHideReviewAgentRunFromChat(run dbgen.AgentRun) bool {
+	role := strings.ToLower(strings.TrimSpace(run.Role))
+	if role == "chat" {
+		return true
+	}
+	return role == AuthorOrchestrator ||
+		role == AuthorVerifier ||
+		strings.Contains(role, "orchestrator") ||
+		strings.Contains(role, "verifier")
 }
 
 func terminalReviewProgressEvent(eventType string) bool {
@@ -1675,19 +1738,34 @@ func stringValue(value any) string {
 	}
 }
 
+func orchestratorPhaseStartMessage(phase string) (string, bool) {
+	switch strings.TrimSpace(phase) {
+	case "normalize_outputs":
+		return "Orchestrator is reading reviewer outputs and extracting candidate findings.", true
+	case "deduplicate", "deduplicate_findings":
+		return "Orchestrator is re-checking and deduplicating findings across reviewer outputs.", true
+	case "verify_findings":
+		return "Orchestrator is re-checking each finding against code evidence and counter-evidence.", true
+	case "build_evidence", "build_evidence_maps":
+		return "Orchestrator is enriching findings with evidence maps and source context.", true
+	default:
+		return "", false
+	}
+}
+
 func humanWorkflowPhase(phase string) string {
 	switch strings.TrimSpace(phase) {
-	case "build_context":
+	case "build_context", "build_review_context":
 		return "Context build"
-	case "run_agents":
+	case "run_agents", "run_review_agents":
 		return "Agent review"
 	case "normalize_outputs":
 		return "Finding normalization"
-	case "deduplicate":
+	case "deduplicate", "deduplicate_findings":
 		return "Finding deduplication"
 	case "verify_findings":
 		return "Finding verification"
-	case "build_evidence":
+	case "build_evidence", "build_evidence_maps":
 		return "Evidence map build"
 	case "draft_comments":
 		return "Publish draft preparation"
@@ -1981,7 +2059,7 @@ func localFindingAnswer(session dbgen.ReviewSession, finding dbgen.Finding) stri
 		lines = append(lines, "", "### Why it was flagged", truncatePromptText(evidence, 1200))
 	}
 	if counter := strings.TrimSpace(nullableStringValue(finding.CounterEvidenceSummary)); counter != "" {
-		lines = append(lines, "", "### Counter-evidence", truncatePromptText(counter, 900))
+		lines = append(lines, "", "### Verification checks", truncatePromptText(counter, 900))
 	}
 	if fix := strings.TrimSpace(nullableStringValue(finding.SuggestedFix)); fix != "" {
 		lines = append(lines, "", "### Suggested fix", truncatePromptText(fix, 900))

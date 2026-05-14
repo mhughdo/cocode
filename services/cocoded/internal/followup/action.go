@@ -17,7 +17,7 @@ const (
 	QuickActionDismiss            = "dismiss"
 	QuickActionCopy               = "copy"
 
-	defaultCounterEvidenceQuestion = "Look for counter-evidence for this finding. Is there any stored evidence, related test, guard, configuration, or code path that contradicts the claim? Cite the strongest evidence refs and say if the scoped context is insufficient."
+	defaultCounterEvidenceQuestion = "Look for real counter-evidence for this finding. Only call something counter-evidence if it refutes the claim; otherwise label it as related context or a test signal. Cite the strongest evidence refs and say if the scoped context is insufficient."
 )
 
 type QuickActionParams struct {

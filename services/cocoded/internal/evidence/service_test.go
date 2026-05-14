@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,7 +15,7 @@ import (
 	"github.com/hughdo/cocode/services/cocoded/internal/testkit/goldenrepo"
 )
 
-func TestVerifySessionCreatesPrimaryAndCounterEvidence(t *testing.T) {
+func TestVerifySessionCreatesPrimaryAndRelatedEvidence(t *testing.T) {
 	t.Parallel()
 
 	env := setupEvidenceEnv(t)
@@ -48,17 +50,17 @@ func TestVerifySessionCreatesPrimaryAndCounterEvidence(t *testing.T) {
 	if summary.Findings != 1 ||
 		summary.EvidenceItemsCreated != 3 ||
 		summary.SupportingEvidence != 1 ||
-		summary.CounterEvidence != 2 ||
-		summary.ByVerificationStatus[StatusPlausible] != 1 {
+		summary.CounterEvidence != 0 ||
+		summary.ByVerificationStatus[StatusVerified] != 1 {
 		t.Fatalf("summary = %+v", summary)
 	}
 	updated, err := env.Queries.GetFinding(context.Background(), finding.ID)
 	if err != nil {
 		t.Fatalf("GetFinding() error = %v", err)
 	}
-	if updated.VerificationStatus != StatusPlausible ||
+	if updated.VerificationStatus != StatusVerified ||
 		!strings.Contains(nullableTestValue(updated.EvidenceSummary), "anchored to changed code") ||
-		!strings.Contains(nullableTestValue(updated.CounterEvidenceSummary), "possible guard") {
+		!strings.Contains(nullableTestValue(updated.CounterEvidenceSummary), "No verified contradiction") {
 		t.Fatalf("updated finding = %+v", updated)
 	}
 	items, err := env.Queries.ListEvidenceItemsByFinding(context.Background(), finding.ID)
@@ -67,7 +69,7 @@ func TestVerifySessionCreatesPrimaryAndCounterEvidence(t *testing.T) {
 	}
 	if len(items) != 3 ||
 		countEvidenceKind(items, KindSupporting) != 1 ||
-		countEvidenceKind(items, KindCounter) != 1 ||
+		countEvidenceKind(items, KindSearch) != 1 ||
 		countEvidenceKind(items, KindTest) != 1 {
 		t.Fatalf("items = %+v", items)
 	}
@@ -183,6 +185,56 @@ func TestVerifySessionAvoidsLooseGenericCounterEvidence(t *testing.T) {
 	}
 }
 
+func TestVerifySessionKeepsNilSafetyLeadsFocused(t *testing.T) {
+	t.Parallel()
+
+	env := setupEvidenceEnv(t)
+	createEvidenceFinding(t, env.Queries, dbgen.CreateFindingParams{
+		ID:                 "finding_nil_safety",
+		ReviewSessionID:    "session_1",
+		CanonicalClaim:     "pickTokenPrice dereferences prices[1] without a nil check, causing a runtime panic",
+		Category:           "correctness",
+		Severity:           "high",
+		Confidence:         0.85,
+		VerificationStatus: StatusUnverified,
+		DecisionStatus:     "undecided",
+		PrimaryPath:        nullableTestString("src/handler.go"),
+		PrimaryStartLine:   nullableTestInt64(4),
+		PrimaryEndLine:     nullableTestInt64(4),
+		SuggestedFix:       nullableTestString("Add a guard before dereferencing prices[1]."),
+		Fingerprint:        "fp_nil_safety",
+		MergedFromCount:    1,
+		FirstSeenAt:        "2026-05-03T00:04:00Z",
+		UpdatedAt:          "2026-05-03T00:04:00Z",
+	})
+	env.Searcher.matches = map[string][]SearchMatch{
+		"nil": {
+			{Path: "src/auth.go", Line: 2, Text: "func RequireAdmin() bool { return true }"},
+			{Path: "src/config.go", Line: 4, Text: "Guard routes with middleware"},
+			{Path: "src/handler_test.go", Line: 12, Text: "func TestNilPricesDoNotPanic(t *testing.T) {}"},
+			{Path: "src/safe.go", Line: 7, Text: "if value == nil { return }"},
+		},
+	}
+
+	_, err := env.Service.VerifySession(context.Background(), env.Session, env.Repository)
+	if err != nil {
+		t.Fatalf("VerifySession() error = %v", err)
+	}
+	items, err := env.Queries.ListEvidenceItemsByFinding(context.Background(), "finding_nil_safety")
+	if err != nil {
+		t.Fatalf("ListEvidenceItemsByFinding() error = %v", err)
+	}
+	if countEvidenceKind(items, KindTest) != 1 || countEvidenceKind(items, KindSearch) != 1 {
+		t.Fatalf("expected one test and one nil-safety lead, got %+v", items)
+	}
+	for _, item := range items {
+		path := nullableTestValue(item.Path)
+		if path == "src/auth.go" || path == "src/config.go" {
+			t.Fatalf("unrelated guard/config lead should not become nil-safety evidence: %+v", items)
+		}
+	}
+}
+
 func TestVerifySessionAssignsVerifiedWhenNoCounterEvidence(t *testing.T) {
 	t.Parallel()
 
@@ -246,6 +298,52 @@ func TestVerifySessionAssignsNeedsHumanForMissingLocation(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].Kind != KindMissing {
 		t.Fatalf("items = %+v", items)
+	}
+}
+
+func TestReadSnippetClampsStaleLinePastEOF(t *testing.T) {
+	t.Parallel()
+
+	repoRoot := t.TempDir()
+	path := filepath.Join(repoRoot, "src", "server.js")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(path, []byte("first\nsecond\nlast line\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	snippet, windowStart, windowEnd, truncated, err := ReadSnippet(repoRoot, "src/server.js", 99, 99, 2, 4096)
+	if err != nil {
+		t.Fatalf("ReadSnippet() error = %v", err)
+	}
+	if truncated {
+		t.Fatalf("ReadSnippet() unexpectedly truncated")
+	}
+	if windowStart != 1 || windowEnd != 3 {
+		t.Fatalf("window = %d..%d, want 1..3", windowStart, windowEnd)
+	}
+	if !strings.Contains(snippet, "3: last line") {
+		t.Fatalf("snippet = %q", snippet)
+	}
+}
+
+func TestPrimaryEvidenceSummarySkipsBareBraceLine(t *testing.T) {
+	t.Parallel()
+
+	finding := dbgen.Finding{
+		CanonicalClaim: "pickTokenPrice dereferences prices[1] without a nil check",
+	}
+	summary := primaryEvidenceSummary(finding, "src/prices.go", 206, 208, strings.Join([]string{
+		"204: if prices == nil {",
+		"205:     return 0",
+		"206: }",
+		"207: if prices[0] != nil && *prices[0] > 0 {",
+		"208:     return (*prices[0] + *prices[1]) / 2",
+	}, "\n"), false)
+	if strings.Contains(summary, "Observed code: `}`") ||
+		!strings.Contains(summary, "Observed code: `if prices[0] != nil") {
+		t.Fatalf("summary = %q", summary)
 	}
 }
 
@@ -384,7 +482,7 @@ func TestGoldenAuthRepoVerifierBuildsEvidenceMap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VerifySession() error = %v", err)
 	}
-	if summary.SupportingEvidence != 1 || summary.CounterEvidence != 1 || summary.ByVerificationStatus[StatusPlausible] != 1 {
+	if summary.SupportingEvidence != 1 || summary.CounterEvidence != 0 || summary.ByVerificationStatus[StatusVerified] != 1 {
 		t.Fatalf("summary = %+v", summary)
 	}
 	updated, err := env.Queries.GetFinding(context.Background(), finding.ID)
@@ -397,7 +495,7 @@ func TestGoldenAuthRepoVerifierBuildsEvidenceMap(t *testing.T) {
 	}
 	if view.Graph.Status != GraphStatusReady ||
 		!hasMapNode(view.Nodes, NodeChangedCode, "apps/api/src/routes/repositories.ts") ||
-		!hasMapNode(view.Nodes, NodeCounterEvidence, "apps/api/src/middleware/auth.ts") ||
+		!hasMapNode(view.Nodes, NodeMiddleware, "apps/api/src/middleware/auth.ts") ||
 		!hasMapEdge(view.Edges, EdgeMissingGuard, EdgeStatusMissing) {
 		t.Fatalf("view = %+v", view)
 	}
@@ -575,6 +673,16 @@ func TestRuleProfilesAddDeterministicSearchTerms(t *testing.T) {
 			},
 			rule:  "webhook_validation",
 			terms: []string{"signature", "hmac", "webhook"},
+		},
+		{
+			name: "nil safety",
+			finding: dbgen.Finding{
+				CanonicalClaim: "pickTokenPrice can panic by dereferencing nil prices",
+				Category:       "correctness",
+				SuggestedFix:   nullableTestString("Add a guard before indexing prices."),
+			},
+			rule:  "nil_safety",
+			terms: []string{"nil", "panic", "bounds"},
 		},
 		{
 			name: "idempotency",

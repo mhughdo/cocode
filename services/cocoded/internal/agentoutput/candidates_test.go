@@ -29,7 +29,7 @@ func TestExtractCandidatesFromReviewAgentOutput(t *testing.T) {
 		candidate.PrimaryPath != "apps/api/src/routes/repositories.ts" ||
 		candidate.PrimaryStartLine != 87 ||
 		candidate.PrimaryEndLine != 112 ||
-		candidate.Evidence[0].Kind != "unknown" ||
+		candidate.Evidence[0].Kind != "changed_code" ||
 		candidate.SuggestedFix == "" ||
 		candidate.DraftComment == "" {
 		t.Fatalf("candidate = %+v", candidate)
@@ -94,6 +94,56 @@ func TestExtractCandidatesFromRealCLIWrappers(t *testing.T) {
 	}
 }
 
+func TestExtractCandidatesNormalizesProviderEvidenceKindAliases(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(strings.Join([]string{
+		fmt.Sprintf(`{"type":"item.completed","item":{"type":"agent_message","text":%s}}`, jsonString(t, `{"findings":[{"claim":"cancelSubscription no longer checks admin authorization","category":"security","severity":"high","confidence":"high","locations":[{"path":"src/server.js","start_line":10,"end_line":11,"side":"RIGHT"}],"evidence":[{"title":"Admin check removed","summary":"The route calls db.cancelSubscription without requireAdmin.","kind":"code_reference","path":"src/server.js","start_line":10,"end_line":11},{"title":"Test confirms member access","summary":"The test now asserts a member can cancel.","kind":"test","path":"test/server.test.js","start_line":5,"end_line":6}]}]}`)),
+		fmt.Sprintf(`{"response":%s}`, jsonString(t, "```json\n"+`{"findings":[{"claim":"exportInvoices lacks authorization","category":"security","severity":"critical","confidence":"high","locations":[{"path":"src/server.js","start_line":17,"end_line":20,"side":"right"}],"evidence":[{"title":"Unprotected export","summary":"The new export function has no requireAdmin call.","kind":"diff","path":"src/server.js","start_line":17,"end_line":20}]}]}`+"\n```")),
+	}, "\n"))
+
+	parsed := Parse(raw, agents.OutputJSONL)
+	result := ExtractCandidates(parsed)
+	if len(result.Diagnostics) != 0 {
+		t.Fatalf("Diagnostics = %+v", result.Diagnostics)
+	}
+	if len(result.Candidates) != 2 {
+		t.Fatalf("Candidates = %+v", result.Candidates)
+	}
+	if result.Candidates[0].Evidence[0].Kind != "changed_code" ||
+		result.Candidates[0].Evidence[1].Kind != "test" ||
+		result.Candidates[1].Severity != "blocker" ||
+		result.Candidates[1].Evidence[0].Kind != "changed_code" {
+		t.Fatalf("Candidates = %+v", result.Candidates)
+	}
+}
+
+func TestExtractCandidatesFromClaudeStreamMessageContent(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(strings.Join([]string{
+		`{"type":"system","subtype":"init"}`,
+		fmt.Sprintf(`{"type":"assistant","message":{"type":"message","role":"assistant","content":[{"type":"text","text":%s}]}}`, jsonString(t, "```json\n"+`{"findings":[{"claim":"cancelSubscription executes without admin authorization","category":"security","severity":"critical","confidence":"high","locations":[{"path":"src/server.js","start_line":10,"end_line":11,"side":"right"}],"evidence":[{"title":"Diff hunk removed requireAdmin","summary":"The hunk removes requireAdmin and still calls the database mutation.","kind":"diff_hunk","path":"src/server.js","start_line":10,"end_line":11}]}]}`+"\n```")),
+		"",
+	}, "\n"))
+
+	parsed := Parse(raw, agents.OutputJSON)
+	if !parsed.Structured || parsed.Mode != agents.OutputJSONL {
+		t.Fatalf("parsed = %+v", parsed)
+	}
+	result := ExtractCandidates(parsed)
+	if len(result.Candidates) != 1 {
+		t.Fatalf("Candidates = %+v Diagnostics = %+v", result.Candidates, result.Diagnostics)
+	}
+	candidate := result.Candidates[0]
+	if candidate.Claim != "cancelSubscription executes without admin authorization" ||
+		candidate.Severity != "blocker" ||
+		candidate.PrimaryPath != "src/server.js" ||
+		candidate.Evidence[0].Kind != "changed_code" {
+		t.Fatalf("candidate = %+v", candidate)
+	}
+}
+
 func TestExtractCandidatesIgnoresPlainTextRealCLIWrappers(t *testing.T) {
 	t.Parallel()
 
@@ -103,6 +153,16 @@ func TestExtractCandidatesIgnoresPlainTextRealCLIWrappers(t *testing.T) {
 {"result":"No findings."}
 `)
 	parsed := Parse(raw, agents.OutputJSONL)
+	result := ExtractCandidates(parsed)
+	if len(result.Candidates) != 0 || len(result.Diagnostics) != 0 {
+		t.Fatalf("Candidates = %+v Diagnostics = %+v", result.Candidates, result.Diagnostics)
+	}
+}
+
+func TestExtractCandidatesIgnoresPlainMessageText(t *testing.T) {
+	t.Parallel()
+
+	parsed := Parse([]byte(`{"message":"starting review"}`), agents.OutputJSON)
 	result := ExtractCandidates(parsed)
 	if len(result.Candidates) != 0 || len(result.Diagnostics) != 0 {
 		t.Fatalf("Candidates = %+v Diagnostics = %+v", result.Candidates, result.Diagnostics)
@@ -276,6 +336,30 @@ func TestExtractCandidatesSkipsInvalidFinding(t *testing.T) {
 	assertDiagnosticCode(t, result.Diagnostics, "missing_claim")
 	assertDiagnosticCode(t, result.Diagnostics, "invalid_confidence")
 	assertDiagnosticCode(t, result.Diagnostics, "invalid_location_range")
+}
+
+func TestExtractCandidatesRequiresEvidence(t *testing.T) {
+	t.Parallel()
+
+	parsed := Parse([]byte(`{
+		"summary": "missing evidence",
+		"findings": [
+			{
+				"claim": "repository update lacks admin guard",
+				"category": "security",
+				"severity": "high",
+				"confidence": 0.82,
+				"locations": [{"path": "a.go", "start_line": 10, "end_line": 11, "side": "RIGHT"}],
+				"evidence": []
+			}
+		]
+	}`), agents.OutputJSON)
+
+	result := ExtractCandidates(parsed)
+	if len(result.Candidates) != 0 {
+		t.Fatalf("Candidates = %+v", result.Candidates)
+	}
+	assertDiagnosticCode(t, result.Diagnostics, "missing_evidence")
 }
 
 func TestExtractCandidatesNormalizesUnknownLabels(t *testing.T) {

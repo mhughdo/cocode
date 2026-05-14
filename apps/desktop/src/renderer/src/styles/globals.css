@@ -169,6 +169,13 @@ pre,
     box-shadow: 0 1px 2px rgb(17 18 20 / 0.025);
   }
 
+  [data-slot="scroll-area-viewport"] > div {
+    display: block !important;
+    min-width: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+
   .cocode-shiki-block {
     --line-numbers-foreground: color-mix(
       in oklab,
@@ -202,6 +209,11 @@ pre,
     margin-right: 0.75rem;
   }
 
+  .cocode-shiki-block .rs-highlighted-line {
+    background: color-mix(in oklab, var(--accent) 18%, transparent);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+
   .cocode-page {
     margin-inline: auto;
     width: min(100%, 1120px);
@@ -229,57 +241,31 @@ pre,
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     align-items: stretch;
+    height: 100%;
     min-height: 0;
-  }
-
-  .evidence-map-right-panel {
-    grid-column: 1 / -1;
-    overflow-wrap: anywhere;
-    word-break: break-word;
-  }
-
-  .evidence-map-right-panel * {
-    min-width: 0;
-  }
-
-  .evidence-map-right-panel pre,
-  .evidence-map-right-panel code {
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    word-break: break-word;
   }
 
   @media (min-width: 1024px) {
     .evidence-map-layout {
-      grid-template-columns: 260px minmax(0, 1fr);
+      grid-template-columns: minmax(0, 1fr) clamp(340px, 30vw, 460px);
     }
   }
 
   @media (min-width: 1280px) {
     .evidence-map-layout {
-      grid-template-columns: 260px minmax(0, 1fr) 320px;
-    }
-
-    .evidence-map-right-panel {
-      grid-column: auto;
-      border-top-width: 0;
-      border-left-width: 1px;
+      grid-template-columns: minmax(0, 1fr) clamp(360px, 32vw, 500px);
     }
   }
 
   @media (min-width: 1440px) {
     .evidence-map-layout {
-      grid-template-columns: 280px minmax(0, 1fr) 360px;
+      grid-template-columns: minmax(0, 1fr) clamp(380px, 30vw, 520px);
     }
   }
 
   @media (min-width: 1800px) {
     .evidence-map-layout {
-      grid-template-columns: 300px minmax(0, 1fr) 420px;
-    }
-
-    .evidence-map-right-panel {
-      height: 640px;
+      grid-template-columns: minmax(0, 1fr) clamp(400px, 28vw, 540px);
     }
   }
 }

@@ -151,6 +151,7 @@ export function NewThreadScreen({
   agentModelCatalogs,
   client,
   onOpenRepository,
+  onSetupContextChange,
   onReviewStarted,
 }: {
   activeRepository?: Repository;
@@ -159,6 +160,11 @@ export function NewThreadScreen({
   agentModelCatalogs: Loadable<AgentModelCatalog[]>;
   client: ApiClient | null;
   onOpenRepository: () => void;
+  onSetupContextChange?: (context: {
+    branch?: string;
+    subtitle?: string;
+    title?: string;
+  }) => void;
   onReviewStarted: (session: ReviewSession) => void;
 }) {
   const [source, setSource] = useState<SnapshotSource>("github");
@@ -550,6 +556,42 @@ export function NewThreadScreen({
     () => (previewReady ? sourcePreview.data.files : []),
     [previewReady, sourcePreview],
   );
+
+  useEffect(() => {
+    if (!onSetupContextChange) {
+      return;
+    }
+    const repositoryLabel = activeRepository?.owner
+      ? `${activeRepository.owner}/${activeRepository.name}`
+      : (activeRepository?.name ??
+        activeWorkspace?.name ??
+        "No project selected");
+    const branchLabel =
+      source === "branch-compare"
+        ? `${baseRef}..${headRefValue}`
+        : source === "local-changes"
+          ? currentBranch || activeRepository?.default_branch || "working tree"
+          : githubUrl.trim()
+            ? "GitHub PR"
+            : activeRepository?.default_branch || "main";
+
+    onSetupContextChange({
+      branch: branchLabel,
+      subtitle: "Set up review",
+      title: repositoryLabel,
+    });
+  }, [
+    activeRepository?.default_branch,
+    activeRepository?.name,
+    activeRepository?.owner,
+    activeWorkspace?.name,
+    baseRef,
+    currentBranch,
+    githubUrl,
+    headRefValue,
+    onSetupContextChange,
+    source,
+  ]);
   const previewStats = setupPreviewStats(previewFiles);
   const renderedDiffFiles = useMemo(
     () => previewFiles.slice(0, renderedDiffFileCount),
@@ -1781,10 +1823,10 @@ const setupReviewRoleOptions: SetupReviewRoleOption[] = [
   },
   {
     id: "counter-evidence-skeptic",
-    label: "Counter-Evidence Skeptic",
-    shortLabel: "Skeptic",
+    label: "Contradiction Verifier",
+    shortLabel: "Verifier",
     description:
-      "Searches for disproving paths, safeguards, and false-positive explanations.",
+      "Separates true contradictions from related safeguards, tests, and false-positive leads.",
     icon: SearchIcon,
   },
   {

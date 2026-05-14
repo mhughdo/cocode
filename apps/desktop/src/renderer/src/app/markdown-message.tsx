@@ -3,11 +3,18 @@ import {
   type CSSProperties,
   type ReactElement,
   type ReactNode,
+  useEffect,
+  useMemo,
+  useState,
 } from "react";
-import ShikiHighlighter from "react-shiki";
 
-import { normalizeSyntaxLanguage, SYNTAX_THEME } from "@/lib/syntax-highlighting";
+import {
+  highlightCodeLines,
+  normalizeSyntaxLanguage,
+  type HighlightedCodeLine,
+} from "@/lib/syntax-highlighting";
 import { cn } from "@/lib/utils";
+import { formatKnownAgentJSONPayload } from "./agent-output-formatting";
 
 export function MarkdownMessage({
   className,
@@ -22,7 +29,7 @@ export function MarkdownMessage({
   return (
     <div
       className={cn(
-        "cocode-markdown space-y-2 text-[13px] leading-6 break-words",
+        "cocode-markdown min-w-0 space-y-2 text-[13px] leading-6 [overflow-wrap:anywhere] break-words",
         muted && "text-muted-foreground",
         className,
       )}
@@ -43,7 +50,7 @@ export function normalizeMarkdownMessageContent(content: string) {
     extractEmbeddedJSONAnswer(raw) ??
     extractJSONAnswer(raw) ??
     extractEscapedJSONAnswer(raw);
-  return extracted || content;
+  return extracted ?? content;
 }
 
 function extractJSONFenceAnswer(raw: string) {
@@ -64,7 +71,7 @@ function extractJSONLinesAnswer(raw: string) {
       continue;
     }
     const extracted = extractJSONAnswer(trimmed);
-    if (extracted) {
+    if (extracted !== null) {
       parsedAny = true;
       answer = extracted;
     }
@@ -82,7 +89,12 @@ function extractEmbeddedJSONAnswer(raw: string) {
     return null;
   }
   const candidate = raw.slice(start, end + 1).trim();
-  if (!candidate.includes('"findings"') && !candidate.includes('"response"')) {
+  if (
+    !candidate.includes('"findings"') &&
+    !candidate.includes('"response"') &&
+    !candidate.includes('"verification_status"') &&
+    !candidate.includes('"evidence_summary"')
+  ) {
     return null;
   }
   return extractJSONAnswer(candidate);
@@ -109,7 +121,8 @@ function extractEscapedJSONAnswer(raw: string) {
 
 function extractJSONAnswer(raw: string): string | null {
   try {
-    return answerFromUnknown(JSON.parse(raw));
+    const parsed = JSON.parse(raw) as unknown;
+    return formatKnownAgentJSONPayload(parsed) ?? answerFromUnknown(parsed);
   } catch {
     return null;
   }
@@ -286,7 +299,12 @@ function renderMarkdownBlocks(content: string) {
       return;
     }
     blocks.push(
-      <p key={`p-${blocks.length}`}>{renderInline(paragraph.join(" "))}</p>,
+      <p
+        className="min-w-0 [overflow-wrap:anywhere]"
+        key={`p-${blocks.length}`}
+      >
+        {renderInline(paragraph.join(" "))}
+      </p>,
     );
     paragraph = [];
   };
@@ -305,7 +323,12 @@ function renderMarkdownBlocks(content: string) {
         start={listType === "ol" && listStart > 1 ? listStart : undefined}
       >
         {listItems.map((item, index) => (
-          <li key={`${index}-${item}`}>{renderInline(item)}</li>
+          <li
+            className="min-w-0 [overflow-wrap:anywhere]"
+            key={`${index}-${item}`}
+          >
+            {renderInline(item)}
+          </li>
         ))}
       </Tag>,
     );
@@ -323,7 +346,12 @@ function renderMarkdownBlocks(content: string) {
         key={`quote-${blocks.length}`}
       >
         {quoteLines.map((line, index) => (
-          <p key={`${index}-${line}`}>{renderInline(line)}</p>
+          <p
+            className="min-w-0 [overflow-wrap:anywhere]"
+            key={`${index}-${line}`}
+          >
+            {renderInline(line)}
+          </p>
         ))}
       </blockquote>,
     );
@@ -427,7 +455,7 @@ function renderMarkdownBlocks(content: string) {
 
 function renderHeading(depth: number, text: string, key: string) {
   const className = cn(
-    "font-semibold text-balance",
+    "font-semibold text-balance break-words [overflow-wrap:anywhere]",
     depth <= 2 ? "mt-3 text-base" : "mt-2 text-sm",
   );
   const children = renderInline(text);
@@ -470,17 +498,57 @@ function CodeBlock({ language, lines }: { language: string; lines: string[] }) {
 export function SyntaxCodeBlock({
   className,
   code,
+  highlightEndLine,
+  highlightStartLine,
   language,
   lineNumbers,
   startLine,
 }: {
   className?: string;
   code: string;
+  highlightEndLine?: number;
+  highlightStartLine?: number;
   language?: string;
   lineNumbers?: boolean;
   startLine?: number;
 }) {
   const normalizedLanguage = normalizeSyntaxLanguage(language ?? "");
+  const normalizedCode = code.trimEnd() || " ";
+  const plainLines = useMemo<HighlightedCodeLine[]>(
+    () =>
+      normalizedCode.split(/\r?\n/).map((line) => [
+        {
+          content: line || " ",
+        },
+      ]),
+    [normalizedCode],
+  );
+  const highlightKey = `${normalizedLanguage}:${normalizedCode}`;
+  const [highlightResult, setHighlightResult] = useState<{
+    key: string;
+    lines: HighlightedCodeLine[];
+  } | null>(null);
+
+  useEffect(() => {
+    let canceled = false;
+    void highlightCodeLines(normalizedCode, normalizedLanguage).then(
+      (lines) => {
+        if (!canceled) {
+          setHighlightResult({
+            key: highlightKey,
+            lines: lines.length > 0 ? lines : plainLines,
+          });
+        }
+      },
+    );
+    return () => {
+      canceled = true;
+    };
+  }, [highlightKey, normalizedCode, normalizedLanguage, plainLines]);
+
+  const highlightedLines =
+    highlightResult?.key === highlightKey ? highlightResult.lines : plainLines;
+
   const style =
     lineNumbers && startLine && startLine > 1
       ? ({
@@ -496,17 +564,47 @@ export function SyntaxCodeBlock({
       )}
       style={style}
     >
-      <ShikiHighlighter
-        addDefaultStyles={false}
-        className="cocode-shiki"
-        language={normalizedLanguage}
-        showLanguage={false}
-        showLineNumbers={Boolean(lineNumbers)}
-        startingLineNumber={startLine && startLine > 0 ? startLine : 1}
-        theme={SYNTAX_THEME}
-      >
-        {code.trimEnd() || " "}
-      </ShikiHighlighter>
+      <div className={cn("cocode-shiki", lineNumbers && "rs-has-line-numbers")}>
+        <pre className="min-w-0 overflow-auto bg-transparent">
+          <code className="block min-w-max">
+            {highlightedLines.map((lineTokens, lineIndex) => {
+              const actualLine = (startLine ?? 1) + lineIndex;
+              const isHighlighted =
+                highlightStartLine &&
+                actualLine >= highlightStartLine &&
+                actualLine <= (highlightEndLine ?? highlightStartLine);
+              return (
+                <span
+                  className={cn(
+                    "block whitespace-pre",
+                    lineNumbers && "rs-line-number",
+                    isHighlighted && "rs-highlighted-line",
+                  )}
+                  data-line-number={actualLine}
+                  key={`${lineIndex}-${lineTokens
+                    .map((token) => token.content)
+                    .join("")}`}
+                >
+                  {lineTokens.map((token, tokenIndex) => (
+                    <span
+                      key={`${lineIndex}-${tokenIndex}`}
+                      style={
+                        token.color
+                          ? {
+                              color: token.color,
+                            }
+                          : undefined
+                      }
+                    >
+                      {token.content}
+                    </span>
+                  ))}
+                </span>
+              );
+            })}
+          </code>
+        </pre>
+      </div>
     </div>
   );
 }
@@ -589,7 +687,7 @@ function renderInline(text: string): ReactNode[] {
     if (token.startsWith("`")) {
       nodes.push(
         <code
-          className="bg-muted rounded px-1.5 py-0.5 font-mono text-[0.9em]"
+          className="bg-muted rounded px-1.5 py-0.5 font-mono text-[0.9em] [overflow-wrap:anywhere] break-words whitespace-normal"
           key={`${match.index}-code`}
         >
           {token.slice(1, -1)}
@@ -606,7 +704,7 @@ function renderInline(text: string): ReactNode[] {
     } else {
       nodes.push(
         <code
-          className="bg-muted rounded px-1.5 py-0.5 font-mono text-[0.9em]"
+          className="bg-muted rounded px-1.5 py-0.5 font-mono text-[0.9em] [overflow-wrap:anywhere] break-words whitespace-normal"
           key={`${match.index}-file`}
         >
           {token}
@@ -642,7 +740,7 @@ function renderLinkToken(token: string, index: number) {
   }
   return (
     <code
-      className="bg-muted rounded px-1.5 py-0.5 font-mono text-[0.9em]"
+      className="bg-muted rounded px-1.5 py-0.5 font-mono text-[0.9em] [overflow-wrap:anywhere] break-words whitespace-normal"
       key={`${index}-local-link`}
       title={href}
     >

@@ -34,7 +34,7 @@ func TestRenderCopyPacketMarkdownIncludesSnapshotFindingsAndBoundedEvidence(t *t
 		"Finding 1: Repository route misses authorization guard.",
 		"apps/api/src/routes/repositories.ts:87-104",
 		"evidence_id=evidence_auth_guard",
-		"Counter-evidence:",
+		"Verification checks:",
 		"...[truncated]",
 	} {
 		if !strings.Contains(packet.Content, want) {
@@ -59,10 +59,10 @@ func TestRenderCopyPacketJSONIsMachineReadable(t *testing.T) {
 		FindingCount  int    `json:"finding_count"`
 		TrustBoundary string `json:"trust_boundary"`
 		Findings      []struct {
-			ID              string         `json:"id"`
-			Location        string         `json:"location"`
-			Evidence        []EvidenceItem `json:"evidence"`
-			CounterEvidence []EvidenceItem `json:"counter_evidence"`
+			ID           string         `json:"id"`
+			Location     string         `json:"location"`
+			Evidence     []EvidenceItem `json:"evidence"`
+			Verification []EvidenceItem `json:"verification_checks"`
 		} `json:"findings"`
 	}
 	if err := json.Unmarshal([]byte(packet.Content), &payload); err != nil {
@@ -75,7 +75,7 @@ func TestRenderCopyPacketJSONIsMachineReadable(t *testing.T) {
 		payload.Findings[0].ID != "finding_auth" ||
 		payload.Findings[0].Location != "apps/api/src/routes/repositories.ts:87-104" ||
 		len(payload.Findings[0].Evidence) == 0 ||
-		len(payload.Findings[0].CounterEvidence) == 0 {
+		len(payload.Findings[0].Verification) == 0 {
 		t.Fatalf("payload = %+v", payload)
 	}
 	if payload.Findings[0].Evidence[0].CodeSnippet != "" {

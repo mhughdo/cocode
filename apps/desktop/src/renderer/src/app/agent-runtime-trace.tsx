@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import type { ReviewEvent } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
+import { formatKnownAgentJSONPayload } from "./agent-output-formatting";
 import { MarkdownMessage } from "./markdown-message";
 
 type TraceTone = "amber" | "blue" | "green" | "red" | "neutral";
@@ -308,7 +309,10 @@ function collectEventSummary(
     pushTraceItem(accumulator.errors, error);
   }
 
-  if ((event.type === "AgentRunOutput" || event.type === "AgentRunProgress") && preview) {
+  if (
+    (event.type === "AgentRunOutput" || event.type === "AgentRunProgress") &&
+    preview
+  ) {
     const parsed = collectPreviewJSON(preview, accumulator);
     if (!parsed) {
       if (stream === "stderr" || event.level === "error") {
@@ -428,6 +432,12 @@ function collectTraceValue(
       accumulator.output,
       formatStructuredFindings(structuredFindings),
     );
+    return;
+  }
+
+  const structuredReviewOutput = formatKnownAgentJSONPayload(value);
+  if (structuredReviewOutput !== null) {
+    pushTraceItem(accumulator.output, structuredReviewOutput);
     return;
   }
 
@@ -635,10 +645,18 @@ function collectOpenCodeStreamValue(
   const type = stringFromUnknown(value.type).toLowerCase();
   const part = isPlainRecord(value.part) ? value.part : undefined;
   const partType = stringFromUnknown(part?.type).toLowerCase();
-  if (
-    !part &&
-    !["reasoning", "text", "step_start", "step_finish"].includes(type)
-  ) {
+  const supportedType =
+    [
+      "reasoning",
+      "text",
+      "step_start",
+      "step-start",
+      "step_finish",
+      "step-finish",
+    ].includes(type) ||
+    isToolType(type) ||
+    isToolType(partType);
+  if (!part && !supportedType) {
     return false;
   }
 
@@ -662,17 +680,31 @@ function collectOpenCodeStreamValue(
     return true;
   }
 
-  if (type === "step_start" || partType === "step-start") {
+  if (
+    type === "step_start" ||
+    type === "step-start" ||
+    partType === "step-start" ||
+    partType === "step_start"
+  ) {
     pushTraceItem(accumulator.lifecycle, "OpenCode step started");
     return true;
   }
 
-  if (type === "step_finish" || partType === "step-finish") {
+  if (
+    type === "step_finish" ||
+    type === "step-finish" ||
+    partType === "step-finish" ||
+    partType === "step_finish"
+  ) {
     pushTraceItem(accumulator.lifecycle, openCodeStepFinishDescription(part));
     return true;
   }
 
-  if (isToolType(`${type} ${partType}`)) {
+  if (
+    isToolType(`${type} ${partType}`) ||
+    isToolType(type) ||
+    isToolType(partType)
+  ) {
     pushToolTraceItem(
       accumulator.toolCalls,
       traceToolDescription(part ?? value),
@@ -698,6 +730,45 @@ function openCodeStepFinishDescription(
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function openCodeTraceSummary(value: Record<string, unknown>) {
+  const type = stringFromUnknown(value.type).toLowerCase();
+  const part = isPlainRecord(value.part) ? value.part : undefined;
+  const partType = stringFromUnknown(part?.type).toLowerCase();
+  const text =
+    stringFromUnknown(part?.text) ||
+    stringFromUnknown(value.text) ||
+    stringFromUnknown(value.output) ||
+    stringFromUnknown(value.reasoning) ||
+    stringFromUnknown(value.summary);
+
+  if (
+    type === "step_start" ||
+    type === "step-start" ||
+    partType === "step-start" ||
+    partType === "step_start" ||
+    type === "step_finish" ||
+    type === "step-finish" ||
+    partType === "step-finish" ||
+    partType === "step_finish"
+  ) {
+    return "";
+  }
+  if (type === "reasoning" || partType === "reasoning") {
+    return text;
+  }
+  if (type === "text" || partType === "text") {
+    return text;
+  }
+  if (
+    isToolType(`${type} ${partType}`) ||
+    isToolType(type) ||
+    isToolType(partType)
+  ) {
+    return traceToolDescription(part ?? value);
+  }
+  return null;
 }
 
 function parseJSONValues(preview: string) {
@@ -740,13 +811,25 @@ function traceToolDescription(value: unknown) {
   }
   const state = isPlainRecord(value.state) ? value.state : undefined;
   const metadata = isPlainRecord(state?.metadata) ? state.metadata : undefined;
-  const input = value.input ?? state?.input;
+  const input =
+    value.input ??
+    state?.input ??
+    value.arguments ??
+    value.args ??
+    value.params ??
+    value.call ??
+    value.payload ??
+    value.request ??
+    value.tool_input ??
+    value.toolInput;
   const command =
     stringFromUnknown(value.command) ||
     stringFromUnknown(value.name) ||
     stringFromUnknown(value.tool) ||
+    stringFromUnknown(value.action) ||
     stringFromUnknown(value.tool_name) ||
-    stringFromUnknown(value.function_name);
+    stringFromUnknown(value.function_name) ||
+    stringFromUnknown(value.operation);
   const status =
     stringFromUnknown(value.status) || stringFromUnknown(state?.status);
   const output =
@@ -754,13 +837,10 @@ function traceToolDescription(value: unknown) {
     stringFromUnknown(value.output) ||
     stringFromUnknown(state?.output) ||
     stringFromUnknown(metadata?.output) ||
-    stringFromUnknown(value.result);
-  const inputText =
-    typeof input === "string"
-      ? input
-      : input && isPlainRecord(input)
-        ? JSON.stringify(input)
-        : "";
+    stringFromUnknown(value.result) ||
+    stringFromUnknown(value.response) ||
+    stringFromUnknown(value.text);
+  const inputText = describeTraceToolInput(input);
   return [
     command,
     inputText && `input: ${inputText}`,
@@ -769,6 +849,40 @@ function traceToolDescription(value: unknown) {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function describeTraceToolInput(input: unknown) {
+  if (typeof input === "string") {
+    return input;
+  }
+  if (!isPlainRecord(input)) {
+    return "";
+  }
+  for (const key of [
+    "command",
+    "cmd",
+    "query",
+    "prompt",
+    "path",
+    "file",
+    "text",
+    "input",
+    "script",
+    "url",
+    "name",
+  ]) {
+    const value = stringFromUnknown(input[key]);
+    if (value) {
+      return value;
+    }
+  }
+  const entries = Object.entries(input).filter(([, value]) =>
+    ["string", "number", "boolean"].includes(typeof value),
+  );
+  if (entries.length > 0 && entries.length <= 4) {
+    return entries.map(([key, value]) => `${key}: ${String(value)}`).join("\n");
+  }
+  return JSON.stringify(input);
 }
 
 function pushToolTraceItem(items: string[], value: string) {
@@ -956,8 +1070,16 @@ function formatTraceJSON(value: unknown, depth: number): string | null {
   if (!isPlainRecord(value)) {
     return null;
   }
+  const openCodeSummary = openCodeTraceSummary(value);
+  if (openCodeSummary !== null) {
+    return openCodeSummary;
+  }
   if (isIgnorableTraceRecord(value)) {
     return "";
+  }
+  const structuredReviewOutput = formatKnownAgentJSONPayload(value);
+  if (structuredReviewOutput !== null) {
+    return structuredReviewOutput;
   }
   const findings = structuredFindingsFromValue(value);
   if (findings.length > 0) {

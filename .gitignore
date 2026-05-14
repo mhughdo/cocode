@@ -10,6 +10,7 @@ test-results/
 
 # Electron build artifacts
 apps/desktop/build/bin/
+apps/desktop/.electron-dev/
 release/
 *.dmg
 *.zip
@@ -20,3 +21,4 @@ bin/
 
 # Local app data
 .cocode/
+tmp

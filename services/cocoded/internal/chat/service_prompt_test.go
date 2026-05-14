@@ -97,6 +97,174 @@ func TestLocalAnswerExplainsMatchingFinding(t *testing.T) {
 	}
 }
 
+func TestShouldHideReviewAgentRunFromChatSkipsInternalWorkflowRuns(t *testing.T) {
+	tests := []struct {
+		role string
+		want bool
+	}{
+		{role: "chat", want: true},
+		{role: "orchestrator", want: true},
+		{role: "Orchestrator", want: true},
+		{role: "verifier", want: true},
+		{role: "finding_verifier", want: true},
+		{role: "primary_reviewer", want: false},
+		{role: "General Reviewer", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.role, func(t *testing.T) {
+			got := shouldHideReviewAgentRunFromChat(dbgen.AgentRun{Role: tt.role})
+			if got != tt.want {
+				t.Fatalf("shouldHideReviewAgentRunFromChat(%q) = %v, want %v", tt.role, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRemoveHiddenReviewAgentRunMessagesDeletesPersistedInternalCards(t *testing.T) {
+	ctx := context.Background()
+	database, err := cocodedb.Open(ctx, cocodedb.MemoryDatabase)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = database.Close()
+	})
+	if err := cocodedb.Apply(ctx, database, cocodedb.Migrations); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	queries := dbgen.New(database)
+	now := "2026-05-03T00:00:00Z"
+	if _, err := queries.CreateWorkspace(ctx, dbgen.CreateWorkspaceParams{
+		ID:           "workspace_cleanup",
+		Name:         "Workspace",
+		RootPath:     t.TempDir(),
+		SettingsJson: "{}",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}); err != nil {
+		t.Fatalf("CreateWorkspace() error = %v", err)
+	}
+	if _, err := queries.CreateRepository(ctx, dbgen.CreateRepositoryParams{
+		ID:          "repo_cleanup",
+		WorkspaceID: "workspace_cleanup",
+		Name:        "repo",
+		LocalPath:   t.TempDir(),
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatalf("CreateRepository() error = %v", err)
+	}
+	if _, err := queries.CreatePullRequestSnapshot(ctx, dbgen.CreatePullRequestSnapshotParams{
+		ID:           "snapshot_cleanup",
+		RepositoryID: "repo_cleanup",
+		SourceType:   "branch_compare",
+		MetadataJson: "{}",
+		CreatedAt:    now,
+	}); err != nil {
+		t.Fatalf("CreatePullRequestSnapshot() error = %v", err)
+	}
+	if _, err := queries.CreateReviewSession(ctx, dbgen.CreateReviewSessionParams{
+		ID:                  "review_session_cleanup",
+		WorkspaceID:         "workspace_cleanup",
+		RepositoryID:        "repo_cleanup",
+		SnapshotID:          "snapshot_cleanup",
+		Title:               "Review",
+		Status:              "completed",
+		ReviewDepth:         "standard",
+		RuntimeLimitSeconds: 60,
+		ContextPolicyJson:   "{}",
+		CreatedAt:           now,
+		UpdatedAt:           now,
+	}); err != nil {
+		t.Fatalf("CreateReviewSession() error = %v", err)
+	}
+	if _, err := queries.CreateAgentConfig(ctx, dbgen.CreateAgentConfigParams{
+		ID:               "agent_config_cleanup",
+		Name:             "Codex CLI",
+		Role:             "general_reviewer",
+		AdapterKind:      "cli_noninteractive",
+		Command:          sql.NullString{String: "codex", Valid: true},
+		ArgsJson:         "[]",
+		CwdMode:          "repo_root",
+		EnvAllowlistJson: "[]",
+		OutputMode:       "json",
+		CapabilitiesJson: `{"supports_json":true}`,
+		SettingsJson:     "{}",
+		Enabled:          1,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}); err != nil {
+		t.Fatalf("CreateAgentConfig() error = %v", err)
+	}
+	for _, run := range []struct {
+		id   string
+		role string
+	}{
+		{id: "agent_run_reviewer", role: "General Reviewer"},
+		{id: "agent_run_verifier", role: "verifier"},
+	} {
+		if _, err := queries.CreateAgentRun(ctx, dbgen.CreateAgentRunParams{
+			ID:              run.id,
+			ReviewSessionID: "review_session_cleanup",
+			AgentConfigID:   "agent_config_cleanup",
+			Status:          "succeeded",
+			Role:            run.role,
+			StartedAt:       sql.NullString{String: now, Valid: true},
+			CompletedAt:     sql.NullString{String: now, Valid: true},
+			MetadataJson:    "{}",
+		}); err != nil {
+			t.Fatalf("CreateAgentRun(%s) error = %v", run.id, err)
+		}
+	}
+	if _, err := database.ExecContext(ctx, `
+INSERT INTO chat_threads (id, review_session_id, title, status, created_at, updated_at)
+VALUES ('thread_cleanup', 'review_session_cleanup', 'Review', 'active', ?, ?)`, now, now); err != nil {
+		t.Fatalf("insert chat thread error = %v", err)
+	}
+	service := Service{Database: database, Queries: queries}
+	if _, err := service.appendMessage(ctx, appendMessageParams{
+		ThreadID:          "thread_cleanup",
+		AuthorType:        AuthorAgent,
+		AuthorDisplayName: "Codex CLI",
+		AgentRunID:        "agent_run_reviewer",
+		Body:              "reviewer output",
+		Status:            MessageStatusCompleted,
+		MetadataJSON:      []byte(`{"answer_source":"review_agent_run","review_agent_run_id":"agent_run_reviewer"}`),
+	}); err != nil {
+		t.Fatalf("append reviewer message error = %v", err)
+	}
+	if _, err := service.appendMessage(ctx, appendMessageParams{
+		ThreadID:          "thread_cleanup",
+		AuthorType:        AuthorAgent,
+		AuthorDisplayName: "Codex CLI",
+		AgentRunID:        "agent_run_verifier",
+		Body:              "verifier output",
+		Status:            MessageStatusCompleted,
+		MetadataJSON:      []byte(`{"answer_source":"review_agent_run","review_agent_run_id":"agent_run_verifier"}`),
+	}); err != nil {
+		t.Fatalf("append verifier message error = %v", err)
+	}
+
+	messages, err := service.listMessages(ctx, "thread_cleanup")
+	if err != nil {
+		t.Fatalf("listMessages() error = %v", err)
+	}
+	visible, err := service.removeHiddenReviewAgentRunMessages(ctx, messages)
+	if err != nil {
+		t.Fatalf("removeHiddenReviewAgentRunMessages() error = %v", err)
+	}
+	if len(visible) != 1 || visible[0].AgentRunID != "agent_run_reviewer" {
+		t.Fatalf("visible messages = %+v", visible)
+	}
+	persisted, err := service.listMessages(ctx, "thread_cleanup")
+	if err != nil {
+		t.Fatalf("listMessages(after cleanup) error = %v", err)
+	}
+	if len(persisted) != 1 || persisted[0].AgentRunID != "agent_run_reviewer" {
+		t.Fatalf("persisted messages = %+v", persisted)
+	}
+}
+
 func TestSessionReviewerAgentConfigsUsesAssignmentRole(t *testing.T) {
 	ctx := context.Background()
 	database, err := cocodedb.Open(ctx, cocodedb.MemoryDatabase)

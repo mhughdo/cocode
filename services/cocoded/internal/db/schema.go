@@ -26,6 +26,17 @@ var Migrations = []Migration{
 		Name:    "enable_cli_reasoning_traces",
 		SQL:     enableCLIReasoningTracesSQL,
 	},
+	{
+		Version: 6,
+		Name:    "codex_workspace_write_runtime",
+		SQL:     codexWorkspaceWriteRuntimeSQL,
+	},
+	{
+		Version:        7,
+		Name:           "evidence_map_route_nodes",
+		SQL:            evidenceMapRouteNodesSQL,
+		RequiredTables: []string{"evidence_graphs", "evidence_items", "evidence_nodes", "evidence_edges", "call_path_steps"},
+	},
 }
 
 const schemaV1SQL = `
@@ -285,7 +296,7 @@ CREATE TABLE evidence_graphs (
 CREATE TABLE evidence_nodes (
   id TEXT PRIMARY KEY,
   evidence_graph_id TEXT NOT NULL REFERENCES evidence_graphs(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL CHECK(kind IN ('changed_code','related_code','middleware','guard','handler','test','config','counter_evidence','missing_guard','unknown')),
+  kind TEXT NOT NULL CHECK(kind IN ('changed_code','entrypoint','route','related_code','middleware','guard','handler','test','config','counter_evidence','missing_guard','unknown')),
   label TEXT NOT NULL,
   path TEXT,
   symbol TEXT,
@@ -586,4 +597,139 @@ SET
   updated_at = datetime('now')
 WHERE command = 'codex'
   AND args_json = '["exec","--json","--sandbox","read-only","--skip-git-repo-check","--ephemeral","--ignore-rules","--color","never","-"]';
+`
+
+const codexWorkspaceWriteRuntimeSQL = `
+UPDATE agent_configs
+SET
+  args_json = '["-a","never","exec","--json","--sandbox","workspace-write","--add-dir","/tmp/cocode-agent-runtime","--skip-git-repo-check","--ephemeral","--ignore-rules","--color","never","-"]',
+  updated_at = datetime('now')
+WHERE command = 'codex'
+  AND args_json IN (
+    '["exec","--json","--sandbox","read-only","--skip-git-repo-check","--ephemeral","--ignore-rules","--color","never","-"]',
+    '["-a","never","exec","--json","--sandbox","read-only","--skip-git-repo-check","--ephemeral","--ignore-rules","--color","never","-"]',
+    '["-a","never","exec","--json","--sandbox","workspace-write","--skip-git-repo-check","--ephemeral","--ignore-rules","--color","never","-"]'
+  );
+`
+
+const evidenceMapRouteNodesSQL = `
+PRAGMA defer_foreign_keys = ON;
+
+CREATE TABLE evidence_nodes_new (
+  id TEXT PRIMARY KEY,
+  evidence_graph_id TEXT NOT NULL REFERENCES evidence_graphs(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK(kind IN ('changed_code','entrypoint','route','related_code','middleware','guard','handler','test','config','counter_evidence','missing_guard','unknown')),
+  label TEXT NOT NULL,
+  path TEXT,
+  symbol TEXT,
+  start_line INTEGER,
+  end_line INTEGER,
+  evidence_item_id TEXT REFERENCES evidence_items(id) ON DELETE SET NULL,
+  confidence REAL NOT NULL DEFAULT 0.5,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE evidence_edges_new (
+  id TEXT PRIMARY KEY,
+  evidence_graph_id TEXT NOT NULL REFERENCES evidence_graphs(id) ON DELETE CASCADE,
+  source_node_id TEXT NOT NULL REFERENCES evidence_nodes_new(id) ON DELETE CASCADE,
+  target_node_id TEXT NOT NULL REFERENCES evidence_nodes_new(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK(kind IN ('calls','mounts','protects','tests','supports','contradicts','missing_guard','imports','reads','writes','unknown')),
+  status TEXT NOT NULL DEFAULT 'observed',
+  label TEXT,
+  confidence REAL NOT NULL DEFAULT 0.5,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE call_path_steps_new (
+  id TEXT PRIMARY KEY,
+  call_path_id TEXT NOT NULL REFERENCES call_paths(id) ON DELETE CASCADE,
+  step_index INTEGER NOT NULL,
+  node_id TEXT REFERENCES evidence_nodes_new(id) ON DELETE SET NULL,
+  path TEXT,
+  start_line INTEGER,
+  end_line INTEGER,
+  label TEXT NOT NULL,
+  UNIQUE(call_path_id, step_index)
+);
+
+INSERT INTO evidence_nodes_new (
+  id,
+  evidence_graph_id,
+  kind,
+  label,
+  path,
+  symbol,
+  start_line,
+  end_line,
+  evidence_item_id,
+  confidence,
+  metadata_json
+)
+SELECT
+  id,
+  evidence_graph_id,
+  kind,
+  label,
+  path,
+  symbol,
+  start_line,
+  end_line,
+  evidence_item_id,
+  confidence,
+  metadata_json
+FROM evidence_nodes;
+
+INSERT INTO evidence_edges_new (
+  id,
+  evidence_graph_id,
+  source_node_id,
+  target_node_id,
+  kind,
+  status,
+  label,
+  confidence,
+  metadata_json
+)
+SELECT
+  id,
+  evidence_graph_id,
+  source_node_id,
+  target_node_id,
+  kind,
+  status,
+  label,
+  confidence,
+  metadata_json
+FROM evidence_edges;
+
+INSERT INTO call_path_steps_new (
+  id,
+  call_path_id,
+  step_index,
+  node_id,
+  path,
+  start_line,
+  end_line,
+  label
+)
+SELECT
+  id,
+  call_path_id,
+  step_index,
+  node_id,
+  path,
+  start_line,
+  end_line,
+  label
+FROM call_path_steps;
+
+DROP TABLE evidence_edges;
+DROP TABLE call_path_steps;
+DROP TABLE evidence_nodes;
+ALTER TABLE evidence_nodes_new RENAME TO evidence_nodes;
+ALTER TABLE evidence_edges_new RENAME TO evidence_edges;
+ALTER TABLE call_path_steps_new RENAME TO call_path_steps;
+CREATE INDEX IF NOT EXISTS idx_evidence_nodes_graph ON evidence_nodes(evidence_graph_id, kind);
+CREATE INDEX IF NOT EXISTS idx_evidence_edges_graph ON evidence_edges(evidence_graph_id, kind);
 `

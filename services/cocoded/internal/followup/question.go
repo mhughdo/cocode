@@ -856,8 +856,8 @@ func localVerifierAnswer(finding dbgen.Finding, items []dbgen.EvidenceItem) stri
 	if counts["supporting"] > 0 {
 		builder.WriteString(" Supporting evidence is present.")
 	}
-	if counts["counter"] > 0 || counts["test"] > 0 {
-		builder.WriteString(" Counter-evidence or related tests are also present, so review the cited evidence before deciding.")
+	if counts["counter"] > 0 || counts["test"] > 0 || counts["search"] > 0 {
+		builder.WriteString(" Verification checks are also present, so separate true contradictions from related leads before deciding.")
 	}
 	if finding.EvidenceSummary.Valid && strings.TrimSpace(finding.EvidenceSummary.String) != "" {
 		builder.WriteString(" ")

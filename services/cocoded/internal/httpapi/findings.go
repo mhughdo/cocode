@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -537,7 +538,7 @@ func evidenceItemsForFinding(ctx context.Context, queries *dbgen.Queries, findin
 
 func hydrateEvidenceSnippets(ctx context.Context, queries *dbgen.Queries, finding dbgen.Finding, items []EvidenceItemResponse) []EvidenceItemResponse {
 	if len(items) == 0 {
-		return items
+		items = []EvidenceItemResponse{}
 	}
 	session, err := queries.GetReviewSession(ctx, finding.ReviewSessionID)
 	if err != nil || session.RepositoryID == "" {
@@ -575,7 +576,98 @@ func hydrateEvidenceSnippets(ctx context.Context, queries *dbgen.Queries, findin
 			EndLine:   windowEnd,
 		}
 	}
+	if !hasPrimarySnippet(hydrated, finding) {
+		if primary, ok := primarySnippetEvidenceItem(repository.LocalPath, finding); ok {
+			hydrated = append([]EvidenceItemResponse{primary}, hydrated...)
+		}
+	}
 	return hydrated
+}
+
+func hasPrimarySnippet(items []EvidenceItemResponse, finding dbgen.Finding) bool {
+	primaryPath := normalizeEvidencePath(nullableValue(finding.PrimaryPath))
+	primaryLine := nullableInt64Value(finding.PrimaryStartLine)
+	if primaryPath == "" || primaryLine <= 0 {
+		return false
+	}
+	for _, item := range items {
+		if strings.TrimSpace(item.CodeSnippet) == "" || normalizeEvidencePath(item.Path) != primaryPath {
+			continue
+		}
+		startLine := item.StartLine
+		endLine := item.EndLine
+		if item.LineWindow != nil {
+			startLine = item.LineWindow.StartLine
+			endLine = item.LineWindow.EndLine
+		}
+		if endLine < startLine {
+			endLine = startLine
+		}
+		if startLine <= primaryLine && primaryLine <= endLine {
+			return true
+		}
+	}
+	return false
+}
+
+func primarySnippetEvidenceItem(repoRoot string, finding dbgen.Finding) (EvidenceItemResponse, bool) {
+	path := strings.TrimSpace(nullableValue(finding.PrimaryPath))
+	startLine := nullableInt64Value(finding.PrimaryStartLine)
+	if path == "" || startLine <= 0 {
+		return EvidenceItemResponse{}, false
+	}
+	endLine := nullableInt64Value(finding.PrimaryEndLine)
+	if endLine < startLine {
+		endLine = startLine
+	}
+	snippet, windowStart, windowEnd, _, err := evidencepkg.ReadSnippet(
+		repoRoot,
+		path,
+		startLine,
+		endLine,
+		detailEvidenceContextLines,
+		detailEvidenceMaxSnippetBytes,
+	)
+	if err != nil || strings.TrimSpace(snippet) == "" {
+		return EvidenceItemResponse{}, false
+	}
+	summary := strings.TrimSpace(nullableValue(finding.EvidenceSummary))
+	if summary == "" {
+		summary = "Changed code around the primary finding anchor is available for inspection."
+	}
+	return EvidenceItemResponse{
+		ID:          finding.ID + ":primary-code",
+		FindingID:   finding.ID,
+		Kind:        "supporting",
+		Title:       "Changed code at " + evidenceRange(path, startLine, endLine),
+		Summary:     summary,
+		Path:        path,
+		StartLine:   startLine,
+		EndLine:     endLine,
+		Confidence:  finding.Confidence,
+		CodeSnippet: snippet,
+		LineWindow: &EvidenceLineWindow{
+			StartLine: windowStart,
+			EndLine:   windowEnd,
+		},
+		Metadata:  json.RawMessage(`{"synthetic":true,"source":"finding_primary_location"}`),
+		CreatedAt: finding.UpdatedAt,
+	}, true
+}
+
+func normalizeEvidencePath(path string) string {
+	normalized := strings.TrimSpace(strings.ReplaceAll(path, "\\", "/"))
+	for strings.Contains(normalized, "//") {
+		normalized = strings.ReplaceAll(normalized, "//", "/")
+	}
+	return strings.TrimPrefix(normalized, "./")
+}
+
+func evidenceRange(path string, startLine int64, endLine int64) string {
+	if endLine > startLine {
+		return path + ":L" + strconv.FormatInt(startLine, 10) + "-L" + strconv.FormatInt(endLine, 10)
+	}
+	return path + ":L" + strconv.FormatInt(startLine, 10)
 }
 
 func groupEvidenceItems(items []EvidenceItemResponse) EvidenceGroupsResponse {

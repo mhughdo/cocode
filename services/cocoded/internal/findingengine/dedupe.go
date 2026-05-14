@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/hughdo/cocode/services/cocoded/internal/agentoutput"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
@@ -156,7 +157,12 @@ func sameFingerprint(a dbgen.FindingCandidate, b dbgen.FindingCandidate) bool {
 }
 
 func overlappingCandidate(a dbgen.FindingCandidate, b dbgen.FindingCandidate) bool {
-	if a.Category != b.Category || !SimilarClaims(a.Claim, b.Claim) {
+	if a.Category != b.Category {
+		return false
+	}
+	similarClaim := SimilarClaims(a.Claim, b.Claim)
+	sharedIdentifier := sharedCandidateCodeIdentifier(a, b)
+	if !similarClaim && !sharedIdentifier {
 		return false
 	}
 	aLocations := decodeCandidateLocations(a.LocationsJson)
@@ -172,9 +178,94 @@ func overlappingCandidate(a dbgen.FindingCandidate, b dbgen.FindingCandidate) bo
 			if nearbyLineMatch(left.StartLine, right.StartLine) {
 				return true
 			}
+			if sharedIdentifier && nearbyLineRange(left.StartLine, left.EndLine, right.StartLine, right.EndLine, 12) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+func nearbyLineRange(aStart int64, aEnd int64, bStart int64, bEnd int64, maxDistance int64) bool {
+	if aStart < 1 || bStart < 1 || maxDistance < 0 {
+		return false
+	}
+	if aEnd < aStart {
+		aEnd = aStart
+	}
+	if bEnd < bStart {
+		bEnd = bStart
+	}
+	if Overlap(aStart, aEnd, bStart, bEnd) {
+		return true
+	}
+	if aEnd < bStart {
+		return bStart-aEnd <= maxDistance
+	}
+	return aStart-bEnd <= maxDistance
+}
+
+func sharedCandidateCodeIdentifier(a dbgen.FindingCandidate, b dbgen.FindingCandidate) bool {
+	left := candidateCodeIdentifiers(a)
+	if len(left) == 0 {
+		return false
+	}
+	for identifier := range candidateCodeIdentifiers(b) {
+		if _, ok := left[identifier]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func candidateCodeIdentifiers(candidate dbgen.FindingCandidate) map[string]struct{} {
+	text := strings.Join([]string{
+		candidate.Claim,
+		candidate.EvidenceJson,
+		nullableCandidateString(candidate.PrimaryPath),
+	}, " ")
+	identifiers := map[string]struct{}{}
+	for _, token := range strings.FieldsFunc(text, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' && r != '[' && r != ']'
+	}) {
+		token = strings.Trim(token, "[]")
+		if !looksLikeCodeIdentifier(token) {
+			continue
+		}
+		identifiers[strings.ToLower(token)] = struct{}{}
+	}
+	return identifiers
+}
+
+func looksLikeCodeIdentifier(token string) bool {
+	if len(token) < 3 {
+		return false
+	}
+	hasLower := false
+	hasUpper := false
+	hasDigit := false
+	hasUnderscore := false
+	hasIndex := strings.Contains(token, "[") || strings.Contains(token, "]")
+	for _, r := range token {
+		switch {
+		case unicode.IsLower(r):
+			hasLower = true
+		case unicode.IsUpper(r):
+			hasUpper = true
+		case unicode.IsDigit(r):
+			hasDigit = true
+		case r == '_':
+			hasUnderscore = true
+		}
+	}
+	return hasIndex || hasUnderscore || hasDigit || (hasLower && hasUpper)
+}
+
+func nullableCandidateString(value sql.NullString) string {
+	if !value.Valid {
+		return ""
+	}
+	return value.String
 }
 
 func nearbyLineMatch(a int64, b int64) bool {

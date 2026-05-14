@@ -150,6 +150,89 @@ describe("withLiveAgentRunMessages", () => {
     expect(messages[0]?.body).not.toContain('"verification_status"');
   });
 
+  it("formats orchestrator cluster JSON output into readable markdown", () => {
+    const messages = withLiveAgentRunMessages({
+      agentConfigs: successApiState([orchestratorConfig]),
+      events: [
+        reviewEvent("event_1", "AgentRunOutput", {
+          text_preview: JSON.stringify({
+            clusters: [
+              {
+                canonical_claim:
+                  "pickTokenPrice can panic when GetPrices returns a nil sell-price slot.",
+                category: "reliability",
+                severity: "medium",
+                confidence: 0.93,
+                verification_status: "verified",
+                primary_location: {
+                  path: "internal/app/aggregatedposition/fetcher/kyberdata/kem_rewards.go",
+                  start_line: 208,
+                  end_line: 208,
+                },
+                evidence_summary:
+                  "The helper checks prices[0] before averaging both price slots.",
+                counter_evidence_summary: "none verified",
+                supporting_evidence: [
+                  {
+                    kind: "supporting",
+                    title: "Unchecked sell-price dereference",
+                    summary: "The code dereferences prices[1].",
+                    path: "internal/app/aggregatedposition/fetcher/kyberdata/kem_rewards.go",
+                    start_line: 207,
+                    end_line: 208,
+                  },
+                ],
+                relationship_evidence: [
+                  {
+                    kind: "static_analysis",
+                    title: "fetchRewardTokenInfo caller",
+                    summary: "The caller reaches pickTokenPrice.",
+                    path: "internal/app/aggregatedposition/fetcher/kyberdata/fetcher.go",
+                    start_line: 389,
+                    end_line: 389,
+                  },
+                ],
+                suggested_fix: "Guard both price slots before averaging.",
+              },
+            ],
+          }),
+        }),
+        reviewEvent("event_2", "AgentRunCompleted", {
+          message: "command completed",
+        }),
+      ],
+      messages: [],
+      session: reviewSession,
+      summary: successApiState({
+        ...summaryFixture,
+        agent_runs: [
+          {
+            id: "agent_run_orchestrator",
+            review_session_id: reviewSession.id,
+            agent_config_id: orchestratorConfig.id,
+            status: "succeeded",
+            role: "orchestrator",
+            completed_at: "2026-05-14T02:01:00Z",
+          },
+        ],
+      }),
+      threadID: "thread_1",
+    });
+
+    expect(messages[0]?.body).toContain("## Findings (1)");
+    expect(messages[0]?.body).toContain(
+      "pickTokenPrice can panic when GetPrices returns a nil sell-price slot.",
+    );
+    expect(messages[0]?.body).toContain("**Status:** Verified");
+    expect(messages[0]?.body).toContain("**Confidence:** 93%");
+    expect(messages[0]?.body).toContain(
+      "internal/app/aggregatedposition/fetcher/kyberdata/kem_rewards.go:208",
+    );
+    expect(messages[0]?.body).toContain("Unchecked sell-price dereference");
+    expect(messages[0]?.body).toContain("fetchRewardTokenInfo caller");
+    expect(messages[0]?.body).not.toContain('"clusters"');
+  });
+
   it("does not duplicate completed runs that already have persisted messages", () => {
     const persisted: ChatMessage = {
       id: "message_1",
@@ -292,6 +375,68 @@ describe("withLiveAgentRunMessages", () => {
       "Orchestrator",
       "Codex GPT-5.5 GPT 5.5",
     ]);
+  });
+
+  it("uses the selected Kiro model instead of the preset auto label", () => {
+    const kiroConfig: AgentConfig = {
+      ...reviewerConfig,
+      id: "agent_config_kiro",
+      name: "Kiro",
+      command: "kiro-cli",
+      model_label: "auto",
+      settings: { model_label: "auto" },
+      capabilities: {
+        can_read: true,
+        supports_json: false,
+        metadata: { provider: "kiro", egress: "external" },
+      },
+    };
+    const session: ReviewSession = {
+      ...reviewSession,
+      agents: [
+        {
+          id: "review_session_agent_kiro",
+          review_session_id: reviewSession.id,
+          agent_config_id: kiroConfig.id,
+          role: "primary_reviewer",
+          run_order: 1,
+          enabled: true,
+          settings_override: { model_label: "claude-opus-4.7" },
+        },
+      ],
+    };
+
+    const messages = withLiveAgentRunMessages({
+      agentConfigs: successApiState([kiroConfig]),
+      events: [
+        agentEvent("event_output_1", "agent_run_kiro", "AgentRunOutput", {
+          text_preview: "Reviewed changed files.",
+        }, "2026-05-14T02:00:30Z"),
+      ],
+      messages: [],
+      session,
+      summary: successApiState({
+        ...summaryFixture,
+        agent_runs: [
+          {
+            id: "agent_run_kiro",
+            review_session_id: reviewSession.id,
+            agent_config_id: kiroConfig.id,
+            review_session_agent_id: "review_session_agent_kiro",
+            status: "running",
+            role: "primary_reviewer",
+            model_label: "claude-opus-4.7",
+            started_at: "2026-05-14T02:00:00Z",
+          },
+        ],
+      }),
+      threadID: "thread_1",
+    });
+
+    expect(messages[0]).toMatchObject({
+      author_display_name: "Kiro Claude Opus 4.7",
+      metadata: { model_label: "Claude Opus 4.7" },
+    });
   });
 
   it("shows orchestrator enrichment progress from workflow phase events", () => {

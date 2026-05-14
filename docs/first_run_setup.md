@@ -33,10 +33,12 @@ Available local presets:
 - Gemini ACP.
 - OpenCode CLI.
 - OpenCode ACP.
+- Kiro CLI.
 - Claude Code preset can remain disabled until the CLI is installed locally.
 - Custom CLI for deterministic local tools or internal agents.
 
 Each CLI or protocol server command should already be installed and authenticated in your shell before cocode runs it.
+For Kiro headless runs, make sure `KIRO_API_KEY` is available to the app environment or log in with the CLI before testing the preset.
 
 For dogfood verification, run the opt-in real CLI smoke suite from `apps/desktop`:
 

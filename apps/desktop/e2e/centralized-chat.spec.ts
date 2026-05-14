@@ -126,6 +126,9 @@ test("routes a centralized chat follow-up to a selected CLI reviewer", async ({
       page.getByText("Review queued. cocode is preparing context"),
     ).toHaveCount(0);
     await expect(page.getByText("Orchestrator").first()).toBeVisible();
+    await expect(
+      page.getByTestId("orchestrator-agent-badge").first(),
+    ).toBeVisible();
 
     await page
       .getByRole("button", { name: "Choose centralized chat responder" })

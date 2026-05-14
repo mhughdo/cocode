@@ -38,7 +38,7 @@ type Preset struct {
 }
 
 func List() []Preset {
-	return []Preset{CodexCLI(), CodexAppServer(), ClaudeCodeCLI(), GeminiCLI(), GeminiACP(), OpenCodeCLI(), OpenCodeACP(), CustomCLI()}
+	return []Preset{CodexCLI(), CodexAppServer(), ClaudeCodeCLI(), GeminiCLI(), GeminiACP(), OpenCodeCLI(), OpenCodeACP(), KiroCLI(), CustomCLI()}
 }
 
 func CodexCLI() Preset {
@@ -46,8 +46,8 @@ func CodexCLI() Preset {
 	return Preset{
 		ID:             "codex-cli",
 		Name:           "Codex CLI",
-		Description:    "Runs Codex non-interactively against the selected repository and captures JSONL events.",
-		Role:           "primary_reviewer",
+		Description:    "Runs Codex non-interactively as the default review orchestrator and captures JSONL events.",
+		Role:           "orchestrator",
 		AdapterKind:    agents.AdapterCLINonInteractive,
 		Command:        "codex",
 		Args:           []string{"-a", "never", "exec", "--json", "--sandbox", "workspace-write", "--add-dir", agents.CLIRuntimeBaseDir(), "--skip-git-repo-check", "--ephemeral", "--ignore-rules", "--color", "never", "-"},
@@ -233,6 +233,32 @@ func OpenCodeACP() Preset {
 			CanCancel:         true,
 			OutputModes:       []agents.OutputMode{agents.OutputJSON, agents.OutputJSONL, agents.OutputNDJSON, agents.OutputText},
 			Metadata:          map[string]any{"provider": "opencode", "egress": string(agents.AgentEgressExternal), "protocol": "acp"},
+		},
+		Settings: settings,
+		Enabled:  true,
+	}
+}
+
+func KiroCLI() Preset {
+	settings := json.RawMessage(`{"prompt_delivery":"arg","timeout_seconds":1800,"version_args":["--version"],"smoke_prompt_enabled":false}`)
+	return Preset{
+		ID:             "kiro-cli",
+		Name:           "Kiro CLI",
+		Description:    "Runs Kiro CLI headlessly with read-only review tools trusted up front and captures the non-interactive text response.",
+		Role:           "primary_reviewer",
+		AdapterKind:    agents.AdapterCLINonInteractive,
+		Command:        "kiro-cli",
+		Args:           []string{"chat", "--no-interactive", "--trust-tools=read,grep,glob,code", "--wrap", "never", agents.PromptArgPlaceholder},
+		CWDMode:        "repo_root",
+		EnvAllowlist:   append(baseCLIEnvAllowlist, "KIRO_API_KEY", "KIRO_HOME"),
+		OutputMode:     agents.OutputText,
+		ModelLabel:     "auto",
+		ReasoningLabel: "",
+		Capabilities: agents.AgentCapabilities{
+			CanRead:     true,
+			CanCancel:   true,
+			OutputModes: []agents.OutputMode{agents.OutputText},
+			Metadata:    map[string]any{"provider": "kiro", "egress": string(agents.AgentEgressExternal)},
 		},
 		Settings: settings,
 		Enabled:  true,

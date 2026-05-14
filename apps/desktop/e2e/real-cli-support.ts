@@ -27,6 +27,8 @@ export const commonEnvAllowlist = [
   "GOOGLE_APPLICATION_CREDENTIALS",
   "GOOGLE_CLOUD_PROJECT",
   "GOOGLE_CLOUD_LOCATION",
+  "KIRO_API_KEY",
+  "KIRO_HOME",
   "OPENROUTER_API_KEY",
   "XAI_API_KEY",
 ];
@@ -36,7 +38,7 @@ export type RealCliTarget = {
   name: string;
   command: string;
   args: string[];
-  outputMode: "json" | "jsonl";
+  outputMode: "json" | "jsonl" | "text";
   promptDelivery: "stdin" | "arg";
   modelLabel: string;
   reasoningLabel?: string;
@@ -98,6 +100,23 @@ export const realCliTargets: Record<string, RealCliTarget> = {
       process.env.COCODE_E2E_OPENCODE_MODEL || "opencode-go/kimi-k2.6",
     reasoningLabel: process.env.COCODE_E2E_OPENCODE_VARIANT || "high",
     provider: process.env.COCODE_E2E_OPENCODE_PROVIDER || "opencode-go",
+  },
+  kiro: {
+    id: "kiro",
+    name: "E2E Real Kiro CLI",
+    command: "kiro-cli",
+    args: [
+      "chat",
+      "--no-interactive",
+      "--trust-tools=read,grep,glob,code",
+      "--wrap",
+      "never",
+      "{{prompt}}",
+    ],
+    outputMode: "text",
+    promptDelivery: "arg",
+    modelLabel: process.env.COCODE_E2E_KIRO_MODEL || "auto",
+    provider: "kiro",
   },
   claude: {
     id: "claude",
@@ -172,13 +191,16 @@ export async function createRealCliAgentConfig(
         model_label: target.modelLabel,
         reasoning_label: target.reasoningLabel ?? "",
         capabilities: {
-          supports_json: true,
+          supports_json: target.outputMode !== "text",
           supports_streaming: target.outputMode === "jsonl",
           supports_sessions: false,
           can_read: true,
           can_write: false,
           can_cancel: true,
-          output_modes: [target.outputMode, "text"],
+          output_modes:
+            target.outputMode === "text"
+              ? ["text"]
+              : [target.outputMode, "text"],
           metadata: {
             provider: target.provider,
             egress: "external",

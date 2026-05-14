@@ -338,6 +338,7 @@ func TestAgentPresetsEndpointIncludesBuiltInCLIs(t *testing.T) {
 		codex.Args[11] != "--color" ||
 		codex.Args[12] != "never" ||
 		codex.Args[13] != "-" ||
+		codex.Role != "orchestrator" ||
 		codex.OutputMode != agents.OutputJSONL ||
 		codex.ModelLabel != "default" ||
 		!codex.Capabilities.CanCancel ||
@@ -436,6 +437,22 @@ func TestAgentPresetsEndpointIncludesBuiltInCLIs(t *testing.T) {
 		!opencodeACP.Capabilities.SupportsOutputMode(agents.OutputJSON) ||
 		!json.Valid(opencodeACP.Settings) {
 		t.Fatalf("opencode acp preset = %+v", opencodeACP)
+	}
+	kiro := findAgentPreset(t, presets, "kiro-cli")
+	if kiro.Command != "kiro-cli" ||
+		len(kiro.Args) != 6 ||
+		kiro.Args[0] != "chat" ||
+		kiro.Args[1] != "--no-interactive" ||
+		kiro.Args[2] != "--trust-tools=read,grep,glob,code" ||
+		kiro.Args[3] != "--wrap" ||
+		kiro.Args[4] != "never" ||
+		kiro.Args[5] != agents.PromptArgPlaceholder ||
+		kiro.OutputMode != agents.OutputText ||
+		kiro.ModelLabel != "auto" ||
+		kiro.Capabilities.SupportsJSON ||
+		!kiro.Capabilities.SupportsOutputMode(agents.OutputText) ||
+		!json.Valid(kiro.Settings) {
+		t.Fatalf("kiro preset = %+v", kiro)
 	}
 	custom := findAgentPreset(t, presets, "custom-cli")
 	if custom.Command != "" ||

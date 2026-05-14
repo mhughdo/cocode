@@ -6,7 +6,7 @@ test("launches Electron app with backend bridge", async ({
   browserName,
 }, testInfo) => {
   expect(browserName).toBe("chromium");
-  const { backendInfo, electronApp } = await launchCocode(testInfo);
+  const { backendInfo, electronApp, page } = await launchCocode(testInfo);
 
   try {
     expect(backendInfo.status).toBe("ready");
@@ -19,6 +19,12 @@ test("launches Electron app with backend bridge", async ({
     expect(sessionResponse.status).toBe(200);
     const sessionBody = await sessionResponse.json();
     expect(sessionBody.data.status).toBe("authenticated");
+
+    await page.getByRole("button", { name: "Settings" }).click();
+    await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: /Kiro CLI Runs Kiro CLI/ }),
+    ).toBeVisible();
   } finally {
     await electronApp.close();
   }

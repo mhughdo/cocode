@@ -270,6 +270,8 @@ function formatEvidenceBullet(item: Record<string, unknown>) {
 function structuredFindingsFromRecord(value: Record<string, unknown>) {
   const rawFindings = Array.isArray(value.findings)
     ? value.findings
+    : Array.isArray(value.clusters)
+      ? value.clusters
     : isPlainRecord(value.finding)
       ? [value.finding]
       : [];
@@ -281,6 +283,7 @@ function formatStructuredFindingsMarkdown(
 ) {
   const blocks = findings.slice(0, 8).map((finding, index) => {
     const title =
+      textFromUnknown(finding.canonical_claim) ||
       textFromUnknown(finding.title) ||
       textFromUnknown(finding.claim) ||
       textFromUnknown(finding.message) ||
@@ -291,26 +294,50 @@ function formatStructuredFindingsMarkdown(
     const path =
       textFromUnknown(finding.path) ||
       textFromUnknown(finding.file) ||
+      locationPath(finding.primary_location) ||
       firstLocationPath(finding.locations);
     const line =
       numberText(finding.line) ||
       numberText(finding.start_line) ||
+      locationLine(finding.primary_location) ||
       firstLocationLine(finding.locations);
     const description =
+      textFromUnknown(finding.evidence_summary) ||
       textFromUnknown(finding.body) ||
       textFromUnknown(finding.description) ||
       textFromUnknown(finding.evidence) ||
       textFromUnknown(finding.summary);
+    const counterEvidence = textFromUnknown(finding.counter_evidence_summary);
+    const status = textFromUnknown(finding.verification_status);
+    const confidence = percentText(finding.confidence);
     const fix =
       textFromUnknown(finding.suggested_fix) ||
       textFromUnknown(finding.recommendation) ||
       textFromUnknown(finding.fix);
+    const evidence = structuredFindingEvidenceItems(finding);
     return [
       `### ${index + 1}. ${title}`,
       severity && `- **Severity:** ${severity}`,
+      status && `- **Status:** ${formatLabel(status)}`,
+      confidence && `- **Confidence:** ${confidence}`,
       category && `- **Category:** ${category}`,
       path && `- **Location:** \`${path}${line ? `:${line}` : ""}\``,
       description && `- **Evidence:** ${description}`,
+      counterEvidence && `- **Verification checks:** ${counterEvidence}`,
+      evidence.length > 0 &&
+        [
+          "- **Evidence map:**",
+          ...evidence
+            .slice(0, 6)
+            .map((item) => `  - ${formatEvidenceBullet(item)}`),
+          evidence.length > 6
+            ? `  - ${evidence.length - 6} more evidence item${
+                evidence.length - 6 === 1 ? "" : "s"
+              }`
+            : "",
+        ]
+          .filter(Boolean)
+          .join("\n"),
       fix && `- **Suggested fix:** ${fix}`,
     ]
       .filter(Boolean)
@@ -321,6 +348,32 @@ function formatStructuredFindingsMarkdown(
     blocks.push(`${omitted} more finding${omitted === 1 ? "" : "s"} omitted.`);
   }
   return [`## Findings (${findings.length})`, ...blocks].join("\n\n");
+}
+
+function structuredFindingEvidenceItems(finding: Record<string, unknown>) {
+  return [
+    ...recordsFromUnknown(finding.supporting_evidence),
+    ...recordsFromUnknown(finding.refuting_evidence),
+    ...recordsFromUnknown(finding.relationship_evidence),
+    ...recordsFromUnknown(finding.related_context),
+    ...recordsFromUnknown(finding.evidence),
+  ];
+}
+
+function recordsFromUnknown(value: unknown) {
+  return Array.isArray(value) ? value.filter(isPlainRecord) : [];
+}
+
+function locationPath(value: unknown) {
+  return isPlainRecord(value)
+    ? textFromUnknown(value.path) || textFromUnknown(value.file)
+    : "";
+}
+
+function locationLine(value: unknown) {
+  return isPlainRecord(value)
+    ? numberText(value.start_line) || numberText(value.line)
+    : "";
 }
 
 function firstLocationPath(value: unknown) {

@@ -1,4 +1,5 @@
 import {
+  Fragment,
   type FormEvent,
   useCallback,
   useEffect,
@@ -330,7 +331,6 @@ const findings = [
 export function App() {
   const [client, setClient] = useState<ApiClient | null>(null);
   const [mainView, setMainView] = useState<MainView>("new-thread");
-  const [backendStatus, setBackendStatus] = useState("loading");
   const [apiSession, setApiSession] =
     useState<Loadable<ApiSessionResponse>>(loadingApiState);
   const [workspaces, setWorkspaces] =
@@ -466,7 +466,6 @@ export function App() {
     if (!bridge) {
       queueMicrotask(() => {
         if (!canceled) {
-          setBackendStatus("unavailable");
           setApiSession(
             errorApiState(new Error("Desktop bridge is unavailable")),
           );
@@ -483,7 +482,6 @@ export function App() {
         if (canceled) {
           return;
         }
-        setBackendStatus(info.status);
 
         const nextClient = createCocodeClient(info);
         setClient(nextClient);
@@ -493,7 +491,6 @@ export function App() {
           }
           setApiSession(state);
           if (state.status === "error") {
-            setBackendStatus("unavailable");
             return;
           }
           void refreshNavigation(nextClient);
@@ -547,7 +544,6 @@ export function App() {
           setApiSession(
             errorApiState(new Error("Backend info is unavailable")),
           );
-          setBackendStatus("unavailable");
         }
       });
 
@@ -834,7 +830,6 @@ export function App() {
       <AppShell
         sidebar={
           <Sidebar
-            backendStatus={backendStatus}
             activeSessionId={displayedSession?.id}
             activeWorkspaceId={activeWorkspaceId}
             workspaces={workspaces}
@@ -2803,7 +2798,6 @@ function CocodeMark() {
 function Sidebar({
   activeSessionId,
   activeWorkspaceId,
-  backendStatus,
   deletingReviewSessionId,
   repositoryOpenState,
   reviewSessions,
@@ -2818,7 +2812,6 @@ function Sidebar({
 }: {
   activeSessionId?: string;
   activeWorkspaceId: string;
-  backendStatus: string;
   deletingReviewSessionId: string;
   repositoryOpenState: Loadable<OpenRepositoryResponse>;
   reviewSessions: Loadable<ReviewSession[]>;
@@ -2994,27 +2987,6 @@ function Sidebar({
           label="Settings"
           onClick={onOpenAgentSettings}
         />
-        <div className="mt-3 flex items-center gap-3 rounded-lg px-2 py-2">
-          <div className="bg-surface-raised flex size-9 items-center justify-center rounded-full border text-sm font-semibold">
-            A
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-medium">Ana Lee</div>
-            <div className="text-sidebar-muted truncate text-xs">ana@local</div>
-          </div>
-          <ChevronDownIcon className="text-sidebar-muted size-4" />
-        </div>
-        <div className="text-sidebar-muted flex items-center justify-between px-2 pb-2 text-xs">
-          <span className="inline-flex items-center gap-1.5">
-            <span
-              className={cn(
-                "size-1.5 rounded-full",
-                backendStatus === "ready" ? "bg-success" : "bg-warning",
-              )}
-            />
-            Backend {backendStatus}
-          </span>
-        </div>
       </div>
       {threadContextMenu && (
         <div
@@ -3352,6 +3324,10 @@ function ReviewThread({
                   client={client}
                   finding={evidenceMapFinding}
                   onBack={() => setActiveTab("findings")}
+                  onOpenFindingDetail={(finding) => {
+                    setDetailFinding(finding);
+                    setActiveTab("finding-detail");
+                  }}
                 />
               ) : (
                 <EmptyState
@@ -4340,9 +4316,6 @@ function ReviewFindingsBoard({
   );
   const [selectedDetail, setSelectedDetail] =
     useState<Loadable<FindingDetailResponse>>(idleApiState());
-  const [dismissReason, setDismissReason] = useState("");
-  const [saveDismissalRule, setSaveDismissalRule] = useState(false);
-  const [ruleMemorySuggestion, setRuleMemorySuggestion] = useState("");
   const [draftComment, setDraftComment] = useState("");
   const [boardReloadKey, setBoardReloadKey] = useState(0);
   const inspectorPanel = useResizableRightPanel({
@@ -4514,7 +4487,7 @@ function ReviewFindingsBoard({
     }
     const reason =
       decision === "dismissed"
-        ? dismissReason.trim() || "dismissed from findings board"
+        ? "dismissed from findings board"
         : `${formatDecisionLabel(decision).toLowerCase()} from findings board`;
     setActionState({
       status: "loading",
@@ -4525,18 +4498,11 @@ function ReviewFindingsBoard({
       client.updateFindingDecision(finding.id, {
         decision,
         reason,
-        rule_memory_suggestion:
-          decision === "dismissed" && saveDismissalRule
-            ? ruleMemorySuggestion.trim() || reason
-            : undefined,
       }),
     );
     if (state.status === "success") {
       setSelectedDetail(state);
       setSelectedFindingId(state.data.finding.id);
-      setDismissReason("");
-      setSaveDismissalRule(false);
-      setRuleMemorySuggestion("");
       setBoardReloadKey((current) => current + 1);
       setActionState({
         status: "success",
@@ -4554,7 +4520,7 @@ function ReviewFindingsBoard({
   }
 
   async function copyFinding(finding = selectedFinding) {
-    if (!client || !finding) {
+    if (!finding) {
       setActionState({
         status: "error",
         message: "Select a finding before copying it.",
@@ -4575,15 +4541,9 @@ function ReviewFindingsBoard({
         throw new Error("Clipboard bridge is unavailable");
       }
       await window.cocode.writeClipboard(content);
-      return client.updateFindingDecision(finding.id, {
-        decision: "copied",
-        reason: "copied from findings board",
-      });
+      return true;
     });
     if (state.status === "success") {
-      setSelectedDetail(state);
-      setSelectedFindingId(state.data.finding.id);
-      setBoardReloadKey((current) => current + 1);
       setActionState({
         status: "success",
         findingId: finding.id,
@@ -4875,24 +4835,17 @@ function ReviewFindingsBoard({
                     ? selectedDetail.data
                     : undefined
                 }
-                dismissalReason={dismissReason}
-                dismissalRuleSuggestion={ruleMemorySuggestion}
                 draftComment={draftComment}
                 finding={selectedFinding}
                 onAccept={() => void updateDecision("accepted")}
                 onCopyFixPacket={() => void copyFinding()}
                 onCopyPath={() => void copyFindingPath()}
                 onDismiss={() => void updateDecision("dismissed")}
-                onDismissReasonChange={setDismissReason}
-                onDismissalRuleSuggestionChange={setRuleMemorySuggestion}
-                onSaveDismissalRuleChange={setSaveDismissalRule}
                 onDraftCommentChange={setDraftComment}
                 onOpenDetail={() => onOpenDetail(selectedFinding)}
                 onOpenEvidenceMap={() => onOpenEvidenceMap(selectedFinding)}
                 onOpenFollowUp={() => onOpenFollowUp(selectedFinding)}
                 onSaveDraftComment={() => void saveDraftComment()}
-                saveDismissalRule={saveDismissalRule}
-                showSaveRule
               />
             )}
           </div>
@@ -5534,6 +5487,49 @@ function CopyPacketPreviewPane({
   );
 }
 
+type ReviewBreadcrumbItem = {
+  label: string;
+  onClick?: () => void;
+};
+
+function ReviewBreadcrumb({ items }: { items: ReviewBreadcrumbItem[] }) {
+  return (
+    <nav
+      aria-label="Review breadcrumb"
+      className="text-muted-foreground mb-2 flex min-w-0 flex-wrap items-center gap-1 text-xs"
+    >
+      {items.map((item, index) => {
+        const isLast = index === items.length - 1;
+        return (
+          <Fragment key={`${item.label}:${index}`}>
+            {index > 0 ? (
+              <ChevronDownIcon className="size-3 -rotate-90 shrink-0" />
+            ) : null}
+            {item.onClick && !isLast ? (
+              <button
+                className="hover:text-foreground min-w-0 cursor-pointer truncate rounded-sm px-0.5 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                type="button"
+                onClick={item.onClick}
+              >
+                {item.label}
+              </button>
+            ) : (
+              <span
+                className={cn(
+                  "min-w-0 truncate px-0.5",
+                  isLast && "text-foreground",
+                )}
+              >
+                {item.label}
+              </span>
+            )}
+          </Fragment>
+        );
+      })}
+    </nav>
+  );
+}
+
 function FindingDetailScreen({
   agentConfigs,
   client,
@@ -5558,9 +5554,6 @@ function FindingDetailScreen({
   const [draftComment, setDraftComment] = useState("");
   const [question, setQuestion] = useState("");
   const [selectedAgentId, setSelectedAgentId] = useState("");
-  const [dismissReason, setDismissReason] = useState("");
-  const [saveDismissalRule, setSaveDismissalRule] = useState(false);
-  const [ruleMemorySuggestion, setRuleMemorySuggestion] = useState("");
   const [actionState, setActionState] =
     useState<Loadable<FindingDetailResponse | AskFindingQuestionResponse>>(
       idleApiState(),
@@ -5621,30 +5614,19 @@ function FindingDetailScreen({
       setActionState(errorApiState(new Error("Backend client is unavailable")));
       return;
     }
-    if (decision === "dismissed" && !dismissReason.trim()) {
-      setActionState(errorApiState(new Error("Dismissal reason is required.")));
-      return;
-    }
     setActionState(loadingApiState());
     const state = await loadApiResource(() =>
       client.updateFindingDecision(activeFinding.id, {
         decision,
         reason:
           decision === "dismissed"
-            ? dismissReason.trim()
+            ? "dismissed from finding detail"
             : "accepted from finding detail",
-        rule_memory_suggestion:
-          decision === "dismissed" && saveDismissalRule
-            ? ruleMemorySuggestion.trim() || dismissReason.trim()
-            : undefined,
       }),
     );
     setActionState(state);
     if (state.status === "success") {
       setDetailState(state);
-      setDismissReason("");
-      setSaveDismissalRule(false);
-      setRuleMemorySuggestion("");
     }
   }
 
@@ -5710,36 +5692,19 @@ function FindingDetailScreen({
 
   return (
     <div className="flex min-h-0 flex-col gap-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-muted-foreground mb-2 flex items-center gap-2 text-xs">
-            <span>Findings</span>
-            <ChevronDownIcon className="size-3 -rotate-90" />
-            <span className="text-foreground">
-              {truncate(activeFinding.canonical_claim, 72)}
-            </span>
-          </div>
-          <h2 className="text-xl leading-7 font-semibold break-words">
-            {activeFinding.canonical_claim}
-          </h2>
-          <p className="text-muted-foreground mt-1 font-mono text-xs break-all">
-            {formatFindingLocation(activeFinding)}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={onBack}>
-            <ArrowLeftIcon data-icon="inline-start" />
-            Findings
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => onOpenEvidenceMap(activeFinding)}
-          >
-            <MapIcon data-icon="inline-start" />
-            Evidence map
-          </Button>
-        </div>
+      <div className="min-w-0">
+        <ReviewBreadcrumb
+          items={[
+            { label: "Findings", onClick: onBack },
+            { label: truncate(activeFinding.canonical_claim, 88) },
+          ]}
+        />
+        <h2 className="text-xl leading-7 font-semibold break-words">
+          {activeFinding.canonical_claim}
+        </h2>
+        <p className="text-muted-foreground mt-1 font-mono text-xs break-all">
+          {formatFindingLocation(activeFinding)}
+        </p>
       </div>
 
       {detailState.status === "loading" && (
@@ -5837,8 +5802,6 @@ function FindingDetailScreen({
                       : undefined,
               }}
               detail={detail}
-              dismissalReason={dismissReason}
-              dismissalRuleSuggestion={ruleMemorySuggestion}
               draftComment={draftComment}
               finding={activeFinding}
               onAccept={() => void updateDecision("accepted")}
@@ -5849,15 +5812,10 @@ function FindingDetailScreen({
                 );
               }}
               onDismiss={() => void updateDecision("dismissed")}
-              onDismissReasonChange={setDismissReason}
-              onDismissalRuleSuggestionChange={setRuleMemorySuggestion}
-              onSaveDismissalRuleChange={setSaveDismissalRule}
               onDraftCommentChange={setDraftComment}
               onOpenEvidenceMap={() => onOpenEvidenceMap(activeFinding)}
               onOpenFollowUp={() => onOpenFollowUp(activeFinding)}
               onSaveDraftComment={() => void saveDraftComment()}
-              saveDismissalRule={saveDismissalRule}
-              showSaveRule
             />
           </div>
         </div>
@@ -6393,11 +6351,13 @@ function EvidenceMapScreen({
   client,
   finding,
   onBack,
+  onOpenFindingDetail,
 }: {
   activeRepository?: Repository;
   client: ApiClient | null;
   finding: Finding;
   onBack: () => void;
+  onOpenFindingDetail: (finding: Finding) => void;
 }) {
   const [mapState, setMapState] =
     useState<Loadable<EvidenceMapResponse>>(idleApiState());
@@ -6476,21 +6436,22 @@ function EvidenceMapScreen({
     <div className="flex h-full min-h-[calc(100vh-220px)] min-w-0 flex-col gap-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-muted-foreground mb-2 flex items-center gap-2 text-xs">
-            <span>Findings</span>
-            <ChevronDownIcon className="size-3 -rotate-90" />
-            <span className="text-foreground">Evidence Map</span>
-          </div>
+          <ReviewBreadcrumb
+            items={[
+              { label: "Findings", onClick: onBack },
+              {
+                label: truncate(displayFinding.canonical_claim, 88),
+                onClick: () => onOpenFindingDetail(finding),
+              },
+              { label: "Evidence map" },
+            ]}
+          />
           <h2 className="text-2xl leading-8 font-semibold">Evidence Map</h2>
           <p className="text-muted-foreground mt-1 max-w-3xl break-words text-sm">
             {displayFinding.canonical_claim}
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={onBack}>
-            <ArrowLeftIcon data-icon="inline-start" />
-            Findings
-          </Button>
           <Button
             disabled={mapState.status !== "success" || isRebuilding}
             size="sm"

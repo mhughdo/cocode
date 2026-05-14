@@ -143,6 +143,20 @@ func TestNormalizeCLIEnvironmentDefaultsTerminalForKnownCLIs(t *testing.T) {
 		t.Fatalf("NormalizeCLIEnvironment(codex) identity env = %#v, want USER/LOGNAME/SHELL/TMPDIR", codex)
 	}
 
+	kiro := NormalizeCLIEnvironment("kiro-cli", map[string]string{"FORCE_COLOR": "1", "TERM": ""})
+	if kiro["TERM"] != "xterm-256color" ||
+		kiro["COLORTERM"] != "truecolor" ||
+		kiro["NO_COLOR"] != "1" ||
+		kiro["USER"] == "" ||
+		kiro["LOGNAME"] == "" ||
+		kiro["SHELL"] == "" ||
+		kiro["TMPDIR"] == "" {
+		t.Fatalf("NormalizeCLIEnvironment(kiro-cli) = %#v, want known CLI terminal and identity env", kiro)
+	}
+	if _, ok := kiro["FORCE_COLOR"]; ok {
+		t.Fatalf("NormalizeCLIEnvironment(kiro-cli) = %#v, want FORCE_COLOR removed", kiro)
+	}
+
 	unknown := NormalizeCLIEnvironment("custom-reviewer", map[string]string{"TERM": "dumb"})
 	if unknown["TERM"] != "dumb" ||
 		unknown["COLORTERM"] != "" ||
@@ -316,17 +330,27 @@ func TestPrepareCommandRuntimeEnvironmentIsolatesGeminiHome(t *testing.T) {
 func TestPrepareCommandRuntimeEnvironmentLeavesOtherCLIsOnRealHome(t *testing.T) {
 	t.Parallel()
 
-	home := t.TempDir()
-	got, cleanup, err := PrepareCommandRuntimeEnvironment("codex", map[string]string{"HOME": home, "TERM": ""})
-	if err != nil {
-		t.Fatalf("PrepareCommandRuntimeEnvironment(codex) error = %v", err)
-	}
-	defer cleanup()
-	if got["HOME"] != home {
-		t.Fatalf("PrepareCommandRuntimeEnvironment(codex) HOME = %q, want %q", got["HOME"], home)
-	}
-	if got["TERM"] != "xterm-256color" {
-		t.Fatalf("PrepareCommandRuntimeEnvironment(codex) TERM = %q", got["TERM"])
+	for _, command := range []string{"codex", "kiro-cli"} {
+		command := command
+		t.Run(command, func(t *testing.T) {
+			t.Parallel()
+
+			home := t.TempDir()
+			got, cleanup, err := PrepareCommandRuntimeEnvironment(command, map[string]string{"HOME": home, "TERM": ""})
+			if err != nil {
+				t.Fatalf("PrepareCommandRuntimeEnvironment(%s) error = %v", command, err)
+			}
+			defer cleanup()
+			if got["HOME"] != home {
+				t.Fatalf("PrepareCommandRuntimeEnvironment(%s) HOME = %q, want %q", command, got["HOME"], home)
+			}
+			if got["TERM"] != "xterm-256color" {
+				t.Fatalf("PrepareCommandRuntimeEnvironment(%s) TERM = %q", command, got["TERM"])
+			}
+			if got["TMPDIR"] == "" || got["XDG_CACHE_HOME"] == "" {
+				t.Fatalf("PrepareCommandRuntimeEnvironment(%s) runtime dirs = %#v", command, got)
+			}
+		})
 	}
 }
 
@@ -549,5 +573,31 @@ func TestCommandArgsWithModelSelectionInjectsOpenCodeModelAfterRun(t *testing.T)
 	want := []string{"run", "--model", "opencode-go/kimi-k2.6", "--variant", "high", "--pure", "--format", "json", "--thinking", PromptArgPlaceholder}
 	if !slices.Equal(got, want) {
 		t.Fatalf("CommandArgsWithModelSelection(opencode) = %#v, want %#v", got, want)
+	}
+}
+
+func TestCommandArgsWithModelSelectionLeavesKiroHeadlessArgs(t *testing.T) {
+	t.Parallel()
+
+	args := []string{"chat", "--no-interactive", "--trust-tools=read,grep,glob,code", PromptArgPlaceholder}
+	got := CommandArgsWithModelSelection(AdapterCLINonInteractive, "kiro-cli", args, "kiro", "")
+	if !slices.Equal(got, args) {
+		t.Fatalf("CommandArgsWithModelSelection(kiro-cli) = %#v, want %#v", got, args)
+	}
+}
+
+func TestCommandArgsWithModelSelectionInjectsKiroModelAfterChat(t *testing.T) {
+	t.Parallel()
+
+	got := CommandArgsWithModelSelection(
+		AdapterCLINonInteractive,
+		"kiro-cli",
+		[]string{"chat", "--no-interactive", "--trust-tools=read,grep,glob,code", PromptArgPlaceholder},
+		"claude-sonnet-4.5",
+		"",
+	)
+	want := []string{"chat", "--model", "claude-sonnet-4.5", "--no-interactive", "--trust-tools=read,grep,glob,code", PromptArgPlaceholder}
+	if !slices.Equal(got, want) {
+		t.Fatalf("CommandArgsWithModelSelection(kiro-cli) = %#v, want %#v", got, want)
 	}
 }

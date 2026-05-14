@@ -55,6 +55,7 @@ Current examples:
 | Claude Code CLI | arg | JSON | `claude -p {{prompt}} --output-format json --permission-mode plan --no-session-persistence` |
 | Gemini CLI | arg | JSON | `gemini -p {{prompt}} --output-format json --approval-mode default --skip-trust` |
 | OpenCode CLI | arg | JSONL | `opencode run --pure --format json --thinking --model opencode-go/kimi-k2.6 --variant high {{prompt}}` |
+| Kiro CLI | arg | text | `kiro-cli chat --model auto --no-interactive --trust-tools=read,grep,glob,code --wrap never {{prompt}}` |
 | Codex App Server | JSON-RPC stdio | JSON | `codex app-server --listen stdio://` |
 | Gemini ACP | ACP stdio | JSON | `gemini --acp` |
 | OpenCode ACP | ACP stdio | JSON | `opencode acp` |

@@ -508,6 +508,14 @@ func (s Service) syncReviewProgressMessages(ctx context.Context, session dbgen.R
 			"review_agent_run_id":           run.ID,
 			"review_agent_run_started_at":   nullableStringValue(run.StartedAt),
 		}
+		if modelLabel, reasoningLabel := agentRunModelLabels(run); modelLabel != "" || reasoningLabel != "" {
+			if modelLabel != "" {
+				messageMetadata["model_label"] = modelLabel
+			}
+			if reasoningLabel != "" {
+				messageMetadata["reasoning_label"] = reasoningLabel
+			}
+		}
 		if reasoning := strings.TrimSpace(answer.ReasoningSummary); reasoning != "" {
 			messageMetadata["reasoning_summary"] = truncateEventPreview(reasoning)
 			messageMetadata["reasoning_disclaimer"] = "Provider-returned reasoning or thinking summary, not private hidden chain-of-thought."
@@ -2488,6 +2496,17 @@ func timestampAfter(value string) string {
 		return time.Now().UTC().Format(time.RFC3339Nano)
 	}
 	return parsed.Add(time.Nanosecond).UTC().Format(time.RFC3339Nano)
+}
+
+func agentRunModelLabels(run dbgen.AgentRun) (string, string) {
+	var metadata struct {
+		ModelLabel     string `json:"model_label"`
+		ReasoningLabel string `json:"reasoning_label"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(run.MetadataJson)), &metadata); err != nil {
+		return "", ""
+	}
+	return strings.TrimSpace(metadata.ModelLabel), strings.TrimSpace(metadata.ReasoningLabel)
 }
 
 func maxInt64(a int64, b int64) int64 {

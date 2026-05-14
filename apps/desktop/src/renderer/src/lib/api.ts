@@ -433,9 +433,12 @@ export interface AgentRunSummary {
   id: string;
   review_session_id: string;
   agent_config_id: string;
+  review_session_agent_id?: string;
   context_bundle_id?: string;
   status: string;
   role: string;
+  model_label?: string;
+  reasoning_label?: string;
   started_at?: string;
   completed_at?: string;
   error_code?: string;

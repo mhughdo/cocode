@@ -125,6 +125,7 @@ func discoverAgentModelCatalogs(ctx context.Context) []AgentModelCatalogResponse
 	discoverers := []func(context.Context) AgentModelCatalogResponse{
 		discoverCodexModels,
 		discoverOpenCodeModels,
+		discoverKiroModels,
 		discoverClaudeModels,
 		discoverGeminiModels,
 	}
@@ -387,6 +388,60 @@ func discoverGeminiModels(_ context.Context) AgentModelCatalogResponse {
 	return catalog
 }
 
+func discoverKiroModels(ctx context.Context) AgentModelCatalogResponse {
+	catalog := modelCatalog("kiro", "Kiro", "kiro-cli")
+	if _, err := agents.ResolveCommandExecutable("kiro-cli"); err != nil {
+		catalog.Error = "kiro-cli command is not installed or not on PATH"
+		return catalog
+	}
+	catalog.Available = true
+	stdout, stderr, err := runModelCatalogCommand(ctx, "kiro-cli", "chat", "--list-models", "--format", "json")
+	if err != nil {
+		catalog.Error = commandCatalogError(err, stderr)
+		return catalog
+	}
+	catalog.Models = kiroModelOptions(stdout)
+	catalog.Source = sourceForModels(catalog.Models)
+	return catalog
+}
+
+func kiroModelOptions(stdout string) []AgentModelOptionResponse {
+	var payload struct {
+		Models []struct {
+			ModelName string `json:"model_name"`
+			ModelID   string `json:"model_id"`
+		} `json:"models"`
+		DefaultModel string `json:"default_model"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		return nil
+	}
+	models := make([]AgentModelOptionResponse, 0, len(payload.Models))
+	for _, model := range payload.Models {
+		id := strings.TrimSpace(model.ModelID)
+		if id == "" {
+			id = strings.TrimSpace(model.ModelName)
+		}
+		if id == "" {
+			continue
+		}
+		label := strings.TrimSpace(model.ModelName)
+		if label == "" {
+			label = modelIDLabel(id)
+		}
+		models = append(models, AgentModelOptionResponse{
+			ID:            id,
+			Label:         modelIDLabel(label),
+			Provider:      "kiro",
+			ProviderLabel: providerLabel("kiro"),
+			Source:        "cli",
+			Default:       strings.EqualFold(id, strings.TrimSpace(payload.DefaultModel)),
+		})
+	}
+	markPreferredDefault(models, []string{payload.DefaultModel, "auto"})
+	return models
+}
+
 type knownModel struct {
 	ID      string
 	Label   string
@@ -471,6 +526,8 @@ func providerLabel(provider string) string {
 		return "Anthropic"
 	case "google":
 		return "Google"
+	case "kiro":
+		return "Kiro"
 	case "xai":
 		return "xAI"
 	case "openrouter":

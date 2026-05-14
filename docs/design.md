@@ -401,7 +401,7 @@ Purpose: connect and verify local CLIs and protocol adapters.
 Must include:
 
 - Adapter list with health status.
-- First-party adapters: Codex CLI, Claude Code, Gemini CLI, OpenCode CLI, Codex App Server, Gemini ACP, Custom CLI.
+- First-party adapters: Codex CLI, Claude Code, Gemini CLI, OpenCode CLI, Kiro CLI, Codex App Server, Gemini ACP, Custom CLI.
 - Selected adapter detail pane.
 - Health check controls.
 - Permission toggles with review-mode defaults.

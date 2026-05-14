@@ -59,7 +59,11 @@ import {
   type RuntimeTraceSummary,
 } from "./agent-runtime-trace";
 import { extractDisplayableAgentOutput } from "./agent-output-formatting";
-import { agentLogoUrl, formatSetupAgentLabel } from "./agent-utils";
+import {
+  agentLogoUrl,
+  formatSetupAgentLabel,
+  modelIDDisplayLabel,
+} from "./agent-utils";
 import { MarkdownMessage } from "./markdown-message";
 
 import cocodeMarkUrl from "../../../../../../assets/app-icon/cocode-logo-mark.svg";
@@ -505,21 +509,34 @@ export function withLiveAgentRunMessages({
   summary: Loadable<ReviewSessionSummary>;
   threadID: string;
 }) {
+  const summaryRuns =
+    summary.status === "success" ? (summary.data.agent_runs ?? []) : [];
+  const agentByConfigID =
+    agentConfigs.status === "success"
+      ? new Map(agentConfigs.data.map((agent) => [agent.id, agent]))
+      : new Map<string, AgentConfig>();
+  const sessionAgentByID = new Map(session.agents.map((agent) => [agent.id, agent]));
+  const runByID = new Map(summaryRuns.map((run) => [run.id, run]));
   const messagesWithProgress = withLocalReviewProgressMessages({
     events,
     messages,
     session,
     threadID,
   });
+  const messagesWithRunMetadata = messagesWithProgress.map((message) =>
+    enrichAgentRunMessageForDisplay({
+      agentByConfigID,
+      message,
+      run: message.agent_run_id ? runByID.get(message.agent_run_id) : undefined,
+      session,
+      sessionAgentByID,
+    }),
+  );
   const existingRunIDs = new Set(
-    messagesWithProgress
+    messagesWithRunMetadata
       .map((message) => message.agent_run_id)
       .filter((id): id is string => Boolean(id)),
   );
-  const agentByConfigID =
-    agentConfigs.status === "success"
-      ? new Map(agentConfigs.data.map((agent) => [agent.id, agent]))
-      : new Map<string, AgentConfig>();
   const eventsByRunID = new Map<string, ReviewEvent[]>();
   const firstEventByRunID = new Map<string, ReviewEvent>();
   for (const event of events) {
@@ -535,15 +552,13 @@ export function withLiveAgentRunMessages({
   }
   const liveMessages: ChatMessage[] = [];
   const representedAgentConfigIDs = new Set(
-    messagesWithProgress
+    messagesWithRunMetadata
       .map((message) => message.agent_config_id)
       .filter((id): id is string => Boolean(id)),
   );
-  const summaryRuns =
-    summary.status === "success" ? (summary.data.agent_runs ?? []) : [];
   const agentRunMessagesCanRender =
     !["queued", "running"].includes(session.status) ||
-    hasReviewStartProgress(messagesWithProgress);
+    hasReviewStartProgress(messagesWithRunMetadata);
   for (const run of summaryRuns) {
     representedAgentConfigIDs.add(run.agent_config_id);
     if (existingRunIDs.has(run.id)) {
@@ -552,7 +567,13 @@ export function withLiveAgentRunMessages({
     if (!agentRunMessagesCanRender) {
       continue;
     }
-    const agent = agentByConfigID.get(run.agent_config_id);
+    const sessionAgent = sessionAgentForRun(session, run, sessionAgentByID);
+    const agent = agentWithRunSelection(
+      agentByConfigID.get(run.agent_config_id),
+      run,
+      sessionAgent,
+    );
+    const displayMetadata = displayMetadataForRun(run, sessionAgent);
     const runEvents = eventsByRunID.get(run.id) ?? [];
     const runtimeSummary = summarizeRuntimeTraceEvents(runEvents);
     const latestEvent = runEvents.at(-1);
@@ -575,6 +596,7 @@ export function withLiveAgentRunMessages({
         metadata: {
           chat_sort_at: timestamp,
           chat_sort_rank: sortRank,
+          ...displayMetadata,
           live: true,
           agent_run_status: run.status,
           reasoning_events: runtimeSummary.reasoning.length,
@@ -601,6 +623,7 @@ export function withLiveAgentRunMessages({
       metadata: {
         chat_sort_at: timestamp,
         chat_sort_rank: sortRank,
+        ...displayMetadata,
         live: true,
         agent_run_status: run.status,
         reasoning_events: runtimeSummary.reasoning.length,
@@ -614,9 +637,9 @@ export function withLiveAgentRunMessages({
   const plannedMessages: ChatMessage[] = [];
   if (
     ["queued", "running"].includes(session.status) &&
-    hasReviewStartProgress(messagesWithProgress)
+    hasReviewStartProgress(messagesWithRunMetadata)
   ) {
-    const now = plannedAgentTimestamp(messagesWithProgress, session);
+    const now = plannedAgentTimestamp(messagesWithRunMetadata, session);
     for (const assignment of session.agents) {
       if (!assignment.enabled) {
         continue;
@@ -624,7 +647,10 @@ export function withLiveAgentRunMessages({
       if (representedAgentConfigIDs.has(assignment.agent_config_id)) {
         continue;
       }
-      const agent = agentByConfigID.get(assignment.agent_config_id);
+      const agent = agentWithSessionAssignmentSelection(
+        agentByConfigID.get(assignment.agent_config_id),
+        assignment,
+      );
       if (agent && isOrchestratorEntry({ agent, assignment })) {
         continue;
       }
@@ -648,6 +674,7 @@ export function withLiveAgentRunMessages({
           agent_run_status: "queued",
           chat_sort_at: now,
           chat_sort_rank: agentSortRank(session, assignment.agent_config_id),
+          ...displayMetadataForAssignment(assignment),
           local: true,
           planned: true,
         },
@@ -657,7 +684,7 @@ export function withLiveAgentRunMessages({
     }
   }
   return sortChatMessages(
-    [...messagesWithProgress, ...liveMessages, ...plannedMessages],
+    [...messagesWithRunMetadata, ...liveMessages, ...plannedMessages],
     session,
   );
 }
@@ -990,6 +1017,141 @@ function agentRunDisplayName(run: AgentRunSummary, agent: AgentConfig | undefine
   return run.role ? compactRoleLabel(run.role) : "Reviewer";
 }
 
+function enrichAgentRunMessageForDisplay({
+  agentByConfigID,
+  message,
+  run,
+  session,
+  sessionAgentByID,
+}: {
+  agentByConfigID: Map<string, AgentConfig>;
+  message: ChatMessage;
+  run?: AgentRunSummary;
+  session: ReviewSession;
+  sessionAgentByID: Map<string, ReviewSessionAgent>;
+}): ChatMessage {
+  if (!run) {
+    return message;
+  }
+  const sessionAgent = sessionAgentForRun(session, run, sessionAgentByID);
+  const agent = agentWithRunSelection(
+    agentByConfigID.get(run.agent_config_id),
+    run,
+    sessionAgent,
+  );
+  const displayMetadata = displayMetadataForRun(run, sessionAgent);
+  if (Object.keys(displayMetadata).length === 0) {
+    return message;
+  }
+  return {
+    ...message,
+    author_display_name: agent
+      ? agentRunDisplayName(run, agent)
+      : message.author_display_name,
+    metadata: {
+      ...(isPlainRecord(message.metadata) ? message.metadata : {}),
+      ...displayMetadata,
+    },
+  };
+}
+
+function sessionAgentForRun(
+  session: ReviewSession,
+  run: AgentRunSummary,
+  sessionAgentByID: Map<string, ReviewSessionAgent>,
+) {
+  if (run.review_session_agent_id) {
+    const byID = sessionAgentByID.get(run.review_session_agent_id);
+    if (byID) {
+      return byID;
+    }
+  }
+  return (
+    session.agents.find(
+      (agent) =>
+        agent.agent_config_id === run.agent_config_id && agent.role === run.role,
+    ) ??
+    session.agents.find((agent) => agent.agent_config_id === run.agent_config_id)
+  );
+}
+
+function agentWithRunSelection(
+  agent: AgentConfig | undefined,
+  run: AgentRunSummary,
+  assignment?: ReviewSessionAgent,
+) {
+  return agentWithDisplaySelection(
+    agent,
+    run.model_label || metadataString(assignment?.settings_override, "model_label"),
+    run.reasoning_label ||
+      metadataString(assignment?.settings_override, "reasoning_label"),
+  );
+}
+
+function agentWithSessionAssignmentSelection(
+  agent: AgentConfig | undefined,
+  assignment: ReviewSessionAgent,
+) {
+  return agentWithDisplaySelection(
+    agent,
+    metadataString(assignment.settings_override, "model_label"),
+    metadataString(assignment.settings_override, "reasoning_label"),
+  );
+}
+
+function agentWithDisplaySelection(
+  agent: AgentConfig | undefined,
+  modelLabel: string,
+  reasoningLabel: string,
+): AgentConfig | undefined {
+  modelLabel = modelLabel.trim();
+  reasoningLabel = reasoningLabel.trim();
+  if (!agent || (!modelLabel && !reasoningLabel)) {
+    return agent;
+  }
+  return {
+    ...agent,
+    model_label: modelLabel || agent.model_label,
+    reasoning_label: reasoningLabel || agent.reasoning_label,
+    settings: {
+      ...agent.settings,
+      ...(modelLabel ? { model_label: modelIDDisplayLabel(modelLabel) } : {}),
+      ...(reasoningLabel ? { reasoning_label: reasoningLabel } : {}),
+    },
+  };
+}
+
+function displayMetadataForRun(
+  run: AgentRunSummary,
+  assignment?: ReviewSessionAgent,
+) {
+  return displayMetadataForSelection(
+    run.model_label || metadataString(assignment?.settings_override, "model_label"),
+    run.reasoning_label ||
+      metadataString(assignment?.settings_override, "reasoning_label"),
+  );
+}
+
+function displayMetadataForAssignment(assignment: ReviewSessionAgent) {
+  return displayMetadataForSelection(
+    metadataString(assignment.settings_override, "model_label"),
+    metadataString(assignment.settings_override, "reasoning_label"),
+  );
+}
+
+function displayMetadataForSelection(modelLabel: string, reasoningLabel: string) {
+  const metadata: Record<string, string> = {};
+  modelLabel = modelLabel.trim();
+  reasoningLabel = reasoningLabel.trim();
+  if (modelLabel) {
+    metadata.model_label = modelIDDisplayLabel(modelLabel);
+  }
+  if (reasoningLabel) {
+    metadata.reasoning_label = reasoningLabel;
+  }
+  return metadata;
+}
+
 function pendingChatMessages({
   agentByConfigID,
   audience,
@@ -1242,7 +1404,10 @@ function ChatMessageCard({
           {message.agent_run_id && (
             <AgentRunBadges
               agent={agent}
+              authorType={message.author_type}
               failed={failed}
+              modelLabel={metadataString(message.metadata, "model_label")}
+              reasoningLabel={metadataString(message.metadata, "reasoning_label")}
               runtimeSummary={runtimeSummary}
               streaming={streaming}
             />
@@ -1321,21 +1486,39 @@ function ExpandableMarkdownMessage({
 
 function AgentRunBadges({
   agent,
+  authorType,
   failed,
+  modelLabel,
+  reasoningLabel,
   runtimeSummary,
   streaming,
 }: {
   agent?: AgentConfig;
+  authorType: ChatMessage["author_type"];
   failed: boolean;
+  modelLabel: string;
+  reasoningLabel: string;
   runtimeSummary: RuntimeTraceSummary;
   streaming: boolean;
 }) {
   const modelBits = [
-    agent?.model_label?.trim(),
-    agent?.reasoning_label?.trim(),
+    modelLabel.trim() || agent?.model_label?.trim(),
+    reasoningLabel.trim() || agent?.reasoning_label?.trim(),
   ].filter(Boolean);
+  const isOrchestrator =
+    authorType === "orchestrator" ||
+    Boolean(agent?.role.toLowerCase().includes("orchestrator"));
   return (
     <>
+      {isOrchestrator && (
+        <Badge
+          data-testid="orchestrator-agent-badge"
+          variant="outline"
+          className="h-4 border-violet-200 bg-violet-50 px-1.5 text-[10px] text-violet-800"
+        >
+          orchestrator
+        </Badge>
+      )}
       <Badge
         variant={failed ? "destructive" : streaming ? "outline" : "secondary"}
         className="h-4 gap-1 px-1.5 text-[10px]"

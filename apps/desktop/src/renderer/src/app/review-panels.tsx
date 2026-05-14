@@ -12,8 +12,6 @@ import { useEffect, useRef, type ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { languageForFilePath } from "@/lib/syntax-highlighting";
@@ -183,6 +181,7 @@ function FindingActions({
   disabled,
   onAccept,
   onCopyFixPacket,
+  onDismiss,
   onOpenDetail,
   onOpenEvidenceMap,
   onOpenFollowUp,
@@ -191,13 +190,14 @@ function FindingActions({
   disabled?: boolean;
   onAccept: () => void;
   onCopyFixPacket: () => void;
+  onDismiss: () => void;
   onOpenDetail?: () => void;
   onOpenEvidenceMap: () => void;
   onOpenFollowUp: () => void;
 }) {
   return (
     <Section title="Actions">
-      <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">
+      <div className="grid min-w-0 grid-cols-2 gap-2">
         <Button
           className="min-w-0 justify-start overflow-hidden"
           disabled={disabled}
@@ -207,6 +207,18 @@ function FindingActions({
           <CheckIcon data-icon="inline-start" />
           Accept
         </Button>
+        <Button
+          className="min-w-0 justify-start overflow-hidden"
+          disabled={disabled}
+          size="sm"
+          variant="outline"
+          onClick={onDismiss}
+        >
+          <MinusIcon data-icon="inline-start" />
+          Dismiss
+        </Button>
+      </div>
+      <div className="mt-2 grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">
         <Button
           className="min-w-0 justify-start overflow-hidden"
           disabled={disabled}
@@ -255,67 +267,6 @@ function FindingActions({
           {actionState.message}
         </div>
       ) : null}
-    </Section>
-  );
-}
-
-function DismissalControls({
-  dismissalReason,
-  dismissalRuleSuggestion,
-  onDismiss,
-  onDismissalReasonChange,
-  onDismissalRuleSuggestionChange,
-  onSaveDismissalRuleChange,
-  saveDismissalRule,
-  showSaveRule,
-}: {
-  dismissalReason: string;
-  dismissalRuleSuggestion: string;
-  onDismiss: () => void;
-  onDismissalReasonChange: (value: string) => void;
-  onDismissalRuleSuggestionChange: (value: string) => void;
-  onSaveDismissalRuleChange: (value: boolean) => void;
-  saveDismissalRule: boolean;
-  showSaveRule: boolean;
-}) {
-  return (
-    <Section title="Dismissal">
-      <div className="grid gap-2">
-        <Input
-          aria-label="Dismissal reason"
-          placeholder="Dismissal reason"
-          value={dismissalReason}
-          onChange={(event) => onDismissalReasonChange(event.target.value)}
-        />
-        {showSaveRule ? (
-          <>
-            <label className="flex items-center gap-2 text-sm">
-              <Checkbox
-                checked={saveDismissalRule}
-                onCheckedChange={(checked) =>
-                  onSaveDismissalRuleChange(checked === true)
-                }
-              />
-              Save dismissal as local rule
-            </label>
-            {saveDismissalRule ? (
-              <Textarea
-                aria-label="Review rule suggestion"
-                className="min-h-20 text-sm"
-                placeholder="Optional guidance. Defaults to the dismissal reason."
-                value={dismissalRuleSuggestion}
-                onChange={(event) =>
-                  onDismissalRuleSuggestionChange(event.target.value)
-                }
-              />
-            ) : null}
-          </>
-        ) : null}
-        <Button onClick={onDismiss} variant="outline">
-          <MinusIcon data-icon="inline-start" />
-          Dismiss finding
-        </Button>
-      </div>
     </Section>
   );
 }
@@ -486,39 +437,25 @@ export function FindingsInspectorPanel({
   onCopyFixPacket,
   onCopyPath,
   onDismiss,
-  dismissalReason,
-  onDismissReasonChange,
-  onDismissalRuleSuggestionChange,
-  onSaveDismissalRuleChange,
   onDraftCommentChange,
   onOpenDetail,
   onOpenEvidenceMap,
   onOpenFollowUp,
   onSaveDraftComment,
-  saveDismissalRule,
-  showSaveRule,
-  dismissalRuleSuggestion,
 }: {
   actionState: { status: LoadingState; message?: string };
   detail?: FindingDetailResponse;
   draftComment: string;
   finding: Finding;
-  dismissalReason: string;
   onAccept: () => void;
   onCopyFixPacket: () => void;
   onCopyPath: () => void;
   onDismiss: () => void;
-  onDismissReasonChange: (value: string) => void;
-  onDismissalRuleSuggestionChange: (value: string) => void;
-  onSaveDismissalRuleChange: (value: boolean) => void;
   onDraftCommentChange: (value: string) => void;
   onOpenDetail?: () => void;
   onOpenEvidenceMap: () => void;
   onOpenFollowUp: () => void;
   onSaveDraftComment: () => void;
-  saveDismissalRule: boolean;
-  showSaveRule: boolean;
-  dismissalRuleSuggestion: string;
 }) {
   const supportingEvidence = evidenceItemsOrEmpty(
     detail?.evidence_groups?.supporting,
@@ -582,6 +519,7 @@ export function FindingsInspectorPanel({
             actionState={actionState}
             onAccept={onAccept}
             onCopyFixPacket={onCopyFixPacket}
+            onDismiss={onDismiss}
             onOpenDetail={onOpenDetail}
             onOpenEvidenceMap={onOpenEvidenceMap}
             onOpenFollowUp={onOpenFollowUp}
@@ -618,16 +556,6 @@ export function FindingsInspectorPanel({
             supportingEvidence={supportingEvidence}
             testEvidence={testEvidence}
             verificationLeads={verificationLeads}
-          />
-          <DismissalControls
-            dismissalReason={dismissalReason}
-            dismissalRuleSuggestion={dismissalRuleSuggestion}
-            onDismiss={onDismiss}
-            onDismissalReasonChange={onDismissReasonChange}
-            onDismissalRuleSuggestionChange={onDismissalRuleSuggestionChange}
-            onSaveDismissalRuleChange={onSaveDismissalRuleChange}
-            saveDismissalRule={saveDismissalRule}
-            showSaveRule={showSaveRule}
           />
           <DraftCommentPanel
             body={draftComment}

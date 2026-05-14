@@ -1,6 +1,17 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-import { closeCocode, launchCocode, seedCocodeData } from "./test-support";
+import {
+  apiRequest,
+  closeCocode,
+  launchCocode,
+  seedCocodeData,
+} from "./test-support";
+
+type FindingDetailResponse = {
+  finding: {
+    decision_status: string;
+  };
+};
 
 test("opens finding detail and Evidence Map from seeded data", async ({
   browserName,
@@ -8,7 +19,7 @@ test("opens finding detail and Evidence Map from seeded data", async ({
   expect(browserName).toBe("chromium");
   const seeded = seedCocodeData(testInfo);
   const app = await launchCocode(testInfo, {}, seeded.dataDir);
-  const { page } = app;
+  const { backendInfo, page } = app;
 
   try {
     await page.setViewportSize({ width: 1600, height: 980 });
@@ -18,6 +29,8 @@ test("opens finding detail and Evidence Map from seeded data", async ({
     await expect(
       page.getByText("PR #42 - repository settings review").first(),
     ).toBeVisible();
+    await expect(page.getByText("Ana Lee")).toHaveCount(0);
+    await expect(page.getByText("Backend ready")).toHaveCount(0);
 
     await page.getByRole("tab", { name: "Findings" }).click();
     const findingsBoard = page.getByLabel("Review findings board");
@@ -47,6 +60,31 @@ test("opens finding detail and Evidence Map from seeded data", async ({
     await expect(page.getByText("Evidence story")).toBeVisible();
     await expect(page.getByText("Actions", { exact: true })).toBeVisible();
     await expect(page.getByText("Draft GitHub comment")).toBeVisible();
+    await expect(page.getByText("Dismissal", { exact: true })).toHaveCount(0);
+    const actionsSection = page
+      .locator("section")
+      .filter({ has: page.getByText("Actions", { exact: true }) })
+      .first();
+    const acceptBox = await actionsSection
+      .getByRole("button", { exact: true, name: "Accept" })
+      .boundingBox();
+    const dismissBox = await actionsSection
+      .getByRole("button", { exact: true, name: "Dismiss" })
+      .boundingBox();
+    expect(acceptBox).toBeTruthy();
+    expect(dismissBox).toBeTruthy();
+    expect(Math.abs(acceptBox!.y - dismissBox!.y)).toBeLessThan(8);
+    await actionsSection
+      .getByRole("button", { name: "Copy fix packet" })
+      .click();
+    await expect(
+      actionsSection.locator("div").filter({ hasText: /^Copied$/ }),
+    ).toBeVisible();
+    const detailAfterCopy = await apiRequest<FindingDetailResponse>(
+      backendInfo,
+      "/api/findings/seed_finding_auth_guard",
+    );
+    expect(detailAfterCopy.finding.decision_status).toBe("accepted");
     await expectResizableRightPanel(page);
 
     await page
@@ -66,6 +104,17 @@ test("opens finding detail and Evidence Map from seeded data", async ({
     await expect(page.getByText("Primary code").last()).toBeVisible();
     await expect(page.getByText("Draft GitHub comment")).toBeVisible();
     await expect(page.getByText("Finding thread")).toBeVisible();
+    const detailBreadcrumb = page.getByRole("navigation", {
+      name: "Review breadcrumb",
+    });
+    await expect(
+      detailBreadcrumb.getByRole("button", { name: "Findings" }),
+    ).toBeVisible();
+    await expect(
+      detailBreadcrumb.getByText(
+        "Repository settings updates miss the workspace admin guard.",
+      ),
+    ).toBeVisible();
     await expectResizableRightPanel(page);
 
     await page
@@ -83,6 +132,18 @@ test("opens finding detail and Evidence Map from seeded data", async ({
     await expect(page.getByText("Evidence bundle")).toHaveCount(0);
     await expectSurfaceFillsViewport(page, page.locator(".evidence-map-layout"));
     await expectSurfaceFillsViewport(page, page.locator(".evidence-map-canvas"));
+    const mapBreadcrumb = page.getByRole("navigation", {
+      name: "Review breadcrumb",
+    });
+    await expect(
+      mapBreadcrumb.getByRole("button", { name: "Findings" }),
+    ).toBeVisible();
+    await expect(
+      mapBreadcrumb.getByRole("button", {
+        name: "Repository settings updates miss the workspace admin guard.",
+      }),
+    ).toBeVisible();
+    await expect(mapBreadcrumb.getByText("Evidence map")).toBeVisible();
 
     await page
       .locator(
@@ -101,6 +162,16 @@ test("opens finding detail and Evidence Map from seeded data", async ({
     ).toHaveCount(0);
     await expect(
       page.getByText("Mutation route reaches settings write").first(),
+    ).toBeVisible();
+    await mapBreadcrumb
+      .getByRole("button", {
+        name: "Repository settings updates miss the workspace admin guard.",
+      })
+      .click();
+    await expect(
+      page.getByRole("heading", {
+        name: "Repository settings updates miss the workspace admin guard.",
+      }),
     ).toBeVisible();
   } finally {
     await closeCocode(app);

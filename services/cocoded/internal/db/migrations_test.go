@@ -89,8 +89,12 @@ CREATE TABLE review_sessions (
 
 CREATE TABLE agent_configs (
   id TEXT PRIMARY KEY,
+  name TEXT,
+  role TEXT,
+  adapter_kind TEXT,
   command TEXT,
   args_json TEXT NOT NULL DEFAULT '[]',
+  output_mode TEXT,
   updated_at TEXT
 );
 
@@ -295,6 +299,50 @@ INSERT INTO agent_configs (
 	}
 	if validConfigArgs != validToolsArgs {
 		t.Fatalf("valid config args = %s, want unchanged %s", validConfigArgs, validToolsArgs)
+	}
+}
+
+func TestApplyPromotesDefaultCodexCLIToOrchestrator(t *testing.T) {
+	t.Parallel()
+
+	database, err := Open(context.Background(), MemoryDatabase)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer database.Close()
+
+	if err := Apply(context.Background(), database, Migrations[:7]); err != nil {
+		t.Fatalf("Apply(initial migrations) error = %v", err)
+	}
+	const codexCLIArgs = `["-a","never","exec","--json","--sandbox","workspace-write","--add-dir","/tmp/cocode-agent-runtime","--skip-git-repo-check","--ephemeral","--ignore-rules","--color","never","-"]`
+	if _, err := database.ExecContext(context.Background(), `
+INSERT INTO agent_configs (
+  id, name, role, adapter_kind, command, args_json, cwd_mode,
+  env_allowlist_json, output_mode, capabilities_json, settings_json,
+  enabled, created_at, updated_at
+) VALUES
+  ('agent_config_codex_cli', 'Codex CLI', 'primary_reviewer', 'cli_noninteractive', 'codex', ?, 'repo_root', '[]', 'jsonl', '{}', '{}', 1, '2026-05-10T00:00:00Z', '2026-05-10T00:00:00Z'),
+  ('agent_config_codex_app', 'Codex App Server', 'primary_reviewer', 'jsonrpc_stdio', 'codex', '["app-server","--listen","stdio://"]', 'repo_root', '[]', 'json', '{}', '{}', 1, '2026-05-10T00:00:00Z', '2026-05-10T00:00:00Z')
+`, codexCLIArgs); err != nil {
+		t.Fatalf("insert codex configs: %v", err)
+	}
+	if err := Apply(context.Background(), database, Migrations); err != nil {
+		t.Fatalf("Apply(codex role migration) error = %v", err)
+	}
+
+	var codexCLIRole string
+	if err := database.QueryRowContext(context.Background(), "SELECT role FROM agent_configs WHERE id = 'agent_config_codex_cli'").Scan(&codexCLIRole); err != nil {
+		t.Fatalf("read codex cli role: %v", err)
+	}
+	if codexCLIRole != "orchestrator" {
+		t.Fatalf("codex cli role = %q, want orchestrator", codexCLIRole)
+	}
+	var codexAppRole string
+	if err := database.QueryRowContext(context.Background(), "SELECT role FROM agent_configs WHERE id = 'agent_config_codex_app'").Scan(&codexAppRole); err != nil {
+		t.Fatalf("read codex app role: %v", err)
+	}
+	if codexAppRole != "primary_reviewer" {
+		t.Fatalf("codex app role = %q, want primary_reviewer", codexAppRole)
 	}
 }
 

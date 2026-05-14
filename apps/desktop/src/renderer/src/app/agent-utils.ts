@@ -11,6 +11,7 @@ import claudeLogoUrl from "../../../../../../assets/agents/claude-color.svg";
 import codexLogoUrl from "../../../../../../assets/agents/codex-color.svg";
 import geminiLogoUrl from "../../../../../../assets/agents/gemini-color.svg";
 import githubLogoUrl from "../../../../../../assets/agents/github.svg";
+import kiroLogoUrl from "../../../../../../assets/agents/kiro-color.svg";
 import opencodeLogoUrl from "../../../../../../assets/agents/opencode-logo-light.svg";
 
 export const BUILTIN_REVIEW_AGENT_PRESET_IDS = [
@@ -18,6 +19,7 @@ export const BUILTIN_REVIEW_AGENT_PRESET_IDS = [
   "claude-code-cli",
   "gemini-cli",
   "opencode-cli",
+  "kiro-cli",
 ] as const;
 
 export type SetupAgentModelChoice = {
@@ -216,6 +218,9 @@ export function agentLogoUrl(agent: AgentVisibilitySource) {
   if (marker.includes("opencode")) {
     return opencodeLogoUrl;
   }
+  if (marker.includes("kiro")) {
+    return kiroLogoUrl;
+  }
   if (marker.includes("gemini") || marker.includes("google")) {
     return geminiLogoUrl;
   }
@@ -257,6 +262,7 @@ export function shouldUseDiscoveredModel(modelLabel?: string) {
     normalized === "" ||
     normalized === "default" ||
     normalized === "claude" ||
+    normalized === "kiro" ||
     normalized === "opencode" ||
     normalized === "gemini-acp" ||
     normalized === "opencode-acp"
@@ -293,6 +299,8 @@ function setupCatalogForAgent(
     .toLowerCase();
   const preferredCommand = marker.includes("opencode")
     ? "opencode"
+    : marker.includes("kiro")
+      ? "kiro-cli"
     : marker.includes("gemini") || marker.includes("google")
       ? "gemini"
       : marker.includes("claude") || marker.includes("anthropic")
@@ -326,6 +334,9 @@ function shortSetupAgentName(agent: AgentConfig) {
   }
   if (normalized.includes("opencode")) {
     return "OpenCode";
+  }
+  if (normalized.includes("kiro")) {
+    return "Kiro";
   }
   if (normalized.includes("gemini")) {
     return "Gemini";

@@ -37,6 +37,12 @@ var Migrations = []Migration{
 		SQL:            evidenceMapRouteNodesSQL,
 		RequiredTables: []string{"evidence_graphs", "evidence_items", "evidence_nodes", "evidence_edges", "call_path_steps"},
 	},
+	{
+		Version:        8,
+		Name:           "codex_cli_default_orchestrator",
+		SQL:            codexCLIDefaultOrchestratorSQL,
+		RequiredTables: []string{"agent_configs"},
+	},
 }
 
 const schemaV1SQL = `
@@ -610,6 +616,18 @@ WHERE command = 'codex'
     '["-a","never","exec","--json","--sandbox","read-only","--skip-git-repo-check","--ephemeral","--ignore-rules","--color","never","-"]',
     '["-a","never","exec","--json","--sandbox","workspace-write","--skip-git-repo-check","--ephemeral","--ignore-rules","--color","never","-"]'
   );
+`
+
+const codexCLIDefaultOrchestratorSQL = `
+UPDATE agent_configs
+SET
+  role = 'orchestrator',
+  updated_at = datetime('now')
+WHERE name = 'Codex CLI'
+  AND role = 'primary_reviewer'
+  AND command = 'codex'
+  AND adapter_kind = 'cli_noninteractive'
+  AND output_mode = 'jsonl';
 `
 
 const evidenceMapRouteNodesSQL = `

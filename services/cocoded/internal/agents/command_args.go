@@ -58,6 +58,11 @@ func CommandArgsWithModelSelection(kind AdapterKind, command string, args []stri
 			injected = append(injected, "--variant", reasoningLabel)
 		}
 		return injectArgsAfterSubcommand(out, "run", injected)
+	case "kiro", "kiro-cli":
+		if shouldSkipCLIModelArgument(commandName, modelLabel) {
+			return out
+		}
+		return injectArgsAfterSubcommand(out, "chat", []string{"--model", modelLabel})
 	case "claude":
 		injected := make([]string, 0, 4)
 		if !shouldSkipCLIModelArgument(commandName, modelLabel) {
@@ -110,7 +115,7 @@ func shouldSkipCLIModelArgument(command string, modelLabel string) bool {
 		return true
 	}
 	switch strings.ToLower(modelLabel) {
-	case "codex", "claude", "gemini", "opencode", "gemini-acp", "opencode-acp":
+	case "codex", "claude", "gemini", "kiro", "kiro-cli", "opencode", "gemini-acp", "opencode-acp":
 		return true
 	}
 	return strings.EqualFold(command, modelLabel)

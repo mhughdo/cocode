@@ -132,16 +132,19 @@ type RunSummary struct {
 }
 
 type AgentRun struct {
-	ID              string `json:"id"`
-	ReviewSessionID string `json:"review_session_id"`
-	AgentConfigID   string `json:"agent_config_id"`
-	ContextBundleID string `json:"context_bundle_id,omitempty"`
-	Status          string `json:"status"`
-	Role            string `json:"role"`
-	StartedAt       string `json:"started_at,omitempty"`
-	CompletedAt     string `json:"completed_at,omitempty"`
-	ErrorCode       string `json:"error_code,omitempty"`
-	ErrorMessage    string `json:"error_message,omitempty"`
+	ID                   string `json:"id"`
+	ReviewSessionID      string `json:"review_session_id"`
+	AgentConfigID        string `json:"agent_config_id"`
+	ReviewSessionAgentID string `json:"review_session_agent_id,omitempty"`
+	ContextBundleID      string `json:"context_bundle_id,omitempty"`
+	Status               string `json:"status"`
+	Role                 string `json:"role"`
+	ModelLabel           string `json:"model_label,omitempty"`
+	ReasoningLabel       string `json:"reasoning_label,omitempty"`
+	StartedAt            string `json:"started_at,omitempty"`
+	CompletedAt          string `json:"completed_at,omitempty"`
+	ErrorCode            string `json:"error_code,omitempty"`
+	ErrorMessage         string `json:"error_message,omitempty"`
 }
 
 type FindingCounts struct {
@@ -892,6 +895,14 @@ func (s *Service) runAgent(ctx context.Context, item runContext) (agentrun.RunRe
 			reviewDeadline = startedAt.Add(time.Duration(item.Session.RuntimeLimitSeconds) * time.Second)
 		}
 	}
+	runMetadata := map[string]any{
+		"phase":                   PhaseRunAgents,
+		"review_session_agent_id": item.SessionAgent.ID,
+		"context_bundle_id":       item.Bundle.ID,
+		"output_mode":             string(agents.OutputMode(item.AgentConfig.OutputMode)),
+	}
+	copyStringMetadata(runMetadata, config.Metadata, "model_label")
+	copyStringMetadata(runMetadata, config.Metadata, "reasoning_label")
 	result, err := s.AgentManager.Execute(ctx, agentrun.RunParams{
 		WorkspaceID:  item.Workspace.ID,
 		Config:       config,
@@ -903,12 +914,7 @@ func (s *Service) runAgent(ctx context.Context, item runContext) (agentrun.RunRe
 			ReviewDeadline:       reviewDeadline,
 			ReviewTimeoutSeconds: maxInt64(0, item.Session.RuntimeLimitSeconds),
 		},
-		Metadata: map[string]any{
-			"phase":                   PhaseRunAgents,
-			"review_session_agent_id": item.SessionAgent.ID,
-			"context_bundle_id":       item.Bundle.ID,
-			"output_mode":             string(agents.OutputMode(item.AgentConfig.OutputMode)),
-		},
+		Metadata:  runMetadata,
 		EventSink: s.agentRunEventSink(item.Session.ID),
 	})
 	if err != nil {
@@ -1917,18 +1923,51 @@ func contextOrBackground(ctx context.Context) context.Context {
 }
 
 func agentRunSummary(run dbgen.AgentRun) AgentRun {
+	metadata := decodeAgentRunDisplayMetadata(run.MetadataJson)
 	return AgentRun{
-		ID:              run.ID,
-		ReviewSessionID: run.ReviewSessionID,
-		AgentConfigID:   run.AgentConfigID,
-		ContextBundleID: nullableValue(run.ContextBundleID),
-		Status:          run.Status,
-		Role:            run.Role,
-		StartedAt:       nullableValue(run.StartedAt),
-		CompletedAt:     nullableValue(run.CompletedAt),
-		ErrorCode:       nullableValue(run.ErrorCode),
-		ErrorMessage:    nullableValue(run.ErrorMessage),
+		ID:                   run.ID,
+		ReviewSessionID:      run.ReviewSessionID,
+		AgentConfigID:        run.AgentConfigID,
+		ReviewSessionAgentID: metadata.ReviewSessionAgentID,
+		ContextBundleID:      nullableValue(run.ContextBundleID),
+		Status:               run.Status,
+		Role:                 run.Role,
+		ModelLabel:           metadata.ModelLabel,
+		ReasoningLabel:       metadata.ReasoningLabel,
+		StartedAt:            nullableValue(run.StartedAt),
+		CompletedAt:          nullableValue(run.CompletedAt),
+		ErrorCode:            nullableValue(run.ErrorCode),
+		ErrorMessage:         nullableValue(run.ErrorMessage),
 	}
+}
+
+type agentRunDisplayMetadata struct {
+	ReviewSessionAgentID string `json:"review_session_agent_id"`
+	ModelLabel           string `json:"model_label"`
+	ReasoningLabel       string `json:"reasoning_label"`
+}
+
+func decodeAgentRunDisplayMetadata(raw string) agentRunDisplayMetadata {
+	var metadata agentRunDisplayMetadata
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &metadata); err != nil {
+		return agentRunDisplayMetadata{}
+	}
+	metadata.ReviewSessionAgentID = strings.TrimSpace(metadata.ReviewSessionAgentID)
+	metadata.ModelLabel = strings.TrimSpace(metadata.ModelLabel)
+	metadata.ReasoningLabel = strings.TrimSpace(metadata.ReasoningLabel)
+	return metadata
+}
+
+func copyStringMetadata(target map[string]any, source map[string]any, key string) {
+	if target == nil || source == nil {
+		return
+	}
+	value, ok := source[key].(string)
+	value = strings.TrimSpace(value)
+	if !ok || value == "" {
+		return
+	}
+	target[key] = value
 }
 
 func nullableString(value string) sql.NullString {

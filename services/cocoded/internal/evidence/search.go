@@ -43,9 +43,13 @@ type SearchMatch struct {
 	Text string `json:"text"`
 }
 
+var lookPath = exec.LookPath
+
 type RipgrepSearcher struct {
 	Command string
 }
+
+type GoSearcher struct{}
 
 func (s RipgrepSearcher) Search(ctx context.Context, options SearchOptions) ([]SearchMatch, error) {
 	query := strings.TrimSpace(options.Query)
@@ -71,6 +75,9 @@ func (s RipgrepSearcher) Search(ctx context.Context, options SearchOptions) ([]S
 	command := strings.TrimSpace(s.Command)
 	if command == "" {
 		command = "rg"
+	}
+	if fallback, ok := shouldUseGoSearchFallback(command, s.Command); ok {
+		return fallback.Search(ctx, options)
 	}
 	paths, err := cleanSearchPaths(options.Paths)
 	if err != nil {
@@ -125,6 +132,231 @@ func (s RipgrepSearcher) Search(ctx context.Context, options SearchOptions) ([]S
 		return nil, fmt.Errorf("run ripgrep: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return parseRipgrepJSON(stdout.Bytes(), limit)
+}
+
+func shouldUseGoSearchFallback(command string, configuredCommand string) (GoSearcher, bool) {
+	if strings.TrimSpace(configuredCommand) != "" && strings.TrimSpace(configuredCommand) != "rg" {
+		return GoSearcher{}, false
+	}
+	if filepath.Base(command) != "rg" {
+		return GoSearcher{}, false
+	}
+	if _, err := lookPath(command); err != nil && errors.Is(err, exec.ErrNotFound) {
+		return GoSearcher{}, true
+	}
+	return GoSearcher{}, false
+}
+
+func (s GoSearcher) Search(ctx context.Context, options SearchOptions) ([]SearchMatch, error) {
+	query := strings.TrimSpace(options.Query)
+	if query == "" {
+		return nil, nil
+	}
+	root, err := safeRepoRoot(options.RepoRoot)
+	if err != nil {
+		return nil, err
+	}
+	limit := options.Limit
+	if limit <= 0 {
+		limit = defaultSearchLimit
+	}
+	timeout := options.Timeout
+	if timeout <= 0 {
+		timeout = defaultSearchTimeout
+	}
+	outputLimit := options.OutputLimit
+	if outputLimit <= 0 {
+		outputLimit = defaultSearchOutputLimit
+	}
+	paths, err := cleanSearchPaths(options.Paths)
+	if err != nil {
+		return nil, err
+	}
+	exclude, err := cleanSearchPaths(options.ExcludePath)
+	if err != nil {
+		return nil, err
+	}
+
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	search := goSearchRun{
+		root:        root,
+		query:       query,
+		limit:       limit,
+		outputLimit: outputLimit,
+		exclude:     exclude,
+	}
+	for _, path := range paths {
+		if err := runCtx.Err(); err != nil {
+			return nil, err
+		}
+		if err := search.searchPath(runCtx, path); err != nil {
+			return nil, err
+		}
+		if len(search.matches) >= limit {
+			break
+		}
+	}
+	return search.matches, nil
+}
+
+type goSearchRun struct {
+	root        string
+	query       string
+	limit       int
+	outputLimit int64
+	exclude     []string
+	matches     []SearchMatch
+	seen        map[string]struct{}
+}
+
+func (r *goSearchRun) searchPath(ctx context.Context, relativePath string) error {
+	abs, clean, err := safeRepoFileOrDirPath(r.root, relativePath)
+	if err != nil {
+		return err
+	}
+	stat, err := os.Lstat(abs)
+	if err != nil {
+		return fmt.Errorf("search path %s cannot be inspected: %w", clean, err)
+	}
+	if shouldSkipSearchPath(clean, stat, r.exclude) {
+		return nil
+	}
+	if stat.IsDir() {
+		return filepath.WalkDir(abs, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			rel, ok := repoRelativePath(r.root, path)
+			if !ok {
+				if entry.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if shouldSkipDirEntry(rel, entry, r.exclude) {
+				if entry.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return nil
+			}
+			return r.searchFile(path, rel, info)
+		})
+	}
+	return r.searchFile(abs, clean, stat)
+}
+
+func (r *goSearchRun) searchFile(abs string, clean string, info os.FileInfo) error {
+	if len(r.matches) >= r.limit {
+		return nil
+	}
+	if !info.Mode().IsRegular() || info.Size() > 512*1024 {
+		return nil
+	}
+	content, err := os.ReadFile(abs)
+	if err != nil {
+		return nil
+	}
+	lines := bytes.SplitAfter(content, []byte{'\n'})
+	for index, line := range lines {
+		if len(r.matches) >= r.limit {
+			return nil
+		}
+		if !bytes.Contains(line, []byte(r.query)) {
+			continue
+		}
+		text := string(line)
+		if int64(len(text)) > r.outputLimit {
+			return errSearchOutputLimit
+		}
+		r.outputLimit -= int64(len(text))
+		key := clean + ":" + strconv.Itoa(index+1)
+		if r.seen == nil {
+			r.seen = map[string]struct{}{}
+		}
+		if _, ok := r.seen[key]; ok {
+			continue
+		}
+		r.seen[key] = struct{}{}
+		r.matches = append(r.matches, SearchMatch{
+			Path: clean,
+			Line: int64(index + 1),
+			Text: text,
+		})
+	}
+	return nil
+}
+
+func safeRepoFileOrDirPath(root string, relativePath string) (string, string, error) {
+	clean, ok := cleanRelativePath(relativePath)
+	if !ok {
+		return "", "", fmt.Errorf("search path %q escapes repo root", relativePath)
+	}
+	if clean == "." {
+		return root, clean, nil
+	}
+	abs := filepath.Join(root, filepath.FromSlash(clean))
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", "", fmt.Errorf("search path %s cannot be resolved: %w", clean, err)
+	}
+	if !pathInsideRoot(root, resolved) {
+		return "", "", fmt.Errorf("search path %s escapes repo root", clean)
+	}
+	return resolved, clean, nil
+}
+
+func repoRelativePath(root string, path string) (string, bool) {
+	rel, err := filepath.Rel(root, path)
+	if err != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return filepath.ToSlash(rel), true
+}
+
+func shouldSkipDirEntry(path string, entry os.DirEntry, exclude []string) bool {
+	if path == "." {
+		return false
+	}
+	if entry.Name() == ".git" {
+		return true
+	}
+	if entry.Type()&os.ModeSymlink != 0 {
+		return true
+	}
+	info, err := entry.Info()
+	if err != nil {
+		return true
+	}
+	return shouldSkipSearchPath(path, info, exclude)
+}
+
+func shouldSkipSearchPath(path string, info os.FileInfo, exclude []string) bool {
+	if path == ".git" || strings.HasPrefix(path, ".git/") {
+		return true
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return true
+	}
+	for _, item := range exclude {
+		if item == "." {
+			return true
+		}
+		if path == item || strings.HasPrefix(path, item+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func cleanSearchPaths(paths []string) ([]string, error) {

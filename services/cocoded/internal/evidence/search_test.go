@@ -49,6 +49,40 @@ func TestRipgrepSearcherFindsMatchesAndLimitsOutput(t *testing.T) {
 	}
 }
 
+func TestRipgrepSearcherFallsBackWhenDefaultCommandIsMissing(t *testing.T) {
+	originalLookPath := lookPath
+	lookPath = func(command string) (string, error) {
+		if command == "rg" {
+			return "", exec.ErrNotFound
+		}
+		return originalLookPath(command)
+	}
+	t.Cleanup(func() {
+		lookPath = originalLookPath
+	})
+
+	root := t.TempDir()
+	writeEvidenceRepoFile(t, root, "src/auth.go", "package src\n\nfunc RequireAdmin() bool { return true }\n")
+	writeEvidenceRepoFile(t, root, "src/routes.go", "package src\n\nfunc route() { _ = RequireAdmin() }\n")
+
+	matches, err := (RipgrepSearcher{}).Search(context.Background(), SearchOptions{
+		RepoRoot:    root,
+		Query:       "RequireAdmin",
+		Paths:       []string{"src"},
+		ExcludePath: []string{"src/auth.go"},
+		Limit:       10,
+	})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(matches) != 1 ||
+		matches[0].Path != "src/routes.go" ||
+		matches[0].Line != 3 ||
+		!strings.Contains(matches[0].Text, "RequireAdmin") {
+		t.Fatalf("matches = %+v", matches)
+	}
+}
+
 func TestRipgrepSearcherRejectsUnsafePathsAndSymlinkEscapes(t *testing.T) {
 	t.Parallel()
 

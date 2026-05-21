@@ -130,8 +130,14 @@ test("opens finding detail and Evidence Map from seeded data", async ({
     await expect(page.getByText("Code hierarchy")).toHaveCount(0);
     await expect(page.getByText("Selected context")).toHaveCount(0);
     await expect(page.getByText("Evidence bundle")).toHaveCount(0);
-    await expectSurfaceFillsViewport(page, page.locator(".evidence-map-layout"));
-    await expectSurfaceFillsViewport(page, page.locator(".evidence-map-canvas"));
+    await expectSurfaceFillsViewport(
+      page,
+      page.locator(".evidence-map-layout"),
+    );
+    await expectSurfaceFillsViewport(
+      page,
+      page.locator(".evidence-map-canvas"),
+    );
     const mapBreadcrumb = page.getByRole("navigation", {
       name: "Review breadcrumb",
     });
@@ -152,9 +158,7 @@ test("opens finding detail and Evidence Map from seeded data", async ({
       .first()
       .click();
     await expect(page.getByText("Selected location")).toBeVisible();
-    await expect(
-      page.getByText("Source file", { exact: true }),
-    ).toBeVisible();
+    await expect(page.getByText("Source file", { exact: true })).toBeVisible();
     await expect(page.getByText("router.patch").first()).toBeVisible();
     await expect(page.getByText("full file").first()).toBeVisible();
     await expect(
@@ -178,10 +182,7 @@ test("opens finding detail and Evidence Map from seeded data", async ({
   }
 });
 
-async function expectSurfaceFillsViewport(
-  page: Page,
-  surface: Locator,
-) {
+async function expectSurfaceFillsViewport(page: Page, surface: Locator) {
   const box = await surface.boundingBox();
   const viewport = page.viewportSize();
   expect(box).toBeTruthy();

@@ -231,7 +231,9 @@ test("routes a centralized chat follow-up to a selected CLI reviewer", async ({
         )
         .first(),
     ).toBeVisible();
-    await expect(findingsBoard.getByLabel("Draft GitHub comment")).toBeVisible();
+    await expect(
+      findingsBoard.getByLabel("Draft GitHub comment"),
+    ).toBeVisible();
     await expect(findingsBoard.getByLabel("Draft GitHub comment")).toHaveValue(
       /Please keep repository settings updates admin-only\./,
     );

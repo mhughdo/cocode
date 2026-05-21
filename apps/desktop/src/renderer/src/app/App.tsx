@@ -5503,11 +5503,11 @@ function ReviewBreadcrumb({ items }: { items: ReviewBreadcrumbItem[] }) {
         return (
           <Fragment key={`${item.label}:${index}`}>
             {index > 0 ? (
-              <ChevronDownIcon className="size-3 -rotate-90 shrink-0" />
+              <ChevronDownIcon className="size-3 shrink-0 -rotate-90" />
             ) : null}
             {item.onClick && !isLast ? (
               <button
-                className="hover:text-foreground min-w-0 cursor-pointer truncate rounded-sm px-0.5 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                className="hover:text-foreground focus-visible:ring-ring min-w-0 cursor-pointer truncate rounded-sm px-0.5 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none"
                 type="button"
                 onClick={item.onClick}
               >
@@ -6447,7 +6447,7 @@ function EvidenceMapScreen({
             ]}
           />
           <h2 className="text-2xl leading-8 font-semibold">Evidence Map</h2>
-          <p className="text-muted-foreground mt-1 max-w-3xl break-words text-sm">
+          <p className="text-muted-foreground mt-1 max-w-3xl text-sm break-words">
             {displayFinding.canonical_claim}
           </p>
         </div>

@@ -93,7 +93,7 @@ function PanelFrame({
         </div>
       </div>
       <ScrollArea className="min-h-0 flex-1">
-        <div className="flex w-full min-w-0 max-w-full flex-col gap-4 overflow-x-hidden p-4">
+        <div className="flex w-full max-w-full min-w-0 flex-col gap-4 overflow-x-hidden p-4">
           {children}
         </div>
       </ScrollArea>
@@ -111,7 +111,7 @@ function Section({
   description?: string;
 }) {
   return (
-    <section className="border-border/70 min-w-0 max-w-full overflow-hidden rounded-lg border bg-white">
+    <section className="border-border/70 max-w-full min-w-0 overflow-hidden rounded-lg border bg-white">
       <div className="px-3 py-2.5">
         <div className="text-sm font-semibold">{title}</div>
         {description && (
@@ -120,7 +120,7 @@ function Section({
           </p>
         )}
       </div>
-      <div className="min-w-0 max-w-full border-t px-3 py-3">{children}</div>
+      <div className="max-w-full min-w-0 border-t px-3 py-3">{children}</div>
     </section>
   );
 }
@@ -511,7 +511,9 @@ export function FindingsInspectorPanel({
             {formatDecisionLabel(finding.decision_status)}
           </Badge>
         </div>
-        <PanelMarkdown className="mt-3">{finding.evidence_summary}</PanelMarkdown>
+        <PanelMarkdown className="mt-3">
+          {finding.evidence_summary}
+        </PanelMarkdown>
       </Section>
       {detail ? (
         <>
@@ -614,8 +616,7 @@ function SourcePreviewPanel({ preview }: { preview: SourcePreview | null }) {
     const containerRect = container.getBoundingClientRect();
     const lineRect = line.getBoundingClientRect();
     const delta = lineRect.top - containerRect.top;
-    const nextTop =
-      container.scrollTop + delta - container.clientHeight * 0.12;
+    const nextTop = container.scrollTop + delta - container.clientHeight * 0.12;
     container.scrollTop = Math.max(0, nextTop);
   }, [content, preview?.path, targetStartLine]);
 
@@ -631,7 +632,7 @@ function SourcePreviewPanel({ preview }: { preview: SourcePreview | null }) {
 
   return (
     <Section title="Source file">
-      <div className="min-w-0 max-w-full overflow-hidden rounded-lg border bg-white">
+      <div className="max-w-full min-w-0 overflow-hidden rounded-lg border bg-white">
         <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b bg-[#fbfbfa] px-3 py-2">
           <span
             className="min-w-0 truncate font-mono text-xs"
@@ -659,7 +660,7 @@ function SourcePreviewPanel({ preview }: { preview: SourcePreview | null }) {
           </div>
         </div>
         <div
-          className="max-h-[520px] min-w-0 max-w-full overflow-auto [scrollbar-gutter:stable_both-edges] [scrollbar-width:thin]"
+          className="max-h-[520px] max-w-full min-w-0 overflow-auto [scrollbar-gutter:stable_both-edges] [scrollbar-width:thin]"
           ref={scrollRef}
         >
           <SyntaxCodeBlock
@@ -695,7 +696,8 @@ function sourcePreviewForSelection(
         fileLineCount: selectedNode.file_line_count,
         fileTruncated: selectedNode.file_truncated,
         path,
-        startLine: selectedNode.deep_link?.start_line ?? selectedNode.start_line,
+        startLine:
+          selectedNode.deep_link?.start_line ?? selectedNode.start_line,
         windowEndLine: selectedNode.line_window?.end_line,
         windowStartLine: selectedNode.line_window?.start_line,
       };
@@ -793,7 +795,7 @@ export function EvidenceMapInspectorPanel({
                 </PanelMarkdown>
               ) : null}
             </div>
-            <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
+            <div className="flex max-w-full min-w-0 flex-wrap items-center justify-end gap-2">
               <Badge variant="outline">
                 {selectedNode.kind.replaceAll("_", " ")}
               </Badge>

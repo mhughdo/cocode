@@ -515,7 +515,9 @@ export function withLiveAgentRunMessages({
     agentConfigs.status === "success"
       ? new Map(agentConfigs.data.map((agent) => [agent.id, agent]))
       : new Map<string, AgentConfig>();
-  const sessionAgentByID = new Map(session.agents.map((agent) => [agent.id, agent]));
+  const sessionAgentByID = new Map(
+    session.agents.map((agent) => [agent.id, agent]),
+  );
   const runByID = new Map(summaryRuns.map((run) => [run.id, run]));
   const messagesWithProgress = withLocalReviewProgressMessages({
     events,
@@ -760,14 +762,12 @@ function sortChatMessages(messages: ChatMessage[], session: ReviewSession) {
   });
 }
 
-function localReviewProgressMessage(event: ReviewEvent):
-  | {
-      authorType: ChatMessage["author_type"];
-      body: string;
-      displayName: string;
-      status: ChatMessage["status"];
-    }
-  | null {
+function localReviewProgressMessage(event: ReviewEvent): {
+  authorType: ChatMessage["author_type"];
+  body: string;
+  displayName: string;
+  status: ChatMessage["status"];
+} | null {
   const phase = payloadString(event.payload.phase);
   const phaseLabel = humanWorkflowPhase(phase);
   const error = payloadString(event.payload.error) || "unknown error";
@@ -905,7 +905,9 @@ function hasReviewStartProgress(messages: ChatMessage[]) {
       return true;
     }
     const body = message.body.trim();
-    return body.startsWith("Review queued.") || body.startsWith("Review started.");
+    return (
+      body.startsWith("Review queued.") || body.startsWith("Review started.")
+    );
   });
 }
 
@@ -992,7 +994,9 @@ function shouldSynthesizeCompletedAgentRunMessage(
   );
 }
 
-function authorTypeForAgentRun(run: AgentRunSummary): ChatMessage["author_type"] {
+function authorTypeForAgentRun(
+  run: AgentRunSummary,
+): ChatMessage["author_type"] {
   const role = run.role.toLowerCase();
   if (role.includes("orchestrator")) {
     return "orchestrator";
@@ -1003,7 +1007,10 @@ function authorTypeForAgentRun(run: AgentRunSummary): ChatMessage["author_type"]
   return "agent";
 }
 
-function agentRunDisplayName(run: AgentRunSummary, agent: AgentConfig | undefined) {
+function agentRunDisplayName(
+  run: AgentRunSummary,
+  agent: AgentConfig | undefined,
+) {
   if (agent) {
     return compactAgentLabel(agent);
   }
@@ -1069,9 +1076,12 @@ function sessionAgentForRun(
   return (
     session.agents.find(
       (agent) =>
-        agent.agent_config_id === run.agent_config_id && agent.role === run.role,
+        agent.agent_config_id === run.agent_config_id &&
+        agent.role === run.role,
     ) ??
-    session.agents.find((agent) => agent.agent_config_id === run.agent_config_id)
+    session.agents.find(
+      (agent) => agent.agent_config_id === run.agent_config_id,
+    )
   );
 }
 
@@ -1082,7 +1092,8 @@ function agentWithRunSelection(
 ) {
   return agentWithDisplaySelection(
     agent,
-    run.model_label || metadataString(assignment?.settings_override, "model_label"),
+    run.model_label ||
+      metadataString(assignment?.settings_override, "model_label"),
     run.reasoning_label ||
       metadataString(assignment?.settings_override, "reasoning_label"),
   );
@@ -1126,7 +1137,8 @@ function displayMetadataForRun(
   assignment?: ReviewSessionAgent,
 ) {
   return displayMetadataForSelection(
-    run.model_label || metadataString(assignment?.settings_override, "model_label"),
+    run.model_label ||
+      metadataString(assignment?.settings_override, "model_label"),
     run.reasoning_label ||
       metadataString(assignment?.settings_override, "reasoning_label"),
   );
@@ -1139,7 +1151,10 @@ function displayMetadataForAssignment(assignment: ReviewSessionAgent) {
   );
 }
 
-function displayMetadataForSelection(modelLabel: string, reasoningLabel: string) {
+function displayMetadataForSelection(
+  modelLabel: string,
+  reasoningLabel: string,
+) {
   const metadata: Record<string, string> = {};
   modelLabel = modelLabel.trim();
   reasoningLabel = reasoningLabel.trim();
@@ -1283,7 +1298,10 @@ function completedAgentRunBody(
   }
   const error = lastNonEmpty(runtimeSummary.errors) || run.error_message || "";
   if (run.status === "failed" || error) {
-    return error || `${agentRunDisplayName(run, agent)} failed before returning output.`;
+    return (
+      error ||
+      `${agentRunDisplayName(run, agent)} failed before returning output.`
+    );
   }
   const role = run.role.toLowerCase();
   if (role.includes("orchestrator")) {
@@ -1407,7 +1425,10 @@ function ChatMessageCard({
               authorType={message.author_type}
               failed={failed}
               modelLabel={metadataString(message.metadata, "model_label")}
-              reasoningLabel={metadataString(message.metadata, "reasoning_label")}
+              reasoningLabel={metadataString(
+                message.metadata,
+                "reasoning_label",
+              )}
               runtimeSummary={runtimeSummary}
               streaming={streaming}
             />

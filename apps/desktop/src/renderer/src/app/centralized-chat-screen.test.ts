@@ -311,9 +311,15 @@ describe("withLiveAgentRunMessages", () => {
         sessionEvent("event_started", "ReviewSessionStarted", {
           status: "running",
         }),
-        agentEvent("event_output_1", "agent_run_reviewer", "AgentRunOutput", {
-          text_preview: "Checking changed files.",
-        }, "2026-05-14T02:04:00Z"),
+        agentEvent(
+          "event_output_1",
+          "agent_run_reviewer",
+          "AgentRunOutput",
+          {
+            text_preview: "Checking changed files.",
+          },
+          "2026-05-14T02:04:00Z",
+        ),
       ],
       messages: [],
       session: runningSession,
@@ -339,12 +345,24 @@ describe("withLiveAgentRunMessages", () => {
         sessionEvent("event_started", "ReviewSessionStarted", {
           status: "running",
         }),
-        agentEvent("event_output_1", "agent_run_reviewer", "AgentRunOutput", {
-          text_preview: "Checking changed files.",
-        }, "2026-05-14T02:04:00Z"),
-        agentEvent("event_output_2", "agent_run_reviewer", "AgentRunOutput", {
-          text_preview: "Still checking changed files.",
-        }, "2026-05-14T02:09:00Z"),
+        agentEvent(
+          "event_output_1",
+          "agent_run_reviewer",
+          "AgentRunOutput",
+          {
+            text_preview: "Checking changed files.",
+          },
+          "2026-05-14T02:04:00Z",
+        ),
+        agentEvent(
+          "event_output_2",
+          "agent_run_reviewer",
+          "AgentRunOutput",
+          {
+            text_preview: "Still checking changed files.",
+          },
+          "2026-05-14T02:09:00Z",
+        ),
       ],
       messages: [],
       session: runningSession,
@@ -409,9 +427,15 @@ describe("withLiveAgentRunMessages", () => {
     const messages = withLiveAgentRunMessages({
       agentConfigs: successApiState([kiroConfig]),
       events: [
-        agentEvent("event_output_1", "agent_run_kiro", "AgentRunOutput", {
-          text_preview: "Reviewed changed files.",
-        }, "2026-05-14T02:00:30Z"),
+        agentEvent(
+          "event_output_1",
+          "agent_run_kiro",
+          "AgentRunOutput",
+          {
+            text_preview: "Reviewed changed files.",
+          },
+          "2026-05-14T02:00:30Z",
+        ),
       ],
       messages: [],
       session,
@@ -552,7 +576,9 @@ const reviewerConfig: AgentConfig = {
   updated_at: "2026-05-14T01:00:00Z",
 };
 
-function reviewSessionWithReviewer(status: ReviewSession["status"]): ReviewSession {
+function reviewSessionWithReviewer(
+  status: ReviewSession["status"],
+): ReviewSession {
   return {
     ...reviewSession,
     status,

@@ -252,9 +252,7 @@ function formatVerificationMarkdown(value: Record<string, unknown>) {
 function formatEvidenceBullet(item: Record<string, unknown>) {
   const kind = formatLabel(textFromUnknown(item.kind));
   const title =
-    textFromUnknown(item.title) ||
-    textFromUnknown(item.summary) ||
-    "Evidence";
+    textFromUnknown(item.title) || textFromUnknown(item.summary) || "Evidence";
   const summary = textFromUnknown(item.summary);
   const path = textFromUnknown(item.path) || textFromUnknown(item.file);
   const start = numberText(item.start_line) || numberText(item.line);
@@ -272,15 +270,13 @@ function structuredFindingsFromRecord(value: Record<string, unknown>) {
     ? value.findings
     : Array.isArray(value.clusters)
       ? value.clusters
-    : isPlainRecord(value.finding)
-      ? [value.finding]
-      : [];
+      : isPlainRecord(value.finding)
+        ? [value.finding]
+        : [];
   return rawFindings.filter(isPlainRecord);
 }
 
-function formatStructuredFindingsMarkdown(
-  findings: Record<string, unknown>[],
-) {
+function formatStructuredFindingsMarkdown(findings: Record<string, unknown>[]) {
   const blocks = findings.slice(0, 8).map((finding, index) => {
     const title =
       textFromUnknown(finding.canonical_claim) ||

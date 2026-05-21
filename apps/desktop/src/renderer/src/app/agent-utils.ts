@@ -301,13 +301,13 @@ function setupCatalogForAgent(
     ? "opencode"
     : marker.includes("kiro")
       ? "kiro-cli"
-    : marker.includes("gemini") || marker.includes("google")
-      ? "gemini"
-      : marker.includes("claude") || marker.includes("anthropic")
-        ? "claude"
-        : marker.includes("codex") || marker.includes("openai")
-          ? "codex"
-          : command;
+      : marker.includes("gemini") || marker.includes("google")
+        ? "gemini"
+        : marker.includes("claude") || marker.includes("anthropic")
+          ? "claude"
+          : marker.includes("codex") || marker.includes("openai")
+            ? "codex"
+            : command;
   return (
     catalogs.find(
       (item) =>

@@ -1820,9 +1820,7 @@ func TestStartReviewSessionEndpointRunsWorkflow(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(repoPath, "src"), 0o755); err != nil {
 		t.Fatalf("mkdir src: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(repoPath, "src", "new.go"), []byte("package src\n\nfunc RequireAdmin() bool { return true }\n"), 0o644); err != nil {
-		t.Fatalf("write repo file: %v", err)
-	}
+	writeHTTPAPIDefaultRepo(t, repoPath)
 	createHTTPAPISnapshotAt(t, queries, repoPath)
 	fakeAgent := fakeJSONAgentPath(t)
 	createHTTPAPIAgentConfigWithCommand(t, queries, "agent_config_fake", "primary_reviewer", 1, fakeAgent, agents.OutputJSON, `{"prompt_delivery":"stdin","timeout_seconds":30}`)
@@ -3410,9 +3408,7 @@ func TestReviewSessionEventsEndpointStreamsLiveWorkflowEvents(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(repoPath, "src"), 0o755); err != nil {
 		t.Fatalf("mkdir src: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(repoPath, "src", "new.go"), []byte("package src\n\nfunc RequireAdmin() bool { return true }\n"), 0o644); err != nil {
-		t.Fatalf("write repo file: %v", err)
-	}
+	writeHTTPAPIDefaultRepo(t, repoPath)
 	createHTTPAPISnapshotAt(t, queries, repoPath)
 	createHTTPAPIAgentConfigWithCommand(t, queries, "agent_config_fake", "primary_reviewer", 1, fakeJSONAgentPath(t), agents.OutputJSON, `{"prompt_delivery":"stdin","timeout_seconds":30}`)
 	session := createHTTPAPIReviewSessionRow(t, queries, "review_session_sse", []string{"agent_config_fake"})

@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -4234,7 +4235,13 @@ func waitForHTTPAPIReviewSessionStatus(t *testing.T, queries *dbgen.Queries, id 
 			return session
 		}
 		if session.Status == "failed" || session.Status == "canceled" {
-			t.Fatalf("review session ended as %s, want %s: %+v", session.Status, status, session)
+			t.Fatalf(
+				"review session ended as %s, want %s: %+v\n%s",
+				session.Status,
+				status,
+				session,
+				httpAPIReviewSessionDiagnostics(t, queries, id),
+			)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -4242,8 +4249,77 @@ func waitForHTTPAPIReviewSessionStatus(t *testing.T, queries *dbgen.Queries, id 
 	if err != nil {
 		t.Fatalf("GetReviewSession(%s) after timeout error = %v", id, err)
 	}
-	t.Fatalf("review session status = %s after timeout, want %s", session.Status, status)
+	t.Fatalf(
+		"review session status = %s after timeout, want %s: %+v\n%s",
+		session.Status,
+		status,
+		session,
+		httpAPIReviewSessionDiagnostics(t, queries, id),
+	)
 	return dbgen.ReviewSession{}
+}
+
+func httpAPIReviewSessionDiagnostics(t *testing.T, queries *dbgen.Queries, reviewSessionID string) string {
+	t.Helper()
+
+	var builder strings.Builder
+	runs, err := queries.ListAgentRunsBySession(context.Background(), reviewSessionID)
+	if err != nil {
+		fmt.Fprintf(&builder, "agent runs: error=%v\n", err)
+	} else {
+		fmt.Fprintf(&builder, "agent runs: count=%d\n", len(runs))
+		for _, run := range runs {
+			fmt.Fprintf(
+				&builder,
+				"- id=%s role=%s status=%s exit=%s error_code=%s error_message=%s stdout=%s stderr=%s parsed=%s metadata=%s\n",
+				run.ID,
+				run.Role,
+				run.Status,
+				nullInt64Diagnostic(run.ExitCode),
+				nullStringDiagnostic(run.ErrorCode),
+				nullStringDiagnostic(run.ErrorMessage),
+				nullStringDiagnostic(run.StdoutArtifactID),
+				nullStringDiagnostic(run.StderrArtifactID),
+				nullStringDiagnostic(run.ParsedOutputArtifactID),
+				run.MetadataJson,
+			)
+		}
+	}
+
+	events, err := queries.ListEventsByReviewSession(context.Background(), nullableString(reviewSessionID))
+	if err != nil {
+		fmt.Fprintf(&builder, "events: error=%v\n", err)
+	} else {
+		fmt.Fprintf(&builder, "events: count=%d\n", len(events))
+		for _, event := range events {
+			fmt.Fprintf(
+				&builder,
+				"- seq=%d type=%s level=%s agent_run=%s artifact=%s payload=%s\n",
+				event.Sequence,
+				event.Type,
+				event.Level,
+				nullStringDiagnostic(event.AgentRunID),
+				nullStringDiagnostic(event.ArtifactID),
+				event.PayloadJson,
+			)
+		}
+	}
+
+	return builder.String()
+}
+
+func nullStringDiagnostic(value sql.NullString) string {
+	if !value.Valid {
+		return "<null>"
+	}
+	return value.String
+}
+
+func nullInt64Diagnostic(value sql.NullInt64) string {
+	if !value.Valid {
+		return "<null>"
+	}
+	return fmt.Sprintf("%d", value.Int64)
 }
 
 func waitForHTTPAPIAgentRunStatus(t *testing.T, queries *dbgen.Queries, reviewSessionID string, status string) dbgen.AgentRun {

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -3938,7 +3939,9 @@ func testRouterWithConfigAndQueries(t *testing.T, config app.Config) (http.Handl
 func createHTTPAPISnapshot(t *testing.T, queries *dbgen.Queries) {
 	t.Helper()
 
-	createHTTPAPISnapshotAt(t, queries, "/tmp/cocode")
+	repoPath := t.TempDir()
+	writeHTTPAPIDefaultRepo(t, repoPath)
+	createHTTPAPISnapshotAt(t, queries, repoPath)
 }
 
 func createHTTPAPISnapshotAt(t *testing.T, queries *dbgen.Queries, repoPath string) {
@@ -4324,10 +4327,11 @@ func waitForHTTPAPIAgentRunCount(t *testing.T, queries *dbgen.Queries, reviewSes
 func fakeJSONAgentPath(t *testing.T) string {
 	t.Helper()
 
-	path, err := filepath.Abs(filepath.Join("..", "..", "..", "..", "testdata", "fake-agents", "json-agent.sh"))
-	if err != nil {
-		t.Fatalf("resolve fake agent path: %v", err)
+	_, source, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve fake agent path: runtime caller unavailable")
 	}
+	path := filepath.Join(filepath.Dir(source), "..", "..", "..", "..", "testdata", "fake-agents", "json-agent.sh")
 	if err := os.Chmod(path, 0o755); err != nil {
 		t.Fatalf("chmod fake agent: %v", err)
 	}
@@ -4998,6 +5002,27 @@ func runHTTPAPIGit(t *testing.T, cwd string, args ...string) {
 func writeHTTPAPIRepoFile(t *testing.T, repoPath string, relativePath string, content string) {
 	t.Helper()
 	writeHTTPAPIRepoBytes(t, repoPath, relativePath, []byte(content))
+}
+
+func writeHTTPAPIDefaultRepo(t *testing.T, repoPath string) {
+	t.Helper()
+
+	writeHTTPAPIRepoFile(t, repoPath, "src/new.go", "package src\n\nfunc RequireAdmin() bool { return true }\n")
+	writeHTTPAPIRepoFile(t, repoPath, "apps/api/src/routes/repositories.ts", numberedHTTPAPIFile(130, "export const repositoriesRoute = true;"))
+	writeHTTPAPIRepoFile(t, repoPath, "apps/desktop/src/renderer/src/app/App.tsx", numberedHTTPAPIFile(130, "export function App() { return null; }"))
+}
+
+func numberedHTTPAPIFile(lines int, marker string) string {
+	var builder strings.Builder
+	for line := 1; line <= lines; line++ {
+		if line == 87 {
+			builder.WriteString(marker)
+		} else {
+			builder.WriteString("// fixture line")
+		}
+		builder.WriteByte('\n')
+	}
+	return builder.String()
 }
 
 func writeHTTPAPIRepoBytes(t *testing.T, repoPath string, relativePath string, content []byte) {

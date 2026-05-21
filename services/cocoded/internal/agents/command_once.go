@@ -172,6 +172,7 @@ func (c *CommandOnceConnection) runCommandAttempt(ctx context.Context, task Agen
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.Stdin = delivery.stdin
+	configureCommandProcess(cmd)
 
 	err := cmd.Run()
 	stdout.Flush()

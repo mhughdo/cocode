@@ -9,7 +9,7 @@ import type {
 } from "@/lib/api";
 import { successApiState } from "@/lib/api";
 
-import { withLiveAgentRunMessages } from "./centralized-chat-screen";
+import { withLiveAgentRunMessages } from "./chat-live-messages";
 
 describe("withLiveAgentRunMessages", () => {
   it("keeps completed orchestrator runs visible when no chat row was persisted", () => {

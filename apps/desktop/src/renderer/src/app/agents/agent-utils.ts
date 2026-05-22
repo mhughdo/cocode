@@ -7,12 +7,12 @@ import {
   type AgentReasoningOption,
 } from "@/lib/api";
 
-import claudeLogoUrl from "../../../../../../assets/agents/claude-color.svg";
-import codexLogoUrl from "../../../../../../assets/agents/codex-color.svg";
-import geminiLogoUrl from "../../../../../../assets/agents/gemini-color.svg";
-import githubLogoUrl from "../../../../../../assets/agents/github.svg";
-import kiroLogoUrl from "../../../../../../assets/agents/kiro-color.svg";
-import opencodeLogoUrl from "../../../../../../assets/agents/opencode-logo-light.svg";
+import claudeLogoUrl from "../../../../../../../assets/agents/claude-color.svg";
+import codexLogoUrl from "../../../../../../../assets/agents/codex-color.svg";
+import geminiLogoUrl from "../../../../../../../assets/agents/gemini-color.svg";
+import githubLogoUrl from "../../../../../../../assets/agents/github.svg";
+import kiroLogoUrl from "../../../../../../../assets/agents/kiro-color.svg";
+import opencodeLogoUrl from "../../../../../../../assets/agents/opencode-logo-light.svg";
 
 export const BUILTIN_REVIEW_AGENT_PRESET_IDS = [
   "codex-cli",

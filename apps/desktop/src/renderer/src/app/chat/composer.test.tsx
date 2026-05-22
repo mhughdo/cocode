@@ -16,7 +16,7 @@ vi.mock("react-shiki", () => ({
   ),
 }));
 
-import { composerContextPolicy, MessageComposer } from "./App";
+import { composerContextPolicy, MessageComposer } from "./message-composer";
 import type { AgentConfig } from "@/lib/api";
 
 const reviewerAgent = {

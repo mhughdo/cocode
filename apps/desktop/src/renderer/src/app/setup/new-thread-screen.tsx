@@ -1,0 +1,1664 @@
+import {
+  type CSSProperties,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import {
+  ChevronDownIcon,
+  ExternalLinkIcon,
+  GitPullRequestIcon,
+  PanelRightCloseIcon,
+  PanelRightOpenIcon,
+  PlayIcon,
+  PlusIcon,
+  RefreshCwIcon,
+  SearchIcon,
+  UsersIcon,
+} from "lucide-react";
+
+import { ErrorState } from "@/components/app/chrome";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
+import {
+  NativeSelect,
+  NativeSelectOption,
+} from "@/components/ui/native-select";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  type AgentConfig,
+  type AgentModelCatalog,
+  type ApiClient,
+  type ChangedFilePatch,
+  errorApiState,
+  idleApiState,
+  loadApiResource,
+  loadingApiState,
+  type Loadable,
+  type Repository,
+  type RepositoryBranch,
+  type ReviewSession,
+  type Snapshot,
+  successApiState,
+  type Workspace,
+} from "@/lib/api";
+import { cn } from "@/lib/utils";
+import {
+  AgentProviderGlyph,
+  SetupAgentRow,
+  SetupAgentSelector,
+  SetupBranchSelector,
+  SetupFocusChip,
+  SetupPresetTile,
+  SetupScopeRow,
+  SetupSegment,
+  SetupStepPanel,
+} from "./setup-controls";
+import {
+  type ManualReviewAgentAssignment,
+  type SnapshotSource,
+  removeRecordKey,
+  setupDefaultBaseRef,
+  setupFocusHintById,
+  setupFocusOptions,
+  setupFocusPrompt,
+  setupManualReviewAgentAssignments,
+  setupPresetOptions,
+  setupPrimaryPresetIds,
+  setupReviewAgentAssignments,
+  setupReviewRoleById,
+  setupReviewRoleOptions,
+  setupRoleIdsForPresets,
+  setupRuntimeLimitSeconds,
+  setupSourceKey,
+  setupSourceOptions,
+  snapshotTitle,
+  toggleSetValue,
+} from "./setup-model";
+import {
+  SetupSourceInspectorPanel,
+  type SetupSourcePreview,
+  setupDiffFileRenderBatchSize,
+  setupInitialDiffFileRenderCount,
+  setupMaxRenderedDiffFiles,
+  setupPreviewStats,
+  sourceInspectorDefaultWidth,
+  sourceInspectorMainMinWidth,
+  sourceInspectorMaxWidth,
+  sourceInspectorMinWidth,
+  sourceInspectorOverlayGutter,
+  sourceInspectorSideBySideMinWidth,
+  sourceInspectorTransitionMs,
+} from "./setup-source-preview";
+
+import {
+  buildSetupAgentSelection,
+  formatSetupAgentChoiceLabel,
+  type SetupAgentModelChoice,
+} from "../agents/agent-utils";
+
+type GitHubSnapshotAuthMethod = "token" | "gh_cli";
+
+export function NewThreadScreen({
+  activeRepository,
+  activeWorkspace,
+  agentConfigs,
+  agentModelCatalogs,
+  client,
+  onOpenRepository,
+  onSetupContextChange,
+  onReviewStarted,
+}: {
+  activeRepository?: Repository;
+  activeWorkspace?: Workspace;
+  agentConfigs: Loadable<AgentConfig[]>;
+  agentModelCatalogs: Loadable<AgentModelCatalog[]>;
+  client: ApiClient | null;
+  onOpenRepository: () => void;
+  onSetupContextChange?: (context: {
+    branch?: string;
+    subtitle?: string;
+    title?: string;
+  }) => void;
+  onReviewStarted: (session: ReviewSession) => void;
+}) {
+  const [source, setSource] = useState<SnapshotSource>("github");
+  const [githubUrl, setGitHubUrl] = useState("");
+  const [githubAuthMethod, setGithubAuthMethod] =
+    useState<GitHubSnapshotAuthMethod>("token");
+  const [baseRefInput, setBaseRefInput] = useState("");
+  const [headRef, setHeadRef] = useState("");
+  const [focusPrompt, setFocusPrompt] = useState("");
+  const [reviewDepth, setReviewDepth] = useState<"quick" | "standard" | "deep">(
+    "standard",
+  );
+  const [selectedFocusIds, setSelectedFocusIds] = useState(
+    () => new Set<string>(),
+  );
+  const [selectedPresetIds, setSelectedPresetIds] = useState(
+    () => new Set<string>(),
+  );
+  const [presetSearch, setPresetSearch] = useState("");
+  const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string> | null>(
+    null,
+  );
+  const [orchestratorAgentId, setOrchestratorAgentId] = useState("");
+  const [agentModelChoices, setAgentModelChoices] = useState<
+    Record<string, SetupAgentModelChoice>
+  >({});
+  const [reviewAgentModelChoices, setReviewAgentModelChoices] = useState<
+    Record<string, SetupAgentModelChoice>
+  >({});
+  const [agentRoleChoices, setAgentRoleChoices] = useState<
+    Record<string, string>
+  >({});
+  const [hiddenReviewAssignmentIds, setHiddenReviewAssignmentIds] = useState(
+    () => new Set<string>(),
+  );
+  const [manualReviewAssignments, setManualReviewAssignments] = useState<
+    ManualReviewAgentAssignment[]
+  >([]);
+  const manualReviewAssignmentSequence = useRef(0);
+  const requestedPatchFileIds = useRef(new Set<string>());
+  const loadedPatchFileIds = useRef(new Set<string>());
+  const sourceInspectorLayoutRef = useRef<HTMLDivElement | null>(null);
+  const [branchState, setBranchState] =
+    useState<Loadable<RepositoryBranch[]>>(idleApiState());
+  const [sourcePreview, setSourcePreview] =
+    useState<Loadable<SetupSourcePreview>>(idleApiState());
+  const [sourceInspectorOpen, setSourceInspectorOpen] = useState(false);
+  const [sourceInspectorRendered, setSourceInspectorRendered] = useState(false);
+  const [sourceInspectorVisible, setSourceInspectorVisible] = useState(false);
+  const [sourceInspectorOpenCount, setSourceInspectorOpenCount] = useState(0);
+  const [sourceInspectorWidth, setSourceInspectorWidth] = useState(
+    sourceInspectorDefaultWidth,
+  );
+  const [sourceInspectorResizing, setSourceInspectorResizing] = useState(false);
+  const [renderedDiffFileCount, setRenderedDiffFileCount] = useState(
+    setupInitialDiffFileRenderCount,
+  );
+  const [filePatchPreviews, setFilePatchPreviews] = useState<
+    Record<string, Loadable<ChangedFilePatch>>
+  >({});
+  const [localError, setLocalError] = useState("");
+  const [startState, setStartState] =
+    useState<Loadable<ReviewSession>>(idleApiState());
+
+  const canCreate = Boolean(activeWorkspace && activeRepository);
+  const safeAgents = useMemo(
+    () =>
+      agentConfigs.status === "success"
+        ? agentConfigs.data.filter(
+            (agent) => agent.enabled && !agent.capabilities.can_write,
+          )
+        : [],
+    [agentConfigs],
+  );
+  const modelCatalogs = useMemo(
+    () =>
+      agentModelCatalogs.status === "success" ? agentModelCatalogs.data : [],
+    [agentModelCatalogs],
+  );
+  const sourceInspectorLayoutActive =
+    sourceInspectorOpen || sourceInspectorRendered;
+  const sourceInspectorVisualOpen =
+    sourceInspectorOpen && sourceInspectorVisible;
+  const sourceInspectorLayoutStyle = sourceInspectorLayoutActive
+    ? ({
+        "--source-inspector-width": `${sourceInspectorWidth}px`,
+      } as CSSProperties)
+    : undefined;
+  const sourceInspectorPanelStyle = sourceInspectorLayoutActive
+    ? ({
+        width: `min(${sourceInspectorWidth}px, calc(100% - 16px))`,
+      } as CSSProperties)
+    : undefined;
+
+  useEffect(() => {
+    let canceled = false;
+    if (sourceInspectorOpen) {
+      queueMicrotask(() => {
+        if (!canceled) {
+          setSourceInspectorRendered(true);
+        }
+      });
+      const frame = window.requestAnimationFrame(() => {
+        if (!canceled) {
+          setSourceInspectorVisible(true);
+        }
+      });
+      return () => {
+        canceled = true;
+        window.cancelAnimationFrame(frame);
+      };
+    }
+
+    queueMicrotask(() => {
+      if (!canceled) {
+        setSourceInspectorVisible(false);
+        setSourceInspectorResizing(false);
+      }
+    });
+    if (!sourceInspectorRendered) {
+      return () => {
+        canceled = true;
+      };
+    }
+    const timer = window.setTimeout(() => {
+      if (!canceled) {
+        setSourceInspectorRendered(false);
+      }
+    }, sourceInspectorTransitionMs);
+    return () => {
+      canceled = true;
+      window.clearTimeout(timer);
+    };
+  }, [sourceInspectorOpen, sourceInspectorRendered]);
+
+  useEffect(() => {
+    if (!sourceInspectorResizing) {
+      return;
+    }
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    function resizeFromClientX(clientX: number) {
+      const layoutBounds =
+        sourceInspectorLayoutRef.current?.getBoundingClientRect();
+      const availableWidth = layoutBounds?.width ?? window.innerWidth;
+      const rightEdge = layoutBounds?.right ?? window.innerWidth;
+      const maxWidth = maxSourceInspectorWidth(availableWidth);
+      const nextWidth = Math.min(
+        maxWidth,
+        Math.max(sourceInspectorMinWidth, rightEdge - clientX),
+      );
+      setSourceInspectorWidth(nextWidth);
+    }
+
+    function handlePointerMove(event: PointerEvent) {
+      resizeFromClientX(event.clientX);
+    }
+
+    function handleMouseMove(event: MouseEvent) {
+      resizeFromClientX(event.clientX);
+    }
+
+    function handleResizeEnd() {
+      setSourceInspectorResizing(false);
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("pointerup", handleResizeEnd, { once: true });
+    window.addEventListener("mouseup", handleResizeEnd, { once: true });
+    return () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("pointerup", handleResizeEnd);
+      window.removeEventListener("mouseup", handleResizeEnd);
+    };
+  }, [sourceInspectorResizing]);
+
+  useEffect(() => {
+    function clampInspectorWidth() {
+      const availableWidth =
+        sourceInspectorLayoutRef.current?.clientWidth ?? window.innerWidth;
+      const maxWidth = maxSourceInspectorWidth(availableWidth);
+      setSourceInspectorWidth((current) =>
+        Math.min(maxWidth, Math.max(sourceInspectorMinWidth, current)),
+      );
+    }
+
+    clampInspectorWidth();
+    window.addEventListener("resize", clampInspectorWidth);
+    return () => {
+      window.removeEventListener("resize", clampInspectorWidth);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!sourceInspectorOpen) {
+      return;
+    }
+    const availableWidth =
+      sourceInspectorLayoutRef.current?.clientWidth ?? window.innerWidth;
+    const maxWidth = maxSourceInspectorWidth(availableWidth);
+    setSourceInspectorWidth((current) =>
+      Math.min(maxWidth, Math.max(sourceInspectorMinWidth, current)),
+    );
+  }, [sourceInspectorOpen]);
+
+  useEffect(() => {
+    let canceled = false;
+    if (!client || !activeWorkspace || !activeRepository) {
+      return () => {
+        canceled = true;
+      };
+    }
+    queueMicrotask(() => {
+      if (!canceled) {
+        setBranchState(loadingApiState());
+      }
+    });
+    void loadApiResource(() =>
+      client.listRepositoryBranches(activeRepository.id, {
+        workspaceId: activeWorkspace.id,
+      }),
+    ).then((state) => {
+      if (!canceled) {
+        setBranchState(state);
+      }
+    });
+    return () => {
+      canceled = true;
+    };
+  }, [activeRepository, activeWorkspace, client]);
+  const defaultAgentIds = useMemo(
+    () => new Set(safeAgents.slice(0, 4).map((agent) => agent.id)),
+    [safeAgents],
+  );
+  const effectiveSelectedAgentIds = selectedAgentIds ?? defaultAgentIds;
+  const effectiveOrchestratorAgentId = safeAgents.some(
+    (agent) => agent.id === orchestratorAgentId,
+  )
+    ? orchestratorAgentId
+    : (safeAgents[0]?.id ?? "");
+  const reviewRoleIds = useMemo(
+    () => setupRoleIdsForPresets(selectedPresetIds),
+    [selectedPresetIds],
+  );
+  const selectedReviewPoolIds = useMemo(() => {
+    const safeIds = new Set(safeAgents.map((agent) => agent.id));
+    const selectedIds = Array.from(effectiveSelectedAgentIds).filter((id) =>
+      safeIds.has(id),
+    );
+    const nonOrchestrator = selectedIds.filter(
+      (id) => id !== effectiveOrchestratorAgentId,
+    );
+    if (nonOrchestrator.length > 0) {
+      return nonOrchestrator;
+    }
+    if (
+      effectiveOrchestratorAgentId &&
+      safeIds.has(effectiveOrchestratorAgentId)
+    ) {
+      return [effectiveOrchestratorAgentId];
+    }
+    return selectedIds;
+  }, [effectiveOrchestratorAgentId, effectiveSelectedAgentIds, safeAgents]);
+  const presetReviewAgentAssignments = useMemo(
+    () =>
+      setupReviewAgentAssignments(
+        safeAgents,
+        selectedReviewPoolIds,
+        reviewRoleIds,
+      ).filter((assignment) => !hiddenReviewAssignmentIds.has(assignment.id)),
+    [
+      hiddenReviewAssignmentIds,
+      reviewRoleIds,
+      safeAgents,
+      selectedReviewPoolIds,
+    ],
+  );
+  const manualReviewAgentAssignments = useMemo(
+    () =>
+      setupManualReviewAgentAssignments(
+        safeAgents,
+        manualReviewAssignments,
+        presetReviewAgentAssignments.length,
+      ),
+    [manualReviewAssignments, presetReviewAgentAssignments.length, safeAgents],
+  );
+  const reviewAgentAssignments = useMemo(
+    () => [...presetReviewAgentAssignments, ...manualReviewAgentAssignments],
+    [manualReviewAgentAssignments, presetReviewAgentAssignments],
+  );
+  const agentSelectionsForRun = useMemo(() => {
+    const selections = [];
+    const orchestrator = safeAgents.find(
+      (agent) => agent.id === effectiveOrchestratorAgentId,
+    );
+    if (orchestrator) {
+      selections.push(
+        buildSetupAgentSelection(
+          orchestrator,
+          agentModelChoices,
+          modelCatalogs,
+          "Orchestrator",
+        ),
+      );
+    }
+    for (const assignment of reviewAgentAssignments) {
+      const role =
+        setupReviewRoleById(agentRoleChoices[assignment.id]) ?? assignment.role;
+      const modelChoice = reviewAgentModelChoices[assignment.id];
+      selections.push(
+        buildSetupAgentSelection(
+          assignment.agent,
+          modelChoice ? { [assignment.agent.id]: modelChoice } : {},
+          modelCatalogs,
+          role.label,
+        ),
+      );
+    }
+    return selections;
+  }, [
+    agentModelChoices,
+    agentRoleChoices,
+    effectiveOrchestratorAgentId,
+    modelCatalogs,
+    reviewAgentAssignments,
+    reviewAgentModelChoices,
+    safeAgents,
+  ]);
+  const reviewAgentIdsForRun = useMemo(
+    () => agentSelectionsForRun.map((selection) => selection.agent_config_id),
+    [agentSelectionsForRun],
+  );
+  const orchestratorAgent =
+    safeAgents.find((agent) => agent.id === effectiveOrchestratorAgentId) ??
+    reviewAgentAssignments[0]?.agent ??
+    safeAgents[0];
+  const selectedAgentCount =
+    (orchestratorAgent ? 1 : 0) + reviewAgentAssignments.length;
+  const selectedFocusLabels = setupFocusOptions
+    .filter((item) => selectedFocusIds.has(item.id))
+    .map((item) => item.label);
+  const selectedPresetLabels = setupPresetOptions
+    .filter((item) => selectedPresetIds.has(item.id))
+    .map((item) => item.title);
+  const visiblePresetOptions = useMemo(() => {
+    const visibleIds = new Set(setupPrimaryPresetIds);
+    return setupPresetOptions.filter((preset) => visibleIds.has(preset.id));
+  }, []);
+  const presetSearchResults = useMemo(() => {
+    const query = presetSearch.trim().toLowerCase();
+    if (!query) {
+      return setupPresetOptions;
+    }
+    return setupPresetOptions.filter((preset) =>
+      [preset.title, preset.subtitle, preset.id]
+        .join(" ")
+        .toLowerCase()
+        .includes(query),
+    );
+  }, [presetSearch]);
+  const branchOptions =
+    branchState.status === "success" ? branchState.data : [];
+  const currentBranch =
+    branchOptions.find((branch) => branch.current && !branch.remote)?.name ??
+    branchOptions.find((branch) => branch.current)?.name ??
+    "";
+  const baseRef =
+    baseRefInput || setupDefaultBaseRef(activeRepository, branchOptions);
+  const headRefValue = headRef || currentBranch || "HEAD";
+  const sourceKey = setupSourceKey({
+    repositoryId: activeRepository?.id ?? "",
+    source,
+    githubUrl,
+    githubAuthMethod: source === "github" ? githubAuthMethod : "",
+    baseRef: source === "branch-compare" ? baseRef : "",
+    headRef: source === "branch-compare" ? headRefValue : "",
+  });
+  const previewReady =
+    sourcePreview.status === "success" && sourcePreview.data.key === sourceKey;
+  const previewSnapshot = previewReady ? sourcePreview.data.snapshot : null;
+  const previewFiles = useMemo(
+    () => (previewReady ? sourcePreview.data.files : []),
+    [previewReady, sourcePreview],
+  );
+
+  useEffect(() => {
+    if (!onSetupContextChange) {
+      return;
+    }
+    const repositoryLabel = activeRepository?.owner
+      ? `${activeRepository.owner}/${activeRepository.name}`
+      : (activeRepository?.name ??
+        activeWorkspace?.name ??
+        "No project selected");
+    const branchLabel =
+      source === "branch-compare"
+        ? `${baseRef}..${headRefValue}`
+        : source === "local-changes"
+          ? currentBranch || activeRepository?.default_branch || "working tree"
+          : githubUrl.trim()
+            ? "GitHub PR"
+            : activeRepository?.default_branch || "main";
+
+    onSetupContextChange({
+      branch: branchLabel,
+      subtitle: "Set up review",
+      title: repositoryLabel,
+    });
+  }, [
+    activeRepository?.default_branch,
+    activeRepository?.name,
+    activeRepository?.owner,
+    activeWorkspace?.name,
+    baseRef,
+    currentBranch,
+    githubUrl,
+    headRefValue,
+    onSetupContextChange,
+    source,
+  ]);
+  const previewStats = setupPreviewStats(previewFiles);
+  const renderedDiffFiles = useMemo(
+    () => previewFiles.slice(0, renderedDiffFileCount),
+    [previewFiles, renderedDiffFileCount],
+  );
+  const patchLoadFiles = useMemo(
+    () =>
+      renderedDiffFiles.filter(
+        (file) => file.patch_artifact_id && !file.is_binary,
+      ),
+    [renderedDiffFiles],
+  );
+
+  useEffect(() => {
+    let canceled = false;
+    if (!client || !previewReady) {
+      return () => {
+        canceled = true;
+      };
+    }
+    const requestedPatchFileIDs = requestedPatchFileIds.current;
+    const loadedPatchFileIDs = loadedPatchFileIds.current;
+
+    const filesToLoad = patchLoadFiles.filter((file) => {
+      if (requestedPatchFileIDs.has(file.id)) {
+        return false;
+      }
+      return !loadedPatchFileIDs.has(file.id);
+    });
+    if (filesToLoad.length === 0) {
+      return () => {
+        canceled = true;
+      };
+    }
+    for (const file of filesToLoad) {
+      requestedPatchFileIDs.add(file.id);
+    }
+
+    setFilePatchPreviews((current) => {
+      const next = { ...current };
+      for (const file of filesToLoad) {
+        next[file.id] = loadingApiState();
+      }
+      return next;
+    });
+
+    for (const file of filesToLoad) {
+      void loadApiResource(() =>
+        client.getChangedFilePatch(file.snapshot_id, file.id),
+      ).then((state) => {
+        requestedPatchFileIDs.delete(file.id);
+        if (!canceled) {
+          if (
+            state.status === "success" &&
+            state.data.changed_file_id === file.id
+          ) {
+            loadedPatchFileIDs.add(file.id);
+          }
+          setFilePatchPreviews((current) => ({
+            ...current,
+            [file.id]: state,
+          }));
+        }
+      });
+    }
+
+    return () => {
+      canceled = true;
+      for (const file of filesToLoad) {
+        requestedPatchFileIDs.delete(file.id);
+      }
+    };
+  }, [client, patchLoadFiles, previewReady]);
+
+  const validateSource = useCallback(() => {
+    if (!canCreate) {
+      setLocalError("Open a git repository before creating a review.");
+      return false;
+    }
+    if (source === "github" && githubUrl.trim() === "") {
+      setLocalError("Enter a GitHub pull request URL.");
+      return false;
+    }
+    if (
+      source === "branch-compare" &&
+      (baseRef.trim() === "" || headRefValue.trim() === "")
+    ) {
+      setLocalError("Choose both base and head branches.");
+      return false;
+    }
+    setLocalError("");
+    return true;
+  }, [baseRef, canCreate, githubUrl, headRefValue, source]);
+
+  const shouldAutoLoadSourcePreview = useCallback(() => {
+    return (
+      canCreate &&
+      sourcePreview.status !== "loading" &&
+      !previewReady &&
+      (source !== "github" || githubUrl.trim() !== "") &&
+      (source !== "branch-compare" || branchState.status === "success")
+    );
+  }, [
+    branchState.status,
+    canCreate,
+    githubUrl,
+    previewReady,
+    source,
+    sourcePreview.status,
+  ]);
+
+  function toggleSourceInspector() {
+    if (sourceInspectorOpen) {
+      setSourceInspectorOpen(false);
+      return;
+    }
+    setSourceInspectorRendered(true);
+    setSourceInspectorVisible(false);
+    setSourceInspectorOpenCount((value) => value + 1);
+    setSourceInspectorOpen(true);
+  }
+
+  function addFocusHint() {
+    setFocusPrompt((current) => {
+      const trimmed = current.trim();
+      const selectedHints = setupFocusOptions
+        .filter((item) => selectedFocusIds.has(item.id))
+        .map((item) => setupFocusHintById[item.id])
+        .filter(Boolean);
+      const nextHint =
+        selectedHints.length > 0
+          ? selectedHints.join("\n")
+          : "Prioritize correctness, user-visible regressions, and missing tests.";
+      if (trimmed.includes(nextHint)) {
+        return current;
+      }
+      return trimmed ? `${trimmed}\n${nextHint}` : nextHint;
+    });
+  }
+
+  function addManualReviewAgent(agentId: string) {
+    const agent = safeAgents.find((item) => item.id === agentId);
+    if (!agent) {
+      return;
+    }
+    manualReviewAssignmentSequence.current += 1;
+    const role =
+      setupReviewRoleById("general-reviewer") ?? setupReviewRoleOptions[0];
+    const id = `manual-review-agent:${manualReviewAssignmentSequence.current}`;
+    setManualReviewAssignments((current) => [
+      ...current,
+      { id, agentId: agent.id, roleId: role.id },
+    ]);
+    setAgentRoleChoices((current) => ({
+      ...current,
+      [id]: role.id,
+    }));
+  }
+
+  function togglePreset(presetId: string) {
+    setHiddenReviewAssignmentIds(new Set());
+    setSelectedPresetIds((current) => toggleSetValue(current, presetId));
+  }
+
+  function loadMoreDiffFiles() {
+    setRenderedDiffFileCount((current) =>
+      Math.min(
+        current + setupDiffFileRenderBatchSize,
+        Math.min(previewFiles.length, setupMaxRenderedDiffFiles),
+      ),
+    );
+  }
+
+  function resetSetup() {
+    setSource("github");
+    setGitHubUrl("");
+    setGithubAuthMethod("token");
+    setBaseRefInput("");
+    setHeadRef("");
+    setFocusPrompt("");
+    setReviewDepth("standard");
+    setSelectedFocusIds(new Set());
+    setSelectedPresetIds(new Set());
+    setPresetSearch("");
+    setSelectedAgentIds(null);
+    setOrchestratorAgentId("");
+    setAgentModelChoices({});
+    setReviewAgentModelChoices({});
+    setAgentRoleChoices({});
+    setHiddenReviewAssignmentIds(new Set());
+    setManualReviewAssignments([]);
+    setSourceInspectorOpen(false);
+    setSourcePreview(idleApiState());
+    setRenderedDiffFileCount(setupInitialDiffFileRenderCount);
+    setFilePatchPreviews({});
+    requestedPatchFileIds.current.clear();
+    loadedPatchFileIds.current.clear();
+    setLocalError("");
+    setStartState(idleApiState());
+  }
+
+  const createSourceSnapshot = useCallback((): Promise<Snapshot> => {
+    if (!client || !activeWorkspace || !activeRepository) {
+      throw new Error("Open a project before creating a review snapshot.");
+    }
+    if (source === "github") {
+      if (window.cocode?.createGitHubSnapshot) {
+        return window.cocode.createGitHubSnapshot({
+          workspaceId: activeWorkspace.id,
+          repositoryId: activeRepository.id,
+          url: githubUrl.trim(),
+          authMethod: githubAuthMethod,
+        });
+      }
+      throw new Error("Desktop GitHub credential bridge is unavailable.");
+    }
+    if (source === "branch-compare") {
+      return client.createLocalCompareSnapshot({
+        workspace_id: activeWorkspace.id,
+        repository_id: activeRepository.id,
+        base_ref: baseRef.trim(),
+        head_ref: headRefValue.trim(),
+      });
+    }
+    return client.createLocalChangesSnapshot({
+      workspace_id: activeWorkspace.id,
+      repository_id: activeRepository.id,
+    });
+  }, [
+    activeRepository,
+    activeWorkspace,
+    baseRef,
+    client,
+    githubUrl,
+    githubAuthMethod,
+    headRefValue,
+    source,
+  ]);
+
+  const loadSourcePreview = useCallback(async () => {
+    if (!client) {
+      setSourcePreview(
+        errorApiState(new Error("Backend client is unavailable.")),
+      );
+      return;
+    }
+    if (!validateSource()) {
+      return;
+    }
+    setRenderedDiffFileCount(setupInitialDiffFileRenderCount);
+    setFilePatchPreviews({});
+    requestedPatchFileIds.current.clear();
+    loadedPatchFileIds.current.clear();
+    setSourcePreview(loadingApiState());
+    const requestedKey = sourceKey;
+    const nextSnapshot = await loadApiResource(createSourceSnapshot);
+    if (nextSnapshot.status !== "success") {
+      setSourcePreview(
+        errorApiState(
+          nextSnapshot.status === "error"
+            ? nextSnapshot.error
+            : new Error("Snapshot creation did not complete."),
+        ),
+      );
+      return;
+    }
+    const files = await loadApiResource(() =>
+      client.listChangedFiles(nextSnapshot.data.id),
+    );
+    if (files.status !== "success") {
+      setSourcePreview(
+        errorApiState(
+          files.status === "error"
+            ? files.error
+            : new Error("Changed files did not load."),
+        ),
+      );
+      return;
+    }
+    setLocalError("");
+    setSourcePreview(
+      successApiState({
+        key: requestedKey,
+        snapshot: nextSnapshot.data,
+        files: files.data,
+      }),
+    );
+  }, [client, createSourceSnapshot, sourceKey, validateSource]);
+
+  useEffect(() => {
+    if (
+      !sourceInspectorOpen ||
+      sourceInspectorOpenCount === 0 ||
+      !shouldAutoLoadSourcePreview()
+    ) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void loadSourcePreview();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [
+    loadSourcePreview,
+    shouldAutoLoadSourcePreview,
+    sourceInspectorOpen,
+    sourceInspectorOpenCount,
+  ]);
+
+  async function startReview() {
+    if (!client) {
+      setStartState(errorApiState(new Error("Backend client is unavailable.")));
+      return;
+    }
+    if (!validateSource()) {
+      return;
+    }
+    if (!activeWorkspace || !activeRepository) {
+      setStartState(
+        errorApiState(new Error("Open a project before starting review.")),
+      );
+      return;
+    }
+    if (reviewAgentIdsForRun.length === 0) {
+      setStartState(
+        errorApiState(new Error("Select at least one read-only review agent.")),
+      );
+      return;
+    }
+
+    setStartState(loadingApiState());
+    const nextSnapshot = previewSnapshot
+      ? successApiState(previewSnapshot)
+      : await loadApiResource(createSourceSnapshot);
+    if (nextSnapshot.status !== "success") {
+      setStartState(idleApiState());
+      setLocalError(
+        nextSnapshot.status === "error"
+          ? nextSnapshot.error.message
+          : "Snapshot creation did not complete.",
+      );
+      return;
+    }
+    setLocalError("");
+
+    const created = await loadApiResource(() =>
+      client.createReviewSession({
+        workspace_id: activeWorkspace.id,
+        snapshot_id: nextSnapshot.data.id,
+        title: snapshotTitle(nextSnapshot.data, activeRepository),
+        review_depth: reviewDepth,
+        focus_prompt: setupFocusPrompt(focusPrompt, selectedFocusLabels),
+        preset: selectedPresetLabels.join(", "),
+        agent_config_ids: reviewAgentIdsForRun,
+        agent_selections: agentSelectionsForRun,
+        runtime_limit_seconds: setupRuntimeLimitSeconds(reviewDepth),
+        context_policy: {
+          include_prompt_material: true,
+          include_changed_code: true,
+          include_related_call_sites: true,
+          include_related_tests: true,
+          include_project_conventions: true,
+          include_prior_comments: true,
+          include_prior_decisions: true,
+          redact_secrets: true,
+          max_tokens:
+            reviewDepth === "deep"
+              ? 24_000
+              : reviewDepth === "quick"
+                ? 10_000
+                : 18_000,
+          max_items:
+            reviewDepth === "deep" ? 260 : reviewDepth === "quick" ? 120 : 200,
+        },
+      }),
+    );
+    if (created.status !== "success") {
+      setStartState(created);
+      return;
+    }
+
+    const started = await loadApiResource(() =>
+      client.startReviewSession(created.data.id),
+    );
+    setStartState(started);
+    if (started.status === "success") {
+      onReviewStarted(started.data);
+    }
+  }
+
+  return (
+    <section className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-[#fbfbfa]">
+      <div className="grid h-full w-full grid-rows-[auto_minmax(0,1fr)]">
+        <div className="flex items-start justify-between gap-4 px-4 pt-5 pb-3 min-[900px]:px-6">
+          <div className="min-w-0">
+            <h1 className="text-[1.34rem] leading-7 font-semibold tracking-[-0.01em]">
+              Set up review
+            </h1>
+            <p className="text-muted-foreground mt-0.5 text-[0.82rem]">
+              Configure the source, focus, orchestration, and presets for this
+              review.
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5 min-[900px]:gap-2">
+            <Button variant="outline" onClick={resetSetup}>
+              <RefreshCwIcon data-icon="inline-start" />
+              Reset
+            </Button>
+            <Button
+              className="px-4"
+              disabled={startState.status === "loading"}
+              onClick={() => void startReview()}
+            >
+              {startState.status === "loading" ? "Starting..." : "Start review"}
+              <PlayIcon data-icon="inline-end" />
+            </Button>
+            <Button
+              aria-label={
+                sourceInspectorOpen
+                  ? "Hide source details"
+                  : "Show source details"
+              }
+              aria-pressed={sourceInspectorOpen}
+              className="cursor-pointer"
+              size="icon"
+              title={
+                sourceInspectorOpen
+                  ? "Hide source details"
+                  : "Show source details"
+              }
+              variant="outline"
+              onClick={toggleSourceInspector}
+            >
+              {sourceInspectorOpen ? (
+                <PanelRightCloseIcon className="size-4" />
+              ) : (
+                <PanelRightOpenIcon className="size-4" />
+              )}
+            </Button>
+          </div>
+        </div>
+
+        <div
+          ref={sourceInspectorLayoutRef}
+          className={cn(
+            "border-border/60 relative grid h-full min-h-0 grid-cols-1 overflow-hidden border-t",
+          )}
+          style={sourceInspectorLayoutStyle}
+        >
+          <div
+            className={cn(
+              "min-w-0 overflow-hidden px-4 py-4 transition-all duration-[220ms] ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none min-[900px]:px-6",
+              sourceInspectorLayoutActive &&
+                "min-[1180px]:pr-[calc(var(--source-inspector-width)+1.5rem)]",
+            )}
+          >
+            <div className="flex h-full min-h-0 flex-col gap-2.5 overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              {!canCreate && (
+                <ErrorState
+                  title="Open a project first"
+                  description="cocode keeps review context grounded in a selected git repository."
+                />
+              )}
+
+              <SetupStepPanel
+                description="Choose where to review from."
+                compact={sourceInspectorLayoutActive}
+                number={1}
+                title="Review source"
+              >
+                <div className="grid grid-cols-[repeat(auto-fit,minmax(min(175px,100%),1fr))] gap-2">
+                  {setupSourceOptions.map((option) => (
+                    <SetupSegment
+                      key={option.id}
+                      active={source === option.id}
+                      icon={option.icon}
+                      label={option.label}
+                      logoUrl={option.logoUrl}
+                      onClick={() => setSource(option.id)}
+                    />
+                  ))}
+                </div>
+
+                <div
+                  className={cn(
+                    "mt-3 grid gap-3",
+                    !sourceInspectorLayoutActive &&
+                      "min-[1320px]:grid-cols-[minmax(210px,0.36fr)_minmax(0,1fr)]",
+                  )}
+                >
+                  <label className="flex min-w-0 flex-col gap-1.5 text-xs font-medium">
+                    Repository
+                    <Button
+                      className="h-9 justify-between"
+                      variant="outline"
+                      onClick={onOpenRepository}
+                    >
+                      <span className="flex min-w-0 items-center gap-2">
+                        <GitPullRequestIcon data-icon="inline-start" />
+                        <span className="truncate">
+                          {activeRepository?.owner
+                            ? `${activeRepository.owner}/${activeRepository.name}`
+                            : activeRepository?.name || "Open project"}
+                        </span>
+                      </span>
+                      <ChevronDownIcon data-icon="inline-end" />
+                    </Button>
+                  </label>
+
+                  {source === "github" && (
+                    <div className="grid min-w-0 grid-cols-1 gap-3 min-[760px]:grid-cols-[minmax(220px,1fr)_150px]">
+                      <label className="flex min-w-0 flex-col gap-1.5 text-xs font-medium">
+                        PR URL
+                        <div className="relative">
+                          <Input
+                            aria-label="Pull request URL"
+                            className="h-9 pr-9"
+                            disabled={!canCreate}
+                            id="github-url"
+                            placeholder="https://github.com/owner/repo/pull/123"
+                            value={githubUrl}
+                            onChange={(event) =>
+                              setGitHubUrl(event.target.value)
+                            }
+                          />
+                          <ExternalLinkIcon className="text-muted-foreground pointer-events-none absolute top-1/2 right-2.5 size-4 -translate-y-1/2" />
+                        </div>
+                      </label>
+                      <label className="flex min-w-0 flex-col gap-1.5 text-xs font-medium">
+                        Access
+                        <NativeSelect
+                          className="h-9"
+                          value={githubAuthMethod}
+                          onChange={(event) =>
+                            setGithubAuthMethod(
+                              event.target.value as GitHubSnapshotAuthMethod,
+                            )
+                          }
+                        >
+                          <NativeSelectOption value="token">
+                            Saved token
+                          </NativeSelectOption>
+                          <NativeSelectOption value="gh_cli">
+                            gh CLI
+                          </NativeSelectOption>
+                        </NativeSelect>
+                      </label>
+                    </div>
+                  )}
+
+                  {source === "local-changes" && (
+                    <div className="flex min-w-0 items-end">
+                      <div className="bg-surface-muted flex h-9 w-full min-w-0 items-center rounded-lg border px-3 text-[0.76rem] leading-4">
+                        <span className="truncate">
+                          <span className="font-medium">Working tree</span>
+                          <span className="text-muted-foreground">
+                            {" "}
+                            staged, unstaged, and untracked files.
+                          </span>
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {source === "branch-compare" && (
+                    <div
+                      className={cn(
+                        "grid grid-cols-1 gap-3",
+                        !sourceInspectorLayoutActive &&
+                          "min-[760px]:grid-cols-2",
+                      )}
+                    >
+                      <SetupBranchSelector
+                        branches={branchState}
+                        disabled={!canCreate}
+                        label="Base branch"
+                        value={baseRef}
+                        onSelect={setBaseRefInput}
+                      />
+                      <SetupBranchSelector
+                        branches={branchState}
+                        disabled={!canCreate}
+                        label="Head branch"
+                        value={headRefValue}
+                        onSelect={setHeadRef}
+                      />
+                    </div>
+                  )}
+                </div>
+              </SetupStepPanel>
+
+              <SetupStepPanel
+                description="What should the review prioritize?"
+                compact={sourceInspectorLayoutActive}
+                number={2}
+                title="Review focus"
+              >
+                <Textarea
+                  aria-label="Focus prompt"
+                  className="min-h-[54px] resize-none bg-white text-[0.82rem]"
+                  placeholder="Describe what this review should focus on, for example auth logic, billing flows, or data integrity..."
+                  value={focusPrompt}
+                  onChange={(event) => setFocusPrompt(event.target.value)}
+                />
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {setupFocusOptions.map((item) => (
+                    <SetupFocusChip
+                      key={item.id}
+                      active={selectedFocusIds.has(item.id)}
+                      icon={item.icon}
+                      label={item.label}
+                      onClick={() =>
+                        setSelectedFocusIds((current) =>
+                          toggleSetValue(current, item.id),
+                        )
+                      }
+                    />
+                  ))}
+                  <Button
+                    className="h-8 cursor-pointer"
+                    size="sm"
+                    variant="outline"
+                    onClick={addFocusHint}
+                  >
+                    <PlusIcon data-icon="inline-start" />
+                    Add focus
+                  </Button>
+                </div>
+              </SetupStepPanel>
+
+              <SetupStepPanel
+                description="Choose the orchestrator and agents that will run your review."
+                compact={sourceInspectorLayoutActive}
+                number={3}
+                title="Orchestration"
+              >
+                <div
+                  className={cn(
+                    "grid items-start gap-4",
+                    !sourceInspectorLayoutActive &&
+                      "lg:grid-cols-[minmax(160px,0.35fr)_minmax(0,1fr)]",
+                  )}
+                >
+                  <div className="min-w-0">
+                    <div className="mb-1.5 flex h-7 items-center">
+                      <label className="block text-[0.78rem] font-medium">
+                        Orchestrator
+                      </label>
+                    </div>
+                    <SetupAgentSelector
+                      agents={safeAgents}
+                      catalogs={modelCatalogs}
+                      choices={agentModelChoices}
+                      disabled={agentConfigs.status === "loading"}
+                      placeholder="Select orchestrator"
+                      selectedAgentId={effectiveOrchestratorAgentId}
+                      onSelect={(agentId, choice) => {
+                        setOrchestratorAgentId(agentId);
+                        setAgentModelChoices((current) => ({
+                          ...current,
+                          [agentId]: choice,
+                        }));
+                      }}
+                    />
+                    <p className="text-muted-foreground mt-1.5 text-[0.72rem]">
+                      Coordinates the review and delegates focused checks.
+                    </p>
+                    {agentModelCatalogs.status === "loading" && (
+                      <p className="text-muted-foreground mt-2 text-xs">
+                        Loading available CLI models...
+                      </p>
+                    )}
+                    {agentModelCatalogs.status === "error" && (
+                      <p className="text-destructive mt-2 text-xs">
+                        {agentModelCatalogs.error.message}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="min-w-0">
+                    <div className="mb-1.5 flex h-7 items-center justify-between gap-2">
+                      <label className="block text-[0.78rem] font-medium whitespace-nowrap">
+                        Review agents
+                      </label>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            className="h-7 cursor-pointer px-2 text-[0.72rem]"
+                            size="sm"
+                            variant="outline"
+                          >
+                            <PlusIcon data-icon="inline-start" />
+                            Add agent
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-80">
+                          <DropdownMenuLabel>
+                            Add review agent
+                          </DropdownMenuLabel>
+                          {safeAgents.map((agent) => (
+                            <DropdownMenuItem
+                              key={agent.id}
+                              className="cursor-pointer"
+                              onSelect={() => addManualReviewAgent(agent.id)}
+                            >
+                              <AgentProviderGlyph agent={agent} />
+                              <span className="min-w-0 flex-1 truncate">
+                                {formatSetupAgentChoiceLabel(
+                                  agent,
+                                  agent.id === effectiveOrchestratorAgentId
+                                    ? agentModelChoices
+                                    : {},
+                                  modelCatalogs,
+                                )}
+                              </span>
+                              <PlusIcon className="text-muted-foreground size-3.5" />
+                            </DropdownMenuItem>
+                          ))}
+                          {safeAgents.length === 0 && (
+                            <DropdownMenuItem disabled>
+                              No review-safe agents configured
+                            </DropdownMenuItem>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button
+                          className="border-border/70 hover:bg-surface-muted mb-2 flex h-8 w-full cursor-pointer items-center justify-between rounded-lg border bg-white px-2.5 text-[0.8rem] font-medium shadow-[0_1px_1px_rgb(17_18_20/0.03)]"
+                          type="button"
+                        >
+                          <span className="inline-flex items-center gap-2">
+                            <UsersIcon className="size-3.5" />
+                            {selectedAgentCount} agents selected
+                          </span>
+                          <ChevronDownIcon className="text-muted-foreground size-3.5" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent className="w-72">
+                        <DropdownMenuLabel>
+                          Available review agents
+                        </DropdownMenuLabel>
+                        {safeAgents.map((agent) => (
+                          <DropdownMenuCheckboxItem
+                            key={agent.id}
+                            checked={reviewAgentIdsForRun.includes(agent.id)}
+                            className="cursor-pointer"
+                            disabled={agent.id === effectiveOrchestratorAgentId}
+                            onCheckedChange={(checked) => {
+                              const next = new Set(effectiveSelectedAgentIds);
+                              if (checked) {
+                                next.add(agent.id);
+                              } else {
+                                next.delete(agent.id);
+                              }
+                              setSelectedAgentIds(next);
+                            }}
+                          >
+                            <AgentProviderGlyph agent={agent} />
+                            <span className="min-w-0 flex-1 truncate">
+                              {formatSetupAgentChoiceLabel(
+                                agent,
+                                agent.id === effectiveOrchestratorAgentId
+                                  ? agentModelChoices
+                                  : {},
+                                modelCatalogs,
+                              )}
+                            </span>
+                          </DropdownMenuCheckboxItem>
+                        ))}
+                        {safeAgents.length === 0 && (
+                          <DropdownMenuItem disabled>
+                            No review-safe agents configured
+                          </DropdownMenuItem>
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                    <div className="border-border/70 flex max-h-[154px] flex-col overflow-y-auto rounded-lg border bg-white [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                      {orchestratorAgent && (
+                        <SetupAgentRow
+                          key={`orchestrator:${orchestratorAgent.id}`}
+                          agent={orchestratorAgent}
+                          catalogs={modelCatalogs}
+                          checked
+                          choices={agentModelChoices}
+                          locked
+                          roles={setupReviewRoleOptions}
+                          onModelChoice={(choice) =>
+                            setAgentModelChoices((current) => ({
+                              ...current,
+                              [orchestratorAgent.id]: choice,
+                            }))
+                          }
+                          onRoleChange={() => undefined}
+                          onCheckedChange={() => undefined}
+                        />
+                      )}
+                      {reviewAgentAssignments.map((assignment) => {
+                        const role =
+                          setupReviewRoleById(
+                            agentRoleChoices[assignment.id],
+                          ) ?? assignment.role;
+                        const modelChoice =
+                          reviewAgentModelChoices[assignment.id];
+                        return (
+                          <SetupAgentRow
+                            key={assignment.id}
+                            agent={assignment.agent}
+                            catalogs={modelCatalogs}
+                            checked
+                            choices={
+                              modelChoice
+                                ? { [assignment.agent.id]: modelChoice }
+                                : {}
+                            }
+                            role={role}
+                            roles={setupReviewRoleOptions}
+                            onModelChoice={(choice) =>
+                              setReviewAgentModelChoices((current) => ({
+                                ...current,
+                                [assignment.id]: choice,
+                              }))
+                            }
+                            onRoleChange={(roleId) =>
+                              setAgentRoleChoices((current) => ({
+                                ...current,
+                                [assignment.id]: roleId,
+                              }))
+                            }
+                            onCheckedChange={() => {
+                              if (assignment.manual) {
+                                setManualReviewAssignments((current) =>
+                                  current.filter(
+                                    (item) => item.id !== assignment.id,
+                                  ),
+                                );
+                                setAgentRoleChoices((current) =>
+                                  removeRecordKey(current, assignment.id),
+                                );
+                                setReviewAgentModelChoices((current) =>
+                                  removeRecordKey(current, assignment.id),
+                                );
+                                return;
+                              }
+                              setHiddenReviewAssignmentIds((current) => {
+                                const next = new Set(current);
+                                next.add(assignment.id);
+                                return next;
+                              });
+                            }}
+                          />
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </SetupStepPanel>
+
+              <SetupStepPanel
+                description="Select a preset and confirm what's included."
+                compact={sourceInspectorLayoutActive}
+                number={4}
+                title="Scope & presets"
+              >
+                <div
+                  className={cn(
+                    "grid items-stretch gap-3",
+                    !sourceInspectorLayoutActive &&
+                      "min-[1180px]:grid-cols-[minmax(300px,1fr)_240px]",
+                  )}
+                >
+                  <div className="flex min-w-0 flex-col">
+                    <div className="grid grid-cols-2 gap-2.5">
+                      {visiblePresetOptions.map((preset) => (
+                        <SetupPresetTile
+                          key={preset.id}
+                          active={selectedPresetIds.has(preset.id)}
+                          icon={preset.icon}
+                          subtitle={preset.subtitle}
+                          tone={preset.tone}
+                          title={preset.title}
+                          onClick={() => togglePreset(preset.id)}
+                        />
+                      ))}
+                    </div>
+                    <div className="mt-auto flex items-center justify-between gap-2 pt-2">
+                      <p className="text-muted-foreground text-[0.72rem]">
+                        {selectedPresetLabels.length} selected from{" "}
+                        {setupPresetOptions.length} built-in presets.
+                      </p>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            className="h-8 cursor-pointer"
+                            size="sm"
+                            variant="outline"
+                          >
+                            <SearchIcon data-icon="inline-start" />
+                            More presets
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent className="w-80 p-2">
+                          <Input
+                            className="mb-2 h-8"
+                            placeholder="Search presets..."
+                            value={presetSearch}
+                            onChange={(event) =>
+                              setPresetSearch(event.target.value)
+                            }
+                            onKeyDown={(event) => event.stopPropagation()}
+                          />
+                          <div className="max-h-64 overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                            {presetSearchResults.map((preset) => (
+                              <DropdownMenuCheckboxItem
+                                key={preset.id}
+                                checked={selectedPresetIds.has(preset.id)}
+                                className="cursor-pointer"
+                                onCheckedChange={() => togglePreset(preset.id)}
+                              >
+                                <span
+                                  className={cn(
+                                    "mr-2 flex size-6 shrink-0 items-center justify-center rounded-md border",
+                                    preset.tone,
+                                  )}
+                                >
+                                  <preset.icon className="size-3.5" />
+                                </span>
+                                <span className="min-w-0 flex-1">
+                                  <span className="block truncate text-[0.78rem] font-medium">
+                                    {preset.title}
+                                  </span>
+                                  <span className="text-muted-foreground block truncate text-[0.68rem]">
+                                    {preset.subtitle}
+                                  </span>
+                                </span>
+                              </DropdownMenuCheckboxItem>
+                            ))}
+                            {presetSearchResults.length === 0 && (
+                              <DropdownMenuItem disabled>
+                                No matching presets
+                              </DropdownMenuItem>
+                            )}
+                          </div>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  </div>
+                  {!sourceInspectorLayoutActive && (
+                    <div className="border-border/70 flex h-full min-h-[206px] flex-col rounded-lg border bg-white/85 p-3">
+                      <div className="text-sm font-semibold">Scope summary</div>
+                      <div className="mt-2 flex flex-col gap-1.5 text-xs">
+                        <SetupScopeRow
+                          label="Source"
+                          value={
+                            setupSourceOptions.find(
+                              (item) => item.id === source,
+                            )?.label ?? "Source"
+                          }
+                        />
+                        <SetupScopeRow
+                          label="Project"
+                          value={activeRepository?.name ?? "No project"}
+                        />
+                        <SetupScopeRow
+                          label="Range"
+                          value={
+                            source === "branch-compare"
+                              ? `${baseRef}..${headRefValue || "head"}`
+                              : source === "github"
+                                ? githubUrl.trim() || "PR URL required"
+                                : "Working tree"
+                          }
+                        />
+                        <SetupScopeRow
+                          label="Presets"
+                          value={`${selectedPresetLabels.length} builtin`}
+                        />
+                        <SetupScopeRow
+                          label="Files"
+                          value={
+                            previewReady
+                              ? String(previewFiles.length)
+                              : "Not loaded"
+                          }
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="mt-3 grid max-w-[180px] gap-1.5">
+                  <label className="flex flex-col gap-1.5 text-[0.78rem] font-medium">
+                    Review depth
+                    <NativeSelect
+                      size="sm"
+                      value={reviewDepth}
+                      onChange={(event) =>
+                        setReviewDepth(
+                          event.target.value as "quick" | "standard" | "deep",
+                        )
+                      }
+                    >
+                      <NativeSelectOption value="quick">
+                        Quick
+                      </NativeSelectOption>
+                      <NativeSelectOption value="standard">
+                        Standard
+                      </NativeSelectOption>
+                      <NativeSelectOption value="deep">Deep</NativeSelectOption>
+                    </NativeSelect>
+                  </label>
+                </div>
+              </SetupStepPanel>
+
+              {(localError || startState.status === "error") && (
+                <ErrorState
+                  title={
+                    localError
+                      ? "Could not create snapshot"
+                      : "Could not start review"
+                  }
+                  description={
+                    localError ||
+                    (startState.status === "error"
+                      ? startState.error.message
+                      : undefined)
+                  }
+                />
+              )}
+            </div>
+          </div>
+
+          {sourceInspectorRendered && (
+            <aside
+              className={cn(
+                "border-border/60 absolute inset-y-0 right-0 z-20 flex h-full max-h-full min-h-0 min-w-0 transform-gpu flex-col overflow-hidden border-l bg-white shadow-[-18px_0_36px_rgb(17_18_20/0.08)] will-change-transform motion-reduce:transition-none",
+                sourceInspectorResizing
+                  ? "transition-none"
+                  : "transition-all duration-[220ms] ease-[cubic-bezier(0.16,1,0.3,1)]",
+                sourceInspectorVisualOpen
+                  ? "pointer-events-auto translate-x-0 opacity-100"
+                  : "pointer-events-none translate-x-full opacity-0",
+              )}
+              style={sourceInspectorPanelStyle}
+            >
+              <SetupSourceInspectorPanel
+                canLoad={canCreate}
+                patchPreviews={filePatchPreviews}
+                preview={sourcePreview}
+                previewReady={previewReady}
+                projectLabel={activeRepository?.name ?? "No project"}
+                rangeLabel={
+                  source === "branch-compare"
+                    ? `${baseRef}..${headRefValue || "head"}`
+                    : source === "github"
+                      ? githubUrl.trim() || "PR URL required"
+                      : "Working tree"
+                }
+                sourceLabel={
+                  setupSourceOptions.find((item) => item.id === source)
+                    ?.label ?? "Source"
+                }
+                renderedFileCount={renderedDiffFileCount}
+                stats={previewStats}
+                onLoad={() => void loadSourcePreview()}
+                onLoadMoreFiles={loadMoreDiffFiles}
+              />
+              <div
+                aria-label="Resize source details"
+                aria-orientation="vertical"
+                className={cn(
+                  "pointer-events-auto absolute inset-y-0 left-0 z-30 w-3 cursor-col-resize touch-none",
+                  "before:bg-border/80 before:absolute before:inset-y-4 before:left-0.5 before:w-px before:rounded-full before:opacity-0 before:transition-opacity hover:bg-black/[0.02] hover:before:opacity-100",
+                  sourceInspectorResizing && "before:opacity-100",
+                )}
+                role="separator"
+                tabIndex={0}
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                  setSourceInspectorResizing(true);
+                }}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  setSourceInspectorResizing(true);
+                }}
+              />
+            </aside>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function maxSourceInspectorWidth(availableWidth: number) {
+  const responsiveMax =
+    availableWidth < sourceInspectorSideBySideMinWidth
+      ? availableWidth - sourceInspectorOverlayGutter
+      : availableWidth - sourceInspectorMainMinWidth;
+  return Math.max(
+    sourceInspectorMinWidth,
+    Math.min(sourceInspectorMaxWidth, responsiveMax),
+  );
+}

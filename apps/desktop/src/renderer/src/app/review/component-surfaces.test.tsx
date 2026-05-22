@@ -1,9 +1,13 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
-import { CodeSnippetViewer, EvidenceCardList, FindingCard } from "./App";
-import { EvidenceMapGraphCanvas } from "./review-evidence-map";
-import { EvidenceMapInspectorPanel } from "./review-panels";
+import {
+  CodeSnippetViewer,
+  EvidenceCardList,
+  FindingCard,
+} from "../findings/finding-components";
+import { EvidenceMapGraphCanvas } from "../evidence/review-evidence-map";
+import { EvidenceMapInspectorPanel } from "../evidence/evidence-map-inspector-panel";
 import type {
   EvidenceItem,
   EvidenceMapResponse,

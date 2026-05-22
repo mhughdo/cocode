@@ -3,7 +3,7 @@ import { type ReactNode } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 
-import { MarkdownMessage } from "../chat/markdown-message";
+import { MarkdownMessage } from "../shared/markdown-message";
 
 export type LoadingState = "idle" | "loading" | "success" | "error";
 

@@ -16,50 +16,22 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import type {
-  ChangedFile,
-  ChangedFilePatch,
-  Loadable,
-  Snapshot,
-} from "@/lib/api";
+import type { ChangedFile, ChangedFilePatch, Loadable } from "@/lib/api";
 import {
   type HighlightedCodeLine,
   highlightCodeLines,
   languageForFilePath,
 } from "@/lib/syntax-highlighting";
 import { cn } from "@/lib/utils";
-
-export type SetupSourcePreview = {
-  key: string;
-  snapshot: Snapshot;
-  files: ChangedFile[];
-};
-
-export type SetupPreviewStats = {
-  total: number;
-  reviewable: number;
-  additions: number;
-  deletions: number;
-  generated: number;
-  binary: number;
-  excluded: number;
-};
-
-export const sourceInspectorMinWidth = 380;
-export const sourceInspectorDefaultWidth = 760;
-export const sourceInspectorMaxWidth = 1280;
-export const sourceInspectorMainMinWidth = 520;
-export const sourceInspectorOverlayGutter = 16;
-export const sourceInspectorSideBySideMinWidth = 1180;
-export const sourceInspectorTransitionMs = 220;
-export const setupInitialDiffFileRenderCount = 6;
-export const setupDiffFileRenderBatchSize = 6;
-export const setupMaxRenderedDiffFiles = 200;
-
-const emptyCollapsedFileIds = new Set<string>();
+import {
+  type SetupPreviewStats,
+  type SetupSourcePreview,
+  setupMaxRenderedDiffFiles,
+} from "./setup-source-preview-model";
 
 export function SetupSourceInspectorPanel({
   canLoad,
+  expandedFileIds,
   patchPreviews,
   preview,
   previewReady,
@@ -68,10 +40,12 @@ export function SetupSourceInspectorPanel({
   renderedFileCount,
   sourceLabel,
   stats,
+  onFileExpandedChange,
   onLoad,
   onLoadMoreFiles,
 }: {
   canLoad: boolean;
+  expandedFileIds: Set<string>;
   patchPreviews: Record<string, Loadable<ChangedFilePatch>>;
   preview: Loadable<SetupSourcePreview>;
   previewReady: boolean;
@@ -80,20 +54,11 @@ export function SetupSourceInspectorPanel({
   renderedFileCount: number;
   sourceLabel: string;
   stats: SetupPreviewStats;
+  onFileExpandedChange: (fileId: string, expanded: boolean) => void;
   onLoad: () => void;
   onLoadMoreFiles: () => void;
 }) {
   const stackScrollRef = useRef<HTMLDivElement | null>(null);
-  const previewKey =
-    preview.status === "success" && previewReady ? preview.data.key : "";
-  const [collapsedFileState, setCollapsedFileState] = useState<{
-    ids: Set<string>;
-    key: string;
-  }>(() => ({ ids: new Set(), key: "" }));
-  const collapsedFileIds =
-    collapsedFileState.key === previewKey
-      ? collapsedFileState.ids
-      : emptyCollapsedFileIds;
   const isLoading = preview.status === "loading";
   const actionLabel = isLoading
     ? "Loading..."
@@ -298,21 +263,9 @@ export function SetupSourceInspectorPanel({
                 key={file.id}
                 file={file}
                 patchPreview={patchPreviews[file.id]}
-                collapsed={collapsedFileIds.has(file.id)}
-                onToggleCollapsed={() =>
-                  setCollapsedFileState((current) => {
-                    const currentIds =
-                      current.key === previewKey
-                        ? current.ids
-                        : emptyCollapsedFileIds;
-                    const next = new Set(currentIds);
-                    if (next.has(file.id)) {
-                      next.delete(file.id);
-                    } else {
-                      next.add(file.id);
-                    }
-                    return { ids: next, key: previewKey };
-                  })
+                collapsed={!expandedFileIds.has(file.id)}
+                onExpandedChange={(expanded) =>
+                  onFileExpandedChange(file.id, expanded)
                 }
               />
             ))}
@@ -342,12 +295,12 @@ function SetupFileDiffPreview({
   file,
   collapsed,
   patchPreview,
-  onToggleCollapsed,
+  onExpandedChange,
 }: {
   file: ChangedFile;
   collapsed: boolean;
   patchPreview?: Loadable<ChangedFilePatch>;
-  onToggleCollapsed: () => void;
+  onExpandedChange: (expanded: boolean) => void;
 }) {
   const unavailableReason = file.is_binary
     ? "Binary files do not have a text diff preview."
@@ -364,7 +317,7 @@ function SetupFileDiffPreview({
         aria-expanded={!collapsed}
         className="hover:bg-surface-muted/50 flex min-h-9 w-full cursor-pointer items-center justify-between gap-3 px-4 text-left transition-colors"
         type="button"
-        onClick={onToggleCollapsed}
+        onClick={() => onExpandedChange(collapsed)}
       >
         <div className="flex min-w-0 items-center gap-2">
           <ChevronDownIcon
@@ -799,28 +752,4 @@ function setupDiffLineNumberTone(
     return "bg-white";
   }
   return "bg-white";
-}
-
-export function setupPreviewStats(files: ChangedFile[]): SetupPreviewStats {
-  return files.reduce<SetupPreviewStats>(
-    (stats, file) => ({
-      total: stats.total + 1,
-      reviewable:
-        stats.reviewable + (file.is_binary || file.is_excluded ? 0 : 1),
-      additions: stats.additions + file.additions,
-      deletions: stats.deletions + file.deletions,
-      generated: stats.generated + (file.is_generated ? 1 : 0),
-      binary: stats.binary + (file.is_binary ? 1 : 0),
-      excluded: stats.excluded + (file.is_excluded ? 1 : 0),
-    }),
-    {
-      total: 0,
-      reviewable: 0,
-      additions: 0,
-      deletions: 0,
-      generated: 0,
-      binary: 0,
-      excluded: 0,
-    },
-  );
 }

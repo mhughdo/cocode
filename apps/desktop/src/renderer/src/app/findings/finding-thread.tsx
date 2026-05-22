@@ -4,7 +4,7 @@ import { EmptyState } from "@/components/app/chrome";
 import { Badge } from "@/components/ui/badge";
 import type { FindingThreadView, ReviewEvent } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { MarkdownMessage } from "../chat/markdown-message";
+import { MarkdownMessage } from "../shared/markdown-message";
 import { formatRelativeAge } from "../shared/time-format";
 
 export function FollowUpMessages({

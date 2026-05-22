@@ -5,7 +5,7 @@ import type { ReviewEvent } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 import { summarizeRuntimeTraceEvents } from "./agent-runtime-trace-summary";
-import { MarkdownMessage } from "./markdown-message";
+import { MarkdownMessage } from "../shared/markdown-message";
 
 export {
   summarizeRuntimeTraceEvents,

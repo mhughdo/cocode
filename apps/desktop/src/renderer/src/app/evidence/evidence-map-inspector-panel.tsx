@@ -9,7 +9,7 @@ import type {
   EvidenceMapResponse,
 } from "@/lib/api";
 
-import { SyntaxCodeBlock } from "../chat/markdown-message";
+import { SyntaxCodeBlock } from "../shared/markdown-message";
 import {
   compactEvidencePanelTitle,
   evidenceBadgeVariant,

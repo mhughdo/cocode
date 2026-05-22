@@ -1,11 +1,4 @@
-import {
-  type CSSProperties,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDownIcon,
   ExternalLinkIcon,
@@ -39,7 +32,6 @@ import {
   type AgentConfig,
   type AgentModelCatalog,
   type ApiClient,
-  type ChangedFilePatch,
   errorApiState,
   idleApiState,
   loadApiResource,
@@ -85,21 +77,9 @@ import {
   snapshotTitle,
   toggleSetValue,
 } from "./setup-model";
-import {
-  SetupSourceInspectorPanel,
-  type SetupSourcePreview,
-  setupDiffFileRenderBatchSize,
-  setupInitialDiffFileRenderCount,
-  setupMaxRenderedDiffFiles,
-  setupPreviewStats,
-  sourceInspectorDefaultWidth,
-  sourceInspectorMainMinWidth,
-  sourceInspectorMaxWidth,
-  sourceInspectorMinWidth,
-  sourceInspectorOverlayGutter,
-  sourceInspectorSideBySideMinWidth,
-  sourceInspectorTransitionMs,
-} from "./setup-source-preview";
+import { SetupSourceInspectorPanel } from "./setup-source-preview";
+import { useSetupSourceInspectorPanel } from "./setup-source-inspector-state";
+import { useSetupSourcePreviewState } from "./setup-source-preview-state";
 
 import {
   buildSetupAgentSelection,
@@ -169,27 +149,22 @@ export function NewThreadScreen({
     ManualReviewAgentAssignment[]
   >([]);
   const manualReviewAssignmentSequence = useRef(0);
-  const requestedPatchFileIds = useRef(new Set<string>());
-  const loadedPatchFileIds = useRef(new Set<string>());
-  const sourceInspectorLayoutRef = useRef<HTMLDivElement | null>(null);
   const [branchState, setBranchState] =
     useState<Loadable<RepositoryBranch[]>>(idleApiState());
-  const [sourcePreview, setSourcePreview] =
-    useState<Loadable<SetupSourcePreview>>(idleApiState());
-  const [sourceInspectorOpen, setSourceInspectorOpen] = useState(false);
-  const [sourceInspectorRendered, setSourceInspectorRendered] = useState(false);
-  const [sourceInspectorVisible, setSourceInspectorVisible] = useState(false);
-  const [sourceInspectorOpenCount, setSourceInspectorOpenCount] = useState(0);
-  const [sourceInspectorWidth, setSourceInspectorWidth] = useState(
-    sourceInspectorDefaultWidth,
-  );
-  const [sourceInspectorResizing, setSourceInspectorResizing] = useState(false);
-  const [renderedDiffFileCount, setRenderedDiffFileCount] = useState(
-    setupInitialDiffFileRenderCount,
-  );
-  const [filePatchPreviews, setFilePatchPreviews] = useState<
-    Record<string, Loadable<ChangedFilePatch>>
-  >({});
+  const {
+    close: closeSourceInspector,
+    layoutActive: sourceInspectorLayoutActive,
+    layoutRef: sourceInspectorLayoutRef,
+    layoutStyle: sourceInspectorLayoutStyle,
+    open: sourceInspectorOpen,
+    openCount: sourceInspectorOpenCount,
+    panelStyle: sourceInspectorPanelStyle,
+    rendered: sourceInspectorRendered,
+    resizing: sourceInspectorResizing,
+    startResize: startSourceInspectorResize,
+    toggle: toggleSourceInspector,
+    visualOpen: sourceInspectorVisualOpen,
+  } = useSetupSourceInspectorPanel();
   const [localError, setLocalError] = useState("");
   const [startState, setStartState] =
     useState<Loadable<ReviewSession>>(idleApiState());
@@ -209,138 +184,6 @@ export function NewThreadScreen({
       agentModelCatalogs.status === "success" ? agentModelCatalogs.data : [],
     [agentModelCatalogs],
   );
-  const sourceInspectorLayoutActive =
-    sourceInspectorOpen || sourceInspectorRendered;
-  const sourceInspectorVisualOpen =
-    sourceInspectorOpen && sourceInspectorVisible;
-  const sourceInspectorLayoutStyle = sourceInspectorLayoutActive
-    ? ({
-        "--source-inspector-width": `${sourceInspectorWidth}px`,
-      } as CSSProperties)
-    : undefined;
-  const sourceInspectorPanelStyle = sourceInspectorLayoutActive
-    ? ({
-        width: `min(${sourceInspectorWidth}px, calc(100% - 16px))`,
-      } as CSSProperties)
-    : undefined;
-
-  useEffect(() => {
-    let canceled = false;
-    if (sourceInspectorOpen) {
-      queueMicrotask(() => {
-        if (!canceled) {
-          setSourceInspectorRendered(true);
-        }
-      });
-      const frame = window.requestAnimationFrame(() => {
-        if (!canceled) {
-          setSourceInspectorVisible(true);
-        }
-      });
-      return () => {
-        canceled = true;
-        window.cancelAnimationFrame(frame);
-      };
-    }
-
-    queueMicrotask(() => {
-      if (!canceled) {
-        setSourceInspectorVisible(false);
-        setSourceInspectorResizing(false);
-      }
-    });
-    if (!sourceInspectorRendered) {
-      return () => {
-        canceled = true;
-      };
-    }
-    const timer = window.setTimeout(() => {
-      if (!canceled) {
-        setSourceInspectorRendered(false);
-      }
-    }, sourceInspectorTransitionMs);
-    return () => {
-      canceled = true;
-      window.clearTimeout(timer);
-    };
-  }, [sourceInspectorOpen, sourceInspectorRendered]);
-
-  useEffect(() => {
-    if (!sourceInspectorResizing) {
-      return;
-    }
-    const previousCursor = document.body.style.cursor;
-    const previousUserSelect = document.body.style.userSelect;
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-
-    function resizeFromClientX(clientX: number) {
-      const layoutBounds =
-        sourceInspectorLayoutRef.current?.getBoundingClientRect();
-      const availableWidth = layoutBounds?.width ?? window.innerWidth;
-      const rightEdge = layoutBounds?.right ?? window.innerWidth;
-      const maxWidth = maxSourceInspectorWidth(availableWidth);
-      const nextWidth = Math.min(
-        maxWidth,
-        Math.max(sourceInspectorMinWidth, rightEdge - clientX),
-      );
-      setSourceInspectorWidth(nextWidth);
-    }
-
-    function handlePointerMove(event: PointerEvent) {
-      resizeFromClientX(event.clientX);
-    }
-
-    function handleMouseMove(event: MouseEvent) {
-      resizeFromClientX(event.clientX);
-    }
-
-    function handleResizeEnd() {
-      setSourceInspectorResizing(false);
-    }
-
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("pointerup", handleResizeEnd, { once: true });
-    window.addEventListener("mouseup", handleResizeEnd, { once: true });
-    return () => {
-      document.body.style.cursor = previousCursor;
-      document.body.style.userSelect = previousUserSelect;
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("mousemove", handleMouseMove);
-      window.removeEventListener("pointerup", handleResizeEnd);
-      window.removeEventListener("mouseup", handleResizeEnd);
-    };
-  }, [sourceInspectorResizing]);
-
-  useEffect(() => {
-    function clampInspectorWidth() {
-      const availableWidth =
-        sourceInspectorLayoutRef.current?.clientWidth ?? window.innerWidth;
-      const maxWidth = maxSourceInspectorWidth(availableWidth);
-      setSourceInspectorWidth((current) =>
-        Math.min(maxWidth, Math.max(sourceInspectorMinWidth, current)),
-      );
-    }
-
-    clampInspectorWidth();
-    window.addEventListener("resize", clampInspectorWidth);
-    return () => {
-      window.removeEventListener("resize", clampInspectorWidth);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!sourceInspectorOpen) {
-      return;
-    }
-    const availableWidth =
-      sourceInspectorLayoutRef.current?.clientWidth ?? window.innerWidth;
-    const maxWidth = maxSourceInspectorWidth(availableWidth);
-    setSourceInspectorWidth((current) =>
-      Math.min(maxWidth, Math.max(sourceInspectorMinWidth, current)),
-    );
-  }, [sourceInspectorOpen]);
 
   useEffect(() => {
     let canceled = false;
@@ -514,13 +357,98 @@ export function NewThreadScreen({
     baseRef: source === "branch-compare" ? baseRef : "",
     headRef: source === "branch-compare" ? headRefValue : "",
   });
-  const previewReady =
-    sourcePreview.status === "success" && sourcePreview.data.key === sourceKey;
-  const previewSnapshot = previewReady ? sourcePreview.data.snapshot : null;
-  const previewFiles = useMemo(
-    () => (previewReady ? sourcePreview.data.files : []),
-    [previewReady, sourcePreview],
-  );
+  const validateSource = useCallback(() => {
+    if (!canCreate) {
+      setLocalError("Open a git repository before creating a review.");
+      return false;
+    }
+    if (source === "github" && githubUrl.trim() === "") {
+      setLocalError("Enter a GitHub pull request URL.");
+      return false;
+    }
+    if (
+      source === "branch-compare" &&
+      (baseRef.trim() === "" || headRefValue.trim() === "")
+    ) {
+      setLocalError("Choose both base and head branches.");
+      return false;
+    }
+    setLocalError("");
+    return true;
+  }, [baseRef, canCreate, githubUrl, headRefValue, source]);
+
+  const createSourceSnapshot = useCallback((): Promise<Snapshot> => {
+    if (!client || !activeWorkspace || !activeRepository) {
+      throw new Error("Open a project before creating a review snapshot.");
+    }
+    if (source === "github") {
+      if (window.cocode?.createGitHubSnapshot) {
+        return window.cocode.createGitHubSnapshot({
+          workspaceId: activeWorkspace.id,
+          repositoryId: activeRepository.id,
+          url: githubUrl.trim(),
+          authMethod: githubAuthMethod,
+        });
+      }
+      throw new Error("Desktop GitHub credential bridge is unavailable.");
+    }
+    if (source === "branch-compare") {
+      return client.createLocalCompareSnapshot({
+        workspace_id: activeWorkspace.id,
+        repository_id: activeRepository.id,
+        base_ref: baseRef.trim(),
+        head_ref: headRefValue.trim(),
+      });
+    }
+    return client.createLocalChangesSnapshot({
+      workspace_id: activeWorkspace.id,
+      repository_id: activeRepository.id,
+    });
+  }, [
+    activeRepository,
+    activeWorkspace,
+    baseRef,
+    client,
+    githubUrl,
+    githubAuthMethod,
+    headRefValue,
+    source,
+  ]);
+
+  const sourcePreviewState = useSetupSourcePreviewState({
+    client,
+    createSourceSnapshot,
+    sourceKey,
+    validateSource,
+  });
+  const sourcePreview = sourcePreviewState.preview;
+  const previewReady = sourcePreviewState.ready;
+  const previewSnapshot = sourcePreviewState.snapshot;
+  const previewFiles = sourcePreviewState.files;
+  const previewStats = sourcePreviewState.stats;
+  const renderedDiffFileCount = sourcePreviewState.renderedFileCount;
+  const filePatchPreviews = sourcePreviewState.patchPreviews;
+  const expandedSourceFileIds = sourcePreviewState.expandedFileIds;
+  const loadSourcePreview = sourcePreviewState.load;
+  const loadMoreDiffFiles = sourcePreviewState.loadMoreFiles;
+  const setSourceFileExpanded = sourcePreviewState.setFileExpanded;
+
+  const shouldAutoLoadSourcePreview = useCallback(() => {
+    return (
+      canCreate &&
+      sourcePreview.status !== "loading" &&
+      !previewReady &&
+      (source !== "github" || isGitHubPullRequestUrl(githubUrl)) &&
+      (source !== "branch-compare" || branchState.status === "success")
+    );
+  }, [
+    branchState.status,
+    canCreate,
+    githubUrl,
+    previewReady,
+    source,
+    sourcePreview.status,
+  ]);
 
   useEffect(() => {
     if (!onSetupContextChange) {
@@ -557,128 +485,6 @@ export function NewThreadScreen({
     onSetupContextChange,
     source,
   ]);
-  const previewStats = setupPreviewStats(previewFiles);
-  const renderedDiffFiles = useMemo(
-    () => previewFiles.slice(0, renderedDiffFileCount),
-    [previewFiles, renderedDiffFileCount],
-  );
-  const patchLoadFiles = useMemo(
-    () =>
-      renderedDiffFiles.filter(
-        (file) => file.patch_artifact_id && !file.is_binary,
-      ),
-    [renderedDiffFiles],
-  );
-
-  useEffect(() => {
-    let canceled = false;
-    if (!client || !previewReady) {
-      return () => {
-        canceled = true;
-      };
-    }
-    const requestedPatchFileIDs = requestedPatchFileIds.current;
-    const loadedPatchFileIDs = loadedPatchFileIds.current;
-
-    const filesToLoad = patchLoadFiles.filter((file) => {
-      if (requestedPatchFileIDs.has(file.id)) {
-        return false;
-      }
-      return !loadedPatchFileIDs.has(file.id);
-    });
-    if (filesToLoad.length === 0) {
-      return () => {
-        canceled = true;
-      };
-    }
-    for (const file of filesToLoad) {
-      requestedPatchFileIDs.add(file.id);
-    }
-
-    setFilePatchPreviews((current) => {
-      const next = { ...current };
-      for (const file of filesToLoad) {
-        next[file.id] = loadingApiState();
-      }
-      return next;
-    });
-
-    for (const file of filesToLoad) {
-      void loadApiResource(() =>
-        client.getChangedFilePatch(file.snapshot_id, file.id),
-      ).then((state) => {
-        requestedPatchFileIDs.delete(file.id);
-        if (!canceled) {
-          if (
-            state.status === "success" &&
-            state.data.changed_file_id === file.id
-          ) {
-            loadedPatchFileIDs.add(file.id);
-          }
-          setFilePatchPreviews((current) => ({
-            ...current,
-            [file.id]: state,
-          }));
-        }
-      });
-    }
-
-    return () => {
-      canceled = true;
-      for (const file of filesToLoad) {
-        requestedPatchFileIDs.delete(file.id);
-      }
-    };
-  }, [client, patchLoadFiles, previewReady]);
-
-  const validateSource = useCallback(() => {
-    if (!canCreate) {
-      setLocalError("Open a git repository before creating a review.");
-      return false;
-    }
-    if (source === "github" && githubUrl.trim() === "") {
-      setLocalError("Enter a GitHub pull request URL.");
-      return false;
-    }
-    if (
-      source === "branch-compare" &&
-      (baseRef.trim() === "" || headRefValue.trim() === "")
-    ) {
-      setLocalError("Choose both base and head branches.");
-      return false;
-    }
-    setLocalError("");
-    return true;
-  }, [baseRef, canCreate, githubUrl, headRefValue, source]);
-
-  const shouldAutoLoadSourcePreview = useCallback(() => {
-    return (
-      canCreate &&
-      sourcePreview.status !== "loading" &&
-      !previewReady &&
-      (source !== "github" || githubUrl.trim() !== "") &&
-      (source !== "branch-compare" || branchState.status === "success")
-    );
-  }, [
-    branchState.status,
-    canCreate,
-    githubUrl,
-    previewReady,
-    source,
-    sourcePreview.status,
-  ]);
-
-  function toggleSourceInspector() {
-    if (sourceInspectorOpen) {
-      setSourceInspectorOpen(false);
-      return;
-    }
-    setSourceInspectorRendered(true);
-    setSourceInspectorVisible(false);
-    setSourceInspectorOpenCount((value) => value + 1);
-    setSourceInspectorOpen(true);
-  }
-
   function addFocusHint() {
     setFocusPrompt((current) => {
       const trimmed = current.trim();
@@ -721,15 +527,6 @@ export function NewThreadScreen({
     setSelectedPresetIds((current) => toggleSetValue(current, presetId));
   }
 
-  function loadMoreDiffFiles() {
-    setRenderedDiffFileCount((current) =>
-      Math.min(
-        current + setupDiffFileRenderBatchSize,
-        Math.min(previewFiles.length, setupMaxRenderedDiffFiles),
-      ),
-    );
-  }
-
   function resetSetup() {
     setSource("github");
     setGitHubUrl("");
@@ -748,103 +545,11 @@ export function NewThreadScreen({
     setAgentRoleChoices({});
     setHiddenReviewAssignmentIds(new Set());
     setManualReviewAssignments([]);
-    setSourceInspectorOpen(false);
-    setSourcePreview(idleApiState());
-    setRenderedDiffFileCount(setupInitialDiffFileRenderCount);
-    setFilePatchPreviews({});
-    requestedPatchFileIds.current.clear();
-    loadedPatchFileIds.current.clear();
+    closeSourceInspector();
+    sourcePreviewState.reset();
     setLocalError("");
     setStartState(idleApiState());
   }
-
-  const createSourceSnapshot = useCallback((): Promise<Snapshot> => {
-    if (!client || !activeWorkspace || !activeRepository) {
-      throw new Error("Open a project before creating a review snapshot.");
-    }
-    if (source === "github") {
-      if (window.cocode?.createGitHubSnapshot) {
-        return window.cocode.createGitHubSnapshot({
-          workspaceId: activeWorkspace.id,
-          repositoryId: activeRepository.id,
-          url: githubUrl.trim(),
-          authMethod: githubAuthMethod,
-        });
-      }
-      throw new Error("Desktop GitHub credential bridge is unavailable.");
-    }
-    if (source === "branch-compare") {
-      return client.createLocalCompareSnapshot({
-        workspace_id: activeWorkspace.id,
-        repository_id: activeRepository.id,
-        base_ref: baseRef.trim(),
-        head_ref: headRefValue.trim(),
-      });
-    }
-    return client.createLocalChangesSnapshot({
-      workspace_id: activeWorkspace.id,
-      repository_id: activeRepository.id,
-    });
-  }, [
-    activeRepository,
-    activeWorkspace,
-    baseRef,
-    client,
-    githubUrl,
-    githubAuthMethod,
-    headRefValue,
-    source,
-  ]);
-
-  const loadSourcePreview = useCallback(async () => {
-    if (!client) {
-      setSourcePreview(
-        errorApiState(new Error("Backend client is unavailable.")),
-      );
-      return;
-    }
-    if (!validateSource()) {
-      return;
-    }
-    setRenderedDiffFileCount(setupInitialDiffFileRenderCount);
-    setFilePatchPreviews({});
-    requestedPatchFileIds.current.clear();
-    loadedPatchFileIds.current.clear();
-    setSourcePreview(loadingApiState());
-    const requestedKey = sourceKey;
-    const nextSnapshot = await loadApiResource(createSourceSnapshot);
-    if (nextSnapshot.status !== "success") {
-      setSourcePreview(
-        errorApiState(
-          nextSnapshot.status === "error"
-            ? nextSnapshot.error
-            : new Error("Snapshot creation did not complete."),
-        ),
-      );
-      return;
-    }
-    const files = await loadApiResource(() =>
-      client.listChangedFiles(nextSnapshot.data.id),
-    );
-    if (files.status !== "success") {
-      setSourcePreview(
-        errorApiState(
-          files.status === "error"
-            ? files.error
-            : new Error("Changed files did not load."),
-        ),
-      );
-      return;
-    }
-    setLocalError("");
-    setSourcePreview(
-      successApiState({
-        key: requestedKey,
-        snapshot: nextSnapshot.data,
-        files: files.data,
-      }),
-    );
-  }, [client, createSourceSnapshot, sourceKey, validateSource]);
 
   useEffect(() => {
     if (
@@ -1604,6 +1309,7 @@ export function NewThreadScreen({
             >
               <SetupSourceInspectorPanel
                 canLoad={canCreate}
+                expandedFileIds={expandedSourceFileIds}
                 patchPreviews={filePatchPreviews}
                 preview={sourcePreview}
                 previewReady={previewReady}
@@ -1621,6 +1327,7 @@ export function NewThreadScreen({
                 }
                 renderedFileCount={renderedDiffFileCount}
                 stats={previewStats}
+                onFileExpandedChange={setSourceFileExpanded}
                 onLoad={() => void loadSourcePreview()}
                 onLoadMoreFiles={loadMoreDiffFiles}
               />
@@ -1637,11 +1344,11 @@ export function NewThreadScreen({
                 onPointerDown={(event) => {
                   event.preventDefault();
                   event.currentTarget.setPointerCapture(event.pointerId);
-                  setSourceInspectorResizing(true);
+                  startSourceInspectorResize();
                 }}
                 onMouseDown={(event) => {
                   event.preventDefault();
-                  setSourceInspectorResizing(true);
+                  startSourceInspectorResize();
                 }}
               />
             </aside>
@@ -1652,13 +1359,8 @@ export function NewThreadScreen({
   );
 }
 
-function maxSourceInspectorWidth(availableWidth: number) {
-  const responsiveMax =
-    availableWidth < sourceInspectorSideBySideMinWidth
-      ? availableWidth - sourceInspectorOverlayGutter
-      : availableWidth - sourceInspectorMainMinWidth;
-  return Math.max(
-    sourceInspectorMinWidth,
-    Math.min(sourceInspectorMaxWidth, responsiveMax),
+function isGitHubPullRequestUrl(value: string) {
+  return /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+(?:[/?#].*)?$/i.test(
+    value.trim(),
   );
 }

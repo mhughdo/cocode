@@ -1,6 +1,6 @@
 import type { ReviewEvent } from "@/lib/api";
 
-import { formatKnownAgentJSONPayload } from "./agent-output-formatting";
+import { formatKnownAgentJSONPayload } from "../shared/agent-output-formatting";
 
 export type RuntimeTraceSummary = {
   diagnostics: string[];

@@ -146,6 +146,7 @@ function extractKnownEmbeddedAgentJSON(raw: string): Extraction {
   const candidate = raw.slice(start, end + 1).trim();
   if (
     !candidate.includes('"findings"') &&
+    !candidate.includes('"clusters"') &&
     !candidate.includes('"response"') &&
     !candidate.includes('"verification_status"') &&
     !candidate.includes('"evidence_summary"')

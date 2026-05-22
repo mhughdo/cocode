@@ -10,7 +10,7 @@ import type {
 } from "@/lib/api";
 
 import { modelIDDisplayLabel } from "../agents/agent-utils";
-import { extractDisplayableAgentOutput } from "./agent-output-formatting";
+import { extractDisplayableAgentOutput } from "../shared/agent-output-formatting";
 import {
   summarizeRuntimeTraceEvents,
   type RuntimeTraceSummary,

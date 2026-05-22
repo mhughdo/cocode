@@ -40,7 +40,7 @@ import type {
   ChatAudience,
   ChatResponderOption,
 } from "./chat-types";
-import { MarkdownMessage } from "./markdown-message";
+import { MarkdownMessage } from "../shared/markdown-message";
 
 export function ChatMessageCard({
   agent,

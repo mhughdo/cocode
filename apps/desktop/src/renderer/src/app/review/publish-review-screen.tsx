@@ -32,7 +32,7 @@ import {
   loadingApiState,
   type ReviewSession,
 } from "@/lib/api";
-import { MarkdownMessage } from "../chat/markdown-message";
+import { MarkdownMessage } from "../shared/markdown-message";
 import { formatFindingLocation } from "../evidence/review-evidence-utils";
 
 export function PublishReviewScreen({

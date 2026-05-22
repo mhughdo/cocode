@@ -1,5 +1,5 @@
 import { MapIcon } from "lucide-react";
-import { useMemo } from "react";
+import { useId, useMemo } from "react";
 
 import { EmptyState } from "@/components/app/chrome";
 import { cn } from "@/lib/utils";
@@ -68,6 +68,9 @@ export function EvidenceMapGraphCanvas({
   onSelect: (selection: EvidenceMapSelection) => void;
   selection: EvidenceMapSelection | null;
 }) {
+  const graphId = useId().replaceAll(":", "");
+  const arrowMarkerId = `${graphId}-evidence-map-arrow`;
+  const nodeShadowId = `${graphId}-evidence-map-node-shadow`;
   const focusedMap = useMemo(() => focusedEvidenceMap(map), [map]);
   const layout = useMemo(
     () => buildEvidenceMapLayout(focusedMap),
@@ -99,7 +102,7 @@ export function EvidenceMapGraphCanvas({
       >
         <defs>
           <filter
-            id="evidence-map-node-shadow"
+            id={nodeShadowId}
             x="-12%"
             y="-24%"
             width="124%"
@@ -114,7 +117,7 @@ export function EvidenceMapGraphCanvas({
             />
           </filter>
           <marker
-            id="evidence-map-arrow"
+            id={arrowMarkerId}
             markerHeight="7"
             markerWidth="7"
             orient="auto"
@@ -198,7 +201,7 @@ export function EvidenceMapGraphCanvas({
                   edge.status === "missing" ? "stroke-destructive" : "",
                 )}
                 d={path}
-                markerEnd="url(#evidence-map-arrow)"
+                markerEnd={`url(#${arrowMarkerId})`}
                 strokeDasharray={edge.status === "missing" ? "7 5" : undefined}
                 strokeWidth={selected ? 2.6 : 1.6}
               />
@@ -243,7 +246,7 @@ export function EvidenceMapGraphCanvas({
               <rect
                 className={cn(style.surface, selected ? style.selected : "")}
                 height={NODE_HEIGHT}
-                filter="url(#evidence-map-node-shadow)"
+                filter={`url(#${nodeShadowId})`}
                 rx="8"
                 strokeWidth={selected ? 2.4 : 1.2}
                 width={NODE_WIDTH}
@@ -398,7 +401,6 @@ function synthesizeFocusedEvidenceEdges(
   }
   const nodeIDs = new Set(nodes.map((node) => node.id));
   const existingKeys = new Set<string>();
-  const existingPairs = new Set<string>();
   const claim = nodes.find((node) => node.kind === "finding_claim");
   const changedNodes = nodes.filter((node) =>
     ["entrypoint", "route", "handler", "changed_code"].includes(node.kind),
@@ -409,7 +411,6 @@ function synthesizeFocusedEvidenceEdges(
     }
     const key = `${edge.source}->${edge.target}`;
     existingKeys.add(key);
-    existingPairs.add(edgePairKey(edge.source, edge.target));
     return true;
   });
 
@@ -417,13 +418,11 @@ function synthesizeFocusedEvidenceEdges(
     const source = changedNodes[index - 1];
     const target = changedNodes[index];
     const key = `${source.id}->${target.id}`;
-    const pairKey = edgePairKey(source.id, target.id);
-    if (existingPairs.has(pairKey)) {
+    if (existingKeys.has(key)) {
       continue;
     }
     edges.push(syntheticEvidenceEdge(source.id, target.id, "reachable path"));
     existingKeys.add(key);
-    existingPairs.add(pairKey);
   }
 
   if (!claim) {
@@ -455,10 +454,6 @@ function synthesizeFocusedEvidenceEdges(
     existingKeys.add(key);
   }
   return edges;
-}
-
-function edgePairKey(left: string, right: string) {
-  return [left, right].sort().join("<->");
 }
 
 function syntheticEvidenceEdge(

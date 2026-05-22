@@ -10,7 +10,7 @@ import {
 import type { EvidenceItem, Finding, FindingDetailResponse } from "@/lib/api";
 import { languageForFilePath } from "@/lib/syntax-highlighting";
 import { cn } from "@/lib/utils";
-import { SyntaxCodeBlock } from "../chat/markdown-message";
+import { SyntaxCodeBlock } from "../shared/markdown-message";
 import {
   evidenceBadgeVariant,
   evidenceCodeSnippet,

@@ -14,7 +14,10 @@ import {
   type HighlightedCodeLine,
 } from "@/lib/syntax-highlighting";
 import { cn } from "@/lib/utils";
-import { formatKnownAgentJSONPayload } from "./agent-output-formatting";
+import {
+  extractDisplayableAgentOutput,
+  formatKnownAgentJSONPayload,
+} from "./agent-output-formatting";
 
 export function MarkdownMessage({
   className,
@@ -44,60 +47,11 @@ export function normalizeMarkdownMessageContent(content: string) {
   if (!raw) {
     return content;
   }
-  const extracted =
-    extractJSONLinesAnswer(raw) ??
-    extractJSONFenceAnswer(raw) ??
-    extractEmbeddedJSONAnswer(raw) ??
-    extractJSONAnswer(raw) ??
-    extractEscapedJSONAnswer(raw);
-  return extracted ?? content;
-}
-
-function extractJSONFenceAnswer(raw: string) {
-  const match = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  const fenced = match?.[1]?.trim();
-  return fenced ? extractJSONAnswer(fenced) : null;
-}
-
-function extractJSONLinesAnswer(raw: string) {
-  if (!raw.includes("\n")) {
-    return null;
+  const displayable = extractDisplayableAgentOutput(raw);
+  if (displayable !== raw) {
+    return displayable;
   }
-  let answer = "";
-  let parsedAny = false;
-  for (const line of raw.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
-      continue;
-    }
-    const extracted = extractJSONAnswer(trimmed);
-    if (extracted !== null) {
-      parsedAny = true;
-      answer = extracted;
-    }
-  }
-  return parsedAny ? answer : null;
-}
-
-function extractEmbeddedJSONAnswer(raw: string) {
-  if (!raw.includes("{") || !raw.includes("}")) {
-    return null;
-  }
-  const start = raw.indexOf("{");
-  const end = raw.lastIndexOf("}");
-  if (start < 0 || end <= start) {
-    return null;
-  }
-  const candidate = raw.slice(start, end + 1).trim();
-  if (
-    !candidate.includes('"findings"') &&
-    !candidate.includes('"response"') &&
-    !candidate.includes('"verification_status"') &&
-    !candidate.includes('"evidence_summary"')
-  ) {
-    return null;
-  }
-  return extractJSONAnswer(candidate);
+  return extractEscapedJSONAnswer(raw) ?? content;
 }
 
 function extractEscapedJSONAnswer(raw: string) {
@@ -112,11 +66,8 @@ function extractEscapedJSONAnswer(raw: string) {
   if (decoded === raw) {
     return null;
   }
-  return (
-    extractJSONFenceAnswer(decoded) ??
-    extractEmbeddedJSONAnswer(decoded) ??
-    extractJSONAnswer(decoded)
-  );
+  const displayable = extractDisplayableAgentOutput(decoded);
+  return displayable !== decoded ? displayable : extractJSONAnswer(decoded);
 }
 
 function extractJSONAnswer(raw: string): string | null {
@@ -150,10 +101,6 @@ function answerFromUnknown(value: unknown): string | null {
   }
   if (isIgnorableAnswerRecord(value)) {
     return null;
-  }
-  const findings = structuredFindingsFromRecord(value);
-  if (findings.length > 0) {
-    return formatStructuredFindingsMarkdown(findings);
   }
   for (const key of [
     "answer",
@@ -196,82 +143,6 @@ function isIgnorableAnswerRecord(value: Record<string, unknown>) {
     nestedType.includes("tool") ||
     nestedType.includes("function")
   );
-}
-
-function structuredFindingsFromRecord(value: Record<string, unknown>) {
-  const rawFindings = Array.isArray(value.findings)
-    ? value.findings
-    : isPlainRecord(value.finding)
-      ? [value.finding]
-      : [];
-  return rawFindings.filter(isPlainRecord);
-}
-
-function formatStructuredFindingsMarkdown(findings: Record<string, unknown>[]) {
-  const blocks = findings.slice(0, 8).map((finding, index) => {
-    const title =
-      textFromUnknown(finding.title) ||
-      textFromUnknown(finding.claim) ||
-      textFromUnknown(finding.message) ||
-      textFromUnknown(finding.description) ||
-      `Finding ${index + 1}`;
-    const severity = textFromUnknown(finding.severity);
-    const category = textFromUnknown(finding.category);
-    const path =
-      textFromUnknown(finding.path) ||
-      textFromUnknown(finding.file) ||
-      firstLocationPath(finding.locations);
-    const line =
-      numberText(finding.line) ||
-      numberText(finding.start_line) ||
-      firstLocationLine(finding.locations);
-    const description =
-      textFromUnknown(finding.body) ||
-      textFromUnknown(finding.description) ||
-      textFromUnknown(finding.evidence) ||
-      textFromUnknown(finding.summary);
-    const fix =
-      textFromUnknown(finding.suggested_fix) ||
-      textFromUnknown(finding.recommendation) ||
-      textFromUnknown(finding.fix);
-    return [
-      `### ${index + 1}. ${title}`,
-      severity && `- **Severity:** ${severity}`,
-      category && `- **Category:** ${category}`,
-      path && `- **Location:** \`${path}${line ? `:${line}` : ""}\``,
-      description && `- **Evidence:** ${description}`,
-      fix && `- **Suggested fix:** ${fix}`,
-    ]
-      .filter(Boolean)
-      .join("\n");
-  });
-  const omitted = Math.max(findings.length - blocks.length, 0);
-  if (omitted > 0) {
-    blocks.push(`${omitted} more finding${omitted === 1 ? "" : "s"} omitted.`);
-  }
-  return [`## Findings (${findings.length})`, ...blocks].join("\n\n");
-}
-
-function firstLocationPath(value: unknown) {
-  if (!Array.isArray(value)) {
-    return "";
-  }
-  const location = value.find(isPlainRecord);
-  return textFromUnknown(location?.path) || textFromUnknown(location?.file);
-}
-
-function firstLocationLine(value: unknown) {
-  if (!Array.isArray(value)) {
-    return "";
-  }
-  const location = value.find(isPlainRecord);
-  return numberText(location?.start_line) || numberText(location?.line);
-}
-
-function numberText(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value)
-    ? String(value)
-    : textFromUnknown(value);
 }
 
 function textFromUnknown(value: unknown) {

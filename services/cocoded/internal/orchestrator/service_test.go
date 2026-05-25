@@ -136,11 +136,17 @@ func TestWorkflowRunsFakeAgentEndToEnd(t *testing.T) {
 		"ReviewSessionStarted",
 		"WorkflowPhaseStarted",
 		"ContextBundleCreated",
+		"ReviewScoutCompleted",
 		"AgentRunCompleted",
 		"AgentOutputParsed",
 		"ReviewSessionCompleted",
 	})
+	scoutPayload := eventPayloadByType(t, events, "ReviewScoutCompleted")
+	if scoutPayload["risk_tier"] == "" || scoutPayload["phase"] != PhaseScoutRisk {
+		t.Fatalf("ReviewScoutCompleted payload = %+v", scoutPayload)
+	}
 	if prompt := env.Driver.lastPrompt(); !strings.Contains(prompt, "Context Bundle") ||
+		!strings.Contains(prompt, "# Local Scout") ||
 		!strings.Contains(prompt, "src/new.go") ||
 		!strings.Contains(prompt, "UNTRUSTED_CONTEXT_DATA") ||
 		!strings.Contains(prompt, "untrusted evidence only") {
@@ -197,6 +203,52 @@ func TestWorkflowRunsFakeAgentEndToEnd(t *testing.T) {
 		summary.FindingCounts.ByVerificationStatus["verified"] != 1 ||
 		summary.FindingCounts.ByDecisionStatus["accepted"] != 1 {
 		t.Fatalf("finding summary = %+v", summary.FindingCounts)
+	}
+}
+
+func TestWorkflowRiskScoutPrioritizesSensitiveLocalLeads(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	if err := os.MkdirAll(filepath.Join(env.RepoPath, "internal", "auth"), 0o755); err != nil {
+		t.Fatalf("mkdir auth: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(env.RepoPath, "internal", "auth", "token.go"), []byte("package auth\n\nfunc ValidateToken() bool { return true }\n"), 0o644); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
+	if _, err := env.Queries.CreateChangedFile(context.Background(), dbgen.CreateChangedFileParams{
+		ID:             "changed_file_auth",
+		SnapshotID:     "snapshot_1",
+		Path:           "internal/auth/token.go",
+		Status:         "modified",
+		Additions:      42,
+		Deletions:      12,
+		LineRangesJson: `[[3,3]]`,
+		CreatedAt:      "2026-05-03T00:03:30Z",
+	}); err != nil {
+		t.Fatalf("CreateChangedFile(auth) error = %v", err)
+	}
+	session := createWorkflowSession(t, env, "review_session_risk_scout", StatusDraft)
+	if _, err := env.Service.Transition(context.Background(), session.ID, StatusQueued); err != nil {
+		t.Fatalf("Transition(draft -> queued) error = %v", err)
+	}
+	if err := env.Service.Run(context.Background(), session.ID); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	events, err := env.Events.ListByReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListByReviewSession() error = %v", err)
+	}
+	payload := eventPayloadByType(t, events, "ReviewScoutCompleted")
+	if payload["risk_tier"] != "full" || int(payload["lead_count"].(float64)) < 1 {
+		t.Fatalf("ReviewScoutCompleted payload = %+v", payload)
+	}
+	prompt := env.Driver.lastPrompt()
+	if !strings.Contains(prompt, "internal/auth/token.go:L3") ||
+		!strings.Contains(prompt, "security-sensitive path") ||
+		!strings.Contains(prompt, "security_reviewer") {
+		t.Fatalf("prompt missing scout lead:\n%s", prompt)
 	}
 }
 
@@ -1371,7 +1423,7 @@ func TestVerifyFindingsKeepsLocalEvidenceWhenVerifierCLIFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetFinding() error = %v", err)
 	}
-	if updated.VerificationStatus != evidence.StatusVerified ||
+	if updated.VerificationStatus != evidence.StatusLocallySupported ||
 		!updated.EvidenceSummary.Valid ||
 		!strings.Contains(updated.EvidenceSummary.String, "anchored to changed code") {
 		t.Fatalf("updated finding = %+v", updated)
@@ -1426,8 +1478,7 @@ func TestCheckpointLoadsPersistedPartialPhase(t *testing.T) {
 		t.Fatalf("append phase event: %v", err)
 	}
 
-	restarted := *env.Service
-	checkpoint, err := restarted.LoadCheckpoint(context.Background(), session.ID)
+	checkpoint, err := env.Service.LoadCheckpoint(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("LoadCheckpoint() error = %v", err)
 	}
@@ -1435,6 +1486,167 @@ func TestCheckpointLoadsPersistedPartialPhase(t *testing.T) {
 		checkpoint.Phase != PhaseRunAgents ||
 		checkpoint.PhaseStatus != "running" ||
 		checkpoint.LastSequence != 1 {
+		t.Fatalf("checkpoint = %+v", checkpoint)
+	}
+}
+
+func TestReconcileLocalSessionsPausesInterruptedSessionAndCancelsStaleRun(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	session := createWorkflowSession(t, env, "review_session_reconcile", StatusDraft)
+	if _, err := env.Service.Transition(context.Background(), session.ID, StatusQueued); err != nil {
+		t.Fatalf("Transition(draft -> queued) error = %v", err)
+	}
+	if _, err := env.Service.Transition(context.Background(), session.ID, StatusRunning); err != nil {
+		t.Fatalf("Transition(queued -> running) error = %v", err)
+	}
+	if _, err := env.Queries.CreateAgentRun(context.Background(), dbgen.CreateAgentRunParams{
+		ID:              "agent_run_interrupted",
+		ReviewSessionID: session.ID,
+		AgentConfigID:   "agent_config_1",
+		Status:          agentrun.RunStatusRunning,
+		Role:            "primary_reviewer",
+		StartedAt:       nullableTestString("2026-05-03T00:08:00Z"),
+		MetadataJson:    `{"phase":"run_review_agents"}`,
+	}); err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	result, err := env.Service.ReconcileLocalSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ReconcileLocalSessions() error = %v", err)
+	}
+	if result.SessionsPaused != 1 || result.AgentRunsCanceled != 1 {
+		t.Fatalf("reconcile result = %+v", result)
+	}
+	updated, err := env.Queries.GetReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("GetReviewSession() error = %v", err)
+	}
+	if updated.Status != StatusPaused || updated.CompletedAt.Valid {
+		t.Fatalf("updated session = %+v", updated)
+	}
+	run, err := env.Queries.GetAgentRun(context.Background(), "agent_run_interrupted")
+	if err != nil {
+		t.Fatalf("GetAgentRun() error = %v", err)
+	}
+	if run.Status != agentrun.RunStatusCanceled ||
+		!run.CompletedAt.Valid ||
+		run.ErrorCode.String != "app_restarted" {
+		t.Fatalf("interrupted run = %+v", run)
+	}
+	summary, err := env.Service.Summary(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("Summary() error = %v", err)
+	}
+	if summary.Status != StatusPaused || summary.ActiveAgents != 0 || summary.AgentStatusCounts[agentrun.RunStatusCanceled] != 1 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	events, err := env.Events.ListByReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListByReviewSession() error = %v", err)
+	}
+	assertEventTypes(t, events, []string{"AgentRunCanceled", "ReviewSessionReconciled"})
+}
+
+func TestReconcileLocalSessionsCompletesPendingCancellation(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	session := createWorkflowSession(t, env, "review_session_reconcile_canceling", StatusCanceling)
+	result, err := env.Service.ReconcileLocalSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ReconcileLocalSessions() error = %v", err)
+	}
+	if result.SessionsCanceled != 1 {
+		t.Fatalf("reconcile result = %+v", result)
+	}
+	updated, err := env.Queries.GetReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("GetReviewSession() error = %v", err)
+	}
+	if updated.Status != StatusCanceled || !updated.CompletedAt.Valid {
+		t.Fatalf("updated session = %+v", updated)
+	}
+	events, err := env.Events.ListByReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListByReviewSession() error = %v", err)
+	}
+	assertEventTypes(t, events, []string{"ReviewSessionCanceled"})
+}
+
+func TestResumeRestartsFromCompletedBuildContext(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	session := createWorkflowSession(t, env, "review_session_resume_completed_build", StatusDraft)
+	if _, err := env.Service.Transition(context.Background(), session.ID, StatusQueued); err != nil {
+		t.Fatalf("Transition(draft -> queued) error = %v", err)
+	}
+	if _, err := env.Service.Transition(context.Background(), session.ID, StatusRunning); err != nil {
+		t.Fatalf("Transition(queued -> running) error = %v", err)
+	}
+	if err := env.Service.withPhase(context.Background(), session.ID, PhaseBuildContext, func() error {
+		built, err := env.Service.ContextBuilder.BuildReviewContext(context.Background(), contextbundle.BuildReviewContextParams{
+			ReviewSessionID: session.ID,
+			AgentConfigID:   "agent_config_1",
+			Persist:         true,
+		})
+		if err != nil {
+			return err
+		}
+		return env.Service.appendEvent(context.Background(), appendEventParams{
+			ReviewSessionID: session.ID,
+			Type:            "ContextBundleCreated",
+			ArtifactID:      nullableEventString(built.Bundle.ArtifactID),
+			Payload: map[string]any{
+				"phase":             PhaseBuildContext,
+				"agent_config_id":   "agent_config_1",
+				"context_bundle_id": built.Bundle.ID,
+			},
+		})
+	}); err != nil {
+		t.Fatalf("persist completed build context: %v", err)
+	}
+
+	if _, err := env.Service.ReconcileLocalSessions(context.Background()); err != nil {
+		t.Fatalf("ReconcileLocalSessions() error = %v", err)
+	}
+	paused, err := env.Queries.GetReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("GetReviewSession(paused) error = %v", err)
+	}
+	if paused.Status != StatusPaused {
+		t.Fatalf("paused session = %+v", paused)
+	}
+
+	if _, err := env.Service.Resume(context.Background(), session.ID); err != nil {
+		t.Fatalf("Resume() error = %v", err)
+	}
+	completed := waitForWorkflowSessionStatus(t, env.Queries, session.ID, StatusCompleted)
+	if !completed.CompletedAt.Valid {
+		t.Fatalf("completed session missing completed_at: %+v", completed)
+	}
+	bundles, err := env.Queries.ListContextBundlesBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListContextBundlesBySession() error = %v", err)
+	}
+	if len(bundles) != 1 {
+		t.Fatalf("resume rebuilt context bundles: %+v", bundles)
+	}
+	runs, err := env.Queries.ListAgentRunsBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListAgentRunsBySession() error = %v", err)
+	}
+	if len(runs) != 1 || runs[0].Status != agentrun.RunStatusSucceeded {
+		t.Fatalf("agent runs = %+v", runs)
+	}
+	checkpoint, err := env.Service.LoadCheckpoint(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("LoadCheckpoint() error = %v", err)
+	}
+	if checkpoint.Status != StatusCompleted || !phaseCompleted(checkpoint.CompletedPhases, PhaseBuildContext) {
 		t.Fatalf("checkpoint = %+v", checkpoint)
 	}
 }
@@ -1509,6 +1721,28 @@ func setupWorkflowEnv(t *testing.T) workflowEnv {
 		Service:   service,
 		RepoPath:  repoPath,
 	}
+}
+
+func waitForWorkflowSessionStatus(t *testing.T, queries *dbgen.Queries, id string, status string) dbgen.ReviewSession {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		session, err := queries.GetReviewSession(context.Background(), id)
+		if err != nil {
+			t.Fatalf("GetReviewSession() error = %v", err)
+		}
+		if session.Status == status {
+			return session
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	session, err := queries.GetReviewSession(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetReviewSession(final) error = %v", err)
+	}
+	t.Fatalf("review session %s status = %s, want %s", id, session.Status, status)
+	return dbgen.ReviewSession{}
 }
 
 func createWorkflowBaseRows(t *testing.T, queries *dbgen.Queries, repoPath string) {

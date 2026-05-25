@@ -111,6 +111,8 @@ type Querier interface {
 	ListGitHubPublicationsBySession(ctx context.Context, reviewSessionID string) ([]GithubPublication, error)
 	ListHumanDecisionsByFinding(ctx context.Context, findingID string) ([]HumanDecision, error)
 	ListHumanDecisionsBySession(ctx context.Context, reviewSessionID string) ([]HumanDecision, error)
+	ListInterruptedAgentRuns(ctx context.Context) ([]AgentRun, error)
+	ListInterruptedReviewSessions(ctx context.Context) ([]ReviewSession, error)
 	ListPublishDraftsBySession(ctx context.Context, reviewSessionID string) ([]PublishDraft, error)
 	ListPullRequestSnapshotsByRepository(ctx context.Context, repositoryID string) ([]PullRequestSnapshot, error)
 	ListRepositoriesByWorkspace(ctx context.Context, workspaceID string) ([]Repository, error)

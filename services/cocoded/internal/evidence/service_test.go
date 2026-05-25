@@ -51,14 +51,14 @@ func TestVerifySessionCreatesPrimaryAndRelatedEvidence(t *testing.T) {
 		summary.EvidenceItemsCreated != 3 ||
 		summary.SupportingEvidence != 1 ||
 		summary.CounterEvidence != 0 ||
-		summary.ByVerificationStatus[StatusVerified] != 1 {
+		summary.ByVerificationStatus[StatusLocallySupported] != 1 {
 		t.Fatalf("summary = %+v", summary)
 	}
 	updated, err := env.Queries.GetFinding(context.Background(), finding.ID)
 	if err != nil {
 		t.Fatalf("GetFinding() error = %v", err)
 	}
-	if updated.VerificationStatus != StatusVerified ||
+	if updated.VerificationStatus != StatusLocallySupported ||
 		!strings.Contains(nullableTestValue(updated.EvidenceSummary), "anchored to changed code") ||
 		!strings.Contains(nullableTestValue(updated.CounterEvidenceSummary), "No verified contradiction") {
 		t.Fatalf("updated finding = %+v", updated)
@@ -261,7 +261,7 @@ func TestVerifySessionAssignsVerifiedWhenNoCounterEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VerifySession() error = %v", err)
 	}
-	if summary.ByVerificationStatus[StatusVerified] != 1 {
+	if summary.ByVerificationStatus[StatusLocallySupported] != 1 {
 		t.Fatalf("summary = %+v", summary)
 	}
 }
@@ -482,7 +482,7 @@ func TestGoldenAuthRepoVerifierBuildsEvidenceMap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VerifySession() error = %v", err)
 	}
-	if summary.SupportingEvidence != 1 || summary.CounterEvidence != 0 || summary.ByVerificationStatus[StatusVerified] != 1 {
+	if summary.SupportingEvidence != 1 || summary.CounterEvidence != 0 || summary.ByVerificationStatus[StatusLocallySupported] != 1 {
 		t.Fatalf("summary = %+v", summary)
 	}
 	updated, err := env.Queries.GetFinding(context.Background(), finding.ID)
@@ -572,7 +572,7 @@ func TestGoldenWebhookRepoVerifierDetectsMissingValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VerifySession() error = %v", err)
 	}
-	if summary.SupportingEvidence != 1 || summary.CounterEvidence != 0 || summary.ByVerificationStatus[StatusVerified] != 1 {
+	if summary.SupportingEvidence != 1 || summary.CounterEvidence != 0 || summary.ByVerificationStatus[StatusLocallySupported] != 1 {
 		t.Fatalf("summary = %+v", summary)
 	}
 	items, err := env.Queries.ListEvidenceItemsByFinding(context.Background(), "finding_golden_webhook")
@@ -597,9 +597,9 @@ func TestAssignVerificationStatusRules(t *testing.T) {
 		want       string
 	}{
 		{
-			name:       "supporting only is verified",
+			name:       "supporting only is locally supported",
 			supporting: 1,
-			want:       StatusVerified,
+			want:       StatusLocallySupported,
 		},
 		{
 			name:       "supporting and counter evidence remains plausible",

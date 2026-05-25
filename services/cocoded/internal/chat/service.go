@@ -1748,6 +1748,8 @@ func stringValue(value any) string {
 
 func orchestratorPhaseStartMessage(phase string) (string, bool) {
 	switch strings.TrimSpace(phase) {
+	case "risk_scout":
+		return "Orchestrator is risk-tiering the diff and preparing local scout leads for the reviewers.", true
 	case "normalize_outputs":
 		return "Orchestrator is reading reviewer outputs and extracting candidate findings.", true
 	case "deduplicate", "deduplicate_findings":
@@ -1765,6 +1767,8 @@ func humanWorkflowPhase(phase string) string {
 	switch strings.TrimSpace(phase) {
 	case "build_context", "build_review_context":
 		return "Context build"
+	case "risk_scout":
+		return "Risk scout"
 	case "run_agents", "run_review_agents":
 		return "Agent review"
 	case "normalize_outputs":

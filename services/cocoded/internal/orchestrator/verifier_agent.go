@@ -312,12 +312,14 @@ func verifierStatusPriority(status string) int {
 		return 1
 	case evidence.StatusLikelyFalsePositive:
 		return 2
-	case evidence.StatusUnverified:
+	case evidence.StatusLocallySupported:
 		return 3
-	case evidence.StatusVerified:
+	case evidence.StatusUnverified:
 		return 4
-	default:
+	case evidence.StatusVerified:
 		return 5
+	default:
+		return 6
 	}
 }
 
@@ -423,7 +425,7 @@ func (s *Service) verifierPrompt(session dbgen.ReviewSession, finding dbgen.Find
 	builder.WriteString("You are the orchestrator-verifier inside cocode. Curate one merged finding against the provided scoped context: deduplicate mentally, re-verify the claim, and enrich the evidence story.\n\n")
 	builder.WriteString("# Output Contract\n\n")
 	builder.WriteString("Return one JSON object with this shape:\n\n")
-	builder.WriteString(`{"verification_status":"verified|plausible|needs_human|likely_false_positive|not_actionable","evidence_summary":"short support summary","counter_evidence_summary":"short contradiction or uncertainty summary","evidence":[{"kind":"supporting|counter|missing|test|search|agent|static_analysis","title":"short title","summary":"what this proves","path":"optional/path","start_line":1,"end_line":1,"confidence":0.0}]}`)
+	builder.WriteString(`{"verification_status":"verified|locally_supported|plausible|needs_human|likely_false_positive|not_actionable","evidence_summary":"short support summary","counter_evidence_summary":"short contradiction or uncertainty summary","evidence":[{"kind":"supporting|counter|missing|test|search|agent|static_analysis","title":"short title","summary":"what this proves","path":"optional/path","start_line":1,"end_line":1,"confidence":0.0}]}`)
 	builder.WriteString("\n\n")
 	builder.WriteString("# Rules\n\n")
 	builder.WriteString("- Verify only the finding below; do not create unrelated review findings.\n")
@@ -694,8 +696,10 @@ func normalizeVerifierStatus(status string) string {
 	status = strings.ReplaceAll(status, "-", "_")
 	status = strings.ReplaceAll(status, " ", "_")
 	switch status {
-	case evidence.StatusVerified, "supported", "confirm", "confirmed", "true_positive":
+	case evidence.StatusVerified, "confirm", "confirmed", "true_positive":
 		return evidence.StatusVerified
+	case evidence.StatusLocallySupported, "supported":
+		return evidence.StatusLocallySupported
 	case evidence.StatusPlausible, "partially_supported":
 		return evidence.StatusPlausible
 	case evidence.StatusNeedsHuman, "needs_review", "uncertain", "unknown", "inconclusive":

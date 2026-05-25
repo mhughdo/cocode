@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -1911,6 +1912,78 @@ func TestStartReviewSessionEndpointRunsWorkflow(t *testing.T) {
 	}
 }
 
+func TestRouterStartupReconcilesInterruptedReviewWorkflow(t *testing.T) {
+	database, err := db.Open(context.Background(), db.MemoryDatabase)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := db.Apply(context.Background(), database, db.Migrations); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	queries := dbgen.New(database)
+	repoPath := t.TempDir()
+	writeHTTPAPIDefaultRepo(t, repoPath)
+	createHTTPAPISnapshotAt(t, queries, repoPath)
+	createHTTPAPIAgentConfig(t, queries, "agent_config_interrupted", "primary_reviewer", 1)
+	session := createHTTPAPIReviewSessionRow(t, queries, "review_session_startup_reconcile", []string{"agent_config_interrupted"})
+	if _, err := queries.UpdateReviewSessionStatus(context.Background(), dbgen.UpdateReviewSessionStatusParams{
+		ID:        session.ID,
+		Status:    "running",
+		StartedAt: nullableString("2026-05-03T00:08:00Z"),
+		UpdatedAt: "2026-05-03T00:08:00Z",
+	}); err != nil {
+		t.Fatalf("UpdateReviewSessionStatus() error = %v", err)
+	}
+	if _, err := queries.CreateAgentRun(context.Background(), dbgen.CreateAgentRunParams{
+		ID:              "agent_run_startup_reconcile",
+		ReviewSessionID: session.ID,
+		AgentConfigID:   "agent_config_interrupted",
+		Status:          "running",
+		Role:            "primary_reviewer",
+		StartedAt:       nullableString("2026-05-03T00:08:01Z"),
+		MetadataJson:    `{"phase":"run_review_agents"}`,
+	}); err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{}))
+	router := NewRouter(app.Config{
+		Addr:        "127.0.0.1:0",
+		AuthToken:   "test-token",
+		DataDir:     t.TempDir(),
+		ArtifactDir: filepath.Join(t.TempDir(), "artifacts"),
+		Version:     "test-version",
+	}, logger, database)
+
+	reconciled, err := queries.GetReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("GetReviewSession() error = %v", err)
+	}
+	if reconciled.Status != "paused" || reconciled.CompletedAt.Valid {
+		t.Fatalf("reconciled session = %+v", reconciled)
+	}
+	run, err := queries.GetAgentRun(context.Background(), "agent_run_startup_reconcile")
+	if err != nil {
+		t.Fatalf("GetAgentRun() error = %v", err)
+	}
+	if run.Status != "canceled" || run.ErrorCode.String != "app_restarted" {
+		t.Fatalf("reconciled run = %+v", run)
+	}
+
+	summaryRequest := httptest.NewRequest(http.MethodGet, "/api/review-sessions/"+session.ID+"/summary", nil)
+	summaryRequest.Header.Set("X-Cocode-Token", "test-token")
+	summaryResponse := httptest.NewRecorder()
+	router.ServeHTTP(summaryResponse, summaryRequest)
+	if summaryResponse.Code != http.StatusOK {
+		t.Fatalf("summary status = %d, body = %s", summaryResponse.Code, summaryResponse.Body.String())
+	}
+	summary := decodeReviewSummaryResponse(t, summaryResponse.Body.Bytes())
+	if summary.Status != "paused" || summary.ActiveAgents != 0 || summary.AgentStatusCounts["canceled"] != 1 {
+		t.Fatalf("summary = %+v", summary)
+	}
+}
+
 func TestFindingListEndpointReturnsCountsAndFilters(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
 	createHTTPAPIFindingFixture(t, queries)
@@ -3208,16 +3281,9 @@ func TestCopyPacketCopiedEndpointMarksPacketAndFindings(t *testing.T) {
 func TestGitHubPreviewEndpointCreatesDraftWithWarnings(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
 	createHTTPAPIFindingFixture(t, queries)
-	if _, err := queries.UpdateFindingDecisionStatus(context.Background(), dbgen.UpdateFindingDecisionStatusParams{
-		ID:             "finding_budget",
-		DecisionStatus: "accepted",
-		UpdatedAt:      "2026-05-03T00:20:00Z",
-	}); err != nil {
-		t.Fatalf("UpdateFindingDecisionStatus() error = %v", err)
-	}
 
 	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/review-sessions/review_session_findings/github/preview", map[string]any{
-		"finding_ids":  []string{"finding_budget", "finding_auth"},
+		"finding_ids":  []string{"finding_auth"},
 		"review_event": "COMMENT",
 	})
 	response := httptest.NewRecorder()
@@ -3229,13 +3295,13 @@ func TestGitHubPreviewEndpointCreatesDraftWithWarnings(t *testing.T) {
 	if preview.PublishDraftID == "" ||
 		preview.ArtifactID == "" ||
 		preview.ReviewEvent != "COMMENT" ||
-		len(preview.Comments) != 2 ||
+		len(preview.Comments) != 1 ||
 		len(preview.Warnings) == 0 ||
 		!preview.Checklist.HasSelectedFindings ||
 		!preview.Checklist.HasUnanchoredComments ||
 		preview.Checklist.CanPublishInline ||
 		!preview.Checklist.CanPublishSummaryOnly ||
-		!strings.Contains(preview.Body, "Renderer preview can load") {
+		!strings.Contains(preview.Body, "Repository settings updates") {
 		t.Fatalf("preview = %+v", preview)
 	}
 	draft, err := queries.GetPublishDraft(context.Background(), preview.PublishDraftID)
@@ -3247,6 +3313,28 @@ func TestGitHubPreviewEndpointCreatesDraftWithWarnings(t *testing.T) {
 		draft.CommentsJson == "" ||
 		!strings.Contains(nullableValue(draft.Body), "Repository settings updates") {
 		t.Fatalf("draft = %+v", draft)
+	}
+}
+
+func TestGitHubPreviewEndpointRejectsUnpublishableAcceptedFinding(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+	if _, err := queries.UpdateFindingDecisionStatus(context.Background(), dbgen.UpdateFindingDecisionStatusParams{
+		ID:             "finding_budget",
+		DecisionStatus: "accepted",
+		UpdatedAt:      "2026-05-03T00:20:00Z",
+	}); err != nil {
+		t.Fatalf("UpdateFindingDecisionStatus() error = %v", err)
+	}
+
+	request := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/review-sessions/review_session_findings/github/preview", map[string]any{
+		"finding_ids": []string{"finding_budget"},
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest ||
+		!strings.Contains(response.Body.String(), "finding is not publishable") {
+		t.Fatalf("github preview status = %d, body = %s", response.Code, response.Body.String())
 	}
 }
 

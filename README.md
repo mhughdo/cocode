@@ -34,7 +34,7 @@ pnpm backend:test
 pnpm check
 ```
 
-The desktop shell is currently a scaffold for T010-T016. The backend exposes a minimal health endpoint and is not launched by Electron yet.
+The desktop shell launches the local backend and runs resumable, evidence-backed review sessions against local repository snapshots.
 
 ## Optional git hooks
 

@@ -152,6 +152,12 @@ FROM agent_runs
 WHERE review_session_id = ?
 ORDER BY started_at ASC, id ASC;
 
+-- name: ListInterruptedAgentRuns :many
+SELECT id, review_session_id, agent_config_id, context_bundle_id, status, role, started_at, completed_at, duration_ms, exit_code, stdout_artifact_id, stderr_artifact_id, parsed_output_artifact_id, error_code, error_message, metadata_json
+FROM agent_runs
+WHERE status IN ('queued', 'running')
+ORDER BY review_session_id ASC, started_at ASC, id ASC;
+
 -- name: UpdateAgentRunStatus :one
 UPDATE agent_runs
 SET

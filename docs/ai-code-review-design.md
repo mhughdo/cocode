@@ -442,6 +442,18 @@ async function runReviewJob(job: ReviewJob) {
 }
 ```
 
+### 5.3 Local-first bridge before CI
+
+Before the GitHub App / runner path is enabled, the desktop MVP should exercise the same reliability contract locally. The local pipeline now mirrors the CI design in these ways:
+
+- **Durable phases and resume:** review sessions checkpoint context build, local scout, reviewer execution, normalization, dedupe, verification, evidence map build, and draft preparation. On backend/app restart, queued/running sessions are reconciled to resumable local state instead of disappearing.
+- **Local risk scout:** after context build and before reviewer execution, cocode computes deterministic risk tiers and investigation leads from changed-file paths, churn, generated/excluded flags, and the focus prompt. These leads are saved as an artifact, emitted as `ReviewScoutCompleted`, and injected into reviewer prompts as prioritization hints rather than findings.
+- **Trust states and publish gates:** local support from code evidence is distinguished from verifier-survived findings. GitHub preview/posting requires accepted, publishable findings with exact changed-line anchors, useful evidence summaries, and either a suggested fix or draft comment.
+- **Event replay:** review events remain sequence-ordered and the renderer reconnects with the last delivered sequence, so chat/progress can recover from transient stream drops.
+- **Dogfood eval loop:** local eval runs now track reviewed, accepted, dismissed, publishable, suppressed, and not-actionable outcomes so the product can optimize for trusted findings before CI automation expands the blast radius.
+
+This keeps CI-specific pieces small later: the GitHub runner should become another trigger/reporting adapter over the local session, event, artifact, finding, and eval contracts rather than a separate review system.
+
 ---
 
 ## 6. Config control plane

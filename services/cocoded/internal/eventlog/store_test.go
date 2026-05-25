@@ -3,6 +3,7 @@ package eventlog
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 
 	"github.com/hughdo/cocode/services/cocoded/internal/db"
@@ -89,6 +90,18 @@ func TestStoreAppendValidatesRequiredFields(t *testing.T) {
 		if _, err := store.Append(context.Background(), params); err == nil {
 			t.Fatalf("Append(%+v) error = nil, want validation error", params)
 		}
+	}
+}
+
+func TestRetryableAppendConflictDetection(t *testing.T) {
+	t.Parallel()
+
+	retryable := errors.New("create event: constraint failed: UNIQUE constraint failed: events.review_session_id, events.sequence")
+	if !isRetryableAppendConflict(retryable) {
+		t.Fatalf("isRetryableAppendConflict(%q) = false, want true", retryable)
+	}
+	if isRetryableAppendConflict(errors.New("create event: UNIQUE constraint failed: events.id")) {
+		t.Fatal("isRetryableAppendConflict(primary key) = true, want false")
 	}
 }
 

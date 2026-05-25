@@ -41,6 +41,7 @@ function FactsGrid({
   const rows: Array<[string, string]> = [
     ["Severity", formatDecisionLabel(finding.severity)],
     ["Status", formatDecisionLabel(finding.verification_status)],
+    ["Trust", formatDecisionLabel(finding.trust_state)],
     ["Decision", formatDecisionLabel(finding.decision_status)],
     ["Signals", String(detail.candidates.length || finding.merged_from_count)],
     ["Confidence", formatConfidence(finding.confidence)],
@@ -399,6 +400,16 @@ export function FindingsInspectorPanel({
         <PanelMarkdown className="mt-3">
           {finding.evidence_summary}
         </PanelMarkdown>
+        {finding.publish_blockers?.length ? (
+          <div className="border-border/80 bg-muted/20 text-muted-foreground mt-3 rounded-md border border-dashed px-3 py-2 text-xs">
+            <div className="text-foreground font-medium">Publish blockers</div>
+            <ul className="mt-1 list-disc space-y-1 pl-4">
+              {finding.publish_blockers.map((blocker) => (
+                <li key={blocker}>{blocker}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
       </Section>
       {detail ? (
         <>

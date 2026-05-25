@@ -226,6 +226,17 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 			Evidence:       &evidence.Service{Queries: queries},
 			AgentManager:   agentManager,
 		}
+		if result, err := reviewWorkflow.ReconcileLocalSessions(context.Background()); err != nil {
+			logger.Error("review workflow reconciliation failed", "error", err)
+		} else if result.InterruptedSessions > 0 || result.InterruptedRuns > 0 {
+			logger.Warn("review workflow reconciliation completed",
+				"interrupted_sessions", result.InterruptedSessions,
+				"sessions_paused", result.SessionsPaused,
+				"sessions_canceled", result.SessionsCanceled,
+				"interrupted_agent_runs", result.InterruptedRuns,
+				"agent_runs_canceled", result.AgentRunsCanceled,
+			)
+		}
 	}
 	gitRepositories, gitRepositoriesErr := gitrepo.New(database)
 	githubAuth, githubAuthErr := githubauth.New(database, githubauth.HTTPTokenValidator{BaseURL: config.GitHubAPIBaseURL})

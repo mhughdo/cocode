@@ -489,6 +489,9 @@ export interface Finding {
   confidence: number;
   verification_status: string;
   decision_status: string;
+  trust_state: string;
+  publishable: boolean;
+  publish_blockers?: string[];
   primary_path?: string;
   primary_start_line?: number;
   primary_end_line?: number;
@@ -1032,6 +1035,9 @@ type FetchLike = (
   input: RequestInfo | URL,
   init?: RequestInit,
 ) => Promise<Response>;
+
+const REVIEW_EVENT_STREAM_INITIAL_RETRY_DELAY_MS = 250;
+const REVIEW_EVENT_STREAM_MAX_RETRY_DELAY_MS = 5_000;
 
 export class ApiError extends Error {
   readonly status: number;
@@ -1670,30 +1676,69 @@ export class ApiClient {
       onEvent: (event: ReviewEvent) => void;
     },
   ) {
-    const response = await this.fetcher(
-      endpointUrl(
-        this.baseUrl,
-        `/api/review-sessions/${encodeURIComponent(id)}/events`,
-        { after_sequence: options.afterSequence },
-      ),
-      {
-        method: "GET",
-        headers: requestHeaders(this.authToken, {}),
-        signal: options.signal,
-      },
-    );
-    if (!response.ok) {
-      await parseEnvelopeResponse<never>(response);
-      return;
+    let afterSequence = options.afterSequence;
+    let retryDelayMs = REVIEW_EVENT_STREAM_INITIAL_RETRY_DELAY_MS;
+
+    for (;;) {
+      throwIfAborted(options.signal);
+      const headers = requestHeaders(this.authToken, {});
+      headers.set("Accept", "text/event-stream");
+      if (afterSequence !== undefined) {
+        headers.set("Last-Event-ID", String(afterSequence));
+      }
+
+      let handlerError: unknown;
+      try {
+        const response = await this.fetcher(
+          endpointUrl(
+            this.baseUrl,
+            `/api/review-sessions/${encodeURIComponent(id)}/events`,
+            { after_sequence: afterSequence },
+          ),
+          {
+            method: "GET",
+            headers,
+            signal: options.signal,
+          },
+        );
+        if (!response.ok) {
+          await parseEnvelopeResponse<never>(response);
+          return;
+        }
+        if (!response.body) {
+          throw new ApiError({
+            message: "Review event stream is unavailable",
+            status: response.status,
+            code: "STREAM_UNAVAILABLE",
+          });
+        }
+        await readReviewEventStream(response.body, (event) => {
+          try {
+            options.onEvent(event);
+          } catch (error) {
+            handlerError = error;
+            throw error;
+          }
+          afterSequence = Math.max(afterSequence ?? 0, event.sequence);
+          retryDelayMs = REVIEW_EVENT_STREAM_INITIAL_RETRY_DELAY_MS;
+        });
+        return;
+      } catch (error) {
+        if (
+          handlerError === error ||
+          isAbortError(error) ||
+          options.signal?.aborted ||
+          !isRetryableReviewEventStreamError(error)
+        ) {
+          throw error;
+        }
+        await waitForReconnectDelay(retryDelayMs, options.signal);
+        retryDelayMs = Math.min(
+          retryDelayMs * 2,
+          REVIEW_EVENT_STREAM_MAX_RETRY_DELAY_MS,
+        );
+      }
     }
-    if (!response.body) {
-      throw new ApiError({
-        message: "Review event stream is unavailable",
-        status: response.status,
-        code: "STREAM_UNAVAILABLE",
-      });
-    }
-    await readReviewEventStream(response.body, options.onEvent);
   }
 
   previewReviewContext(
@@ -1875,6 +1920,60 @@ async function readReviewEventStream(
 
   buffer += decoder.decode();
   consumeSSEBuffer(buffer + "\n\n", onEvent);
+}
+
+function isRetryableReviewEventStreamError(error: unknown) {
+  if (!(error instanceof ApiError)) {
+    return true;
+  }
+  if (error.code === "INVALID_SSE_EVENT") {
+    return false;
+  }
+  return (
+    error.status === 0 ||
+    error.status === 408 ||
+    error.status === 429 ||
+    error.status >= 500
+  );
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
+function throwIfAborted(signal: AbortSignal | undefined) {
+  if (signal?.aborted) {
+    throw abortError(signal);
+  }
+}
+
+function waitForReconnectDelay(
+  delayMs: number,
+  signal: AbortSignal | undefined,
+) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError(signal));
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, delayMs);
+    function abort() {
+      clearTimeout(timeout);
+      reject(abortError(signal));
+    }
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+
+function abortError(signal: AbortSignal | undefined) {
+  return (
+    signal?.reason ??
+    new DOMException("The review event stream was aborted.", "AbortError")
+  );
 }
 
 function consumeSSEBuffer(

@@ -148,6 +148,9 @@ func previewFindings(ctx context.Context, queries *dbgen.Queries, reviewSessionI
 	if unaccepted := firstUnacceptedPreviewFinding(selectedRows); unaccepted != "" {
 		return nil, apperrorInvalid("finding must be accepted before GitHub preview: " + unaccepted)
 	}
+	if unpublishable, blocker := firstUnpublishablePreviewFinding(selectedRows); unpublishable != "" {
+		return nil, apperrorInvalid("finding is not publishable: " + unpublishable + " (" + blocker + ")")
+	}
 	if len(selectedRows) == 0 {
 		return nil, apperrorInvalid("at least one finding is required")
 	}
@@ -178,6 +181,16 @@ func firstUnacceptedPreviewFinding(rows []dbgen.Finding) string {
 		}
 	}
 	return ""
+}
+
+func firstUnpublishablePreviewFinding(rows []dbgen.Finding) (string, string) {
+	for _, row := range rows {
+		blockers := findingPublishBlockers(row)
+		if len(blockers) > 0 {
+			return row.ID, blockers[0]
+		}
+	}
+	return "", ""
 }
 
 func firstPublishedDuplicate(all []dbgen.Finding, selected []dbgen.Finding) string {

@@ -15,16 +15,18 @@ test("reloads persisted findings and decisions after app restart", async ({
       .click();
     await firstLaunch.page.getByRole("tab", { name: "Findings" }).click();
     await expect(
-      firstLaunch.page.getByRole("heading", {
+      firstLaunch.page.getByRole("button", {
         name: "Repository settings updates miss the workspace admin guard.",
       }),
     ).toBeVisible();
     await firstLaunch.page
-      .getByRole("tab", { exact: true, name: "Evidence" })
-      .click();
-    await expect(
-      firstLaunch.page.getByText("Mutation route reaches settings write"),
-    ).toBeVisible();
+      .locator('[data-testid^="finding-row-"]')
+      .filter({
+        hasText: "Repository settings updates miss the workspace admin guard.",
+      })
+      .first()
+      .click({ position: { x: 12, y: 12 } });
+    await expect(firstLaunch.page.getByText("Evidence story")).toBeVisible();
     await firstLaunch.page.getByRole("tab", { name: "Publish" }).click();
     await expect(firstLaunch.page.getByText("1 selected")).toBeVisible();
   } finally {
@@ -44,16 +46,18 @@ test("reloads persisted findings and decisions after app restart", async ({
 
     await secondLaunch.page.getByRole("tab", { name: "Findings" }).click();
     await expect(
-      secondLaunch.page.getByRole("heading", {
+      secondLaunch.page.getByRole("button", {
         name: "Repository settings updates miss the workspace admin guard.",
       }),
     ).toBeVisible();
     await secondLaunch.page
-      .getByRole("tab", { exact: true, name: "Evidence" })
-      .click();
-    await expect(
-      secondLaunch.page.getByText("Mutation route reaches settings write"),
-    ).toBeVisible();
+      .locator('[data-testid^="finding-row-"]')
+      .filter({
+        hasText: "Repository settings updates miss the workspace admin guard.",
+      })
+      .first()
+      .click({ position: { x: 12, y: 12 } });
+    await expect(secondLaunch.page.getByText("Evidence story")).toBeVisible();
 
     await secondLaunch.page.getByRole("tab", { name: "Publish" }).click();
     await expect(secondLaunch.page.getByText("1 selected")).toBeVisible();

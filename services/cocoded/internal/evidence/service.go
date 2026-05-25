@@ -33,6 +33,7 @@ const (
 const (
 	StatusUnverified          = "unverified"
 	StatusVerified            = "verified"
+	StatusLocallySupported    = "locally_supported"
 	StatusPlausible           = "plausible"
 	StatusNeedsHuman          = "needs_human"
 	StatusLikelyFalsePositive = "likely_false_positive"
@@ -571,7 +572,7 @@ func mergeCuratedCounterEvidenceSummary(existing string, next string, directCoun
 func assignVerificationStatus(finding dbgen.Finding, supporting int, counter int, missing int) string {
 	switch {
 	case supporting > 0 && counter == 0:
-		return StatusVerified
+		return StatusLocallySupported
 	case supporting > 0 && counter > 0:
 		return StatusPlausible
 	case supporting == 0 && counter > 0:

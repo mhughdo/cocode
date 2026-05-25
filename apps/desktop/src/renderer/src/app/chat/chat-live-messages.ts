@@ -391,6 +391,8 @@ function localReviewProgressMessage(event: ReviewEvent): {
 
 function orchestratorPhaseStartMessage(phase: string) {
   switch (phase.trim()) {
+    case "risk_scout":
+      return "Orchestrator is risk-tiering the diff and preparing local scout leads for the reviewers.";
     case "normalize_outputs":
       return "Orchestrator is reading reviewer outputs and extracting candidate findings.";
     case "deduplicate":
@@ -411,6 +413,8 @@ function humanWorkflowPhase(phase: string) {
     case "build_context":
     case "build_review_context":
       return "Context build";
+    case "risk_scout":
+      return "Risk scout";
     case "run_agents":
     case "run_review_agents":
       return "Agent review";

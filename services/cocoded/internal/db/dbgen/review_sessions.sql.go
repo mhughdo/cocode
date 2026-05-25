@@ -144,6 +144,52 @@ func (q *Queries) GetReviewSession(ctx context.Context, id string) (ReviewSessio
 	return i, err
 }
 
+const listInterruptedReviewSessions = `-- name: ListInterruptedReviewSessions :many
+SELECT id, workspace_id, repository_id, snapshot_id, title, status, review_depth, focus_prompt, preset, runtime_limit_seconds, context_policy_json, started_at, completed_at, created_at, updated_at
+FROM review_sessions
+WHERE status IN ('queued', 'running', 'canceling')
+ORDER BY updated_at ASC, id ASC
+`
+
+func (q *Queries) ListInterruptedReviewSessions(ctx context.Context) ([]ReviewSession, error) {
+	rows, err := q.db.QueryContext(ctx, listInterruptedReviewSessions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ReviewSession{}
+	for rows.Next() {
+		var i ReviewSession
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.RepositoryID,
+			&i.SnapshotID,
+			&i.Title,
+			&i.Status,
+			&i.ReviewDepth,
+			&i.FocusPrompt,
+			&i.Preset,
+			&i.RuntimeLimitSeconds,
+			&i.ContextPolicyJson,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listReviewSessionsByWorkspace = `-- name: ListReviewSessionsByWorkspace :many
 SELECT id, workspace_id, repository_id, snapshot_id, title, status, review_depth, focus_prompt, preset, runtime_limit_seconds, context_policy_json, started_at, completed_at, created_at, updated_at
 FROM review_sessions

@@ -84,9 +84,6 @@ test("starts a fake review and renders findings", async ({
     await expect(
       page.getByRole("heading", { name: "Set up review" }),
     ).toBeVisible();
-    await expect(
-      page.getByRole("button", { name: "E2E Fake Reviewer" }).first(),
-    ).toBeVisible();
     await clearPrimaryPresets(page);
     await selectFakeOnly(page);
     await page.getByRole("button", { name: "Start review" }).click();
@@ -98,13 +95,19 @@ test("starts a fake review and renders findings", async ({
     ).toBeVisible();
     await expect(page.getByRole("tab", { name: "Findings" })).toBeVisible();
     await page.getByRole("tab", { name: "Findings" }).click();
+    const findingRow = page
+      .locator('[data-testid^="finding-row-"]')
+      .filter({
+        hasText:
+          "Repository update permissions now allow members to mutate settings.",
+      })
+      .first();
     await expect(
-      page.getByRole("heading", {
+      findingRow.getByRole("button", {
         name: "Repository update permissions now allow members to mutate settings.",
       }),
     ).toBeVisible();
-    await expect(page.getByText("src/auth.ts").first()).toBeVisible();
-    await expect(page.getByText("Verified").first()).toBeVisible();
+    await expect(findingRow).toContainText("Needs triage");
   } finally {
     await closeCocode(app);
   }

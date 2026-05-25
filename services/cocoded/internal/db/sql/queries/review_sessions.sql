@@ -46,6 +46,12 @@ FROM review_sessions
 WHERE workspace_id = ?
 ORDER BY created_at DESC;
 
+-- name: ListInterruptedReviewSessions :many
+SELECT id, workspace_id, repository_id, snapshot_id, title, status, review_depth, focus_prompt, preset, runtime_limit_seconds, context_policy_json, started_at, completed_at, created_at, updated_at
+FROM review_sessions
+WHERE status IN ('queued', 'running', 'canceling')
+ORDER BY updated_at ASC, id ASC;
+
 -- name: UpdateReviewSession :one
 UPDATE review_sessions
 SET

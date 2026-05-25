@@ -11,7 +11,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -39,6 +41,7 @@ const (
 
 const (
 	PhaseBuildContext     = "build_review_context"
+	PhaseScoutRisk        = "risk_scout"
 	PhaseRunAgents        = "run_review_agents"
 	PhaseNormalizeOutputs = "normalize_outputs"
 	PhaseDeduplicate      = "deduplicate_findings"
@@ -88,6 +91,9 @@ type Service struct {
 	Now              func() time.Time
 	NewEventID       func() string
 	NewArtifactID    func() string
+
+	mu             sync.Mutex
+	activeSessions map[string]struct{}
 }
 
 type EventLog interface {
@@ -101,6 +107,16 @@ type DedupeHook interface {
 
 type StartResult struct {
 	Session dbgen.ReviewSession
+}
+
+type ReconcileResult struct {
+	SessionsPaused      int `json:"sessions_paused"`
+	SessionsCanceled    int `json:"sessions_canceled"`
+	AgentRunsCanceled   int `json:"agent_runs_canceled"`
+	AgentRunEvents      int `json:"agent_run_events"`
+	SessionEvents       int `json:"session_events"`
+	InterruptedSessions int `json:"interrupted_sessions"`
+	InterruptedRuns     int `json:"interrupted_runs"`
 }
 
 type Checkpoint struct {
@@ -177,6 +193,38 @@ type runContext struct {
 	SessionAgent dbgen.ReviewSessionAgent
 	AgentConfig  dbgen.AgentConfig
 	Bundle       contextbundle.Bundle
+	BundleText   string
+	Scout        localReviewScout
+}
+
+type localReviewScout struct {
+	SchemaVersion string             `json:"schema_version"`
+	OverallRisk   string             `json:"overall_risk"`
+	RiskScore     int                `json:"risk_score"`
+	Profiles      []string           `json:"profiles,omitempty"`
+	Summary       string             `json:"summary"`
+	Leads         []localReviewLead  `json:"leads,omitempty"`
+	IgnoredAreas  []localIgnoredArea `json:"ignored_areas,omitempty"`
+	GeneratedAt   string             `json:"generated_at"`
+}
+
+type localReviewLead struct {
+	Path              string   `json:"path"`
+	Status            string   `json:"status"`
+	StartLine         int64    `json:"start_line,omitempty"`
+	EndLine           int64    `json:"end_line,omitempty"`
+	Additions         int64    `json:"additions"`
+	Deletions         int64    `json:"deletions"`
+	RiskScore         int      `json:"risk_score"`
+	SeverityHint      string   `json:"severity_hint"`
+	SuggestedReviewer string   `json:"suggested_reviewer"`
+	Reason            string   `json:"reason"`
+	Signals           []string `json:"signals,omitempty"`
+}
+
+type localIgnoredArea struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
 }
 
 func (s *Service) Start(ctx context.Context, reviewSessionID string) (StartResult, error) {
@@ -208,7 +256,15 @@ func (s *Service) Run(ctx context.Context, reviewSessionID string) error {
 		return err
 	}
 	ctx = contextOrBackground(ctx)
+	if !s.registerActiveSession(reviewSessionID) {
+		return fmt.Errorf("%w: review session is already running", ErrInvalidStatusTransition)
+	}
+	defer s.unregisterActiveSession(reviewSessionID)
 	err := s.run(ctx, reviewSessionID)
+	return s.handleRunError(ctx, reviewSessionID, err)
+}
+
+func (s *Service) handleRunError(ctx context.Context, reviewSessionID string, err error) error {
 	if err == nil {
 		return nil
 	}
@@ -226,6 +282,94 @@ func (s *Service) Run(ctx context.Context, reviewSessionID string) error {
 		},
 	})
 	return err
+}
+
+func (s *Service) ReconcileLocalSessions(ctx context.Context) (ReconcileResult, error) {
+	if err := s.validate(); err != nil {
+		return ReconcileResult{}, err
+	}
+	ctx = contextOrBackground(ctx)
+	result := ReconcileResult{}
+
+	runs, err := s.Queries.ListInterruptedAgentRuns(ctx)
+	if err != nil {
+		return result, fmt.Errorf("list interrupted agent runs: %w", err)
+	}
+	result.InterruptedRuns = len(runs)
+	for _, run := range runs {
+		updated, err := s.cancelInterruptedAgentRun(ctx, run)
+		if err != nil {
+			return result, err
+		}
+		result.AgentRunsCanceled++
+		if err := s.appendEvent(ctx, appendEventParams{
+			ReviewSessionID: updated.ReviewSessionID,
+			AgentRunID:      nullableEventString(updated.ID),
+			Type:            "AgentRunCanceled",
+			Level:           "warn",
+			Payload: map[string]any{
+				"agent_run_id":    updated.ID,
+				"agent_config_id": updated.AgentConfigID,
+				"previous_status": run.Status,
+				"status":          updated.Status,
+				"error_code":      "app_restarted",
+				"reason":          "backend restarted before the local agent run reached a terminal state",
+			},
+		}); err != nil {
+			return result, err
+		}
+		result.AgentRunEvents++
+	}
+
+	sessions, err := s.Queries.ListInterruptedReviewSessions(ctx)
+	if err != nil {
+		return result, fmt.Errorf("list interrupted review sessions: %w", err)
+	}
+	result.InterruptedSessions = len(sessions)
+	for _, session := range sessions {
+		switch session.Status {
+		case StatusCanceling:
+			updated, err := s.reconcileSessionStatus(ctx, session, StatusCanceled)
+			if err != nil {
+				return result, err
+			}
+			result.SessionsCanceled++
+			if err := s.appendEvent(ctx, appendEventParams{
+				ReviewSessionID: updated.ID,
+				Type:            "ReviewSessionCanceled",
+				Level:           "warn",
+				Payload: map[string]any{
+					"previous_status": session.Status,
+					"status":          updated.Status,
+					"reason":          "backend restarted while cancellation was pending",
+				},
+			}); err != nil {
+				return result, err
+			}
+			result.SessionEvents++
+		case StatusQueued, StatusRunning:
+			updated, err := s.reconcileSessionStatus(ctx, session, StatusPaused)
+			if err != nil {
+				return result, err
+			}
+			result.SessionsPaused++
+			if err := s.appendEvent(ctx, appendEventParams{
+				ReviewSessionID: updated.ID,
+				Type:            "ReviewSessionReconciled",
+				Level:           "warn",
+				Payload: map[string]any{
+					"previous_status": session.Status,
+					"status":          updated.Status,
+					"resume_from":     lastCompletedPhaseName(s.loadCheckpointBestEffort(ctx, updated.ID).CompletedPhases),
+					"reason":          "backend restarted before the local review session reached a terminal state",
+				},
+			}); err != nil {
+				return result, err
+			}
+			result.SessionEvents++
+		}
+	}
+	return result, nil
 }
 
 func (s *Service) Cancel(ctx context.Context, reviewSessionID string) (dbgen.ReviewSession, error) {
@@ -369,6 +513,7 @@ func (s *Service) Resume(ctx context.Context, reviewSessionID string) (dbgen.Rev
 	if err := s.validate(); err != nil {
 		return dbgen.ReviewSession{}, err
 	}
+	ctx = contextOrBackground(ctx)
 	session, err := s.Transition(ctx, reviewSessionID, StatusRunning)
 	if err != nil {
 		return dbgen.ReviewSession{}, err
@@ -381,6 +526,13 @@ func (s *Service) Resume(ctx context.Context, reviewSessionID string) (dbgen.Rev
 		},
 	}); err != nil {
 		return dbgen.ReviewSession{}, err
+	}
+	if s.registerActiveSession(session.ID) {
+		go func() {
+			defer s.unregisterActiveSession(session.ID)
+			bg := s.background()
+			_ = s.handleRunError(bg, session.ID, s.runWorkflow(bg, session))
+		}()
 	}
 	return session, nil
 }
@@ -452,6 +604,69 @@ func CanTransition(current string, next string) bool {
 	default:
 		return false
 	}
+}
+
+func (s *Service) cancelInterruptedAgentRun(ctx context.Context, run dbgen.AgentRun) (dbgen.AgentRun, error) {
+	if run.Status != agentrun.RunStatusQueued && run.Status != agentrun.RunStatusRunning {
+		return run, nil
+	}
+	now := s.now().Format(time.RFC3339Nano)
+	completedAt := nullableString(now)
+	durationMs := run.DurationMs
+	if run.StartedAt.Valid {
+		if startedAt, err := time.Parse(time.RFC3339Nano, run.StartedAt.String); err == nil {
+			durationMs = sql.NullInt64{Int64: maxInt64(0, s.now().Sub(startedAt).Milliseconds()), Valid: true}
+		}
+	}
+	updated, err := s.Queries.UpdateAgentRunStatus(ctx, dbgen.UpdateAgentRunStatusParams{
+		ID:                     run.ID,
+		Status:                 agentrun.RunStatusCanceled,
+		StartedAt:              run.StartedAt,
+		CompletedAt:            completedAt,
+		DurationMs:             durationMs,
+		ExitCode:               run.ExitCode,
+		StdoutArtifactID:       run.StdoutArtifactID,
+		StderrArtifactID:       run.StderrArtifactID,
+		ParsedOutputArtifactID: run.ParsedOutputArtifactID,
+		ErrorCode:              nullableString("app_restarted"),
+		ErrorMessage:           nullableString("backend restarted before the local agent run reached a terminal state"),
+		MetadataJson:           run.MetadataJson,
+	})
+	if err != nil {
+		return dbgen.AgentRun{}, fmt.Errorf("cancel interrupted agent run %s: %w", run.ID, err)
+	}
+	return updated, nil
+}
+
+func (s *Service) reconcileSessionStatus(ctx context.Context, current dbgen.ReviewSession, next string) (dbgen.ReviewSession, error) {
+	now := s.now().Format(time.RFC3339Nano)
+	completedAt := current.CompletedAt
+	if terminalStatus(next) {
+		completedAt = nullableString(now)
+	}
+	updated, err := s.Queries.UpdateReviewSessionStatusIfCurrent(ctx, dbgen.UpdateReviewSessionStatusIfCurrentParams{
+		Status:      next,
+		StartedAt:   current.StartedAt,
+		CompletedAt: completedAt,
+		UpdatedAt:   now,
+		ID:          current.ID,
+		Status_2:    current.Status,
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return dbgen.ReviewSession{}, fmt.Errorf("%w: %s -> %s", ErrInvalidStatusTransition, current.Status, next)
+		}
+		return dbgen.ReviewSession{}, fmt.Errorf("reconcile review session %s: %w", current.ID, err)
+	}
+	return updated, nil
+}
+
+func (s *Service) loadCheckpointBestEffort(ctx context.Context, reviewSessionID string) Checkpoint {
+	checkpoint, err := s.LoadCheckpoint(ctx, reviewSessionID)
+	if err != nil {
+		return Checkpoint{}
+	}
+	return checkpoint
 }
 
 func (s *Service) LoadCheckpoint(ctx context.Context, reviewSessionID string) (Checkpoint, error) {
@@ -605,7 +820,10 @@ func (s *Service) run(ctx context.Context, reviewSessionID string) error {
 	}); err != nil {
 		return err
 	}
+	return s.runWorkflow(ctx, session)
+}
 
+func (s *Service) runWorkflow(ctx context.Context, session dbgen.ReviewSession) error {
 	repository, err := s.Queries.GetRepository(ctx, session.RepositoryID)
 	if err != nil {
 		return fmt.Errorf("read repository: %w", err)
@@ -622,8 +840,17 @@ func (s *Service) run(ctx context.Context, reviewSessionID string) error {
 		return ErrNoEnabledReviewAgents
 	}
 
+	checkpoint, err := s.LoadCheckpoint(ctx, session.ID)
+	if err != nil {
+		return err
+	}
 	runContexts := make([]runContext, 0, len(sessionAgents))
-	if err := s.withPhase(ctx, session.ID, PhaseBuildContext, func() error {
+	if phaseCompleted(checkpoint.CompletedPhases, PhaseBuildContext) {
+		runContexts, err = s.loadRunContextsFromPersistedBundles(ctx, session, repository, workspace, sessionAgents)
+		if err != nil {
+			return err
+		}
+	} else if err := s.withPhase(ctx, session.ID, PhaseBuildContext, func() error {
 		for _, sessionAgent := range sessionAgents {
 			agentConfig, err := s.Queries.GetAgentConfig(ctx, sessionAgent.AgentConfigID)
 			if err != nil {
@@ -662,6 +889,7 @@ func (s *Service) run(ctx context.Context, reviewSessionID string) error {
 				SessionAgent: sessionAgent,
 				AgentConfig:  agentConfig,
 				Bundle:       built.Bundle,
+				BundleText:   contextbundle.RenderBundle(built.Bundle),
 			})
 		}
 		return nil
@@ -677,10 +905,50 @@ func (s *Service) run(ctx context.Context, reviewSessionID string) error {
 		return err
 	}
 
+	var scout localReviewScout
+	if phaseCompleted(checkpoint.CompletedPhases, PhaseScoutRisk) {
+		scout, err = s.buildLocalReviewScout(ctx, session, repository)
+		if err != nil {
+			return err
+		}
+	} else if err := s.withPhase(ctx, session.ID, PhaseScoutRisk, func() error {
+		var buildErr error
+		scout, buildErr = s.buildLocalReviewScout(ctx, session, repository)
+		if buildErr != nil {
+			return buildErr
+		}
+		return s.recordLocalReviewScout(ctx, session, scout)
+	}); err != nil {
+		return err
+	}
+	for i := range runContexts {
+		runContexts[i].Scout = scout
+	}
+	if canceled, err := s.cancellationRequested(ctx, session.ID); err != nil {
+		return err
+	} else if canceled {
+		return s.completeCanceled(ctx, session.ID)
+	}
+	if err := s.waitWhilePaused(ctx, session.ID); err != nil {
+		return err
+	}
+
 	failedRuns := 0
 	succeededRuns := 0
 	runResults := []agentrun.RunResult{}
-	if err := s.withPhase(ctx, session.ID, PhaseRunAgents, func() error {
+	if phaseCompleted(checkpoint.CompletedPhases, PhaseRunAgents) {
+		runResults, err = s.loadReviewAgentRunResults(ctx, session.ID)
+		if err != nil {
+			return err
+		}
+		for _, result := range runResults {
+			if result.Run.Status == agentrun.RunStatusSucceeded {
+				succeededRuns++
+			} else {
+				failedRuns++
+			}
+		}
+	} else if err := s.withPhase(ctx, session.ID, PhaseRunAgents, func() error {
 		results, err := s.runAgents(ctx, runContexts)
 		if err != nil {
 			return err
@@ -736,6 +1004,9 @@ func (s *Service) run(ctx context.Context, reviewSessionID string) error {
 		}
 		if err := s.waitWhilePaused(ctx, session.ID); err != nil {
 			return err
+		}
+		if phaseCompleted(checkpoint.CompletedPhases, phase) {
+			continue
 		}
 		runPhase := func() error { return nil }
 		switch phase {
@@ -1506,6 +1777,367 @@ func agentCapabilities(config dbgen.AgentConfig) (agents.AgentCapabilities, erro
 	return capabilities, nil
 }
 
+func (s *Service) buildLocalReviewScout(ctx context.Context, session dbgen.ReviewSession, repository dbgen.Repository) (localReviewScout, error) {
+	files, err := s.Queries.ListChangedFilesBySnapshot(ctx, session.SnapshotID)
+	if err != nil {
+		return localReviewScout{}, fmt.Errorf("list changed files for local scout: %w", err)
+	}
+	return assessLocalReviewScout(session, repository, files, s.now()), nil
+}
+
+func (s *Service) recordLocalReviewScout(ctx context.Context, session dbgen.ReviewSession, scout localReviewScout) error {
+	artifactID := sql.NullString{}
+	if s.Artifacts != nil {
+		content, err := json.MarshalIndent(scout, "", "  ")
+		if err != nil {
+			return fmt.Errorf("encode local scout artifact: %w", err)
+		}
+		metadata, err := json.Marshal(map[string]any{
+			"review_session_id": session.ID,
+			"phase":             PhaseScoutRisk,
+			"source":            "local_scout",
+		})
+		if err != nil {
+			return fmt.Errorf("encode local scout artifact metadata: %w", err)
+		}
+		saved, err := s.Artifacts.Save(ctx, artifact.SaveParams{
+			ID:              s.artifactID(),
+			WorkspaceID:     session.WorkspaceID,
+			ReviewSessionID: nullableString(session.ID),
+			Kind:            "review_scout",
+			RelativePath:    filepath.ToSlash(filepath.Join("review-scout", session.ID+".json")),
+			ContentType:     "application/json",
+			MetadataJSON:    string(metadata),
+			CreatedAt:       s.now().Format(time.RFC3339Nano),
+		}, content)
+		if err != nil {
+			return fmt.Errorf("save local scout artifact: %w", err)
+		}
+		artifactID = nullableEventString(saved.ID)
+	}
+	return s.appendEvent(ctx, appendEventParams{
+		ReviewSessionID: session.ID,
+		Type:            "ReviewScoutCompleted",
+		ArtifactID:      artifactID,
+		Payload: map[string]any{
+			"phase":       PhaseScoutRisk,
+			"risk_tier":   scout.OverallRisk,
+			"risk_score":  scout.RiskScore,
+			"profiles":    scout.Profiles,
+			"lead_count":  len(scout.Leads),
+			"summary":     scout.Summary,
+			"artifact_id": nullableValue(artifactID),
+		},
+	})
+}
+
+func assessLocalReviewScout(session dbgen.ReviewSession, repository dbgen.Repository, files []dbgen.ChangedFile, now time.Time) localReviewScout {
+	profileSet := map[string]bool{}
+	leads := make([]localReviewLead, 0, len(files))
+	ignored := make([]localIgnoredArea, 0)
+	maxScore := 0
+	totalRisk := 0
+	focus := strings.ToLower(session.FocusPrompt.String)
+
+	for _, file := range files {
+		path := strings.TrimSpace(file.Path)
+		if path == "" {
+			continue
+		}
+		lowerPath := strings.ToLower(path)
+		if file.IsExcluded != 0 {
+			ignored = append(ignored, localIgnoredArea{Path: path, Reason: "excluded by context visibility policy"})
+			continue
+		}
+		if file.IsBinary != 0 {
+			ignored = append(ignored, localIgnoredArea{Path: path, Reason: "binary file"})
+			continue
+		}
+		if file.IsGenerated != 0 {
+			ignored = append(ignored, localIgnoredArea{Path: path, Reason: "generated file"})
+			continue
+		}
+
+		score := 1
+		signals := []string{}
+		suggestedReviewer := "correctness_reviewer"
+		addSignal := func(profile string, signal string, weight int) {
+			if profile != "" {
+				profileSet[profile] = true
+			}
+			signals = append(signals, signal)
+			score += weight
+		}
+
+		switch {
+		case containsAny(lowerPath, "auth", "permission", "rbac", "jwt", "token", "secret", "crypto", "oauth", "acl", "security"):
+			addSignal("security", "security-sensitive path", 4)
+			suggestedReviewer = "security_reviewer"
+		case containsAny(lowerPath, "payment", "billing", "price", "quote", "trade", "wallet", "reward", "settlement"):
+			addSignal("business_logic", "money or quote path", 4)
+			suggestedReviewer = "correctness_reviewer"
+		}
+		if containsAny(lowerPath, "migration", "schema", ".sql", "database", "/db/", "models", "repository") {
+			addSignal("data_integrity", "data or schema path", 3)
+			if suggestedReviewer == "correctness_reviewer" {
+				suggestedReviewer = "data_reviewer"
+			}
+		}
+		if containsAny(lowerPath, "worker", "queue", "lock", "mutex", "goroutine", "async", "thread", "scheduler", "concurrent") {
+			addSignal("reliability", "async or concurrency path", 3)
+			if suggestedReviewer == "correctness_reviewer" {
+				suggestedReviewer = "reliability_reviewer"
+			}
+		}
+		if containsAny(lowerPath, "api", "handler", "router", "controller", "client", "proto", "contract", "webhook") {
+			addSignal("api_contract", "API boundary path", 2)
+		}
+		if containsAny(lowerPath, "config", ".github/workflows", "helm", "values.yaml", "dockerfile", "terraform") {
+			addSignal("release", "configuration or release path", 2)
+			if suggestedReviewer == "correctness_reviewer" {
+				suggestedReviewer = "release_reviewer"
+			}
+		}
+		if strings.EqualFold(file.Status, "deleted") {
+			addSignal("correctness", "deleted file", 2)
+		}
+		churn := file.Additions + file.Deletions
+		switch {
+		case churn >= 300:
+			addSignal("complexity", "large diff", 3)
+		case churn >= 80:
+			addSignal("complexity", "medium-sized diff", 1)
+		}
+		if isTestPath(lowerPath) {
+			score--
+			profileSet["tests"] = true
+			signals = append(signals, "test path")
+			if suggestedReviewer == "correctness_reviewer" {
+				suggestedReviewer = "test_reviewer"
+			}
+		}
+		if isDocumentationPath(lowerPath) {
+			score -= 2
+			signals = append(signals, "documentation-only-looking path")
+		}
+		if focus != "" && focusMatchesPath(focus, lowerPath) {
+			addSignal("focus", "matches user focus prompt", 2)
+		}
+		if score < 0 {
+			score = 0
+		}
+		totalRisk += score
+		if score > maxScore {
+			maxScore = score
+		}
+		if score < 3 && len(signals) == 0 {
+			continue
+		}
+		startLine, endLine := firstChangedLineRange(file.LineRangesJson)
+		leads = append(leads, localReviewLead{
+			Path:              path,
+			Status:            file.Status,
+			StartLine:         startLine,
+			EndLine:           endLine,
+			Additions:         file.Additions,
+			Deletions:         file.Deletions,
+			RiskScore:         score,
+			SeverityHint:      severityHintForScore(score),
+			SuggestedReviewer: suggestedReviewer,
+			Reason:            scoutReason(path, signals, score),
+			Signals:           dedupeStrings(signals),
+		})
+	}
+
+	sort.SliceStable(leads, func(i, j int) bool {
+		if leads[i].RiskScore != leads[j].RiskScore {
+			return leads[i].RiskScore > leads[j].RiskScore
+		}
+		return leads[i].Path < leads[j].Path
+	})
+	if len(leads) > 8 {
+		leads = leads[:8]
+	}
+	profiles := mapKeys(profileSet)
+	riskScore := maxScore + minInt(totalRisk/6, 5) + minInt(len(files)/10, 3)
+	tier := "lite"
+	switch {
+	case riskScore >= 9 || profileSet["security"] || profileSet["business_logic"]:
+		tier = "full"
+	case riskScore >= 5 || len(leads) >= 3:
+		tier = "standard"
+	}
+	return localReviewScout{
+		SchemaVersion: "local_review_scout.v1",
+		OverallRisk:   tier,
+		RiskScore:     riskScore,
+		Profiles:      profiles,
+		Summary:       scoutSummary(repository, tier, leads, len(files)),
+		Leads:         leads,
+		IgnoredAreas:  ignored,
+		GeneratedAt:   now.UTC().Format(time.RFC3339Nano),
+	}
+}
+
+func renderLocalScoutPrompt(scout localReviewScout) string {
+	if strings.TrimSpace(scout.SchemaVersion) == "" {
+		return ""
+	}
+	var builder strings.Builder
+	builder.WriteString("# Local Scout\n\n")
+	builder.WriteString("These deterministic local signals are not findings. Use them only to prioritize investigation, then verify or discard each lead from code evidence.\n\n")
+	builder.WriteString("Risk tier: ")
+	builder.WriteString(scout.OverallRisk)
+	builder.WriteString(" (score ")
+	builder.WriteString(fmt.Sprintf("%d", scout.RiskScore))
+	builder.WriteString(")\n")
+	if len(scout.Profiles) > 0 {
+		builder.WriteString("Profiles: ")
+		builder.WriteString(strings.Join(scout.Profiles, ", "))
+		builder.WriteByte('\n')
+	}
+	if strings.TrimSpace(scout.Summary) != "" {
+		builder.WriteString("Summary: ")
+		builder.WriteString(scout.Summary)
+		builder.WriteByte('\n')
+	}
+	builder.WriteByte('\n')
+	if len(scout.Leads) == 0 {
+		builder.WriteString("- No high-risk local leads were found; still review the changed lines normally.\n\n")
+		return builder.String()
+	}
+	builder.WriteString("Investigation leads:\n")
+	for _, lead := range scout.Leads {
+		builder.WriteString("- ")
+		builder.WriteString(lead.Path)
+		if lead.StartLine > 0 {
+			builder.WriteString(fmt.Sprintf(":L%d", lead.StartLine))
+			if lead.EndLine > lead.StartLine {
+				builder.WriteString(fmt.Sprintf("-L%d", lead.EndLine))
+			}
+		}
+		builder.WriteString(" - ")
+		builder.WriteString(lead.SeverityHint)
+		builder.WriteString(", ")
+		builder.WriteString(lead.SuggestedReviewer)
+		builder.WriteString(": ")
+		builder.WriteString(lead.Reason)
+		if len(lead.Signals) > 0 {
+			builder.WriteString(" Signals: ")
+			builder.WriteString(strings.Join(lead.Signals, "; "))
+		}
+		builder.WriteByte('\n')
+	}
+	builder.WriteByte('\n')
+	return builder.String()
+}
+
+func containsAny(value string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(value, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func isTestPath(path string) bool {
+	return strings.Contains(path, "_test.") ||
+		strings.Contains(path, ".test.") ||
+		strings.Contains(path, ".spec.") ||
+		strings.Contains(path, "/test/") ||
+		strings.Contains(path, "/tests/")
+}
+
+func isDocumentationPath(path string) bool {
+	return strings.HasSuffix(path, ".md") ||
+		strings.HasSuffix(path, ".mdx") ||
+		strings.HasSuffix(path, ".txt") ||
+		strings.HasPrefix(path, "docs/")
+}
+
+func focusMatchesPath(focus string, path string) bool {
+	for _, token := range strings.FieldsFunc(focus, func(r rune) bool {
+		return !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' || r == '/')
+	}) {
+		token = strings.TrimSpace(strings.ToLower(token))
+		if len(token) >= 3 && strings.Contains(path, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func firstChangedLineRange(raw string) (int64, int64) {
+	var ranges [][]int64
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &ranges); err != nil || len(ranges) == 0 || len(ranges[0]) == 0 {
+		return 0, 0
+	}
+	start := ranges[0][0]
+	end := start
+	if len(ranges[0]) > 1 {
+		end = ranges[0][1]
+	}
+	if end < start {
+		end = start
+	}
+	return start, end
+}
+
+func severityHintForScore(score int) string {
+	switch {
+	case score >= 8:
+		return "high"
+	case score >= 5:
+		return "medium"
+	default:
+		return "low"
+	}
+}
+
+func scoutReason(path string, signals []string, score int) string {
+	if len(signals) == 0 {
+		return fmt.Sprintf("%s changed with local risk score %d", path, score)
+	}
+	return fmt.Sprintf("Local scout ranked this changed file at %d because %s.", score, strings.Join(dedupeStrings(signals), ", "))
+}
+
+func scoutSummary(repository dbgen.Repository, tier string, leads []localReviewLead, changedFileCount int) string {
+	repoName := strings.TrimSpace(repository.Name)
+	if repoName == "" {
+		repoName = "repository"
+	}
+	if len(leads) == 0 {
+		return fmt.Sprintf("%s has %d changed file(s); no high-risk local lead exceeded the scout threshold.", repoName, changedFileCount)
+	}
+	return fmt.Sprintf("%s local scout classified this review as %s with %d investigation lead(s). Top lead: %s.", repoName, tier, len(leads), leads[0].Path)
+}
+
+func dedupeStrings(values []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
+}
+
+func mapKeys(values map[string]bool) []string {
+	keys := make([]string, 0, len(values))
+	for key, ok := range values {
+		if ok && strings.TrimSpace(key) != "" {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func (s *Service) reviewPrompt(item runContext) string {
 	var builder strings.Builder
 	builder.WriteString(strings.TrimSpace(s.promptTemplate()))
@@ -1531,7 +2163,14 @@ func (s *Service) reviewPrompt(item runContext) string {
 		builder.WriteByte('\n')
 	}
 	builder.WriteString("\n")
-	builder.WriteString(contextbundle.RenderBundle(item.Bundle))
+	if scoutPrompt := renderLocalScoutPrompt(item.Scout); scoutPrompt != "" {
+		builder.WriteString(scoutPrompt)
+	}
+	if strings.TrimSpace(item.BundleText) != "" {
+		builder.WriteString(item.BundleText)
+	} else {
+		builder.WriteString(contextbundle.RenderBundle(item.Bundle))
+	}
 	return builder.String()
 }
 
@@ -1575,6 +2214,89 @@ func (s *Service) enabledSessionAgents(ctx context.Context, reviewSessionID stri
 		enabled = append(enabled, agent)
 	}
 	return enabled, nil
+}
+
+func (s *Service) loadRunContextsFromPersistedBundles(ctx context.Context, session dbgen.ReviewSession, repository dbgen.Repository, workspace dbgen.Workspace, sessionAgents []dbgen.ReviewSessionAgent) ([]runContext, error) {
+	rows, err := s.Queries.ListContextBundlesBySession(ctx, session.ID)
+	if err != nil {
+		return nil, fmt.Errorf("list persisted context bundles: %w", err)
+	}
+	bundleByAgentConfig := map[string]dbgen.ContextBundle{}
+	for _, row := range rows {
+		if row.Scope != string(contextbundle.ScopeReview) || !row.AgentConfigID.Valid {
+			continue
+		}
+		if _, exists := bundleByAgentConfig[row.AgentConfigID.String]; exists {
+			continue
+		}
+		bundleByAgentConfig[row.AgentConfigID.String] = row
+	}
+	runContexts := make([]runContext, 0, len(sessionAgents))
+	for _, sessionAgent := range sessionAgents {
+		agentConfig, err := s.Queries.GetAgentConfig(ctx, sessionAgent.AgentConfigID)
+		if err != nil {
+			return nil, fmt.Errorf("read agent config %s: %w", sessionAgent.AgentConfigID, err)
+		}
+		row, ok := bundleByAgentConfig[agentConfig.ID]
+		if !ok {
+			return nil, fmt.Errorf("resume review session %s: persisted context bundle for agent %s was not found", session.ID, agentConfig.ID)
+		}
+		itemRows, err := s.Queries.ListContextItemsByBundle(ctx, row.ID)
+		if err != nil {
+			return nil, fmt.Errorf("list context bundle items %s: %w", row.ID, err)
+		}
+		bundle, err := contextbundle.BundleFromRows(row, itemRows)
+		if err != nil {
+			return nil, fmt.Errorf("load context bundle %s: %w", row.ID, err)
+		}
+		if !row.ArtifactID.Valid {
+			return nil, fmt.Errorf("resume review session %s: context bundle %s has no rendered artifact", session.ID, row.ID)
+		}
+		rendered, _, err := s.Artifacts.Read(ctx, row.ArtifactID.String)
+		if err != nil {
+			return nil, fmt.Errorf("read context bundle artifact %s: %w", row.ArtifactID.String, err)
+		}
+		runContexts = append(runContexts, runContext{
+			Session:      session,
+			Repository:   repository,
+			Workspace:    workspace,
+			SessionAgent: sessionAgent,
+			AgentConfig:  agentConfig,
+			Bundle:       bundle,
+			BundleText:   string(rendered),
+		})
+	}
+	return runContexts, nil
+}
+
+func (s *Service) loadReviewAgentRunResults(ctx context.Context, reviewSessionID string) ([]agentrun.RunResult, error) {
+	runs, err := s.Queries.ListAgentRunsBySession(ctx, reviewSessionID)
+	if err != nil {
+		return nil, fmt.Errorf("list persisted agent runs: %w", err)
+	}
+	results := make([]agentrun.RunResult, 0, len(runs))
+	for _, run := range runs {
+		if !agentRunMetadataPhase(run.MetadataJson, PhaseRunAgents) {
+			continue
+		}
+		switch run.Status {
+		case agentrun.RunStatusSucceeded, agentrun.RunStatusFailed, agentrun.RunStatusTimedOut, agentrun.RunStatusCanceled, agentrun.RunStatusOutputInvalid:
+			results = append(results, agentrun.RunResult{Run: run})
+		}
+	}
+	if len(results) == 0 {
+		return nil, fmt.Errorf("resume review session %s: completed agent phase has no persisted terminal review agent runs", reviewSessionID)
+	}
+	return results, nil
+}
+
+func agentRunMetadataPhase(raw string, phase string) bool {
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &metadata); err != nil {
+		return false
+	}
+	value, _ := metadata["phase"].(string)
+	return strings.TrimSpace(value) == phase
 }
 
 type appendEventParams struct {
@@ -1711,6 +2433,7 @@ func workflowEventType(eventType agents.EventType) string {
 func workflowPhases() []string {
 	return []string{
 		PhaseBuildContext,
+		PhaseScoutRisk,
 		PhaseRunAgents,
 		PhaseNormalizeOutputs,
 		PhaseDeduplicate,
@@ -1754,6 +2477,16 @@ func phaseCompleted(completedPhases []string, phase string) bool {
 		}
 	}
 	return false
+}
+
+func lastCompletedPhaseName(completedPhases []string) string {
+	last := ""
+	for _, phase := range workflowPhases() {
+		if phaseCompleted(completedPhases, phase) {
+			last = phase
+		}
+	}
+	return last
 }
 
 func terminalStatus(status string) bool {
@@ -1866,6 +2599,33 @@ func (s *Service) validateQueries() error {
 		return fmt.Errorf("%w: queries are required", ErrServiceNotConfigured)
 	}
 	return nil
+}
+
+func (s *Service) registerActiveSession(reviewSessionID string) bool {
+	reviewSessionID = strings.TrimSpace(reviewSessionID)
+	if reviewSessionID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.activeSessions == nil {
+		s.activeSessions = map[string]struct{}{}
+	}
+	if _, exists := s.activeSessions[reviewSessionID]; exists {
+		return false
+	}
+	s.activeSessions[reviewSessionID] = struct{}{}
+	return true
+}
+
+func (s *Service) unregisterActiveSession(reviewSessionID string) {
+	reviewSessionID = strings.TrimSpace(reviewSessionID)
+	if reviewSessionID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.activeSessions, reviewSessionID)
 }
 
 func (s *Service) background() context.Context {
@@ -2156,6 +2916,13 @@ func absInt64(value int64) int64 {
 
 func maxInt(a int, b int) int {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+func minInt(a int, b int) int {
+	if a < b {
 		return a
 	}
 	return b

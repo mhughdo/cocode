@@ -556,6 +556,69 @@ describe("ApiClient", () => {
     }
   });
 
+  it("reconnects transient review event streams from the last received sequence", async () => {
+    const firstEvent = { ...reviewEventFixture, id: "event_3", sequence: 3 };
+    const secondEvent = { ...reviewEventFixture, id: "event_4", sequence: 4 };
+    const seen: Array<{ lastEventId: string | null; url: string }> = [];
+    const fetcher = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const headers = new Headers(init?.headers);
+        const url = String(input);
+        seen.push({
+          lastEventId: headers.get("Last-Event-ID"),
+          url,
+        });
+        if (seen.length === 1) {
+          return streamResponseWithError(
+            [
+              "event: review.event",
+              `data: ${JSON.stringify(firstEvent)}`,
+              "",
+              "",
+            ].join("\n"),
+            new Error("socket closed"),
+          );
+        }
+        if (
+          seen.length === 2 &&
+          url.endsWith("/api/review-sessions/session_1/events?after_sequence=3")
+        ) {
+          return streamResponse(
+            [
+              "event: review.event",
+              `data: ${JSON.stringify(secondEvent)}`,
+              "",
+              "",
+            ].join("\n"),
+          );
+        }
+        return jsonResponse({ data: null, error: null }, 404);
+      },
+    );
+    const client = createCocodeClient({
+      baseUrl: "http://127.0.0.1:17658",
+      authToken: "local-token",
+      fetch: fetcher,
+    });
+
+    const events: unknown[] = [];
+    await client.streamReviewEvents("session_1", {
+      onEvent: (event) => events.push(event),
+    });
+
+    expect(events).toEqual([firstEvent, secondEvent]);
+    expect(seen).toEqual([
+      {
+        lastEventId: null,
+        url: "http://127.0.0.1:17658/api/review-sessions/session_1/events",
+      },
+      {
+        lastEventId: "3",
+        url: "http://127.0.0.1:17658/api/review-sessions/session_1/events?after_sequence=3",
+      },
+    ]);
+  });
+
   it("manages agent configs through typed helpers", async () => {
     const seen: { url: string; method: string; body: unknown }[] = [];
     const fetcher = vi.fn(
@@ -999,6 +1062,27 @@ function streamResponse(body: string): Response {
   );
 }
 
+function streamResponseWithError(body: string, error: Error): Response {
+  const encoder = new TextEncoder();
+  let sentBody = false;
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (!sentBody) {
+          sentBody = true;
+          controller.enqueue(encoder.encode(body));
+          return;
+        }
+        controller.error(error);
+      },
+    }),
+    {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    },
+  );
+}
+
 const workspaceFixture = {
   id: "workspace_1",
   name: "cocode",
@@ -1069,6 +1153,9 @@ const findingFixture = {
   confidence: 0.91,
   verification_status: "verified",
   decision_status: "needs_triage",
+  trust_state: "verifier_survived",
+  publishable: false,
+  publish_blockers: ["finding must be accepted by a human"],
   primary_path: "src/app.ts",
   primary_start_line: 42,
   primary_end_line: 45,

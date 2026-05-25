@@ -24,6 +24,7 @@ type RepoSpec struct {
 	ExpectedFindings []ExpectedFinding
 	Detectors        []string
 	FileExpectations []FileExpectation
+	ReviewOutcomes   []ReviewOutcome
 }
 
 type ExpectedFinding struct {
@@ -47,17 +48,27 @@ type Report struct {
 }
 
 type Metrics struct {
-	RepoCount            int      `json:"repo_count"`
-	ExpectedFindings     int      `json:"expected_findings"`
-	ActualFindings       int      `json:"actual_findings"`
-	AcceptedExpected     int      `json:"accepted_expected"`
-	MissingExpected      int      `json:"missing_expected"`
-	FalsePositives       int      `json:"false_positives"`
-	PrecisionIsh         float64  `json:"precision_ish"`
-	AcceptedExpectedRate float64  `json:"accepted_expected_rate"`
-	DurationMs           int64    `json:"duration_ms"`
-	CostUSD              *float64 `json:"cost_usd"`
-	CostSource           string   `json:"cost_source"`
+	RepoCount             int      `json:"repo_count"`
+	ExpectedFindings      int      `json:"expected_findings"`
+	ActualFindings        int      `json:"actual_findings"`
+	AcceptedExpected      int      `json:"accepted_expected"`
+	MissingExpected       int      `json:"missing_expected"`
+	FalsePositives        int      `json:"false_positives"`
+	PrecisionIsh          float64  `json:"precision_ish"`
+	AcceptedExpectedRate  float64  `json:"accepted_expected_rate"`
+	ReviewedFindings      int      `json:"reviewed_findings"`
+	AcceptedFindings      int      `json:"accepted_findings"`
+	DismissedFindings     int      `json:"dismissed_findings"`
+	PublishableFindings   int      `json:"publishable_findings"`
+	SuppressedFindings    int      `json:"suppressed_findings"`
+	NotActionableFindings int      `json:"not_actionable_findings"`
+	AcceptedFindingRate   float64  `json:"accepted_finding_rate"`
+	FalsePositiveRate     float64  `json:"false_positive_rate"`
+	SuppressionRate       float64  `json:"suppression_rate"`
+	ReviewOutcomeSource   string   `json:"review_outcome_source"`
+	DurationMs            int64    `json:"duration_ms"`
+	CostUSD               *float64 `json:"cost_usd"`
+	CostSource            string   `json:"cost_source"`
 }
 
 type RepoReport struct {
@@ -68,6 +79,8 @@ type RepoReport struct {
 	AcceptedExpectedIDs []string          `json:"accepted_expected_ids"`
 	MissingExpectedIDs  []string          `json:"missing_expected_ids"`
 	FalsePositiveIDs    []string          `json:"false_positive_ids"`
+	ReviewOutcomes      []ReviewOutcome   `json:"review_outcomes,omitempty"`
+	ReviewMetrics       ReviewMetrics     `json:"review_metrics"`
 	FileExpectations    []FileExpectation `json:"file_expectations,omitempty"`
 	FileResults         []FileCheckResult `json:"file_results,omitempty"`
 	DurationMs          int64             `json:"duration_ms"`
@@ -84,6 +97,25 @@ type Finding struct {
 	MatchTerms []string `json:"match_terms"`
 }
 
+type ReviewOutcome struct {
+	FindingID   string `json:"finding_id"`
+	Decision    string `json:"decision"`
+	Publishable bool   `json:"publishable,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+}
+
+type ReviewMetrics struct {
+	ReviewedFindings      int     `json:"reviewed_findings"`
+	AcceptedFindings      int     `json:"accepted_findings"`
+	DismissedFindings     int     `json:"dismissed_findings"`
+	PublishableFindings   int     `json:"publishable_findings"`
+	SuppressedFindings    int     `json:"suppressed_findings"`
+	NotActionableFindings int     `json:"not_actionable_findings"`
+	AcceptedFindingRate   float64 `json:"accepted_finding_rate"`
+	SuppressionRate       float64 `json:"suppression_rate"`
+	OutcomeSource         string  `json:"outcome_source"`
+}
+
 type FileCheckResult struct {
 	Path          string   `json:"path"`
 	Excluded      bool     `json:"excluded"`
@@ -98,6 +130,15 @@ const (
 	detectorAuthAdminGuard        = "auth_admin_guard"
 	detectorWebhookSignature      = "webhook_signature_validation"
 	detectorGeneratedNoiseControl = "generated_noise_control"
+
+	reviewDecisionAccepted      = "accepted"
+	reviewDecisionDismissed     = "dismissed"
+	reviewDecisionSuppressed    = "suppressed"
+	reviewDecisionNotActionable = "not_actionable"
+
+	reviewOutcomeSourceDerived  = "derived_from_detector_matches"
+	reviewOutcomeSourceExplicit = "explicit_review_outcomes"
+	reviewOutcomeSourceMixed    = "mixed"
 )
 
 var DefaultSpecs = []RepoSpec{
@@ -223,6 +264,10 @@ func runRepo(ctx context.Context, reposRoot string, spec RepoSpec, nowFunc func(
 		return RepoReport{}, err
 	}
 	acceptedExpected, missingExpected, falsePositiveIDs := matchExpected(spec.ExpectedFindings, actual)
+	reviewOutcomes, reviewMetrics, err := evaluateReviewOutcomes(spec.ReviewOutcomes, actual, acceptedExpected, falsePositiveIDs)
+	if err != nil {
+		return RepoReport{}, fmt.Errorf("review outcomes for golden repo %s: %w", name, err)
+	}
 	return RepoReport{
 		Name:                name,
 		Path:                repoPath,
@@ -231,6 +276,8 @@ func runRepo(ctx context.Context, reposRoot string, spec RepoSpec, nowFunc func(
 		AcceptedExpectedIDs: acceptedExpected,
 		MissingExpectedIDs:  missingExpected,
 		FalsePositiveIDs:    falsePositiveIDs,
+		ReviewOutcomes:      reviewOutcomes,
+		ReviewMetrics:       reviewMetrics,
 		FileExpectations:    append([]FileExpectation(nil), spec.FileExpectations...),
 		FileResults:         fileResults,
 		DurationMs:          time.Since(started).Milliseconds(),
@@ -395,6 +442,122 @@ func matchExpected(expected []ExpectedFinding, actual []Finding) ([]string, []st
 	return acceptedExpected, missingExpected, falsePositiveIDs
 }
 
+func evaluateReviewOutcomes(configured []ReviewOutcome, actual []Finding, acceptedExpectedIDs []string, falsePositiveIDs []string) ([]ReviewOutcome, ReviewMetrics, error) {
+	if len(configured) > 0 {
+		outcomes, err := validateReviewOutcomes(configured, actual)
+		if err != nil {
+			return nil, ReviewMetrics{}, err
+		}
+		return outcomes, summarizeReviewOutcomes(outcomes, reviewOutcomeSourceExplicit), nil
+	}
+	outcomes := deriveReviewOutcomes(acceptedExpectedIDs, falsePositiveIDs)
+	return outcomes, summarizeReviewOutcomes(outcomes, reviewOutcomeSourceDerived), nil
+}
+
+func validateReviewOutcomes(configured []ReviewOutcome, actual []Finding) ([]ReviewOutcome, error) {
+	actualIDs := make(map[string]bool, len(actual))
+	for _, finding := range actual {
+		actualIDs[finding.ID] = true
+	}
+	seen := make(map[string]bool, len(configured))
+	outcomes := make([]ReviewOutcome, 0, len(configured))
+	for _, outcome := range configured {
+		normalized := ReviewOutcome{
+			FindingID:   strings.TrimSpace(outcome.FindingID),
+			Decision:    strings.ToLower(strings.TrimSpace(outcome.Decision)),
+			Publishable: outcome.Publishable,
+			Reason:      strings.TrimSpace(outcome.Reason),
+		}
+		if normalized.FindingID == "" {
+			return nil, fmt.Errorf("review outcome finding_id is required")
+		}
+		if !actualIDs[normalized.FindingID] {
+			return nil, fmt.Errorf("review outcome references unknown finding %q", normalized.FindingID)
+		}
+		if seen[normalized.FindingID] {
+			return nil, fmt.Errorf("review outcome for finding %q is duplicated", normalized.FindingID)
+		}
+		seen[normalized.FindingID] = true
+		if !reviewDecisionKnown(normalized.Decision) {
+			return nil, fmt.Errorf("review outcome for finding %q has unknown decision %q", normalized.FindingID, outcome.Decision)
+		}
+		if normalized.Publishable && normalized.Decision != reviewDecisionAccepted {
+			return nil, fmt.Errorf("review outcome for finding %q is publishable without accepted decision", normalized.FindingID)
+		}
+		outcomes = append(outcomes, normalized)
+	}
+	sortReviewOutcomes(outcomes)
+	return outcomes, nil
+}
+
+func deriveReviewOutcomes(acceptedExpectedIDs []string, falsePositiveIDs []string) []ReviewOutcome {
+	outcomes := make([]ReviewOutcome, 0, len(acceptedExpectedIDs)+len(falsePositiveIDs))
+	for _, id := range acceptedExpectedIDs {
+		outcomes = append(outcomes, ReviewOutcome{
+			FindingID:   id,
+			Decision:    reviewDecisionAccepted,
+			Publishable: true,
+			Reason:      "matched expected finding",
+		})
+	}
+	for _, id := range falsePositiveIDs {
+		outcomes = append(outcomes, ReviewOutcome{
+			FindingID: id,
+			Decision:  reviewDecisionDismissed,
+			Reason:    "unmatched eval finding",
+		})
+	}
+	sortReviewOutcomes(outcomes)
+	return outcomes
+}
+
+func summarizeReviewOutcomes(outcomes []ReviewOutcome, source string) ReviewMetrics {
+	metrics := ReviewMetrics{
+		ReviewedFindings: len(outcomes),
+		OutcomeSource:    source,
+	}
+	for _, outcome := range outcomes {
+		switch outcome.Decision {
+		case reviewDecisionAccepted:
+			metrics.AcceptedFindings++
+		case reviewDecisionDismissed:
+			metrics.DismissedFindings++
+		case reviewDecisionSuppressed:
+			metrics.SuppressedFindings++
+		case reviewDecisionNotActionable:
+			metrics.NotActionableFindings++
+		}
+		if outcome.Publishable {
+			metrics.PublishableFindings++
+		}
+	}
+	if metrics.ReviewedFindings > 0 {
+		metrics.AcceptedFindingRate = float64(metrics.AcceptedFindings) / float64(metrics.ReviewedFindings)
+		metrics.SuppressionRate = float64(metrics.SuppressedFindings+metrics.NotActionableFindings) / float64(metrics.ReviewedFindings)
+	} else {
+		metrics.AcceptedFindingRate = 1
+	}
+	return metrics
+}
+
+func sortReviewOutcomes(outcomes []ReviewOutcome) {
+	sort.Slice(outcomes, func(i, j int) bool {
+		if outcomes[i].FindingID == outcomes[j].FindingID {
+			return outcomes[i].Decision < outcomes[j].Decision
+		}
+		return outcomes[i].FindingID < outcomes[j].FindingID
+	})
+}
+
+func reviewDecisionKnown(decision string) bool {
+	switch decision {
+	case reviewDecisionAccepted, reviewDecisionDismissed, reviewDecisionSuppressed, reviewDecisionNotActionable:
+		return true
+	default:
+		return false
+	}
+}
+
 func findingMatches(want ExpectedFinding, got Finding) bool {
 	if want.ID != "" && want.ID == got.ID {
 		return true
@@ -413,9 +576,11 @@ func findingMatches(want ExpectedFinding, got Finding) bool {
 
 func summarize(reports []RepoReport, duration time.Duration) Metrics {
 	metrics := Metrics{
-		RepoCount:  len(reports),
-		DurationMs: duration.Milliseconds(),
-		CostSource: "unavailable_for_static_harness",
+		RepoCount:            len(reports),
+		DurationMs:           duration.Milliseconds(),
+		CostSource:           "unavailable_for_static_harness",
+		AcceptedFindingRate:  1,
+		AcceptedExpectedRate: 1,
 	}
 	for _, report := range reports {
 		metrics.ExpectedFindings += len(report.ExpectedFindings)
@@ -423,6 +588,13 @@ func summarize(reports []RepoReport, duration time.Duration) Metrics {
 		metrics.AcceptedExpected += len(report.AcceptedExpectedIDs)
 		metrics.MissingExpected += len(report.MissingExpectedIDs)
 		metrics.FalsePositives += len(report.FalsePositiveIDs)
+		metrics.ReviewedFindings += report.ReviewMetrics.ReviewedFindings
+		metrics.AcceptedFindings += report.ReviewMetrics.AcceptedFindings
+		metrics.DismissedFindings += report.ReviewMetrics.DismissedFindings
+		metrics.PublishableFindings += report.ReviewMetrics.PublishableFindings
+		metrics.SuppressedFindings += report.ReviewMetrics.SuppressedFindings
+		metrics.NotActionableFindings += report.ReviewMetrics.NotActionableFindings
+		metrics.ReviewOutcomeSource = mergeReviewOutcomeSource(metrics.ReviewOutcomeSource, report.ReviewMetrics.OutcomeSource)
 		for _, file := range report.FileResults {
 			if !file.Matched {
 				metrics.FalsePositives++
@@ -436,10 +608,28 @@ func summarize(reports []RepoReport, duration time.Duration) Metrics {
 	}
 	if metrics.ExpectedFindings > 0 {
 		metrics.AcceptedExpectedRate = float64(metrics.AcceptedExpected) / float64(metrics.ExpectedFindings)
-	} else {
-		metrics.AcceptedExpectedRate = 1
+	}
+	if metrics.ActualFindings > 0 {
+		metrics.FalsePositiveRate = float64(metrics.FalsePositives) / float64(metrics.ActualFindings)
+	}
+	if metrics.ReviewedFindings > 0 {
+		metrics.AcceptedFindingRate = float64(metrics.AcceptedFindings) / float64(metrics.ReviewedFindings)
+		metrics.SuppressionRate = float64(metrics.SuppressedFindings+metrics.NotActionableFindings) / float64(metrics.ReviewedFindings)
+	}
+	if metrics.ReviewOutcomeSource == "" {
+		metrics.ReviewOutcomeSource = reviewOutcomeSourceDerived
 	}
 	return metrics
+}
+
+func mergeReviewOutcomeSource(current string, next string) string {
+	if current == "" {
+		return next
+	}
+	if next == "" || current == next {
+		return current
+	}
+	return reviewOutcomeSourceMixed
 }
 
 func readRepoText(repoPath string, relativePath string) (string, error) {

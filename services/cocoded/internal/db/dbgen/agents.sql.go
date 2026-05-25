@@ -427,6 +427,53 @@ func (q *Queries) ListAgentRunsBySession(ctx context.Context, reviewSessionID st
 	return items, nil
 }
 
+const listInterruptedAgentRuns = `-- name: ListInterruptedAgentRuns :many
+SELECT id, review_session_id, agent_config_id, context_bundle_id, status, role, started_at, completed_at, duration_ms, exit_code, stdout_artifact_id, stderr_artifact_id, parsed_output_artifact_id, error_code, error_message, metadata_json
+FROM agent_runs
+WHERE status IN ('queued', 'running')
+ORDER BY review_session_id ASC, started_at ASC, id ASC
+`
+
+func (q *Queries) ListInterruptedAgentRuns(ctx context.Context) ([]AgentRun, error) {
+	rows, err := q.db.QueryContext(ctx, listInterruptedAgentRuns)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentRun{}
+	for rows.Next() {
+		var i AgentRun
+		if err := rows.Scan(
+			&i.ID,
+			&i.ReviewSessionID,
+			&i.AgentConfigID,
+			&i.ContextBundleID,
+			&i.Status,
+			&i.Role,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.DurationMs,
+			&i.ExitCode,
+			&i.StdoutArtifactID,
+			&i.StderrArtifactID,
+			&i.ParsedOutputArtifactID,
+			&i.ErrorCode,
+			&i.ErrorMessage,
+			&i.MetadataJson,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listReviewSessionAgents = `-- name: ListReviewSessionAgents :many
 SELECT id, review_session_id, agent_config_id, role, run_order, enabled, settings_override_json
 FROM review_session_agents

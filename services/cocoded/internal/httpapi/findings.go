@@ -64,6 +64,9 @@ type FindingResponse struct {
 	Confidence             float64                      `json:"confidence"`
 	VerificationStatus     string                       `json:"verification_status"`
 	DecisionStatus         string                       `json:"decision_status"`
+	TrustState             string                       `json:"trust_state"`
+	Publishable            bool                         `json:"publishable"`
+	PublishBlockers        []string                     `json:"publish_blockers,omitempty"`
 	PrimaryPath            string                       `json:"primary_path,omitempty"`
 	PrimaryStartLine       int64                        `json:"primary_start_line,omitempty"`
 	PrimaryEndLine         int64                        `json:"primary_end_line,omitempty"`
@@ -777,6 +780,7 @@ func findingResponse(row dbgen.Finding) FindingResponse {
 }
 
 func findingResponseWithSources(row dbgen.Finding, sources []FindingSourceAgentResponse) FindingResponse {
+	publishBlockers := findingPublishBlockers(row)
 	return FindingResponse{
 		ID:                     row.ID,
 		ReviewSessionID:        row.ReviewSessionID,
@@ -786,6 +790,9 @@ func findingResponseWithSources(row dbgen.Finding, sources []FindingSourceAgentR
 		Confidence:             row.Confidence,
 		VerificationStatus:     row.VerificationStatus,
 		DecisionStatus:         row.DecisionStatus,
+		TrustState:             findingTrustState(row, publishBlockers),
+		Publishable:            len(publishBlockers) == 0,
+		PublishBlockers:        publishBlockers,
 		PrimaryPath:            nullableValue(row.PrimaryPath),
 		PrimaryStartLine:       nullableInt64Value(row.PrimaryStartLine),
 		PrimaryEndLine:         nullableInt64Value(row.PrimaryEndLine),
@@ -800,6 +807,62 @@ func findingResponseWithSources(row dbgen.Finding, sources []FindingSourceAgentR
 		UpdatedAt:              row.UpdatedAt,
 		SourceAgents:           sources,
 	}
+}
+
+func findingTrustState(row dbgen.Finding, publishBlockers []string) string {
+	if row.DecisionStatus == "accepted" {
+		if len(publishBlockers) == 0 {
+			return "publishable"
+		}
+		return "human_accepted"
+	}
+	switch row.VerificationStatus {
+	case evidencepkg.StatusVerified:
+		return "verifier_survived"
+	case evidencepkg.StatusLocallySupported, evidencepkg.StatusPlausible:
+		return "locally_supported"
+	case evidencepkg.StatusLikelyFalsePositive, evidencepkg.StatusDuplicate, evidencepkg.StatusNotActionable:
+		return row.VerificationStatus
+	}
+	if findingHasAnchor(row) {
+		return "anchored"
+	}
+	return "raw"
+}
+
+func findingPublishBlockers(row dbgen.Finding) []string {
+	blockers := []string{}
+	if row.DecisionStatus != "accepted" {
+		blockers = append(blockers, "finding must be accepted by a human")
+	}
+	if !findingHasAnchor(row) {
+		blockers = append(blockers, "finding needs an exact changed-line anchor")
+	}
+	if strings.TrimSpace(nullableValue(row.EvidenceSummary)) == "" {
+		blockers = append(blockers, "finding needs an evidence summary")
+	}
+	if strings.TrimSpace(nullableValue(row.SuggestedFix)) == "" && strings.TrimSpace(nullableValue(row.DraftComment)) == "" {
+		blockers = append(blockers, "finding needs a concrete next action or draft comment")
+	}
+	switch row.VerificationStatus {
+	case evidencepkg.StatusVerified:
+	case evidencepkg.StatusDuplicate:
+		blockers = append(blockers, "duplicate findings cannot be published")
+	case evidencepkg.StatusLikelyFalsePositive:
+		blockers = append(blockers, "likely false positives cannot be published")
+	case evidencepkg.StatusNotActionable:
+		blockers = append(blockers, "not-actionable findings cannot be published")
+	default:
+		blockers = append(blockers, "finding must survive verifier review")
+	}
+	return blockers
+}
+
+func findingHasAnchor(row dbgen.Finding) bool {
+	return row.PrimaryPath.Valid &&
+		strings.TrimSpace(row.PrimaryPath.String) != "" &&
+		row.PrimaryStartLine.Valid &&
+		row.PrimaryStartLine.Int64 > 0
 }
 
 func findingCandidateResponse(ctx context.Context, queries *dbgen.Queries, row dbgen.FindingCandidate, relation string) (FindingCandidateResponse, *apperror.Error) {

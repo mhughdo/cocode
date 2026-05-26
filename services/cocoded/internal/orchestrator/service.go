@@ -60,7 +60,7 @@ Review the provided diff and bounded repository context. Return evidence-backed 
 
 # Rules
 
-- Prefer correctness, security, reliability, data integrity, tests, and API compatibility findings.
+- Prefer concrete, user-impacting defects over broad style feedback.
 - Every finding must cite the exact changed file and line range where the issue is visible. If you cannot point to a concrete changed line, do not emit the finding.
 - Evidence must explain what the cited line does, why that behavior is wrong or risky, and what condition would trigger the issue.
 - Use counter_evidence_request to describe the strongest thing that would disprove the finding. Do not invent counter-evidence as if it was already verified.

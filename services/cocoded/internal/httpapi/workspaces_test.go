@@ -142,6 +142,65 @@ func TestListRepositoryBranches(t *testing.T) {
 	}
 }
 
+func TestSearchRepositoryFilesReturnsFuzzyRepoFiles(t *testing.T) {
+	router, _ := testRouterWithQueries(t)
+	repoPath := initHTTPAPIGitRepo(t)
+	writeHTTPAPIRepoFile(t, repoPath, ".gitignore", "*.log\n")
+	writeHTTPAPIRepoFile(t, repoPath, "AGENTS.md", "# Agent guide\n")
+	writeHTTPAPIRepoFile(t, repoPath, "docs/prd.md", "# Product requirements\n")
+	writeHTTPAPIRepoFile(t, repoPath, "scripts/manual/note.md", "# Manual note\n")
+	writeHTTPAPIRepoFile(t, repoPath, "src/server.go", "package src\n")
+	writeHTTPAPIRepoFile(t, repoPath, "debug/ignored.log", "ignore me\n")
+	runHTTPAPIGit(t, repoPath, "add", ".gitignore", "AGENTS.md", "docs/prd.md", "src/server.go")
+	runHTTPAPIGit(t, repoPath, "commit", "-m", "initial")
+
+	openRequest := newAuthenticatedJSONRequest(t, http.MethodPost, "/api/workspaces/open-repository", map[string]any{
+		"path": repoPath,
+	})
+	openResponse := httptest.NewRecorder()
+	router.ServeHTTP(openResponse, openRequest)
+	if openResponse.Code != http.StatusOK {
+		t.Fatalf("open status = %d, body = %s", openResponse.Code, openResponse.Body.String())
+	}
+	opened := decodeHTTPAPIData[OpenRepositoryResponse](t, openResponse.Body.Bytes())
+
+	searchRequest := httptest.NewRequest(http.MethodGet, "/api/repositories/"+opened.Repository.ID+"/files?workspace_id="+opened.Workspace.ID+"&q=prd&limit=5", nil)
+	searchRequest.Header.Set("X-Cocode-Token", "test-token")
+	searchResponse := httptest.NewRecorder()
+	router.ServeHTTP(searchResponse, searchRequest)
+	if searchResponse.Code != http.StatusOK {
+		t.Fatalf("search status = %d, body = %s", searchResponse.Code, searchResponse.Body.String())
+	}
+	matches := decodeHTTPAPIData[[]RepositoryFileResponse](t, searchResponse.Body.Bytes())
+	if len(matches) == 0 || matches[0].Path != "docs/prd.md" || matches[0].Directory != "docs" {
+		t.Fatalf("search matches = %+v, want docs/prd.md first", matches)
+	}
+
+	untrackedRequest := httptest.NewRequest(http.MethodGet, "/api/repositories/"+opened.Repository.ID+"/files?workspace_id="+opened.Workspace.ID+"&q=note", nil)
+	untrackedRequest.Header.Set("X-Cocode-Token", "test-token")
+	untrackedResponse := httptest.NewRecorder()
+	router.ServeHTTP(untrackedResponse, untrackedRequest)
+	if untrackedResponse.Code != http.StatusOK {
+		t.Fatalf("untracked search status = %d, body = %s", untrackedResponse.Code, untrackedResponse.Body.String())
+	}
+	untrackedMatches := decodeHTTPAPIData[[]RepositoryFileResponse](t, untrackedResponse.Body.Bytes())
+	if len(untrackedMatches) == 0 || untrackedMatches[0].Path != "scripts/manual/note.md" {
+		t.Fatalf("untracked matches = %+v, want scripts/manual/note.md", untrackedMatches)
+	}
+
+	ignoredRequest := httptest.NewRequest(http.MethodGet, "/api/repositories/"+opened.Repository.ID+"/files?workspace_id="+opened.Workspace.ID+"&q=ignored", nil)
+	ignoredRequest.Header.Set("X-Cocode-Token", "test-token")
+	ignoredResponse := httptest.NewRecorder()
+	router.ServeHTTP(ignoredResponse, ignoredRequest)
+	if ignoredResponse.Code != http.StatusOK {
+		t.Fatalf("ignored search status = %d, body = %s", ignoredResponse.Code, ignoredResponse.Body.String())
+	}
+	ignoredMatches := decodeHTTPAPIData[[]RepositoryFileResponse](t, ignoredResponse.Body.Bytes())
+	if len(ignoredMatches) != 0 {
+		t.Fatalf("ignored matches = %+v, want none", ignoredMatches)
+	}
+}
+
 func TestOpenRepositoryRejectsNonGitPathWithoutPersistence(t *testing.T) {
 	router, queries := testRouterWithQueries(t)
 

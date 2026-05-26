@@ -122,6 +122,41 @@ func TestServiceBuildReviewContextPreviewsAndPersists(t *testing.T) {
 	}
 }
 
+func TestServiceBuildReviewContextIncludesFocusFiles(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repoPath := t.TempDir()
+	writeRepoFile(t, repoPath, "docs/prd.md", "# PRD\n\nReview this billing workflow first.\n")
+	writeRepoFile(t, repoPath, "app/main.go", "package main\n\nfunc main() {}\n")
+	queries, store := contextBuilderTestStore(t, repoPath)
+	service := Service{
+		Queries:   queries,
+		Artifacts: store,
+		Now: func() time.Time {
+			return time.Date(2026, 5, 3, 0, 7, 0, 0, time.UTC)
+		},
+	}
+
+	result, err := service.BuildReviewContext(ctx, BuildReviewContextParams{
+		ReviewSessionID: "review_session_1",
+		PolicyOverride:  json.RawMessage(`{"focus_paths":["docs/prd.md"],"max_tokens":50000,"max_items":80}`),
+	})
+	if err != nil {
+		t.Fatalf("BuildReviewContext() error = %v", err)
+	}
+
+	kinds := itemKinds(result.Bundle.Items)
+	if !slices.Contains(kinds, ItemFocusFile) {
+		t.Fatalf("item kinds = %+v, missing %s", kinds, ItemFocusFile)
+	}
+	rendered := RenderBundle(result.Bundle)
+	if !strings.Contains(rendered, "Focus file docs/prd.md") ||
+		!strings.Contains(rendered, "Review this billing workflow first.") {
+		t.Fatalf("rendered context = %s", rendered)
+	}
+}
+
 func TestServiceBuildReviewContextReturnsTypedErrors(t *testing.T) {
 	t.Parallel()
 

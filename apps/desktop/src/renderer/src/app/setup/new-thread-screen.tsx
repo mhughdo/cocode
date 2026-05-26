@@ -27,7 +27,6 @@ import {
   NativeSelect,
   NativeSelectOption,
 } from "@/components/ui/native-select";
-import { Textarea } from "@/components/ui/textarea";
 import {
   type AgentConfig,
   type AgentModelCatalog,
@@ -45,6 +44,7 @@ import {
   type Workspace,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { ReviewFocusComposer } from "./review-focus-composer";
 import {
   AgentProviderGlyph,
   SetupAgentRow,
@@ -59,6 +59,7 @@ import {
 import {
   type ManualReviewAgentAssignment,
   type SnapshotSource,
+  type SetupFocusFileMention,
   removeRecordKey,
   setupDefaultBaseRef,
   setupFocusHintById,
@@ -119,6 +120,7 @@ export function NewThreadScreen({
   const [baseRefInput, setBaseRefInput] = useState("");
   const [headRef, setHeadRef] = useState("");
   const [focusPrompt, setFocusPrompt] = useState("");
+  const [focusFiles, setFocusFiles] = useState<SetupFocusFileMention[]>([]);
   const [reviewDepth, setReviewDepth] = useState<"quick" | "standard" | "deep">(
     "standard",
   );
@@ -318,9 +320,13 @@ export function NewThreadScreen({
     safeAgents[0];
   const selectedAgentCount =
     (orchestratorAgent ? 1 : 0) + reviewAgentAssignments.length;
-  const selectedFocusLabels = setupFocusOptions
+  const selectedFocusAreas = setupFocusOptions
     .filter((item) => selectedFocusIds.has(item.id))
-    .map((item) => item.label);
+    .map((item) => ({
+      id: item.id,
+      instruction: setupFocusHintById[item.id] ?? item.label,
+      label: item.label,
+    }));
   const selectedPresetLabels = setupPresetOptions
     .filter((item) => selectedPresetIds.has(item.id))
     .map((item) => item.title);
@@ -485,24 +491,6 @@ export function NewThreadScreen({
     onSetupContextChange,
     source,
   ]);
-  function addFocusHint() {
-    setFocusPrompt((current) => {
-      const trimmed = current.trim();
-      const selectedHints = setupFocusOptions
-        .filter((item) => selectedFocusIds.has(item.id))
-        .map((item) => setupFocusHintById[item.id])
-        .filter(Boolean);
-      const nextHint =
-        selectedHints.length > 0
-          ? selectedHints.join("\n")
-          : "Prioritize correctness, user-visible regressions, and missing tests.";
-      if (trimmed.includes(nextHint)) {
-        return current;
-      }
-      return trimmed ? `${trimmed}\n${nextHint}` : nextHint;
-    });
-  }
-
   function addManualReviewAgent(agentId: string) {
     const agent = safeAgents.find((item) => item.id === agentId);
     if (!agent) {
@@ -534,6 +522,7 @@ export function NewThreadScreen({
     setBaseRefInput("");
     setHeadRef("");
     setFocusPrompt("");
+    setFocusFiles([]);
     setReviewDepth("standard");
     setSelectedFocusIds(new Set());
     setSelectedPresetIds(new Set());
@@ -612,7 +601,11 @@ export function NewThreadScreen({
         snapshot_id: nextSnapshot.data.id,
         title: snapshotTitle(nextSnapshot.data, activeRepository),
         review_depth: reviewDepth,
-        focus_prompt: setupFocusPrompt(focusPrompt, selectedFocusLabels),
+        focus_prompt: setupFocusPrompt({
+          files: focusFiles,
+          focusAreas: selectedFocusAreas,
+          prompt: focusPrompt,
+        }),
         preset: selectedPresetLabels.join(", "),
         agent_config_ids: reviewAgentIdsForRun,
         agent_selections: agentSelectionsForRun,
@@ -626,6 +619,7 @@ export function NewThreadScreen({
           include_prior_comments: true,
           include_prior_decisions: true,
           redact_secrets: true,
+          focus_paths: focusFiles.map((file) => file.path),
           max_tokens:
             reviewDepth === "deep"
               ? 24_000
@@ -660,7 +654,7 @@ export function NewThreadScreen({
               Set up review
             </h1>
             <p className="text-muted-foreground mt-1.5 text-sm">
-              Configure the source, focus, orchestration, and presets for this
+              Configure the source, context, orchestration, and presets for this
               review.
             </p>
           </div>
@@ -853,17 +847,20 @@ export function NewThreadScreen({
               </SetupStepPanel>
 
               <SetupStepPanel
-                description="What should the review prioritize?"
+                description="Add instructions, files, docs, and optional review lenses."
                 compact={sourceInspectorLayoutActive}
                 number={2}
                 title="Review focus"
               >
-                <Textarea
-                  aria-label="Focus prompt"
-                  className="min-h-[54px] resize-none bg-white text-[0.82rem]"
-                  placeholder="Describe what this review should focus on, for example auth logic, billing flows, or data integrity..."
+                <ReviewFocusComposer
+                  client={client}
+                  disabled={!canCreate}
+                  repositoryId={activeRepository?.id}
+                  selectedFiles={focusFiles}
                   value={focusPrompt}
-                  onChange={(event) => setFocusPrompt(event.target.value)}
+                  workspaceId={activeWorkspace?.id}
+                  onSelectedFilesChange={setFocusFiles}
+                  onValueChange={setFocusPrompt}
                 />
                 <div className="mt-2 flex flex-wrap gap-2">
                   {setupFocusOptions.map((item) => (
@@ -879,15 +876,6 @@ export function NewThreadScreen({
                       }
                     />
                   ))}
-                  <Button
-                    className="h-8 cursor-pointer"
-                    size="sm"
-                    variant="outline"
-                    onClick={addFocusHint}
-                  >
-                    <PlusIcon data-icon="inline-start" />
-                    Add focus
-                  </Button>
                 </div>
               </SetupStepPanel>
 

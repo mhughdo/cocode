@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
 	"github.com/hughdo/cocode/services/cocoded/internal/diffparse"
@@ -138,6 +139,77 @@ func BuildChangedFileContentItems(options FileContextOptions, files []ChangedFil
 		}
 	}
 	return items, nil
+}
+
+func BuildFocusFileContextItems(options FileContextOptions, paths []string) ([]Item, []string, error) {
+	options = normalizeFileContextOptions(options)
+	if strings.TrimSpace(options.BundleID) == "" {
+		return nil, nil, errors.New("context bundle id is required")
+	}
+	root, err := safeRepoRoot(options.RepoRoot)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	items := []Item{}
+	warnings := []string{}
+	seen := map[string]struct{}{}
+	var usedBytes int64
+	for _, rawPath := range paths {
+		path := strings.TrimSpace(rawPath)
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		if options.MaxItems > 0 && len(items) >= options.MaxItems {
+			break
+		}
+		budget := minPositive(options.MaxFullFileBytes, remainingBudget(options.MaxTotalBytes, usedBytes))
+		if budget <= 0 {
+			warnings = appendWarning(warnings, "focus file context budget exhausted")
+			break
+		}
+		absolutePath, err := safeRepoFilePath(root, path)
+		if err != nil {
+			warnings = appendWarning(warnings, fmt.Sprintf("focus file %s skipped: %v", path, err))
+			continue
+		}
+		stat, err := os.Stat(absolutePath)
+		if err != nil {
+			warnings = appendWarning(warnings, fmt.Sprintf("focus file %s skipped: %v", path, err))
+			continue
+		}
+		if stat.IsDir() {
+			warnings = appendWarning(warnings, fmt.Sprintf("focus file %s skipped: path is a directory", path))
+			continue
+		}
+		content, truncated, err := readFullFile(absolutePath, budget)
+		if err != nil {
+			warnings = appendWarning(warnings, fmt.Sprintf("focus file %s skipped: %v", path, err))
+			continue
+		}
+		if content == "" {
+			continue
+		}
+		if strings.ContainsRune(content, '\x00') || !utf8.ValidString(content) {
+			warnings = appendWarning(warnings, fmt.Sprintf("focus file %s skipped: binary content", path))
+			continue
+		}
+		usedBytes += int64(len(content))
+		item, err := buildFileContentItem(options.BundleID, ChangedFileContentInput{
+			Path:   path,
+			Status: "focus",
+		}, ItemFocusFile, 1, countContentLines(content), content, truncated, "focus_file")
+		if err != nil {
+			return nil, nil, err
+		}
+		item.Title = fmt.Sprintf("Focus file %s", path)
+		items = append(items, item)
+	}
+	return items, warnings, nil
 }
 
 func normalizeFileContextOptions(options FileContextOptions) FileContextOptions {

@@ -81,6 +81,15 @@ func TestReviewSessionStatusTransitionMatrix(t *testing.T) {
 	}
 }
 
+func TestDefaultPromptTemplateDoesNotInjectReviewFocusCategories(t *testing.T) {
+	t.Parallel()
+
+	prompt := (&Service{}).promptTemplate()
+	if strings.Contains(strings.ToLower(prompt), "security") {
+		t.Fatalf("default prompt should not inject an unchecked security focus:\n%s", prompt)
+	}
+}
+
 func TestWorkflowRunsFakeAgentEndToEnd(t *testing.T) {
 	t.Parallel()
 

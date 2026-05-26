@@ -1,8 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
+  apiRequest,
   closeCocode,
   createBranchReviewRepo,
   createFakeAgentConfig,
@@ -76,6 +77,31 @@ async function toggleMorePreset(page: Page, query: string, name: RegExp) {
   }
   await page.getByPlaceholder("Search presets...").fill(query);
   await page.getByRole("menuitemcheckbox", { name }).click();
+}
+
+async function selectFakeOnly(page: Page) {
+  await page.getByRole("button", { name: "Select orchestrator" }).click();
+  await page.getByRole("menuitem", { name: /E2E Fake Reviewer/ }).click();
+  await page.getByRole("button", { name: "Add agent" }).click();
+  await page.getByRole("menuitem", { name: /E2E Fake Reviewer/ }).click();
+
+  const removeButtons = page.getByRole("button", { name: /^Remove / });
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const count = await removeButtons.count();
+    let removed = false;
+    for (let index = 0; index < count; index += 1) {
+      const button = removeButtons.nth(index);
+      const label = (await button.getAttribute("aria-label")) ?? "";
+      if (!label.includes("E2E Fake Reviewer")) {
+        await button.click();
+        removed = true;
+        break;
+      }
+    }
+    if (!removed) {
+      break;
+    }
+  }
 }
 
 test("opens a local repository and configures a branch comparison", async ({
@@ -166,6 +192,82 @@ test("loads local changes source details and collapses file diffs", async ({
     await expect(page.getByTestId("setup-diff-scroll")).toHaveCount(0);
     await fileToggle.click();
     await expect(fileToggle).toHaveAttribute("aria-expanded", "true");
+  } finally {
+    await closeCocode(app);
+  }
+});
+
+test("pins focus files and keeps unchecked focus chips out of the session prompt", async ({
+  browserName,
+}, testInfo) => {
+  expect(browserName).toBe("chromium");
+  const repoPath = createBranchReviewRepo(testInfo.outputPath("focus-repo"));
+  mkdirSync(join(repoPath, "docs"), { recursive: true });
+  writeFileSync(
+    join(repoPath, "docs/prd.md"),
+    "# Product requirements\n\nReview billing and reward accounting first.\n",
+  );
+  writeFileSync(
+    join(repoPath, "src/auth.ts"),
+    [
+      "export function canUpdateRepository(role: string): boolean {",
+      '  return role === "admin" || role === "member" || role === "viewer";',
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const fakeAgentPath = createFakeReviewAgent(
+    testInfo.outputPath("bin/fake-review-agent"),
+  );
+  const app = await launchCocode(testInfo, {
+    COCODE_E2E_REPOSITORY_PATH: repoPath,
+  });
+  const { backendInfo, page } = app;
+
+  try {
+    await createFakeAgentConfig(backendInfo, fakeAgentPath);
+    await page.reload();
+    await openSeededProject(page);
+    await waitForReviewAgentOption(page, /E2E Fake Reviewer/);
+    await page.getByRole("button", { name: /Local changes/ }).click();
+    await clearPrimaryPresets(page);
+    await selectFakeOnly(page);
+
+    await page.getByLabel("Review context").fill("@prd");
+    await expect(page.getByRole("button", { name: /prd\.md/ })).toBeVisible();
+    await page.getByRole("button", { name: /prd\.md/ }).click();
+    await expect(page.getByText("docs/prd.md")).toBeVisible();
+    await page
+      .getByLabel("Review context")
+      .fill("Pay attention to reward accounting.");
+
+    const securityChip = page.getByRole("button", {
+      name: /Security issues/,
+    });
+    await securityChip.click();
+    await expect(securityChip).toHaveAttribute("aria-pressed", "true");
+    await securityChip.click();
+    await expect(securityChip).toHaveAttribute("aria-pressed", "false");
+
+    await page.getByRole("button", { name: "Start review" }).click();
+    await expect(page.getByRole("tab", { name: "Findings" })).toBeVisible();
+
+    const workspaces = await apiRequest<Array<{ id: string }>>(
+      backendInfo,
+      "/api/workspaces",
+    );
+    const sessions = await apiRequest<
+      Array<{
+        context_policy: { focus_paths?: string[] };
+        focus_prompt?: string;
+      }>
+    >(backendInfo, `/api/review-sessions?workspace_id=${workspaces[0].id}`);
+    const session = sessions[0];
+    expect(session.focus_prompt).toContain("docs/prd.md");
+    expect(session.focus_prompt).toContain("Pay attention to reward accounting.");
+    expect(session.focus_prompt).not.toContain("Security issues");
+    expect(session.focus_prompt).not.toContain("unsafe authorization boundaries");
+    expect(session.context_policy.focus_paths).toEqual(["docs/prd.md"]);
   } finally {
     await closeCocode(app);
   }

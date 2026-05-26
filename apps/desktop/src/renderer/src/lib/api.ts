@@ -78,6 +78,14 @@ export interface RepositoryBranch {
   remote: boolean;
 }
 
+export interface RepositoryFile {
+  path: string;
+  name: string;
+  directory?: string;
+  kind: "file" | "directory" | string;
+  score: number;
+}
+
 export interface OpenRepositoryResponse {
   workspace: Workspace;
   repository: Repository;
@@ -379,6 +387,7 @@ export interface ReviewContextPolicy {
   include_prior_comments?: boolean;
   include_prior_decisions?: boolean;
   redact_secrets?: boolean;
+  focus_paths?: string[];
   local_only_paths?: string[];
   max_tokens?: number;
   max_items?: number;
@@ -1120,6 +1129,28 @@ export class ApiClient {
         query: {
           ...requestOptions.query,
           workspace_id: workspaceId,
+        },
+      },
+    );
+  }
+
+  searchRepositoryFiles(
+    repositoryId: string,
+    options: Omit<ApiRequestOptions, "method" | "body" | "query"> & {
+      workspaceId?: string;
+      query?: string;
+      limit?: number;
+    } = {},
+  ) {
+    const { workspaceId, query, limit, ...requestOptions } = options;
+    return this.get<RepositoryFile[]>(
+      `/api/repositories/${encodeURIComponent(repositoryId)}/files`,
+      {
+        ...requestOptions,
+        query: {
+          workspace_id: workspaceId,
+          q: query,
+          limit,
         },
       },
     );

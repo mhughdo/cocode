@@ -231,6 +231,7 @@ export function SetupFocusChip({
 }) {
   return (
     <button
+      aria-pressed={active}
       className={cn(
         "border-transparent text-muted-foreground bg-surface-sunken hover:bg-muted hover:text-foreground inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-full border px-3 text-sm font-medium transition-colors",
         active && "border-border bg-card text-foreground",
@@ -239,7 +240,8 @@ export function SetupFocusChip({
       onClick={onClick}
     >
       <Icon className="size-3.5 shrink-0" />
-      {label}
+      <span>{label}</span>
+      {active && <CheckIcon className="size-3.5 shrink-0" />}
     </button>
   );
 }

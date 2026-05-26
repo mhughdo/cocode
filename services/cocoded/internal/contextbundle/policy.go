@@ -20,6 +20,7 @@ type ReviewContextPolicy struct {
 	IncludePriorComments      bool     `json:"include_prior_comments"`
 	IncludePriorDecisions     bool     `json:"include_prior_decisions"`
 	RedactSecrets             bool     `json:"redact_secrets"`
+	FocusPaths                []string `json:"focus_paths,omitempty"`
 	LocalOnlyPaths            []string `json:"local_only_paths,omitempty"`
 	MaxTokens                 int64    `json:"max_tokens"`
 	MaxItems                  int      `json:"max_items"`
@@ -34,6 +35,7 @@ type reviewContextPolicyPatch struct {
 	IncludePriorComments      *bool    `json:"include_prior_comments"`
 	IncludePriorDecisions     *bool    `json:"include_prior_decisions"`
 	RedactSecrets             *bool    `json:"redact_secrets"`
+	FocusPaths                []string `json:"focus_paths"`
 	LocalOnlyPaths            []string `json:"local_only_paths"`
 	MaxTokens                 *int64   `json:"max_tokens"`
 	MaxItems                  *int     `json:"max_items"`
@@ -99,6 +101,9 @@ func ApplyReviewContextPolicy(base ReviewContextPolicy, raw json.RawMessage) (Re
 	if patch.RedactSecrets != nil {
 		base.RedactSecrets = *patch.RedactSecrets
 	}
+	if patch.FocusPaths != nil {
+		base.FocusPaths = append([]string(nil), patch.FocusPaths...)
+	}
 	if patch.LocalOnlyPaths != nil {
 		base.LocalOnlyPaths = append([]string(nil), patch.LocalOnlyPaths...)
 	}
@@ -136,19 +141,33 @@ func (p ReviewContextPolicy) JSON() json.RawMessage {
 }
 
 func (p ReviewContextPolicy) withCleanLocalOnlyPaths() (ReviewContextPolicy, error) {
+	focusPaths, err := cleanPolicyPaths(p.FocusPaths, "focus_paths")
+	if err != nil {
+		return ReviewContextPolicy{}, err
+	}
+	p.FocusPaths = focusPaths
 	if len(p.LocalOnlyPaths) == 0 {
 		return p, nil
 	}
+	localOnlyPaths, err := cleanPolicyPaths(p.LocalOnlyPaths, "local_only_paths")
+	if err != nil {
+		return ReviewContextPolicy{}, err
+	}
+	p.LocalOnlyPaths = localOnlyPaths
+	return p, nil
+}
+
+func cleanPolicyPaths(values []string, field string) ([]string, error) {
 	seen := map[string]struct{}{}
-	paths := make([]string, 0, len(p.LocalOnlyPaths))
-	for _, path := range p.LocalOnlyPaths {
+	paths := make([]string, 0, len(values))
+	for _, path := range values {
 		path = strings.TrimSpace(path)
 		if path == "" {
 			continue
 		}
 		clean, err := security.CleanRelativePath(path)
 		if err != nil || clean == "." {
-			return ReviewContextPolicy{}, fmt.Errorf("review context policy local_only_paths contains unsafe path %q", path)
+			return nil, fmt.Errorf("review context policy %s contains unsafe path %q", field, path)
 		}
 		path = clean
 		if _, ok := seen[path]; ok {
@@ -157,8 +176,7 @@ func (p ReviewContextPolicy) withCleanLocalOnlyPaths() (ReviewContextPolicy, err
 		seen[path] = struct{}{}
 		paths = append(paths, path)
 	}
-	p.LocalOnlyPaths = paths
-	return p, nil
+	return paths, nil
 }
 
 func (p ReviewContextPolicy) withBestEffortCleanLocalOnlyPaths() ReviewContextPolicy {
@@ -166,6 +184,7 @@ func (p ReviewContextPolicy) withBestEffortCleanLocalOnlyPaths() ReviewContextPo
 	if err == nil {
 		return clean
 	}
+	p.FocusPaths = nil
 	p.LocalOnlyPaths = nil
 	return p
 }

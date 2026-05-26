@@ -31,6 +31,7 @@ const (
 	ItemPriorComment   ItemKind = "prior_comment"
 	ItemPriorDecision  ItemKind = "prior_decision"
 	ItemEvidence       ItemKind = "evidence"
+	ItemFocusFile      ItemKind = "focus_file"
 	ItemRedactionNote  ItemKind = "redaction_note"
 	ItemPromptMaterial ItemKind = "prompt_material"
 )

@@ -135,6 +135,21 @@ func (s Service) BuildReviewContext(ctx context.Context, params BuildReviewConte
 		}
 		items = append(items, item)
 	}
+	if len(policy.FocusPaths) > 0 {
+		focusItems, warnings, err := BuildFocusFileContextItems(FileContextOptions{
+			BundleID:         bundleID,
+			RepoRoot:         repository.LocalPath,
+			MaxFullFileBytes: 32 * 1024,
+			MaxTotalBytes:    96 * 1024,
+			MaxItems:         16,
+		}, policy.FocusPaths)
+		result.Warnings = append(result.Warnings, warnings...)
+		if err != nil {
+			result.Warnings = appendWarning(result.Warnings, "focus file context skipped: "+err.Error())
+		} else {
+			items = append(items, focusItems...)
+		}
+	}
 	if policy.IncludeChangedCode {
 		diffFiles, warnings := s.diffContextFiles(ctx, contextFiles)
 		result.Warnings = append(result.Warnings, warnings...)

@@ -76,6 +76,18 @@ export const setupFocusHintById: Record<string, string> = {
   edge: "Exercise edge cases around empty input, large diffs, retries, cancellation, concurrency, and rollback paths.",
 };
 
+export type SetupFocusArea = {
+  id: string;
+  label: string;
+  instruction: string;
+};
+
+export type SetupFocusFileMention = {
+  path: string;
+  name?: string;
+  directory?: string;
+};
+
 export type SetupPresetOption = {
   id: string;
   subtitle: string;
@@ -423,11 +435,54 @@ export function setupRoleIdsForPresets(selectedPresetIds: Set<string>) {
   return roleIds;
 }
 
-export function setupFocusPrompt(prompt: string, labels: string[]) {
+export function setupFocusPrompt({
+  files,
+  focusAreas,
+  prompt,
+}: {
+  files: SetupFocusFileMention[];
+  focusAreas: SetupFocusArea[];
+  prompt: string;
+}) {
+  const sections: string[] = [];
+  if (focusAreas.length > 0) {
+    sections.push(
+      [
+        "Review lenses:",
+        ...focusAreas.map(
+          (area) => `- ${area.label}: ${area.instruction.trim()}`,
+        ),
+      ].join("\n"),
+    );
+  }
+  const uniqueFiles = uniqueFocusFiles(files);
+  if (uniqueFiles.length > 0) {
+    sections.push(
+      [
+        "Context files to read first:",
+        ...uniqueFiles.map((file) => `- ${file.path}`),
+      ].join("\n"),
+    );
+  }
   const trimmed = prompt.trim();
-  const focusLine =
-    labels.length > 0 ? `Focus areas: ${labels.join(", ")}.` : "";
-  return [trimmed, focusLine].filter(Boolean).join("\n\n");
+  if (trimmed !== "") {
+    sections.push(["Additional reviewer context:", trimmed].join("\n"));
+  }
+  return sections.join("\n\n");
+}
+
+export function uniqueFocusFiles(files: SetupFocusFileMention[]) {
+  const seen = new Set<string>();
+  const unique: SetupFocusFileMention[] = [];
+  for (const file of files) {
+    const path = file.path.trim();
+    if (path === "" || seen.has(path)) {
+      continue;
+    }
+    seen.add(path);
+    unique.push({ ...file, path });
+  }
+  return unique;
 }
 
 export function setupDefaultBaseRef(

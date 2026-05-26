@@ -103,6 +103,51 @@ describe("ApiClient", () => {
     expect(seenPath).toBe("/repo/cocode");
   });
 
+  it("searches repository files with workspace and query params", async () => {
+    let seenUrl = "";
+    const fetcher = vi.fn(
+      async (input: RequestInfo | URL) => {
+        seenUrl = String(input);
+        return jsonResponse({
+          data: [
+            {
+              path: "docs/prd.md",
+              name: "prd.md",
+              directory: "docs",
+              kind: "file",
+              score: 123,
+            },
+          ],
+          error: null,
+        });
+      },
+    );
+    const client = createCocodeClient({
+      baseUrl: "http://127.0.0.1:17658",
+      authToken: "local-token",
+      fetch: fetcher,
+    });
+
+    await expect(
+      client.searchRepositoryFiles("repo_1", {
+        workspaceId: "workspace_1",
+        query: "prd",
+        limit: 8,
+      }),
+    ).resolves.toEqual([
+      {
+        path: "docs/prd.md",
+        name: "prd.md",
+        directory: "docs",
+        kind: "file",
+        score: 123,
+      },
+    ]);
+    expect(seenUrl).toBe(
+      "http://127.0.0.1:17658/api/repositories/repo_1/files?workspace_id=workspace_1&q=prd&limit=8",
+    );
+  });
+
   it("creates snapshots and starts reviews through typed helpers", async () => {
     const seen: { url: string; body: unknown }[] = [];
     const fetcher = vi.fn(

@@ -77,6 +77,8 @@ func CommandArgsWithModelSelection(kind AdapterKind, command string, args []stri
 			return out
 		}
 		return append([]string{"--model", modelLabel}, out...)
+	case "agy":
+		return out
 	default:
 		return out
 	}
@@ -115,7 +117,7 @@ func shouldSkipCLIModelArgument(command string, modelLabel string) bool {
 		return true
 	}
 	switch strings.ToLower(modelLabel) {
-	case "codex", "claude", "gemini", "kiro", "kiro-cli", "opencode", "gemini-acp", "opencode-acp":
+	case "agy", "antigravity", "codex", "claude", "gemini", "kiro", "kiro-cli", "opencode", "gemini-acp", "opencode-acp":
 		return true
 	}
 	return strings.EqualFold(command, modelLabel)

@@ -78,8 +78,8 @@ function SourcePreviewPanel({ preview }: { preview: SourcePreview | null }) {
 
   return (
     <Section title="Source file">
-      <div className="max-w-full min-w-0 overflow-hidden rounded-lg border bg-white">
-        <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b bg-[#fbfbfa] px-3 py-2">
+      <div className="border-border-subtle bg-card max-w-full min-w-0 overflow-hidden rounded-lg border shadow-xs">
+        <div className="border-border-subtle bg-surface flex min-w-0 flex-wrap items-center justify-between gap-2 border-b px-3 py-2">
           <span
             className="min-w-0 truncate font-mono text-xs"
             title={preview.path}
@@ -300,7 +300,7 @@ export function EvidenceMapInspectorPanel({
           {selectedEvidence.slice(0, 4).map((item) => (
             <div
               key={item.id}
-              className="border-border/70 rounded-lg border bg-white p-3"
+              className="border-border-subtle bg-card rounded-lg border p-3"
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">

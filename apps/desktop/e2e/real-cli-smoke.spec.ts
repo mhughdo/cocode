@@ -14,7 +14,7 @@ if (selectedTargets.length === 0) {
   test("real CLI smoke checks are opt-in", async () => {
     test.skip(
       true,
-      "Set COCODE_E2E_REAL_CLIS=codex,gemini,opencode,claude or all to run real local CLI smoke checks.",
+      "Set COCODE_E2E_REAL_CLIS=codex,gemini,opencode,agy,claude or all to run real local CLI smoke checks.",
     );
   });
 } else {

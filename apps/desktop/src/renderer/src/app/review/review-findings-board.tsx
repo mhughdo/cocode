@@ -442,9 +442,9 @@ export function ReviewFindingsBoard({
   return (
     <section
       aria-label="Review findings board"
-      className="border-border/70 flex h-full min-h-[calc(100vh-220px)] min-w-0 flex-col overflow-hidden rounded-xl border bg-white shadow-[0_1px_2px_rgb(17_18_20/0.03)]"
+      className="bg-card border-border-subtle flex h-full min-h-[calc(100vh-220px)] min-w-0 flex-col overflow-hidden rounded-xl border"
     >
-      <div className="flex flex-wrap items-center gap-2 border-b bg-white p-4">
+      <div className="border-border-subtle bg-surface/40 flex flex-wrap items-center gap-2 border-b p-4">
         <div className="relative min-w-64 flex-[1.4]">
           <SearchIcon className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
           <Input
@@ -609,7 +609,7 @@ export function ReviewFindingsBoard({
             )}
         </div>
         {selectedFinding && (
-          <div className="relative min-w-0 border-t bg-[#fbfbfa] p-4 xl:border-t-0 xl:border-l">
+          <div className="relative min-w-0 border-t bg-surface p-4 xl:border-t-0 xl:border-l">
             <ResizableRightPanelHandle
               onPointerDown={inspectorPanel.startResize}
             />

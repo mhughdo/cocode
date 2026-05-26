@@ -121,7 +121,7 @@ export function ReviewThread({
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               <div className="flex min-w-0 flex-wrap items-center gap-2">
-                <h1 className="truncate text-xl font-semibold">
+                <h1 className="truncate text-2xl font-semibold tracking-tight">
                   {session?.title ?? "Review thread"}
                 </h1>
                 {live.refreshState.status === "refreshing" && (
@@ -493,7 +493,13 @@ function FindingRow({
       </div>
       <div className="flex shrink-0 gap-1">
         <Badge
-          variant={finding.severity === "High" ? "destructive" : "secondary"}
+          variant={
+            finding.severity === "High"
+              ? "severity-high"
+              : finding.severity === "Medium"
+                ? "severity-medium"
+                : "severity-low"
+          }
         >
           {finding.severity}
         </Badge>

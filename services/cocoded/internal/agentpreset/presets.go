@@ -38,7 +38,7 @@ type Preset struct {
 }
 
 func List() []Preset {
-	return []Preset{CodexCLI(), CodexAppServer(), ClaudeCodeCLI(), GeminiCLI(), GeminiACP(), OpenCodeCLI(), OpenCodeACP(), KiroCLI(), CustomCLI()}
+	return []Preset{CodexCLI(), CodexAppServer(), ClaudeCodeCLI(), GeminiCLI(), GeminiACP(), OpenCodeCLI(), OpenCodeACP(), AntigravityCLI(), KiroCLI(), CustomCLI()}
 }
 
 func CodexCLI() Preset {
@@ -233,6 +233,32 @@ func OpenCodeACP() Preset {
 			CanCancel:         true,
 			OutputModes:       []agents.OutputMode{agents.OutputJSON, agents.OutputJSONL, agents.OutputNDJSON, agents.OutputText},
 			Metadata:          map[string]any{"provider": "opencode", "egress": string(agents.AgentEgressExternal), "protocol": "acp"},
+		},
+		Settings: settings,
+		Enabled:  true,
+	}
+}
+
+func AntigravityCLI() Preset {
+	settings := json.RawMessage(`{"prompt_delivery":"stdin","timeout_seconds":1800,"version_args":["--version"],"smoke_prompt_enabled":false}`)
+	return Preset{
+		ID:             "antigravity-cli",
+		Name:           "Antigravity CLI",
+		Description:    "Runs Antigravity CLI in non-interactive print mode with sandboxed terminal access and captures the text response.",
+		Role:           "primary_reviewer",
+		AdapterKind:    agents.AdapterCLINonInteractive,
+		Command:        "agy",
+		Args:           []string{"--print", "--sandbox", "--dangerously-skip-permissions", "--print-timeout", "30m0s"},
+		CWDMode:        "repo_root",
+		EnvAllowlist:   append(append([]string{}, baseCLIEnvAllowlist...), "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"),
+		OutputMode:     agents.OutputText,
+		ModelLabel:     "gemini-3.5-flash",
+		ReasoningLabel: "high",
+		Capabilities: agents.AgentCapabilities{
+			CanRead:     true,
+			CanCancel:   true,
+			OutputModes: []agents.OutputMode{agents.OutputText},
+			Metadata:    map[string]any{"provider": "antigravity", "upstream_provider": "google", "egress": string(agents.AgentEgressExternal)},
 		},
 		Settings: settings,
 		Enabled:  true,

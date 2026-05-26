@@ -527,7 +527,7 @@ export function App() {
         commands: [
           {
             title: "Configure CLI agents",
-            description: "Codex, Gemini, OpenCode, and custom CLIs",
+            description: "Codex, Gemini, Antigravity, OpenCode, and custom CLIs",
             icon: TerminalIcon,
             onSelect: () => setMainView("agent-settings"),
           },

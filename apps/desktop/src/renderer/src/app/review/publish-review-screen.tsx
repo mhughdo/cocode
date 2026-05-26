@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  CheckCircle2Icon,
+  CircleSlash2Icon,
   CopyIcon,
   FileSearchIcon,
   GitPullRequestIcon,
@@ -32,6 +34,7 @@ import {
   loadingApiState,
   type ReviewSession,
 } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import { MarkdownMessage } from "../shared/markdown-message";
 import { formatFindingLocation } from "../evidence/review-evidence-utils";
 
@@ -586,16 +589,23 @@ function GitHubPreviewChecklistView({
     ["Can publish summary-only", preview.checklist.can_publish_summary_only],
   ] as const;
   return (
-    <div className="grid grid-cols-[repeat(auto-fit,minmax(170px,1fr))] gap-2">
+    <div className="grid grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-2">
       {items.map(([label, ok]) => (
         <div
           key={label}
-          className="flex items-center gap-2 rounded-md border p-2"
+          className={cn(
+            "flex items-center gap-2 rounded-md border px-2.5 py-2 text-sm",
+            ok
+              ? "border-status-verified-border bg-status-verified-surface/40"
+              : "border-border-subtle bg-surface-sunken/40",
+          )}
         >
-          <Badge variant={ok ? "secondary" : "outline"}>
-            {ok ? "yes" : "no"}
-          </Badge>
-          <span className="text-sm">{label}</span>
+          {ok ? (
+            <CheckCircle2Icon className="text-status-verified-foreground size-4 shrink-0" />
+          ) : (
+            <CircleSlash2Icon className="text-muted-foreground/70 size-4 shrink-0" />
+          )}
+          <span className="truncate">{label}</span>
         </div>
       ))}
     </div>

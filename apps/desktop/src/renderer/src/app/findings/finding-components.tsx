@@ -1,16 +1,48 @@
 import { CopyIcon, FileSearchIcon } from "lucide-react";
 
 import { EmptyState, LoadingRows } from "@/components/app/chrome";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
-  NativeSelect,
-  NativeSelectOption,
-} from "@/components/ui/native-select";
+  StatusPill,
+  type FindingDecisionStatus,
+} from "@/components/app/status-pill";
+import { Badge, type BadgeVariant } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import type { EvidenceItem, Finding, FindingDetailResponse } from "@/lib/api";
 import { languageForFilePath } from "@/lib/syntax-highlighting";
 import { cn } from "@/lib/utils";
 import { SyntaxCodeBlock } from "../shared/markdown-message";
+
+function severityBadgeVariant(severity: string): BadgeVariant {
+  switch (severity) {
+    case "blocker":
+      return "severity-blocker";
+    case "high":
+      return "severity-high";
+    case "medium":
+      return "severity-medium";
+    case "low":
+    case "info":
+      return "severity-low";
+    default:
+      return "outline";
+  }
+}
+
+function severityRuleClass(severity: string): string {
+  switch (severity) {
+    case "blocker":
+      return "border-l-severity-blocker-solid";
+    case "high":
+      return "border-l-severity-high-solid";
+    case "medium":
+      return "border-l-severity-medium-solid";
+    case "low":
+    case "info":
+      return "border-l-severity-low-solid";
+    default:
+      return "border-l-transparent";
+  }
+}
 import {
   evidenceBadgeVariant,
   evidenceCodeSnippet,
@@ -68,11 +100,12 @@ export function FindingCard({
   return (
     <div
       className={cn(
-        "grid w-full cursor-pointer grid-cols-1 gap-3 border-b border-l-2 border-l-transparent px-4 py-3 text-left transition-colors last:border-b-0 hover:bg-[#fbfbfa]",
+        "border-border-subtle grid w-full cursor-pointer grid-cols-1 gap-3 border-b border-l-[3px] px-4 py-3 text-left transition-colors last:border-b-0 hover:bg-muted/60",
+        severityRuleClass(finding.severity),
         layout === "inspector"
           ? "lg:grid-cols-[72px_minmax(0,1fr)_132px_72px]"
           : "lg:grid-cols-[72px_minmax(0,1.35fr)_minmax(96px,0.64fr)_132px_minmax(112px,0.64fr)_72px]",
-        selected && "border-l-foreground bg-[#f7f7f5]",
+        selected && "bg-muted",
       )}
       aria-selected={selected}
       data-testid={`finding-row-${finding.id}`}
@@ -81,13 +114,7 @@ export function FindingCard({
       <div className="flex min-w-0 items-start gap-2 lg:block">
         <Badge
           className="shrink-0"
-          variant={
-            finding.severity === "high" || finding.severity === "blocker"
-              ? "destructive"
-              : finding.severity === "medium"
-                ? "secondary"
-                : "outline"
-          }
+          variant={severityBadgeVariant(finding.severity)}
         >
           {finding.severity}
         </Badge>
@@ -123,30 +150,18 @@ export function FindingCard({
         ) : null}
       </div>
       <div className="flex min-w-0 items-start lg:pt-0.5">
-        <NativeSelect
-          aria-label={`Set status for ${finding.canonical_claim}`}
-          className="w-full min-w-0"
+        <StatusPill
+          ariaLabel={`Set status for ${finding.canonical_claim}`}
           disabled={pending}
-          size="sm"
-          value={findingDecisionSelectValue(finding)}
-          onChange={(event) => {
-            event.stopPropagation();
-            const decision = findingDecisionMutationFromValue(
-              event.target.value,
-            );
-            if (decision) {
-              onDecisionChange(decision);
+          options={["accepted", "dismissed", "deferred"]}
+          value={findingDecisionSelectValue(finding) as FindingDecisionStatus}
+          onChange={(next) => {
+            if (next === "pending") {
+              return;
             }
+            onDecisionChange(next as FindingDecisionMutation);
           }}
-          onClick={(event) => event.stopPropagation()}
-        >
-          <NativeSelectOption value="pending" disabled>
-            Needs triage
-          </NativeSelectOption>
-          <NativeSelectOption value="accepted">Accepted</NativeSelectOption>
-          <NativeSelectOption value="dismissed">Dismissed</NativeSelectOption>
-          <NativeSelectOption value="deferred">Deferred</NativeSelectOption>
-        </NativeSelect>
+        />
       </div>
       <div
         className={cn(
@@ -203,8 +218,8 @@ export function CodeSnippetViewer({
             Copy path
           </Button>
         </div>
-        <div className="border-border/70 overflow-hidden rounded-lg border bg-white shadow-[0_1px_2px_rgb(17_18_20/0.03)]">
-          <div className="border-border/60 flex items-center justify-between gap-2 border-b bg-[#fbfbfa] px-3 py-2">
+        <div className="border-border-subtle bg-card overflow-hidden rounded-lg border">
+          <div className="border-border-subtle bg-surface flex items-center justify-between gap-2 border-b px-3 py-2">
             <span className="truncate font-mono text-xs">{path}</span>
             <div className="flex shrink-0 items-center gap-1.5">
               <Badge variant="outline">location</Badge>
@@ -237,9 +252,9 @@ export function CodeSnippetViewer({
         return (
           <div
             key={item.id}
-            className="border-border/70 overflow-hidden rounded-lg border bg-white shadow-[0_1px_2px_rgb(17_18_20/0.03)]"
+            className="border-border-subtle bg-card overflow-hidden rounded-lg border"
           >
-            <div className="border-border/60 flex items-center justify-between gap-2 border-b bg-[#fbfbfa] px-3 py-2">
+            <div className="border-border-subtle bg-surface flex items-center justify-between gap-2 border-b px-3 py-2">
               <span className="truncate font-mono text-xs">
                 {item.path || formatFindingLocation(finding)}
               </span>
@@ -329,11 +344,3 @@ function findingDecisionSelectValue(
   return "pending";
 }
 
-function findingDecisionMutationFromValue(
-  value: string,
-): FindingDecisionMutation | null {
-  if (value === "accepted" || value === "dismissed" || value === "deferred") {
-    return value;
-  }
-  return null;
-}

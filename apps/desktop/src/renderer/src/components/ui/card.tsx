@@ -1,20 +1,46 @@
 import * as React from "react";
+import { cva, type VariantProps } from "class-variance-authority";
 
 import { cn } from "@/lib/utils";
+
+const cardVariants = cva(
+  "group/card text-card-foreground flex flex-col gap-4 overflow-hidden rounded-xl py-4 text-sm has-data-[slot=card-footer]:pb-0 has-[>img:first-child]:pt-0 data-[size=sm]:gap-3 data-[size=sm]:py-3 data-[size=sm]:has-data-[slot=card-footer]:pb-0 *:[img:first-child]:rounded-t-xl *:[img:last-child]:rounded-b-xl",
+  {
+    variants: {
+      variant: {
+        default: "bg-card ring-1 ring-border",
+        raised: "bg-card ring-1 ring-border shadow-sm",
+        sunken: "bg-surface-sunken ring-1 ring-border-subtle",
+        ghost: "bg-transparent",
+      },
+      interactive: {
+        true: "transition-shadow hover:shadow-md focus-visible:shadow-md focus-visible:ring-ring focus-visible:outline-none",
+        false: "",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+      interactive: false,
+    },
+  },
+);
+
+type CardProps = React.ComponentProps<"div"> &
+  VariantProps<typeof cardVariants> & { size?: "default" | "sm" };
 
 function Card({
   className,
   size = "default",
+  variant,
+  interactive,
   ...props
-}: React.ComponentProps<"div"> & { size?: "default" | "sm" }) {
+}: CardProps) {
   return (
     <div
       data-slot="card"
       data-size={size}
-      className={cn(
-        "group/card bg-card text-card-foreground ring-foreground/10 flex flex-col gap-4 overflow-hidden rounded-xl py-4 text-sm ring-1 has-data-[slot=card-footer]:pb-0 has-[>img:first-child]:pt-0 data-[size=sm]:gap-3 data-[size=sm]:py-3 data-[size=sm]:has-data-[slot=card-footer]:pb-0 *:[img:first-child]:rounded-t-xl *:[img:last-child]:rounded-b-xl",
-        className,
-      )}
+      data-variant={variant ?? "default"}
+      className={cn(cardVariants({ variant, interactive }), className)}
       {...props}
     />
   );
@@ -100,4 +126,5 @@ export {
   CardAction,
   CardDescription,
   CardContent,
+  cardVariants,
 };

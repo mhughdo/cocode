@@ -652,14 +652,14 @@ export function NewThreadScreen({
   }
 
   return (
-    <section className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-[#fbfbfa]">
+    <section className="bg-background flex min-h-0 min-w-0 flex-col overflow-hidden">
       <div className="grid h-full w-full grid-rows-[auto_minmax(0,1fr)]">
-        <div className="flex items-start justify-between gap-4 px-4 pt-5 pb-3 min-[900px]:px-6">
+        <div className="flex items-start justify-between gap-4 px-6 pt-6 pb-4 min-[900px]:px-8">
           <div className="min-w-0">
-            <h1 className="text-[1.34rem] leading-7 font-semibold tracking-[-0.01em]">
+            <h1 className="text-2xl leading-tight font-semibold tracking-tight">
               Set up review
             </h1>
-            <p className="text-muted-foreground mt-0.5 text-[0.82rem]">
+            <p className="text-muted-foreground mt-1.5 text-sm">
               Configure the source, focus, orchestration, and presets for this
               review.
             </p>
@@ -1210,7 +1210,7 @@ export function NewThreadScreen({
                     </div>
                   </div>
                   {!sourceInspectorLayoutActive && (
-                    <div className="border-border/70 flex h-full min-h-[206px] flex-col rounded-lg border bg-white/85 p-3">
+                    <div className="bg-card border-border-subtle flex h-full min-h-[206px] flex-col rounded-lg border p-3.5">
                       <div className="text-sm font-semibold">Scope summary</div>
                       <div className="mt-2 flex flex-col gap-1.5 text-xs">
                         <SetupScopeRow

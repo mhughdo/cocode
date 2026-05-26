@@ -63,9 +63,9 @@ export function ChatMessageCard({
   return (
     <article
       className={cn(
-        "border-border/80 flex gap-3 rounded-xl border bg-white px-4 py-3 shadow-[0_1px_2px_rgba(17,18,20,0.03)]",
-        isSystem && "bg-[#fbfbfa]",
-        streaming && "border-dashed bg-[#fbfbfa]",
+        "bg-card border-border-subtle flex gap-3 rounded-xl border px-4 py-3",
+        isSystem && "bg-transparent border-transparent",
+        streaming && "bg-surface",
         failed && "border-destructive/30 bg-destructive/5",
       )}
     >
@@ -198,14 +198,20 @@ function AgentRunBadges({
       {isOrchestrator && (
         <Badge
           data-testid="orchestrator-agent-badge"
-          variant="outline"
-          className="h-4 border-violet-200 bg-violet-50 px-1.5 text-[10px] text-violet-800"
+          variant="signal-agent"
+          className="h-4 px-1.5 text-[10px]"
         >
           orchestrator
         </Badge>
       )}
       <Badge
-        variant={failed ? "destructive" : streaming ? "outline" : "secondary"}
+        variant={
+          failed
+            ? "destructive"
+            : streaming
+              ? "outline"
+              : "status-verified"
+        }
         className="h-4 gap-1 px-1.5 text-[10px]"
       >
         {streaming && <Loader2Icon className="size-3 animate-spin" />}
@@ -217,26 +223,17 @@ function AgentRunBadges({
         </Badge>
       )}
       {runtimeSummary.reasoning.length > 0 && (
-        <Badge
-          variant="outline"
-          className="h-4 border-amber-200 bg-amber-50 px-1.5 text-[10px] text-amber-800"
-        >
+        <Badge variant="signal-trace" className="h-4 px-1.5 text-[10px]">
           reasoning {runtimeSummary.reasoning.length}
         </Badge>
       )}
       {runtimeSummary.toolCalls.length > 0 && (
-        <Badge
-          variant="outline"
-          className="h-4 border-blue-200 bg-blue-50 px-1.5 text-[10px] text-blue-800"
-        >
+        <Badge variant="signal-tool" className="h-4 px-1.5 text-[10px]">
           tools {runtimeSummary.toolCalls.length}
         </Badge>
       )}
       {runtimeSummary.output.length > 0 && (
-        <Badge
-          variant="outline"
-          className="h-4 border-emerald-200 bg-emerald-50 px-1.5 text-[10px] text-emerald-800"
-        >
+        <Badge variant="signal-output" className="h-4 px-1.5 text-[10px]">
           output {runtimeSummary.output.length}
         </Badge>
       )}
@@ -255,7 +252,7 @@ function ReasoningSummary({ metadata }: { metadata: unknown }) {
     return null;
   }
   return (
-    <details className="border-border/70 bg-surface/50 mt-3 rounded-lg border px-3 py-2 text-xs">
+    <details className="border-border-subtle bg-surface mt-3 rounded-lg border px-3 py-2 text-xs">
       <summary className="text-muted-foreground flex cursor-pointer list-none items-center justify-between gap-3 font-medium [&::-webkit-details-marker]:hidden">
         <span>Reasoning summary</span>
         <span>model-visible</span>

@@ -78,7 +78,7 @@ if (selectedTargets.length === 0) {
   test("real CLI branch reviews are opt-in", async () => {
     test.skip(
       true,
-      "Set COCODE_E2E_REAL_REVIEW_CLIS=codex,gemini,opencode,claude or all to run a real local CLI review.",
+      "Set COCODE_E2E_REAL_REVIEW_CLIS=codex,gemini,opencode,agy,claude or all to run a real local CLI review.",
     );
   });
 } else {

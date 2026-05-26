@@ -434,7 +434,7 @@ export function AgentSettingsScreen({
 
           <div className="grid grid-cols-[320px_minmax(0,1fr)] gap-4">
             <div className="flex min-w-0 flex-col gap-4">
-              <section className="bg-surface-raised rounded-lg border">
+              <section className="bg-card border-border-subtle rounded-lg border">
                 <div className="border-b px-3 py-2 text-sm font-medium">
                   Available CLIs
                 </div>
@@ -459,10 +459,10 @@ export function AgentSettingsScreen({
                     <button
                       key={preset.id}
                       className={cn(
-                        "hover:bg-surface flex w-full items-start gap-3 rounded-md px-2 py-2 text-left text-sm",
+                        "hover:bg-muted flex w-full items-start gap-3 rounded-md px-2 py-2 text-left text-sm transition-colors",
                         formMode === "create" &&
                           form.sourcePresetId === preset.id &&
-                          "bg-surface",
+                          "bg-muted",
                       )}
                       type="button"
                       onClick={() => selectPreset(preset)}
@@ -490,7 +490,7 @@ export function AgentSettingsScreen({
                 </div>
               </section>
 
-              <section className="bg-surface-raised rounded-lg border">
+              <section className="bg-card border-border-subtle rounded-lg border">
                 <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
                   <span className="text-sm font-medium">Saved connections</span>
                   {configs.status === "success" && (
@@ -518,10 +518,10 @@ export function AgentSettingsScreen({
                     <button
                       key={config.id}
                       className={cn(
-                        "hover:bg-surface flex w-full items-center gap-3 rounded-md px-2 py-2 text-left text-sm",
+                        "hover:bg-muted flex w-full items-center gap-3 rounded-md px-2 py-2 text-left text-sm transition-colors",
                         formMode === "edit" &&
                           form.id === config.id &&
-                          "bg-surface",
+                          "bg-muted",
                       )}
                       type="button"
                       onClick={() => selectConfig(config)}
@@ -548,7 +548,7 @@ export function AgentSettingsScreen({
               </section>
             </div>
 
-            <section className="bg-surface-raised min-w-0 rounded-lg border">
+            <section className="bg-card border-border-subtle min-w-0 rounded-lg border">
               <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
                 <div className="min-w-0">
                   <div className="truncate text-sm font-medium">
@@ -902,9 +902,9 @@ export function AgentSettingsScreen({
             </section>
           </div>
 
-          <section className="bg-surface-raised rounded-lg border">
+          <section className="bg-card border-border-subtle rounded-lg border">
             <button
-              className="hover:bg-surface/70 flex w-full items-center justify-between gap-3 rounded-t-lg px-4 py-3 text-left"
+              className="hover:bg-muted/70 flex w-full items-center justify-between gap-3 rounded-t-lg px-4 py-3 text-left transition-colors"
               type="button"
               onClick={() => setShowProjectSettings((current) => !current)}
             >

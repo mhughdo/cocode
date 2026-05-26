@@ -43,7 +43,7 @@ export function CentralizedChatRail({
       : session.agents.length;
   return (
     <aside className="flex min-h-0 flex-col gap-4 overflow-y-auto pr-1 [scrollbar-width:none] max-xl:grid max-xl:grid-cols-3 max-lg:grid-cols-1 [&::-webkit-scrollbar]:hidden">
-      <section className="border-border/80 space-y-3 rounded-xl border bg-white p-4 shadow-[0_1px_2px_rgba(17,18,20,0.03)]">
+      <section className="border-border-subtle bg-card space-y-3 rounded-xl border p-4">
         <h2 className="text-[15px] font-semibold">Review summary</h2>
         <RailStatus
           detail={`${stats?.by_verification.verified ?? 0}`}
@@ -69,13 +69,13 @@ export function CentralizedChatRail({
           label="Dismissed"
           ok
         />
-        <div className="text-muted-foreground border-border/70 border-t pt-3 text-xs">
+        <div className="text-muted-foreground border-border-subtle border-t pt-3 text-xs">
           {agentCount} reviewer{agentCount === 1 ? "" : "s"} configured •{" "}
           {session.status}
         </div>
       </section>
 
-      <section className="border-border/80 space-y-3 rounded-xl border bg-white p-4 shadow-[0_1px_2px_rgba(17,18,20,0.03)]">
+      <section className="border-border-subtle bg-card space-y-3 rounded-xl border p-4">
         <h2 className="text-[15px] font-semibold">Top finding</h2>
         {topFinding ? (
           <div className="space-y-3">
@@ -101,7 +101,7 @@ export function CentralizedChatRail({
         )}
       </section>
 
-      <section className="border-border/80 min-h-0 space-y-3 rounded-xl border bg-white p-4 shadow-[0_1px_2px_rgba(17,18,20,0.03)]">
+      <section className="border-border-subtle bg-card min-h-0 space-y-3 rounded-xl border p-4">
         <h2 className="text-[15px] font-semibold">Activity</h2>
         {latestEvents.length > 0 ? (
           <div className="max-h-60 space-y-3 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">

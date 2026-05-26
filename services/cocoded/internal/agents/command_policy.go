@@ -126,7 +126,7 @@ func NormalizeCLIEnvironment(command string, env map[string]string) map[string]s
 	}
 	commandName := commandPolicyName(command)
 	switch commandName {
-	case "claude", "codex", "kiro", "kiro-cli", "opencode":
+	case "agy", "claude", "codex", "kiro", "kiro-cli", "opencode":
 		ensureCLIRuntimeIdentity(out)
 		out["PATH"] = normalizeCLIPath(out["PATH"], out["HOME"])
 		if term := strings.TrimSpace(out["TERM"]); term == "" || term == "dumb" {
@@ -230,7 +230,7 @@ func CLIRuntimeBaseDir() string {
 func prepareCLIToolRuntimeEnvironment(command string, env map[string]string) (map[string]string, func(), error) {
 	commandName := commandPolicyName(command)
 	switch commandName {
-	case "claude", "codex", "gemini", "kiro", "kiro-cli", "opencode":
+	case "agy", "claude", "codex", "gemini", "kiro", "kiro-cli", "opencode":
 	default:
 		return env, func() {}, nil
 	}

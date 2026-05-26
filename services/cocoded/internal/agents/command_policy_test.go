@@ -157,6 +157,20 @@ func TestNormalizeCLIEnvironmentDefaultsTerminalForKnownCLIs(t *testing.T) {
 		t.Fatalf("NormalizeCLIEnvironment(kiro-cli) = %#v, want FORCE_COLOR removed", kiro)
 	}
 
+	agy := NormalizeCLIEnvironment("agy", map[string]string{"FORCE_COLOR": "1", "TERM": ""})
+	if agy["TERM"] != "xterm-256color" ||
+		agy["COLORTERM"] != "truecolor" ||
+		agy["NO_COLOR"] != "1" ||
+		agy["USER"] == "" ||
+		agy["LOGNAME"] == "" ||
+		agy["SHELL"] == "" ||
+		agy["TMPDIR"] == "" {
+		t.Fatalf("NormalizeCLIEnvironment(agy) = %#v, want known CLI terminal and identity env", agy)
+	}
+	if _, ok := agy["FORCE_COLOR"]; ok {
+		t.Fatalf("NormalizeCLIEnvironment(agy) = %#v, want FORCE_COLOR removed", agy)
+	}
+
 	unknown := NormalizeCLIEnvironment("custom-reviewer", map[string]string{"TERM": "dumb"})
 	if unknown["TERM"] != "dumb" ||
 		unknown["COLORTERM"] != "" ||
@@ -330,7 +344,7 @@ func TestPrepareCommandRuntimeEnvironmentIsolatesGeminiHome(t *testing.T) {
 func TestPrepareCommandRuntimeEnvironmentLeavesOtherCLIsOnRealHome(t *testing.T) {
 	t.Parallel()
 
-	for _, command := range []string{"codex", "kiro-cli"} {
+	for _, command := range []string{"codex", "kiro-cli", "agy"} {
 		command := command
 		t.Run(command, func(t *testing.T) {
 			t.Parallel()
@@ -599,5 +613,15 @@ func TestCommandArgsWithModelSelectionInjectsKiroModelAfterChat(t *testing.T) {
 	want := []string{"chat", "--model", "claude-sonnet-4.5", "--no-interactive", "--trust-tools=read,grep,glob,code", PromptArgPlaceholder}
 	if !slices.Equal(got, want) {
 		t.Fatalf("CommandArgsWithModelSelection(kiro-cli) = %#v, want %#v", got, want)
+	}
+}
+
+func TestCommandArgsWithModelSelectionLeavesAntigravityArgs(t *testing.T) {
+	t.Parallel()
+
+	args := []string{"--print", "--sandbox"}
+	got := CommandArgsWithModelSelection(AdapterCLINonInteractive, "agy", args, "gemini-3.5-flash", "high")
+	if !slices.Equal(got, args) {
+		t.Fatalf("CommandArgsWithModelSelection(agy) = %#v, want %#v", got, args)
 	}
 }

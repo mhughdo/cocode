@@ -441,6 +441,22 @@ func TestAgentPresetsEndpointIncludesBuiltInCLIs(t *testing.T) {
 		!json.Valid(opencodeACP.Settings) {
 		t.Fatalf("opencode acp preset = %+v", opencodeACP)
 	}
+	antigravity := findAgentPreset(t, presets, "antigravity-cli")
+	if antigravity.Command != "agy" ||
+		len(antigravity.Args) != 5 ||
+		antigravity.Args[0] != "--print" ||
+		antigravity.Args[1] != "--sandbox" ||
+		antigravity.Args[2] != "--dangerously-skip-permissions" ||
+		antigravity.Args[3] != "--print-timeout" ||
+		antigravity.Args[4] != "30m0s" ||
+		antigravity.OutputMode != agents.OutputText ||
+		antigravity.ModelLabel != "gemini-3.5-flash" ||
+		antigravity.ReasoningLabel != "high" ||
+		antigravity.Capabilities.SupportsJSON ||
+		!antigravity.Capabilities.SupportsOutputMode(agents.OutputText) ||
+		!json.Valid(antigravity.Settings) {
+		t.Fatalf("antigravity preset = %+v", antigravity)
+	}
 	kiro := findAgentPreset(t, presets, "kiro-cli")
 	if kiro.Command != "kiro-cli" ||
 		len(kiro.Args) != 6 ||

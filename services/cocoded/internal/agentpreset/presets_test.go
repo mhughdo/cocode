@@ -277,6 +277,45 @@ func TestOpenCodeACPPreset(t *testing.T) {
 	}
 }
 
+func TestAntigravityCLIPreset(t *testing.T) {
+	t.Parallel()
+
+	preset := AntigravityCLI()
+	if preset.ID != "antigravity-cli" ||
+		preset.Command != "agy" ||
+		preset.AdapterKind != agents.AdapterCLINonInteractive ||
+		preset.OutputMode != agents.OutputText ||
+		preset.ModelLabel != "gemini-3.5-flash" ||
+		preset.ReasoningLabel != "high" ||
+		preset.Capabilities.SupportsJSON ||
+		!preset.Capabilities.CanCancel ||
+		!preset.Capabilities.SupportsOutputMode(agents.OutputText) {
+		t.Fatalf("preset = %+v", preset)
+	}
+	if len(preset.Args) != 5 ||
+		preset.Args[0] != "--print" ||
+		preset.Args[1] != "--sandbox" ||
+		preset.Args[2] != "--dangerously-skip-permissions" ||
+		preset.Args[3] != "--print-timeout" ||
+		preset.Args[4] != "30m0s" {
+		t.Fatalf("preset args = %+v", preset.Args)
+	}
+	settings := decodePresetSettings(t, preset)
+	if settings.PromptDelivery != agents.PromptViaStdin ||
+		settings.TimeoutSeconds != 1800 ||
+		len(settings.VersionArgs) != 1 ||
+		settings.VersionArgs[0] != "--version" ||
+		settings.SmokePromptEnabled {
+		t.Fatalf("settings = %+v", settings)
+	}
+	if !containsString(preset.EnvAllowlist, "PATH") ||
+		!containsString(preset.EnvAllowlist, "HOME") ||
+		!containsString(preset.EnvAllowlist, "GEMINI_API_KEY") ||
+		!containsString(preset.EnvAllowlist, "GOOGLE_APPLICATION_CREDENTIALS") {
+		t.Fatalf("env allowlist = %+v", preset.EnvAllowlist)
+	}
+}
+
 func TestKiroCLIPreset(t *testing.T) {
 	t.Parallel()
 
@@ -352,7 +391,7 @@ func TestListIncludesKnownPresets(t *testing.T) {
 	for _, preset := range presets {
 		ids[preset.ID] = struct{}{}
 	}
-	for _, id := range []string{"codex-cli", "codex-app-server", "claude-code-cli", "gemini-cli", "gemini-acp", "opencode-cli", "opencode-acp", "kiro-cli", "custom-cli"} {
+	for _, id := range []string{"codex-cli", "codex-app-server", "claude-code-cli", "gemini-cli", "gemini-acp", "opencode-cli", "opencode-acp", "antigravity-cli", "kiro-cli", "custom-cli"} {
 		if _, ok := ids[id]; !ok {
 			t.Fatalf("preset %q missing from %+v", id, presets)
 		}

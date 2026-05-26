@@ -128,6 +128,7 @@ func discoverAgentModelCatalogs(ctx context.Context) []AgentModelCatalogResponse
 		discoverKiroModels,
 		discoverClaudeModels,
 		discoverGeminiModels,
+		discoverAntigravityModels,
 	}
 	catalogs := make([]AgentModelCatalogResponse, len(discoverers))
 	var wg sync.WaitGroup
@@ -388,6 +389,20 @@ func discoverGeminiModels(_ context.Context) AgentModelCatalogResponse {
 	return catalog
 }
 
+func discoverAntigravityModels(_ context.Context) AgentModelCatalogResponse {
+	catalog := modelCatalog("antigravity", "Antigravity", "agy")
+	if _, err := agents.ResolveCommandExecutable("agy"); err != nil {
+		catalog.Error = "agy command is not installed or not on PATH"
+		return catalog
+	}
+	catalog.Available = true
+	catalog.Models = knownModelOptions("google", "cli-known", []knownModel{
+		{ID: "gemini-3.5-flash", Label: "Gemini 3.5 Flash", Default: true},
+	}, genericReasoningOptions("high", []string{"low", "medium", "high"}))
+	catalog.Source = sourceForModels(catalog.Models)
+	return catalog
+}
+
 func discoverKiroModels(ctx context.Context) AgentModelCatalogResponse {
 	catalog := modelCatalog("kiro", "Kiro", "kiro-cli")
 	if _, err := agents.ResolveCommandExecutable("kiro-cli"); err != nil {
@@ -526,6 +541,8 @@ func providerLabel(provider string) string {
 		return "Anthropic"
 	case "google":
 		return "Google"
+	case "antigravity":
+		return "Antigravity"
 	case "kiro":
 		return "Kiro"
 	case "xai":

@@ -207,7 +207,7 @@ export function Sidebar({
               onClick={() => onSelectWorkspace(workspace.id)}
             />
             {workspace.id === activeWorkspaceId && (
-              <div className="border-border/70 mt-1 mb-2 flex flex-col gap-1 border-l pl-3">
+              <div className="border-border-subtle ml-3.5 mt-1 mb-2 flex flex-col gap-1 border-l pl-3">
                 {reviewSessions.status === "loading" && (
                   <div className="text-sidebar-muted px-2 py-1 text-xs">
                     Loading threads...
@@ -275,7 +275,7 @@ export function Sidebar({
       </div>
       {threadContextMenu && (
         <div
-          className="app-no-drag bg-popover text-popover-foreground ring-foreground/10 fixed z-50 min-w-40 rounded-lg p-1 text-sm shadow-lg ring-1"
+          className="app-no-drag bg-popover text-popover-foreground ring-border fixed z-50 min-w-40 rounded-lg p-1 text-sm shadow-lg ring-1"
           style={{
             left: Math.min(threadContextMenu.x, window.innerWidth - 176),
             top: Math.min(threadContextMenu.y, window.innerHeight - 52),
@@ -334,10 +334,10 @@ export function TopNav({
     : (setupContext?.subtitle ?? "Set up review");
 
   return (
-    <div className="app-drag bg-surface-raised/96 flex h-[52px] shrink-0 items-center justify-between gap-4 border-b px-5 backdrop-blur">
+    <div className="app-drag bg-background border-border-subtle flex h-14 shrink-0 items-center justify-between gap-4 border-b px-5">
       <div className="flex min-w-0 items-center gap-3">
         <div className="min-w-0">
-          <div className="truncate text-[0.92rem] font-semibold">
+          <div className="truncate text-[0.94rem] font-semibold tracking-[-0.005em]">
             {titleLabel}
           </div>
           <div className="text-muted-foreground mt-0.5 flex min-w-0 items-center gap-1.5 text-xs">
@@ -347,7 +347,7 @@ export function TopNav({
         </div>
       </div>
 
-      <div className="app-no-drag text-muted-foreground flex h-7 max-w-[220px] min-w-0 items-center gap-1.5 rounded-lg border bg-white px-2.5 text-xs">
+      <div className="app-no-drag text-muted-foreground bg-surface-raised border-border-subtle flex h-7 max-w-[220px] min-w-0 items-center gap-1.5 rounded-md border px-2.5 text-xs">
         <GitBranchIcon className="size-[13px] shrink-0" />
         <span className="truncate">{branchLabel}</span>
       </div>

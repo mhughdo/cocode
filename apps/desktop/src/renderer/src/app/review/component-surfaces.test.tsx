@@ -32,7 +32,9 @@ describe("review component surfaces", () => {
     expect(html).toContain("apps/api/src/routes/repositories.ts");
     expect(html).toContain("high");
     expect(html).toContain("Needs triage");
-    expect(html).toContain("<select");
+    expect(html).toContain(
+      'aria-label="Set status for Repository settings update lacks admin guard"',
+    );
   });
 
   it("renders evidence cards in prioritized order with locations", () => {

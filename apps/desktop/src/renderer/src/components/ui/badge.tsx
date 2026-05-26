@@ -19,6 +19,33 @@ const badgeVariants = cva(
         ghost:
           "hover:bg-muted hover:text-muted-foreground dark:hover:bg-muted/50",
         link: "text-primary underline-offset-4 hover:underline",
+
+        "severity-blocker":
+          "bg-severity-blocker-surface border-severity-blocker-border text-severity-blocker-foreground",
+        "severity-high":
+          "bg-severity-high-surface border-severity-high-border text-severity-high-foreground",
+        "severity-medium":
+          "bg-severity-medium-surface border-severity-medium-border text-severity-medium-foreground",
+        "severity-low":
+          "bg-severity-low-surface border-severity-low-border text-severity-low-foreground",
+
+        "status-verified":
+          "bg-status-verified-surface border-status-verified-border text-status-verified-foreground",
+        "status-triage":
+          "bg-status-triage-surface border-status-triage-border text-status-triage-foreground",
+        "status-accepted":
+          "bg-status-accepted-surface border-status-accepted-border text-status-accepted-foreground",
+        "status-dismissed":
+          "bg-status-dismissed-surface border-status-dismissed-border text-status-dismissed-foreground",
+
+        "signal-agent":
+          "bg-signal-agent-surface border-signal-agent-border text-signal-agent-foreground",
+        "signal-trace":
+          "bg-signal-trace-surface border-signal-trace-border text-signal-trace-foreground",
+        "signal-tool":
+          "bg-signal-tool-surface border-signal-tool-border text-signal-tool-foreground",
+        "signal-output":
+          "bg-signal-output-surface border-signal-output-border text-signal-output-foreground",
       },
     },
     defaultVariants: {
@@ -26,6 +53,10 @@ const badgeVariants = cva(
     },
   },
 );
+
+export type BadgeVariant = NonNullable<
+  VariantProps<typeof badgeVariants>["variant"]
+>;
 
 function Badge({
   className,

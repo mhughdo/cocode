@@ -55,7 +55,7 @@ export function AppShell({
   return (
     <TooltipProvider>
       <main className="bg-background text-foreground flex h-screen min-h-0 overflow-hidden">
-        <aside className="bg-sidebar text-sidebar-foreground flex w-[266px] shrink-0 flex-col border-r shadow-[inset_-1px_0_0_rgb(17_18_20/0.04)]">
+        <aside className="bg-sidebar text-sidebar-foreground border-border-subtle flex w-[266px] shrink-0 flex-col border-r">
           {sidebar}
         </aside>
         <section className="bg-background flex min-w-0 flex-1 flex-col">
@@ -118,9 +118,9 @@ export function SidebarNavButton({
   return (
     <button
       className={cn(
-        "text-sidebar-foreground/86 hover:bg-background/70 flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[0.84rem] transition-colors [&_svg]:size-3.5 [&_svg]:shrink-0",
+        "text-sidebar-foreground/80 hover:bg-surface-muted/70 hover:text-sidebar-foreground flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[0.84rem] transition-colors [&_svg]:size-3.5 [&_svg]:shrink-0",
         active &&
-          "bg-background text-sidebar-foreground shadow-[0_1px_2px_oklch(0.2_0.02_255/0.04)]",
+          "bg-surface-muted text-sidebar-foreground font-medium",
         className,
       )}
       type="button"
@@ -153,7 +153,7 @@ export function PaneHeader({
   return (
     <div
       className={cn(
-        "bg-surface-raised/96 flex h-16 shrink-0 items-center justify-between gap-4 border-b px-5 backdrop-blur",
+        "bg-background border-border-subtle flex h-14 shrink-0 items-center justify-between gap-4 border-b px-5",
         className,
       )}
     >

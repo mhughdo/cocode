@@ -83,16 +83,15 @@ function FindingActions({
 }) {
   return (
     <Section title="Actions">
-      <div className="grid min-w-0 grid-cols-2 gap-2">
-        <Button
-          className="min-w-0 justify-start overflow-hidden"
-          disabled={disabled}
-          size="sm"
-          onClick={onAccept}
-        >
-          <CheckIcon data-icon="inline-start" />
-          Accept
-        </Button>
+      <Button
+        className="w-full justify-center"
+        disabled={disabled}
+        onClick={onAccept}
+      >
+        <CheckIcon data-icon="inline-start" />
+        Accept finding
+      </Button>
+      <div className="mt-2 grid min-w-0 grid-cols-2 gap-2">
         <Button
           className="min-w-0 justify-start overflow-hidden"
           disabled={disabled}
@@ -103,8 +102,6 @@ function FindingActions({
           <MinusIcon data-icon="inline-start" />
           Dismiss
         </Button>
-      </div>
-      <div className="mt-2 grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">
         <Button
           className="min-w-0 justify-start overflow-hidden"
           disabled={disabled}
@@ -383,17 +380,21 @@ export function FindingsInspectorPanel({
         <div className="flex flex-wrap gap-2">
           <Badge
             variant={
-              finding.severity === "high" || finding.severity === "blocker"
-                ? "destructive"
-                : "secondary"
+              finding.severity === "blocker"
+                ? "severity-blocker"
+                : finding.severity === "high"
+                  ? "severity-high"
+                  : finding.severity === "medium"
+                    ? "severity-medium"
+                    : "severity-low"
             }
           >
             {finding.severity}
           </Badge>
-          <Badge variant="outline">
+          <Badge variant="status-verified">
             {formatDecisionLabel(finding.verification_status)}
           </Badge>
-          <Badge variant="secondary">
+          <Badge variant="status-triage">
             {formatDecisionLabel(finding.decision_status)}
           </Badge>
         </div>
@@ -401,7 +402,7 @@ export function FindingsInspectorPanel({
           {finding.evidence_summary}
         </PanelMarkdown>
         {finding.publish_blockers?.length ? (
-          <div className="border-border/80 bg-muted/20 text-muted-foreground mt-3 rounded-md border border-dashed px-3 py-2 text-xs">
+          <div className="border-border-subtle bg-surface-sunken text-muted-foreground mt-3 rounded-md border px-3 py-2 text-xs">
             <div className="text-foreground font-medium">Publish blockers</div>
             <ul className="mt-1 list-disc space-y-1 pl-4">
               {finding.publish_blockers.map((blocker) => (

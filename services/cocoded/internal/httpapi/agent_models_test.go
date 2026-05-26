@@ -1,6 +1,11 @@
 package httpapi
 
-import "testing"
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestKiroModelOptionsUsesCLIModelCatalog(t *testing.T) {
 	t.Parallel()
@@ -41,5 +46,34 @@ func TestKiroModelOptionsFallsBackToAutoDefault(t *testing.T) {
 }`)
 	if len(models) != 2 || !models[0].Default || models[1].Default {
 		t.Fatalf("kiroModelOptions() = %+v, want auto as fallback default", models)
+	}
+}
+
+func TestDiscoverAntigravityModelsUsesKnownGeminiFlashDefault(t *testing.T) {
+	binDir := t.TempDir()
+	agyPath := filepath.Join(binDir, "agy")
+	if err := os.WriteFile(agyPath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatalf("WriteFile(agy) error = %v", err)
+	}
+	t.Setenv("PATH", binDir)
+	t.Setenv("HOME", t.TempDir())
+
+	catalog := discoverAntigravityModels(context.Background())
+	if !catalog.Available ||
+		catalog.Provider != "antigravity" ||
+		catalog.ProviderLabel != "Antigravity" ||
+		catalog.Command != "agy" ||
+		catalog.Source != "cli-known" ||
+		len(catalog.Models) != 1 {
+		t.Fatalf("catalog = %+v", catalog)
+	}
+	model := catalog.Models[0]
+	if model.ID != "gemini-3.5-flash" ||
+		model.Label != "Gemini 3.5 Flash" ||
+		model.Provider != "google" ||
+		!model.Default ||
+		len(model.ReasoningEfforts) != 3 ||
+		!model.ReasoningEfforts[2].Default {
+		t.Fatalf("model = %+v", model)
 	}
 }

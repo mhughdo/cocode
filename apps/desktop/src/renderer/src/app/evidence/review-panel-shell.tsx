@@ -26,19 +26,17 @@ export function PanelFrame({
     <aside
       data-review-panel="true"
       className={cn(
-        "border-border/70 flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border bg-white shadow-[0_1px_2px_rgb(17_18_20/0.03)]",
+        "bg-card border-border flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border",
         className,
       )}
     >
-      <div className="min-w-0 border-b bg-white px-4 py-3">
+      <div className="border-border-subtle min-w-0 border-b px-4 py-3.5">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             {eyebrow && (
-              <div className="text-muted-foreground text-xs font-medium">
-                {eyebrow}
-              </div>
+              <div className="cocode-section-label">{eyebrow}</div>
             )}
-            <div className="text-base font-semibold [overflow-wrap:anywhere] break-words">
+            <div className="mt-1 text-base font-semibold [overflow-wrap:anywhere] break-words">
               {title}
             </div>
             {subtitle && (
@@ -53,7 +51,7 @@ export function PanelFrame({
         </div>
       </div>
       <ScrollArea className="min-h-0 flex-1">
-        <div className="flex w-full max-w-full min-w-0 flex-col gap-4 overflow-x-hidden p-4">
+        <div className="flex w-full max-w-full min-w-0 flex-col gap-5 overflow-x-hidden px-4 py-4">
           {children}
         </div>
       </ScrollArea>
@@ -71,16 +69,14 @@ export function Section({
   description?: string;
 }) {
   return (
-    <section className="border-border/70 max-w-full min-w-0 overflow-hidden rounded-lg border bg-white">
-      <div className="px-3 py-2.5">
-        <div className="text-sm font-semibold">{title}</div>
-        {description && (
-          <p className="text-muted-foreground mt-1 text-xs leading-5 [overflow-wrap:anywhere] break-words">
-            {description}
-          </p>
-        )}
-      </div>
-      <div className="max-w-full min-w-0 border-t px-3 py-3">{children}</div>
+    <section className="max-w-full min-w-0">
+      <div className="text-sm font-semibold">{title}</div>
+      {description && (
+        <p className="text-muted-foreground mt-1 text-xs leading-5 [overflow-wrap:anywhere] break-words">
+          {description}
+        </p>
+      )}
+      <div className="mt-2.5 max-w-full min-w-0">{children}</div>
     </section>
   );
 }

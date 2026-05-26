@@ -135,11 +135,11 @@ function RuntimeTraceSection({
     <section
       className={cn(
         "rounded-md border px-2 py-1.5",
-        tone === "amber" && "border-amber-200 bg-amber-50/60",
-        tone === "blue" && "border-blue-200 bg-blue-50/60",
-        tone === "green" && "border-emerald-200 bg-emerald-50/60",
+        tone === "amber" && "border-signal-trace-border bg-signal-trace-surface/60",
+        tone === "blue" && "border-signal-tool-border bg-signal-tool-surface/60",
+        tone === "green" && "border-signal-output-border bg-signal-output-surface/60",
         tone === "red" && "border-destructive/20 bg-destructive/5",
-        tone === "neutral" && "border-border/70 bg-background/70",
+        tone === "neutral" && "border-border-subtle bg-surface",
       )}
     >
       <div className="text-muted-foreground mb-1 flex items-center justify-between gap-2 text-[10px] font-semibold tracking-wide uppercase">

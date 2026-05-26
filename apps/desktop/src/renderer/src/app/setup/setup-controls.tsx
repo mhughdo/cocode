@@ -59,16 +59,16 @@ export function SetupStepPanel({
   title: string;
 }) {
   return (
-    <section className="grid grid-cols-[28px_minmax(0,1fr)] gap-3">
-      <div className="relative flex justify-center pt-2">
+    <section className="grid grid-cols-[32px_minmax(0,1fr)] gap-3">
+      <div className="relative flex justify-center pt-2.5">
         {number < 4 && (
-          <span className="bg-border/80 absolute top-8 bottom-[-16px] left-1/2 w-px -translate-x-1/2" />
+          <span className="bg-border absolute top-[38px] bottom-[-18px] left-1/2 w-px -translate-x-1/2" />
         )}
-        <span className="bg-foreground text-background relative z-10 flex size-5 items-center justify-center rounded-full text-[0.68rem] font-semibold shadow-[0_1px_2px_rgb(17_18_20/0.14)]">
+        <span className="bg-foreground text-background relative z-10 flex size-7 items-center justify-center rounded-full text-xs font-semibold">
           {number}
         </span>
       </div>
-      <div className="border-border/70 rounded-xl border bg-white/88 px-4 py-3 shadow-[0_1px_2px_rgb(17_18_20/0.03)]">
+      <div className="bg-card border-border-subtle rounded-xl border px-4 py-3.5">
         <div
           className={cn(
             "grid gap-4",
@@ -78,8 +78,8 @@ export function SetupStepPanel({
           )}
         >
           <div className="min-w-0">
-            <h2 className="text-[0.96rem] leading-5 font-semibold">{title}</h2>
-            <p className="text-muted-foreground mt-1 text-[0.78rem] leading-5">
+            <h2 className="text-md leading-5 font-semibold">{title}</h2>
+            <p className="text-muted-foreground mt-1 text-sm leading-5">
               {description}
             </p>
           </div>
@@ -106,9 +106,8 @@ export function SetupSegment({
   return (
     <button
       className={cn(
-        "border-border/70 hover:bg-surface-muted flex h-10 min-w-0 cursor-pointer items-center justify-between gap-2 rounded-lg border bg-white px-2.5 text-left text-[0.78rem] font-medium shadow-[0_1px_1px_rgb(17_18_20/0.025)] transition-colors",
-        active &&
-          "border-foreground/50 bg-white shadow-[0_1px_2px_rgb(17_18_20/0.08)]",
+        "bg-surface-sunken text-muted-foreground hover:bg-muted hover:text-foreground flex h-10 min-w-0 cursor-pointer items-center justify-between gap-2 rounded-lg border border-transparent px-2.5 text-left text-sm font-medium transition-colors",
+        active && "bg-card text-foreground border-border",
       )}
       type="button"
       onClick={onClick}
@@ -123,7 +122,7 @@ export function SetupSegment({
       </span>
       <span
         className={cn(
-          "border-border flex size-3.5 shrink-0 items-center justify-center rounded-full border bg-white",
+          "border-border-strong flex size-3.5 shrink-0 items-center justify-center rounded-full border bg-card",
           active && "border-foreground bg-foreground",
         )}
       >
@@ -158,7 +157,7 @@ export function SetupBranchSelector({
         <DropdownMenuTrigger asChild>
           <button
             aria-label={`${label}: ${value}`}
-            className="border-border/70 hover:bg-surface-muted flex h-9 w-full cursor-pointer items-center justify-between gap-2 rounded-lg border bg-white px-3 text-left text-[0.8rem] font-medium shadow-[0_1px_1px_rgb(17_18_20/0.03)] disabled:cursor-default disabled:opacity-60"
+            className="border-border hover:bg-muted/75 bg-card flex h-9 w-full cursor-pointer items-center justify-between gap-2 rounded-md border px-3 text-left text-sm font-medium shadow-xs disabled:cursor-default disabled:opacity-60"
             disabled={disabled}
             type="button"
           >
@@ -233,9 +232,8 @@ export function SetupFocusChip({
   return (
     <button
       className={cn(
-        "border-border/70 text-muted-foreground hover:bg-surface-muted hover:text-foreground inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-full border bg-white px-3 text-[0.76rem] font-medium transition-colors",
-        active &&
-          "border-border bg-surface text-foreground shadow-[0_1px_1px_rgb(17_18_20/0.025)]",
+        "border-transparent text-muted-foreground bg-surface-sunken hover:bg-muted hover:text-foreground inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-full border px-3 text-sm font-medium transition-colors",
+        active && "border-border bg-card text-foreground",
       )}
       type="button"
       onClick={onClick}
@@ -269,7 +267,7 @@ export function SetupAgentSelector({
       <DropdownMenuTrigger asChild>
         <button
           aria-label={placeholder}
-          className="border-border/70 hover:bg-surface-muted flex h-8 w-full cursor-pointer items-center justify-between gap-3 rounded-lg border bg-white px-2.5 text-left text-[0.8rem] font-medium shadow-[0_1px_1px_rgb(17_18_20/0.03)] disabled:cursor-default disabled:opacity-60"
+          className="border-border hover:bg-muted/75 bg-card flex h-8 w-full cursor-pointer items-center justify-between gap-3 rounded-md border px-2.5 text-left text-sm font-medium shadow-xs disabled:cursor-default disabled:opacity-60"
           disabled={disabled}
           type="button"
         >
@@ -536,8 +534,8 @@ export function SetupAgentRow({
     <div
       aria-selected={checked}
       className={cn(
-        "border-border/60 grid min-h-9 grid-cols-[minmax(96px,1fr)_92px_24px] items-center gap-1.5 border-b px-2.5 py-1 text-[0.78rem] last:border-b-0",
-        locked ? "bg-surface-muted/75" : "bg-white",
+        "border-border-subtle grid min-h-9 grid-cols-[minmax(96px,1fr)_92px_24px] items-center gap-1.5 border-b px-2.5 py-1 text-sm last:border-b-0",
+        locked ? "bg-muted/40" : "bg-transparent",
       )}
     >
       <span className="flex min-w-0 items-center gap-2">
@@ -673,31 +671,29 @@ export function SetupPresetTile({
     <button
       aria-pressed={active}
       className={cn(
-        "border-border/70 hover:bg-surface-muted flex min-h-[72px] cursor-pointer items-start gap-2.5 rounded-lg border bg-white px-3 py-2.5 text-left transition-colors",
-        active &&
-          "border-foreground/35 bg-surface-muted ring-foreground/10 ring-1",
+        "bg-card border-border-subtle hover:border-border hover:bg-surface-muted/30 focus-visible:ring-ring focus-visible:ring-2 focus-visible:outline-none flex min-h-[80px] cursor-pointer items-start gap-3 rounded-lg border px-3.5 py-3 text-left transition-colors",
+        active && "border-foreground/30 bg-surface-muted/40",
       )}
       type="button"
       onClick={onClick}
     >
       <span
         className={cn(
-          "flex size-6 shrink-0 items-center justify-center rounded-md border",
+          "flex size-7 shrink-0 items-center justify-center rounded-md border",
           tone,
-          active && "bg-white",
         )}
       >
         <Icon className="size-3.5" />
       </span>
       <span className="min-w-0 flex-1">
-        <span className="line-clamp-2 text-[0.8rem] leading-4 font-semibold">
+        <span className="line-clamp-2 text-sm leading-snug font-semibold">
           {title}
         </span>
-        <span className="text-muted-foreground mt-0.5 line-clamp-2 text-[0.7rem] leading-4">
+        <span className="text-muted-foreground mt-1 line-clamp-2 text-xs leading-4">
           {subtitle}
         </span>
       </span>
-      {active && <CheckIcon className="size-3.5 shrink-0" />}
+      {active && <CheckIcon className="text-foreground/60 size-3.5 shrink-0" />}
     </button>
   );
 }

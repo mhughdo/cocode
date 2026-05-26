@@ -19,6 +19,7 @@ export const BUILTIN_REVIEW_AGENT_PRESET_IDS = [
   "claude-code-cli",
   "gemini-cli",
   "opencode-cli",
+  "antigravity-cli",
   "kiro-cli",
 ] as const;
 
@@ -218,6 +219,9 @@ export function agentLogoUrl(agent: AgentVisibilitySource) {
   if (marker.includes("opencode")) {
     return opencodeLogoUrl;
   }
+  if (marker.includes("antigravity") || marker.includes("agy")) {
+    return geminiLogoUrl;
+  }
   if (marker.includes("kiro")) {
     return kiroLogoUrl;
   }
@@ -262,6 +266,8 @@ export function shouldUseDiscoveredModel(modelLabel?: string) {
     normalized === "" ||
     normalized === "default" ||
     normalized === "claude" ||
+    normalized === "antigravity" ||
+    normalized === "agy" ||
     normalized === "kiro" ||
     normalized === "opencode" ||
     normalized === "gemini-acp" ||
@@ -299,15 +305,17 @@ function setupCatalogForAgent(
     .toLowerCase();
   const preferredCommand = marker.includes("opencode")
     ? "opencode"
-    : marker.includes("kiro")
-      ? "kiro-cli"
-      : marker.includes("gemini") || marker.includes("google")
-        ? "gemini"
-        : marker.includes("claude") || marker.includes("anthropic")
-          ? "claude"
-          : marker.includes("codex") || marker.includes("openai")
-            ? "codex"
-            : command;
+    : marker.includes("antigravity") || marker.includes("agy")
+      ? "agy"
+      : marker.includes("kiro")
+        ? "kiro-cli"
+        : marker.includes("gemini") || marker.includes("google")
+          ? "gemini"
+          : marker.includes("claude") || marker.includes("anthropic")
+            ? "claude"
+            : marker.includes("codex") || marker.includes("openai")
+              ? "codex"
+              : command;
   return (
     catalogs.find(
       (item) =>
@@ -334,6 +342,9 @@ function shortSetupAgentName(agent: AgentConfig) {
   }
   if (normalized.includes("opencode")) {
     return "OpenCode";
+  }
+  if (normalized.includes("antigravity")) {
+    return "Antigravity";
   }
   if (normalized.includes("kiro")) {
     return "Kiro";

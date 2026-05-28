@@ -13,6 +13,7 @@ import {
   SearchCommandDialog,
   type SearchCommandGroup,
 } from "@/components/app/chrome";
+import { Button } from "@/components/ui/button";
 import { Toaster } from "@/components/ui/sonner";
 import {
   type AgentConfig,
@@ -51,6 +52,8 @@ import { formatRelativeAge } from "./shared/time-format";
 
 const MAX_SEARCH_RESULTS = 5;
 type MainView = "new-thread" | "review" | "agent-settings";
+type ReviewSessionsByWorkspace = Record<string, Loadable<ReviewSession[]>>;
+
 export function App() {
   const [client, setClient] = useState<ApiClient | null>(null);
   const [mainView, setMainView] = useState<MainView>("new-thread");
@@ -62,6 +65,8 @@ export function App() {
     useState<Loadable<Repository[]>>(idleApiState());
   const [reviewSessions, setReviewSessions] =
     useState<Loadable<ReviewSession[]>>(idleApiState());
+  const [reviewSessionsByWorkspace, setReviewSessionsByWorkspace] =
+    useState<ReviewSessionsByWorkspace>({});
   const [repositoryOpenState, setRepositoryOpenState] =
     useState<Loadable<OpenRepositoryResponse>>(idleApiState());
   const [agentConfigs, setAgentConfigs] =
@@ -128,9 +133,17 @@ export function App() {
   }, []);
 
   const loadWorkspaceDetails = useCallback(
-    async (api: ApiClient, workspace: Workspace) => {
+    async (
+      api: ApiClient,
+      workspace: Workspace,
+      preferredRepositoryId = "",
+    ) => {
       setRepositories(loadingApiState());
       setReviewSessions(loadingApiState());
+      setReviewSessionsByWorkspace((current) => ({
+        ...current,
+        [workspace.id]: loadingApiState(),
+      }));
       const [repositoryState, sessionState] = await Promise.all([
         loadApiResource(() => api.listRepositories(workspace.id)),
         loadApiResource(() => api.listReviewSessions(workspace.id)),
@@ -138,10 +151,16 @@ export function App() {
 
       setRepositories(repositoryState);
       setReviewSessions(sessionState);
+      setReviewSessionsByWorkspace((current) => ({
+        ...current,
+        [workspace.id]: sessionState,
+      }));
       if (repositoryState.status === "success") {
         const nextRepository =
           repositoryState.data.find(
-            (repository) => repository.id === workspace.default_repo_id,
+            (repository) =>
+              repository.id ===
+              (preferredRepositoryId || workspace.default_repo_id),
           ) ?? repositoryState.data[0];
         setActiveRepositoryId(nextRepository?.id ?? "");
       }
@@ -158,19 +177,21 @@ export function App() {
       if (workspaceState.status !== "success") {
         setRepositories(successApiState([]));
         setReviewSessions(successApiState([]));
+        setReviewSessionsByWorkspace({});
         setActiveWorkspaceId("");
         setActiveRepositoryId("");
         return;
       }
 
-      const nextWorkspace =
-        workspaceState.data.find(
-          (workspace) => workspace.id === preferredWorkspaceId,
-        ) ?? workspaceState.data[0];
+      const nextWorkspace = preferredWorkspaceId
+        ? workspaceState.data.find(
+            (workspace) => workspace.id === preferredWorkspaceId,
+          )
+        : undefined;
 
       if (!nextWorkspace) {
         setRepositories(successApiState([]));
-        setReviewSessions(successApiState([]));
+        setReviewSessions(idleApiState());
         setActiveWorkspaceId("");
         setActiveRepositoryId("");
         return;
@@ -287,12 +308,12 @@ export function App() {
     () => (reviewSessions.status === "success" ? reviewSessions.data : []),
     [reviewSessions],
   );
-  const activeWorkspace =
-    workspaceList.find((workspace) => workspace.id === activeWorkspaceId) ??
-    workspaceList[0];
-  const activeRepository =
-    repositoryList.find((repository) => repository.id === activeRepositoryId) ??
-    repositoryList[0];
+  const activeWorkspace = workspaceList.find(
+    (workspace) => workspace.id === activeWorkspaceId,
+  );
+  const activeRepository = repositoryList.find(
+    (repository) => repository.id === activeRepositoryId,
+  );
   const activeSession = sessionList[0];
   const displayedSession =
     currentReviewSession ?? (mainView === "review" ? activeSession : undefined);
@@ -427,10 +448,17 @@ export function App() {
   ]);
 
   const handleSelectReviewSession = useCallback((session: ReviewSession) => {
+    const workspace = workspaceList.find(
+      (item) => item.id === session.workspace_id,
+    );
+    if (client && workspace && session.workspace_id !== activeWorkspaceId) {
+      setActiveWorkspaceId(session.workspace_id);
+      void loadWorkspaceDetails(client, workspace, session.repository_id);
+    }
     setCurrentReviewSession(session);
     setSetupNavContext(null);
     setMainView("review");
-  }, []);
+  }, [activeWorkspaceId, client, loadWorkspaceDetails, workspaceList]);
 
   const handleDeleteReviewSession = useCallback(
     async (session: ReviewSession) => {
@@ -467,6 +495,18 @@ export function App() {
             )
           : current,
       );
+      setReviewSessionsByWorkspace((current) => {
+        const state = current[session.workspace_id];
+        if (state?.status !== "success") {
+          return current;
+        }
+        return {
+          ...current,
+          [session.workspace_id]: successApiState(
+            state.data.filter((item) => item.id !== session.id),
+          ),
+        };
+      });
       if (currentReviewSession?.id === session.id) {
         setCurrentReviewSession(null);
         setMainView("new-thread");
@@ -556,7 +596,7 @@ export function App() {
             activeSessionId={displayedSession?.id}
             activeWorkspaceId={activeWorkspaceId}
             workspaces={workspaces}
-            reviewSessions={reviewSessions}
+            reviewSessionsByWorkspace={reviewSessionsByWorkspace}
             repositoryOpenState={repositoryOpenState}
             deletingReviewSessionId={deletingReviewSessionId}
             onOpenRepository={handleOpenRepository}
@@ -582,7 +622,8 @@ export function App() {
         }
         statusBanner={<AppConnectionNotice apiSession={apiSession} />}
       >
-        {mainView === "new-thread" && (
+        {mainView === "new-thread" &&
+          (activeWorkspace && activeRepository ? (
           <NewThreadScreen
             activeRepository={activeRepository}
             activeWorkspace={activeWorkspace}
@@ -600,7 +641,9 @@ export function App() {
             }}
             onOpenRepository={handleOpenRepository}
           />
-        )}
+          ) : (
+            <NoProjectSelectedScreen onOpenRepository={handleOpenRepository} />
+          ))}
         {mainView === "review" && (
           <ReviewThread
             activeRepository={activeRepository}
@@ -626,5 +669,32 @@ export function App() {
       )}
       <Toaster position="bottom-right" />
     </>
+  );
+}
+
+function NoProjectSelectedScreen({
+  onOpenRepository,
+}: {
+  onOpenRepository: () => void;
+}) {
+  return (
+    <section className="flex h-full min-h-0 flex-1 items-center justify-center px-6 py-10">
+      <div className="flex max-w-md flex-col items-center text-center">
+        <div className="bg-surface-raised border-border-subtle mb-4 flex size-12 items-center justify-center rounded-xl border">
+          <FolderOpenIcon className="text-muted-foreground size-5" />
+        </div>
+        <h1 className="text-xl font-semibold tracking-tight">
+          Choose a project to get started
+        </h1>
+        <p className="text-muted-foreground mt-2 text-sm leading-6">
+          Open a git repository or select a project from the sidebar before
+          creating a review thread.
+        </p>
+        <Button className="mt-5" type="button" onClick={onOpenRepository}>
+          <FolderOpenIcon data-icon="inline-start" />
+          Open project
+        </Button>
+      </div>
+    </section>
   );
 }

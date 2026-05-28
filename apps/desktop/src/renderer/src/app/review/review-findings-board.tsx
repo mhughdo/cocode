@@ -18,6 +18,7 @@ import {
   loadApiResource,
   loadingApiState,
   type ReviewSession,
+  successApiState,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
@@ -88,7 +89,6 @@ export function ReviewFindingsBoard({
   const [selectedDetail, setSelectedDetail] =
     useState<Loadable<FindingDetailResponse>>(idleApiState());
   const [draftComment, setDraftComment] = useState("");
-  const [boardReloadKey, setBoardReloadKey] = useState(0);
   const inspectorPanel = useResizableRightPanel({
     defaultWidth: 500,
     maxWidth: 760,
@@ -164,7 +164,6 @@ export function ReviewFindingsBoard({
       canceled = true;
     };
   }, [
-    boardReloadKey,
     boardSessionId,
     agentFilter,
     client,
@@ -262,7 +261,9 @@ export function ReviewFindingsBoard({
     (finding) => finding.id === selectedFindingId,
   );
   const selectedFindingDetail =
-    selectedDetail.status === "success" ? selectedDetail.data : undefined;
+    selectedFindingId && selectedDetail.status === "success"
+      ? selectedDetail.data
+      : undefined;
   const selectedFinding =
     selectedFindingDetail?.finding ??
     (selectedDetail.status === "idle" || selectedDetail.status === "loading"
@@ -295,9 +296,10 @@ export function ReviewFindingsBoard({
       }),
     );
     if (state.status === "success") {
-      setSelectedDetail(state);
-      setSelectedFindingId(state.data.finding.id);
-      setBoardReloadKey((current) => current + 1);
+      patchBoardFinding(state.data.finding);
+      if (selectedFindingId === finding.id) {
+        setSelectedDetail(state);
+      }
       setActionState({
         status: "success",
         findingId: finding.id,
@@ -374,7 +376,7 @@ export function ReviewFindingsBoard({
     });
     if (state.status === "success") {
       setSelectedDetail(state);
-      setBoardReloadKey((current) => current + 1);
+      patchBoardFinding(state.data.finding);
       setActionState({
         status: "success",
         findingId: selectedFinding.id,
@@ -594,7 +596,6 @@ export function ReviewFindingsBoard({
               layout={selectedFinding ? "inspector" : "wide"}
               selected={finding.id === selectedFindingId}
               onDecisionChange={(decision) => {
-                setSelectedFindingId(finding.id);
                 void updateDecision(decision, finding);
               }}
               onOpenDetail={() => onOpenDetail(finding)}
@@ -647,6 +648,20 @@ export function ReviewFindingsBoard({
       </div>
     </section>
   );
+
+  function patchBoardFinding(updated: Finding) {
+    setBoardFindings((current) => {
+      if (current.status !== "success") {
+        return current;
+      }
+      return successApiState({
+        ...current.data,
+        items: current.data.items.map((item) =>
+          item.id === updated.id ? updated : item,
+        ),
+      });
+    });
+  }
 }
 
 function useDebouncedValue<T>(value: T, delayMs: number): T {

@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { launchCocode } from "./test-support";
+import { apiRequest, createBranchReviewRepo, launchCocode } from "./test-support";
 
 test("launches Electron app with backend bridge", async ({
   browserName,
@@ -19,6 +19,33 @@ test("launches Electron app with backend bridge", async ({
     expect(sessionResponse.status).toBe(200);
     const sessionBody = await sessionResponse.json();
     expect(sessionBody.data.status).toBe("authenticated");
+    await expect(
+      page.getByRole("heading", { name: "Choose a project to get started" }),
+    ).toBeVisible();
+
+    const firstRepo = createBranchReviewRepo(
+      testInfo.outputPath("smoke-repo-one"),
+    );
+    const secondRepo = createBranchReviewRepo(
+      testInfo.outputPath("smoke-repo-two"),
+    );
+    await apiRequest(backendInfo, "/api/workspaces/open-repository", {
+      method: "POST",
+      body: { path: firstRepo },
+    });
+    await apiRequest(backendInfo, "/api/workspaces/open-repository", {
+      method: "POST",
+      body: { path: secondRepo },
+    });
+    await page.reload();
+    await page.getByRole("button", { name: /smoke-repo-one/ }).click();
+    await expect(
+      page.getByRole("button", { name: "Set up review" }),
+    ).toHaveCount(1);
+    await page.getByRole("button", { name: /smoke-repo-two/ }).click();
+    await expect(
+      page.getByRole("button", { name: "Set up review" }),
+    ).toHaveCount(2);
 
     await page.getByRole("button", { name: "Settings" }).click();
     await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();

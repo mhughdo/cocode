@@ -23,6 +23,7 @@ test("opens finding detail and Evidence Map from seeded data", async ({
 
   try {
     await page.setViewportSize({ width: 1600, height: 980 });
+    await page.getByRole("button", { name: /cocode Demo/ }).click();
     await page
       .getByRole("button", { name: /PR #42 - repository settings review/ })
       .click();
@@ -50,6 +51,22 @@ test("opens finding detail and Evidence Map from seeded data", async ({
     ).toBeVisible();
 
     await expect(page.getByText("Evidence story")).toHaveCount(0);
+    const statusOnlyRow = page
+      .locator('[data-testid^="finding-row-"]')
+      .filter({
+        hasText: "Renderer preview can load the full diff payload without a display budget.",
+      })
+      .first();
+    await statusOnlyRow
+      .getByRole("button", {
+        name: /Set status for Renderer preview can load the full diff payload without a display budget\./,
+      })
+      .click();
+    await page.getByRole("menuitem", { name: "Deferred" }).click();
+    await expect(statusOnlyRow.getByText("Deferred")).toBeVisible();
+    await expect(page.getByText("Evidence story")).toHaveCount(0);
+    await expect(page.getByLabel("Draft GitHub comment")).toHaveCount(0);
+
     const findingRow = page
       .locator('[data-testid^="finding-row-"]')
       .filter({
@@ -66,7 +83,7 @@ test("opens finding detail and Evidence Map from seeded data", async ({
       .filter({ has: page.getByText("Actions", { exact: true }) })
       .first();
     const acceptBox = await actionsSection
-      .getByRole("button", { exact: true, name: "Accept" })
+      .getByRole("button", { exact: true, name: "Accept finding" })
       .boundingBox();
     const dismissBox = await actionsSection
       .getByRole("button", { exact: true, name: "Dismiss" })

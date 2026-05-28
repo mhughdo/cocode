@@ -27,9 +27,11 @@ import type {
   Snapshot,
   Workspace,
 } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import { formatRelativeAge } from "../shared/time-format";
 
 const MAX_SIDEBAR_SESSIONS = 12;
+const IDLE_REVIEW_SESSIONS: Loadable<ReviewSession[]> = { status: "idle" };
 
 export type SetupNavContext = {
   branch?: string;
@@ -85,7 +87,7 @@ export function Sidebar({
   activeWorkspaceId,
   deletingReviewSessionId,
   repositoryOpenState,
-  reviewSessions,
+  reviewSessionsByWorkspace,
   workspaces,
   onDeleteReviewSession,
   onOpenAgentSettings,
@@ -99,7 +101,7 @@ export function Sidebar({
   activeWorkspaceId: string;
   deletingReviewSessionId: string;
   repositoryOpenState: Loadable<OpenRepositoryResponse>;
-  reviewSessions: Loadable<ReviewSession[]>;
+  reviewSessionsByWorkspace: Record<string, Loadable<ReviewSession[]>>;
   workspaces: Loadable<Workspace[]>;
   onDeleteReviewSession: (session: ReviewSession) => void;
   onOpenAgentSettings: () => void;
@@ -114,13 +116,10 @@ export function Sidebar({
     x: number;
     y: number;
   } | null>(null);
+  const [expandedWorkspaceIds, setExpandedWorkspaceIds] = useState(
+    () => new Set<string>(),
+  );
   const workspaceList = workspaces.status === "success" ? workspaces.data : [];
-  const sessionList =
-    reviewSessions.status === "success"
-      ? reviewSessions.data.slice(0, MAX_SIDEBAR_SESSIONS)
-      : [];
-  const activeWorkspaceHasThreads =
-    reviewSessions.status === "success" && sessionList.length > 0;
 
   useEffect(() => {
     if (!threadContextMenu) {
@@ -193,70 +192,103 @@ export function Sidebar({
             No projects yet
           </div>
         )}
-        {workspaceList.map((workspace) => (
-          <div key={workspace.id} className="min-w-0">
-            <SidebarNavButton
-              active={workspace.id === activeWorkspaceId}
-              icon={FolderOpenIcon}
-              label={workspace.name}
-              meta={
-                workspace.id === activeWorkspaceId ? (
-                  <ChevronDownIcon className="size-3.5" />
-                ) : undefined
-              }
-              onClick={() => onSelectWorkspace(workspace.id)}
-            />
-            {workspace.id === activeWorkspaceId && (
-              <div className="border-border-subtle ml-3.5 mt-1 mb-2 flex flex-col gap-1 border-l pl-3">
-                {reviewSessions.status === "loading" && (
-                  <div className="text-sidebar-muted px-2 py-1 text-xs">
-                    Loading threads...
-                  </div>
-                )}
-                {reviewSessions.status === "error" && (
-                  <div className="text-destructive px-2 py-1 text-xs">
-                    {reviewSessions.error.message}
-                  </div>
-                )}
-                {reviewSessions.status === "success" &&
-                  !activeWorkspaceHasThreads && (
-                    <SidebarNavButton
-                      active={!activeSessionId}
-                      className="h-8 text-[0.78rem]"
-                      icon={FileTextIcon}
-                      label="Set up review"
-                      meta="Draft"
-                      onClick={onOpenNewThread}
-                    />
-                  )}
-                {sessionList.map((session) => (
-                  <SidebarNavButton
-                    key={session.id}
-                    active={session.id === activeSessionId}
-                    className="h-auto min-h-9 items-start py-1.5 text-[0.78rem]"
-                    disabled={deletingReviewSessionId === session.id}
-                    icon={FileTextIcon}
-                    label={session.title}
-                    meta={
-                      deletingReviewSessionId === session.id
-                        ? "Deleting"
-                        : formatRelativeAge(session.updated_at)
-                    }
-                    onClick={() => onSelectReviewSession(session)}
-                    onContextMenu={(event) => {
-                      event.preventDefault();
-                      setThreadContextMenu({
-                        session,
-                        x: event.clientX,
-                        y: event.clientY,
-                      });
-                    }}
+        {workspaceList.map((workspace) => {
+          const expanded =
+            expandedWorkspaceIds.has(workspace.id) ||
+            workspace.id === activeWorkspaceId;
+          const workspaceSessions =
+            reviewSessionsByWorkspace[workspace.id] ?? IDLE_REVIEW_SESSIONS;
+          const sessionList =
+            workspaceSessions.status === "success"
+              ? workspaceSessions.data.slice(0, MAX_SIDEBAR_SESSIONS)
+              : [];
+          const workspaceHasThreads =
+            workspaceSessions.status === "success" && sessionList.length > 0;
+          return (
+            <div key={workspace.id} className="min-w-0">
+              <SidebarNavButton
+                active={workspace.id === activeWorkspaceId}
+                icon={FolderOpenIcon}
+                label={workspace.name}
+                meta={
+                  <ChevronDownIcon
+                    className={cn(
+                      "size-3.5 transition-transform",
+                      expanded ? "" : "-rotate-90",
+                    )}
                   />
-                ))}
-              </div>
-            )}
-          </div>
-        ))}
+                }
+                onClick={() => {
+                  setExpandedWorkspaceIds((current) => {
+                    const next = new Set(current);
+                    next.add(workspace.id);
+                    return next;
+                  });
+                  onSelectWorkspace(workspace.id);
+                }}
+              />
+              {expanded && (
+                <div className="border-border-subtle ml-3.5 mt-1 mb-2 flex flex-col gap-1 border-l pl-3">
+                  {workspaceSessions.status === "idle" && (
+                    <div className="text-sidebar-muted px-2 py-1 text-xs">
+                      Select project to load threads
+                    </div>
+                  )}
+                  {workspaceSessions.status === "loading" && (
+                    <div className="text-sidebar-muted px-2 py-1 text-xs">
+                      Loading threads...
+                    </div>
+                  )}
+                  {workspaceSessions.status === "error" && (
+                    <div className="text-destructive px-2 py-1 text-xs">
+                      {workspaceSessions.error.message}
+                    </div>
+                  )}
+                  {workspaceSessions.status === "success" &&
+                    !workspaceHasThreads && (
+                      <SidebarNavButton
+                        active={
+                          workspace.id === activeWorkspaceId && !activeSessionId
+                        }
+                        className="h-8 text-[0.78rem]"
+                        icon={FileTextIcon}
+                        label="Set up review"
+                        meta="Draft"
+                        onClick={() => {
+                          onSelectWorkspace(workspace.id);
+                          onOpenNewThread();
+                        }}
+                      />
+                    )}
+                  {sessionList.map((session) => (
+                    <SidebarNavButton
+                      key={session.id}
+                      active={session.id === activeSessionId}
+                      className="h-auto min-h-9 items-start py-1.5 text-[0.78rem]"
+                      disabled={deletingReviewSessionId === session.id}
+                      icon={FileTextIcon}
+                      label={session.title}
+                      meta={
+                        deletingReviewSessionId === session.id
+                          ? "Deleting"
+                          : formatRelativeAge(session.updated_at)
+                      }
+                      onClick={() => onSelectReviewSession(session)}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        setThreadContextMenu({
+                          session,
+                          x: event.clientX,
+                          y: event.clientY,
+                        });
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </SidebarSection>
 
       {repositoryOpenState.status === "error" && (

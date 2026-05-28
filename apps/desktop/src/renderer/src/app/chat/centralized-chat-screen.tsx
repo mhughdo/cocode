@@ -1,5 +1,6 @@
 import {
   type FormEvent,
+  type KeyboardEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -28,18 +29,19 @@ import {
   loadingApiState,
   successApiState,
 } from "@/lib/api";
-import { AskTargetDropdown, ChatMessageCard } from "./chat-message-card";
+import { ChatMessageCard, ResponderDropdown } from "./chat-message-card";
 import {
   pendingChatMessages,
   withLiveAgentRunMessages,
 } from "./chat-live-messages";
 import { CentralizedChatRail } from "./chat-rail";
-import { agentByID, isOrchestratorEntry } from "./chat-message-utils";
-import type {
-  ChatAskTargetOption,
-  ChatAudience,
-  ChatResponderOption,
-} from "./chat-types";
+import {
+  agentByID,
+  compactAgentLabel,
+  compactRoleLabel,
+  isOrchestratorEntry,
+} from "./chat-message-utils";
+import type { ChatAudience, ChatResponderOption } from "./chat-types";
 import { FinalFindingsMessage } from "./final-findings-message";
 
 const chatThreadCache = new Map<string, ChatThreadView>();
@@ -68,7 +70,7 @@ export function CentralizedChatScreen({
     return cached ? successApiState(cached) : loadingApiState();
   });
   const [message, setMessage] = useState("");
-  const [askTargetID, setAskTargetID] = useState<ChatAudience>("all_agents");
+  const [responderID, setResponderID] = useState("orchestrator");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [pendingAgentMessages, setPendingAgentMessages] = useState<
@@ -104,54 +106,43 @@ export function CentralizedChatScreen({
       sessionAgentEntries[0]?.agent
     );
   }, [sessionAgentEntries]);
-  const agents = useMemo(
-    () =>
-      sessionAgentEntries
-        .filter((entry) => !isOrchestratorEntry(entry))
-        .map((entry) => entry.agent),
-    [sessionAgentEntries],
-  );
   const allSessionAgents = useMemo(
     () => sessionAgentEntries.map((entry) => entry.agent),
     [sessionAgentEntries],
   );
-  const askTargetOptions = useMemo<ChatAskTargetOption[]>(
-    () => [
-      {
-        id: "all_agents",
-        label: "All review agents",
-        description: `Fan out to ${agents.length || "all"} reviewer${
-          agents.length === 1 ? "" : "s"
-        } and synthesize.`,
-        icon: "all",
-      },
-      {
-        id: "orchestrator",
-        label: "Orchestrator",
-        description: "Ask cocode to answer from review state.",
-        icon: "orchestrator",
-      },
-    ],
-    [agents.length],
+  const responderOptions = useMemo<ChatResponderOption[]>(
+    () =>
+      [...sessionAgentEntries]
+        .sort(
+          (left, right) =>
+            left.assignment.run_order - right.assignment.run_order,
+        )
+        .map(({ agent, assignment }) => {
+          const isOrchestrator = isOrchestratorEntry({ agent, assignment });
+          return {
+            id: isOrchestrator ? "orchestrator" : `agent:${agent.id}`,
+            label: isOrchestrator ? "Orchestrator" : compactAgentLabel(agent),
+            description: isOrchestrator
+              ? "Coordinate and synthesize review state."
+              : `${compactRoleLabel(assignment.role || agent.role || "Reviewer")} in this review.`,
+            icon: isOrchestrator ? "orchestrator" : "agent",
+            agentConfigId: agent.id,
+          } satisfies ChatResponderOption;
+        }),
+    [sessionAgentEntries],
   );
-
-  const selectedResponder = useMemo<ChatResponderOption>(
-    () => ({
+  const selectedResponder =
+    responderOptions.find((option) => option.id === responderID) ??
+    responderOptions.find((option) => option.id === "orchestrator") ??
+    responderOptions[0] ?? {
       id: "orchestrator",
       label: "Orchestrator",
-      description: "cocode synthesizer",
+      description: "Coordinate and synthesize review state.",
       icon: "orchestrator",
       agentConfigId: orchestratorAgent?.id,
-    }),
-    [orchestratorAgent?.id],
-  );
-  const effectiveAskTargetID =
-    agents.length === 0 && askTargetID === "all_agents"
-      ? "orchestrator"
-      : askTargetID;
-  const selectedAskTarget =
-    askTargetOptions.find((option) => option.id === effectiveAskTargetID) ??
-      askTargetOptions[0];
+    };
+  const selectedAudience: ChatAudience =
+    selectedResponder.id === "orchestrator" ? "orchestrator" : "selected_agent";
 
   const setSuccessfulThread = useCallback(
     (view: ChatThreadView) => {
@@ -293,11 +284,10 @@ export function CentralizedChatScreen({
       });
     }
     setMessage("");
-    const audience = effectiveAskTargetID;
     setPendingAgentMessages(
       pendingChatMessages({
         agentByConfigID,
-        audience,
+        audience: selectedAudience,
         responder: selectedResponder,
         sessionAgents: session.agents,
         threadID: thread.status === "success" ? thread.data.thread.id : "",
@@ -306,7 +296,7 @@ export function CentralizedChatScreen({
     const request = {
       body,
       mode: "follow_up",
-      audience,
+      audience: selectedAudience,
       include_evidence: true,
       include_recent_messages: true,
       ...(selectedResponder.agentConfigId
@@ -341,6 +331,17 @@ export function CentralizedChatScreen({
     }
     setPendingAgentMessages([]);
     setSubmitting(false);
+  }
+
+  function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.nativeEvent.isComposing) {
+      return;
+    }
+    if (event.key !== "Enter" || event.shiftKey) {
+      return;
+    }
+    event.preventDefault();
+    event.currentTarget.form?.requestSubmit();
   }
 
   return (
@@ -412,25 +413,19 @@ export function CentralizedChatScreen({
               className="max-h-36 min-h-18 resize-none border-0 bg-transparent px-4 py-3 text-[13px] shadow-none focus-visible:ring-0"
               disabled={!client || submitting}
               onChange={(event) => setMessage(event.target.value)}
-              onKeyDown={(event) => {
-                if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-                  event.currentTarget.form?.requestSubmit();
-                }
-              }}
+              onKeyDown={handleComposerKeyDown}
               placeholder="Ask cocode anything about this review..."
               value={message}
             />
-            <div className="flex flex-wrap items-center justify-between gap-2 px-3 pb-3">
-              <div className="flex min-w-0 flex-wrap items-center gap-2">
-                <AskTargetDropdown
-                  options={askTargetOptions}
-                  selected={selectedAskTarget}
-                  onSelect={setAskTargetID}
-                />
-              </div>
+            <div className="flex flex-wrap items-center justify-end gap-2 px-3 pb-3">
+              <ResponderDropdown
+                options={responderOptions}
+                selected={selectedResponder}
+                onSelect={setResponderID}
+              />
               <Button
                 aria-label="Send centralized chat message"
-                className="rounded-lg bg-[#141414] text-white hover:bg-[#2a2a2a]"
+                className="size-9 rounded-full bg-[#141414] text-white hover:bg-[#2a2a2a]"
                 disabled={!message.trim() || submitting || !client}
                 size="icon"
                 type="submit"

@@ -10,6 +10,7 @@ import {
 
 import {
   highlightCodeLines,
+  languageForFilePath,
   normalizeSyntaxLanguage,
   type HighlightedCodeLine,
 } from "@/lib/syntax-highlighting";
@@ -501,23 +502,73 @@ function isDiffLanguage(language: string) {
 }
 
 function DiffCodeBlock({ lines }: { lines: string[] }) {
-  const renderedLines = trimOuterEmptyLines(lines);
+  const renderedLines = useMemo(() => trimOuterEmptyLines(lines), [lines]);
+  const code = useMemo(
+    () => renderedLines.map(diffCodeContent).join("\n") || " ",
+    [renderedLines],
+  );
+  const language = useMemo(() => inferDiffLanguage(renderedLines), [renderedLines]);
+  const plainLines = useMemo<HighlightedCodeLine[]>(
+    () => code.split(/\r?\n/).map((line) => [{ content: line || " " }]),
+    [code],
+  );
+  const highlightKey = `${language}:${code}`;
+  const [highlightResult, setHighlightResult] = useState<{
+    key: string;
+    lines: HighlightedCodeLine[];
+  } | null>(null);
+
+  useEffect(() => {
+    let canceled = false;
+    void highlightCodeLines(code, language).then((highlightedLines) => {
+      if (!canceled) {
+        setHighlightResult({
+          key: highlightKey,
+          lines: highlightedLines.length > 0 ? highlightedLines : plainLines,
+        });
+      }
+    });
+    return () => {
+      canceled = true;
+    };
+  }, [code, highlightKey, language, plainLines]);
+
+  const highlightedLines =
+    highlightResult?.key === highlightKey ? highlightResult.lines : plainLines;
+
   return (
     <div className="cocode-shiki-block border-border/70 bg-muted/55 max-w-full overflow-hidden rounded-lg border">
       <div className="cocode-shiki cocode-diff">
         <pre className="min-w-0 overflow-auto bg-transparent">
           <code className="block min-w-full">
-            {renderedLines.map((line, index) => (
-              <span
-                className={cn(
-                  "block px-1 whitespace-pre",
-                  diffLineClass(line),
-                )}
-                key={`${index}-${line}`}
-              >
-                {line || " "}
-              </span>
-            ))}
+            {renderedLines.map((line, index) => {
+              const prefix = diffLinePrefix(line);
+              const lineTokens = highlightedLines[index] ?? [{ content: " " }];
+              return (
+                <span
+                  className={cn("block px-1 whitespace-pre", diffLineClass(line))}
+                  key={`${index}-${line}`}
+                >
+                  {prefix ? (
+                    <span className={diffPrefixClass(prefix)}>{prefix}</span>
+                  ) : null}
+                  {lineTokens.map((token, tokenIndex) => (
+                    <span
+                      key={`${index}-${tokenIndex}`}
+                      style={
+                        token.color
+                          ? {
+                              color: token.color,
+                            }
+                          : undefined
+                      }
+                    >
+                      {token.content}
+                    </span>
+                  ))}
+                </span>
+              );
+            })}
           </code>
         </pre>
       </div>
@@ -540,7 +591,7 @@ function trimOuterEmptyLines(lines: string[]) {
 function diffLineClass(line: string) {
   const trimmed = line.trimStart();
   if (trimmed.startsWith("@@")) {
-    return "bg-sky-50 text-sky-700";
+    return "bg-sky-50";
   }
   if (trimmed.startsWith("diff --git") || trimmed.startsWith("index ")) {
     return "text-muted-foreground font-semibold";
@@ -549,12 +600,65 @@ function diffLineClass(line: string) {
     return "text-muted-foreground";
   }
   if (trimmed.startsWith("+")) {
-    return "bg-emerald-50 text-emerald-700";
+    return "bg-emerald-50";
   }
   if (trimmed.startsWith("-")) {
-    return "bg-red-50 text-red-700";
+    return "bg-red-50";
   }
   return "text-foreground";
+}
+
+function diffLinePrefix(line: string) {
+  const trimmedStartLength = line.length - line.trimStart().length;
+  if (trimmedStartLength > 0) {
+    return "";
+  }
+  const first = line[0];
+  if (first === "+" || first === "-") {
+    if (line.startsWith("+++") || line.startsWith("---")) {
+      return "";
+    }
+    return first;
+  }
+  return "";
+}
+
+function diffCodeContent(line: string) {
+  const prefix = diffLinePrefix(line);
+  return prefix ? line.slice(1) : line;
+}
+
+function diffPrefixClass(prefix: string) {
+  if (prefix === "+") {
+    return "text-emerald-700";
+  }
+  if (prefix === "-") {
+    return "text-red-700";
+  }
+  return "text-muted-foreground";
+}
+
+function inferDiffLanguage(lines: string[]) {
+  const headerPath = lines
+    .map((line) => {
+      const match = line.match(/^(?:diff --git a\/\S+ b\/(\S+)|\+\+\+ b\/(\S+)|--- a\/(\S+))/);
+      return match?.[1] ?? match?.[2] ?? match?.[3] ?? "";
+    })
+    .find(Boolean);
+  if (headerPath) {
+    return languageForFilePath(headerPath);
+  }
+  const content = lines.map(diffCodeContent).join("\n");
+  if (/\bfunc\s+\w+|\bpackage\s+\w+|:=|\bnil\b|\berr\s*!=\s*nil/.test(content)) {
+    return "go";
+  }
+  if (/\b(?:const|let|var|function)\b|=>|import\s+.*from/.test(content)) {
+    return "typescript";
+  }
+  if (/\bdef\s+\w+|^\s*from\s+\S+\s+import\s+/m.test(content)) {
+    return "python";
+  }
+  return "plaintext";
 }
 
 function MarkdownTable({ lines }: { lines: string[] }) {

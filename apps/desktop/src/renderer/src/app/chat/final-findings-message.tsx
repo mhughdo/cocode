@@ -1,4 +1,4 @@
-import { ArrowRightIcon, ListChecksIcon } from "lucide-react";
+import { ArrowRightIcon } from "lucide-react";
 
 import { Badge, type BadgeVariant } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,7 @@ import {
   formatDecisionLabel,
   formatFindingLocation,
 } from "../evidence/review-evidence-utils";
+import cocodeMarkUrl from "../../../../../../../assets/app-icon/cocode-logo-mark.svg";
 
 export function FinalFindingsMessage({
   findings,
@@ -24,12 +25,12 @@ export function FinalFindingsMessage({
       aria-label="Finalized findings"
       className="bg-card border-border-subtle flex gap-3 rounded-xl border px-4 py-3"
     >
-      <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-[#0f0f0f] text-white">
-        <ListChecksIcon className="size-4" />
+      <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-[#0f0f0f]">
+        <img alt="" className="size-4.5" src={cocodeMarkUrl} />
       </span>
       <div className="min-w-0 flex-1">
         <div className="mb-1 flex min-w-0 flex-wrap items-center gap-2 text-[13px]">
-          <span className="font-semibold">System</span>
+          <span className="font-semibold">Cocode</span>
           <Badge variant="outline" className="h-4 px-1.5 text-[10px]">
             finalized
           </Badge>

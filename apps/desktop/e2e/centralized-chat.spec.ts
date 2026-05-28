@@ -89,7 +89,7 @@ async function addFakeReviewer(page: Page) {
   ).toBeVisible();
 }
 
-test("routes centralized chat follow-ups through the orchestrator", async ({
+test("routes centralized chat follow-ups to a selected participant agent", async ({
   browserName,
 }, testInfo) => {
   test.setTimeout(90_000);
@@ -130,18 +130,21 @@ test("routes centralized chat follow-ups through the orchestrator", async ({
       page.getByTestId("orchestrator-agent-badge").first(),
     ).toBeVisible();
 
+    await page
+      .getByRole("button", { name: "Choose centralized chat responder" })
+      .click();
     await expect(
-      page.getByRole("button", { name: "Choose centralized chat responder" }),
-    ).toHaveCount(0);
-    await expect(
-      page.getByRole("button", { name: "Choose centralized chat ask target" }),
+      page.getByRole("menuitem", { name: /Orchestrator/ }),
     ).toBeVisible();
+    await page
+      .getByRole("menuitem", { name: /E2E Fake Reviewer/ })
+      .first()
+      .click();
+    await expect(page.getByText(/Agent: E2E Fake Reviewer/)).toBeVisible();
     await page
       .getByLabel("Centralized review message")
       .fill("Can you re-check the authorization delta?");
-    await page
-      .getByRole("button", { name: "Send centralized chat message" })
-      .click();
+    await page.getByLabel("Centralized review message").press("Enter");
 
     await expect(
       page.getByText("Can you re-check the authorization delta?"),
@@ -151,6 +154,9 @@ test("routes centralized chat follow-ups through the orchestrator", async ({
     ).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText("completed").last()).toBeVisible();
     await expect(page.getByLabel("Finalized findings")).toBeVisible();
+    await expect(
+      page.getByLabel("Finalized findings").getByText("Cocode"),
+    ).toBeVisible();
     await expect(
       page.getByRole("button", { name: /Open Findings/ }),
     ).toBeVisible();
@@ -186,6 +192,7 @@ test("routes centralized chat follow-ups through the orchestrator", async ({
       );
     }
     await page.reload();
+    await page.getByRole("button", { name: /chat-repo/ }).click();
     await page
       .getByRole("button", { name: /chat-repo main\.\.feature\/review-auth/ })
       .click();

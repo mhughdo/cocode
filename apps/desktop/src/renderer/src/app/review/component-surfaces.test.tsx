@@ -7,6 +7,7 @@ import {
   FindingCard,
 } from "../findings/finding-components";
 import { ChatMessageCard } from "../chat/chat-message-card";
+import { FinalFindingsMessage } from "../chat/final-findings-message";
 import { EvidenceMapGraphCanvas } from "../evidence/review-evidence-map";
 import { EvidenceMapInspectorPanel } from "../evidence/evidence-map-inspector-panel";
 import { MarkdownMessage } from "../shared/markdown-message";
@@ -186,6 +187,20 @@ describe("review component surfaces", () => {
     expect(completed).not.toContain("See more");
     expect(completed).toContain("Line 18");
     expect(streaming).toContain("See more");
+  });
+
+  it("brands finalized findings as Cocode instead of a generic system message", () => {
+    const html = renderToStaticMarkup(
+      <FinalFindingsMessage
+        findings={[findingFixture]}
+        onOpenFindingDetail={vi.fn()}
+        onOpenFindings={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain("Cocode");
+    expect(html).toContain("Findings finalized");
+    expect(html).not.toContain(">System<");
   });
 });
 

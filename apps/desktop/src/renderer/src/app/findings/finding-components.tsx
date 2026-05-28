@@ -149,7 +149,11 @@ export function FindingCard({
           <div className="mt-1">L{finding.primary_start_line}</div>
         ) : null}
       </div>
-      <div className="flex min-w-0 items-start lg:pt-0.5">
+      <div
+        className="flex min-w-0 items-start lg:pt-0.5"
+        onClick={(event) => event.stopPropagation()}
+        onPointerDown={(event) => event.stopPropagation()}
+      >
         <StatusPill
           ariaLabel={`Set status for ${finding.canonical_claim}`}
           disabled={pending}
@@ -343,4 +347,3 @@ function findingDecisionSelectValue(
   }
   return "pending";
 }
-

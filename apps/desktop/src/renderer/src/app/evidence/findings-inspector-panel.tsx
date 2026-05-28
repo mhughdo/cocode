@@ -83,25 +83,26 @@ function FindingActions({
 }) {
   return (
     <Section title="Actions">
-      <Button
-        className="w-full justify-center"
-        disabled={disabled}
-        onClick={onAccept}
-      >
-        <CheckIcon data-icon="inline-start" />
-        Accept finding
-      </Button>
-      <div className="mt-2 grid min-w-0 grid-cols-2 gap-2">
+      <div className="grid min-w-0 grid-cols-2 gap-2">
         <Button
-          className="min-w-0 justify-start overflow-hidden"
+          className="min-w-0 justify-center overflow-hidden"
           disabled={disabled}
-          size="sm"
+          onClick={onAccept}
+        >
+          <CheckIcon data-icon="inline-start" />
+          Accept finding
+        </Button>
+        <Button
+          className="min-w-0 justify-center overflow-hidden"
+          disabled={disabled}
           variant="outline"
           onClick={onDismiss}
         >
           <MinusIcon data-icon="inline-start" />
           Dismiss
         </Button>
+      </div>
+      <div className="mt-2 grid min-w-0 grid-cols-2 gap-2">
         <Button
           className="min-w-0 justify-start overflow-hidden"
           disabled={disabled}

@@ -377,18 +377,18 @@ export function ResponderDropdown({
       <DropdownMenuTrigger asChild>
         <Button
           aria-label="Choose centralized chat responder"
-          className="h-9 max-w-[280px] justify-start gap-2 rounded-lg bg-white px-3"
+          className="h-9 max-w-[280px] justify-start gap-2 rounded-full bg-white px-3"
           size="sm"
           type="button"
           variant="outline"
         >
           <ResponderIcon option={selected} />
-          <span className="truncate">Responder: {selected.label}</span>
+          <span className="truncate">Agent: {selected.label}</span>
           <ChevronDownIcon className="size-3.5" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-72">
-        <DropdownMenuLabel>Responder</DropdownMenuLabel>
+        <DropdownMenuLabel>Agent</DropdownMenuLabel>
         <DropdownMenuGroup>
           {options.map((option) => (
             <DropdownMenuItem

@@ -151,6 +151,7 @@ export function NewThreadScreen({
     ManualReviewAgentAssignment[]
   >([]);
   const manualReviewAssignmentSequence = useRef(0);
+  const branchRequestSequence = useRef(0);
   const [branchState, setBranchState] =
     useState<Loadable<RepositoryBranch[]>>(idleApiState());
   const {
@@ -187,31 +188,41 @@ export function NewThreadScreen({
     [agentModelCatalogs],
   );
 
-  useEffect(() => {
-    let canceled = false;
-    if (!client || !activeWorkspace || !activeRepository) {
-      return () => {
-        canceled = true;
-      };
+  const activeWorkspaceId = activeWorkspace?.id ?? "";
+  const activeRepositoryId = activeRepository?.id ?? "";
+  const refreshBranches = useCallback(() => {
+    if (!client || !activeWorkspaceId || !activeRepositoryId) {
+      branchRequestSequence.current += 1;
+      setBranchState(idleApiState());
+      return;
     }
-    queueMicrotask(() => {
-      if (!canceled) {
-        setBranchState(loadingApiState());
-      }
-    });
+
+    const requestId = (branchRequestSequence.current += 1);
+    setBranchState((current) =>
+      current.status === "success" ? current : loadingApiState(),
+    );
     void loadApiResource(() =>
-      client.listRepositoryBranches(activeRepository.id, {
-        workspaceId: activeWorkspace.id,
+      client.listRepositoryBranches(activeRepositoryId, {
+        workspaceId: activeWorkspaceId,
       }),
     ).then((state) => {
-      if (!canceled) {
+      if (branchRequestSequence.current === requestId) {
         setBranchState(state);
+      }
+    });
+  }, [activeRepositoryId, activeWorkspaceId, client]);
+
+  useEffect(() => {
+    let canceled = false;
+    queueMicrotask(() => {
+      if (!canceled) {
+        refreshBranches();
       }
     });
     return () => {
       canceled = true;
     };
-  }, [activeRepository, activeWorkspace, client]);
+  }, [refreshBranches]);
   const defaultAgentIds = useMemo(
     () => new Set(safeAgents.slice(0, 4).map((agent) => agent.id)),
     [safeAgents],
@@ -831,6 +842,7 @@ export function NewThreadScreen({
                         branches={branchState}
                         disabled={!canCreate}
                         label="Base branch"
+                        onRefresh={refreshBranches}
                         value={baseRef}
                         onSelect={setBaseRefInput}
                       />
@@ -838,6 +850,7 @@ export function NewThreadScreen({
                         branches={branchState}
                         disabled={!canCreate}
                         label="Head branch"
+                        onRefresh={refreshBranches}
                         value={headRefValue}
                         onSelect={setHeadRef}
                       />

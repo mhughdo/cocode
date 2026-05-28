@@ -1,6 +1,16 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Route } from "@playwright/test";
 
-import { apiRequest, createBranchReviewRepo, launchCocode } from "./test-support";
+import {
+  apiRequest,
+  createBranchReviewRepo,
+  launchCocode,
+} from "./test-support";
+
+type OpenRepositorySummary = {
+  workspace: {
+    id: string;
+  };
+};
 
 test("launches Electron app with backend bridge", async ({
   browserName,
@@ -29,20 +39,59 @@ test("launches Electron app with backend bridge", async ({
     const secondRepo = createBranchReviewRepo(
       testInfo.outputPath("smoke-repo-two"),
     );
-    await apiRequest(backendInfo, "/api/workspaces/open-repository", {
-      method: "POST",
-      body: { path: firstRepo },
-    });
-    await apiRequest(backendInfo, "/api/workspaces/open-repository", {
-      method: "POST",
-      body: { path: secondRepo },
-    });
+    await apiRequest<OpenRepositorySummary>(
+      backendInfo,
+      "/api/workspaces/open-repository",
+      {
+        method: "POST",
+        body: { path: firstRepo },
+      },
+    );
+    const secondOpen = await apiRequest<OpenRepositorySummary>(
+      backendInfo,
+      "/api/workspaces/open-repository",
+      {
+        method: "POST",
+        body: { path: secondRepo },
+      },
+    );
     await page.reload();
     await page.getByRole("button", { name: /smoke-repo-one/ }).click();
     await expect(
       page.getByRole("button", { name: "Set up review" }),
     ).toHaveCount(1);
+
+    let releaseSecondRepositoryLoad = () => undefined;
+    const secondRepositoryLoadReleased = new Promise<void>((resolve) => {
+      releaseSecondRepositoryLoad = resolve;
+    });
+    let shouldPauseSecondRepositoryLoad = true;
+    const secondRepositoryRoute = async (route: Route) => {
+      if (shouldPauseSecondRepositoryLoad) {
+        shouldPauseSecondRepositoryLoad = false;
+        await secondRepositoryLoadReleased;
+      }
+      await route.continue();
+    };
+    await page.route(
+      `**/api/workspaces/${secondOpen.workspace.id}/repositories`,
+      secondRepositoryRoute,
+    );
     await page.getByRole("button", { name: /smoke-repo-two/ }).click();
+    await expect(
+      page.getByRole("heading", { name: "Loading project" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Set up review" }),
+    ).toHaveCount(0);
+    releaseSecondRepositoryLoad();
+    await expect(
+      page.getByRole("heading", { name: "Set up review" }),
+    ).toBeVisible();
+    await page.unroute(
+      `**/api/workspaces/${secondOpen.workspace.id}/repositories`,
+      secondRepositoryRoute,
+    );
     await expect(
       page.getByRole("button", { name: "Set up review" }),
     ).toHaveCount(2);

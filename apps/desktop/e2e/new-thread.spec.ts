@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -152,6 +153,62 @@ test("opens a local repository and configures a branch comparison", async ({
   }
 });
 
+test("refreshes branch selectors after external git changes", async ({
+  browserName,
+}, testInfo) => {
+  expect(browserName).toBe("chromium");
+  const repoPath = createBranchReviewRepo(
+    testInfo.outputPath("branch-refresh-repo"),
+  );
+  const app = await launchCocode(testInfo, {
+    COCODE_E2E_REPOSITORY_PATH: repoPath,
+  });
+  const { page } = app;
+
+  try {
+    await openSeededProject(page);
+    await page.getByRole("button", { name: /Compare branches/ }).click();
+    const branchRefresh = page.waitForResponse(
+      (response) =>
+        response.request().method() === "GET" &&
+        response.url().includes("/branches"),
+    );
+    await page.getByRole("button", { name: /Head branch/ }).click();
+    await branchRefresh;
+    await page.getByLabel("Search head branch").fill("feature");
+    await expect(
+      page.getByRole("menuitem", { name: /feature\/review-auth/ }),
+    ).toBeVisible();
+
+    execFileSync("git", ["branch", "external/refresh-target"], {
+      cwd: repoPath,
+      env: {
+        ...process.env,
+        GIT_CONFIG_NOSYSTEM: "1",
+      },
+      stdio: "pipe",
+    });
+
+    await page.getByLabel("Search head branch").fill("external/refresh-target");
+    await expect(
+      page.getByRole("menuitem", { name: /No matching branches/ }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "Refresh head branch list" })
+      .click();
+    await page
+      .getByRole("menuitem", { name: /external\/refresh-target/ })
+      .click();
+    await expect(
+      page.getByRole("button", {
+        name: /Head branch: external\/refresh-target/,
+      }),
+    ).toBeVisible();
+  } finally {
+    await closeCocode(app);
+  }
+});
+
 test("loads local changes source details and collapses file diffs", async ({
   browserName,
 }, testInfo) => {
@@ -264,9 +321,13 @@ test("pins focus files and keeps unchecked focus chips out of the session prompt
     >(backendInfo, `/api/review-sessions?workspace_id=${workspaces[0].id}`);
     const session = sessions[0];
     expect(session.focus_prompt).toContain("docs/prd.md");
-    expect(session.focus_prompt).toContain("Pay attention to reward accounting.");
+    expect(session.focus_prompt).toContain(
+      "Pay attention to reward accounting.",
+    );
     expect(session.focus_prompt).not.toContain("Security issues");
-    expect(session.focus_prompt).not.toContain("unsafe authorization boundaries");
+    expect(session.focus_prompt).not.toContain(
+      "unsafe authorization boundaries",
+    );
     expect(session.context_policy.focus_paths).toEqual(["docs/prd.md"]);
   } finally {
     await closeCocode(app);

@@ -314,6 +314,7 @@ function EvidenceStory({
 
 export function FindingsInspectorPanel({
   actionState,
+  className,
   detail,
   draftComment,
   finding,
@@ -328,6 +329,7 @@ export function FindingsInspectorPanel({
   onSaveDraftComment,
 }: {
   actionState: { status: LoadingState; message?: string };
+  className?: string;
   detail?: FindingDetailResponse;
   draftComment: string;
   finding: Finding;
@@ -361,6 +363,7 @@ export function FindingsInspectorPanel({
 
   return (
     <PanelFrame
+      className={className}
       actions={
         onOpenDetail ? (
           <Button

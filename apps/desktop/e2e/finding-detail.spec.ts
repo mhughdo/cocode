@@ -54,7 +54,8 @@ test("opens finding detail and Evidence Map from seeded data", async ({
     const statusOnlyRow = page
       .locator('[data-testid^="finding-row-"]')
       .filter({
-        hasText: "Renderer preview can load the full diff payload without a display budget.",
+        hasText:
+          "Renderer preview can load the full diff payload without a display budget.",
       })
       .first();
     await statusOnlyRow
@@ -78,6 +79,7 @@ test("opens finding detail and Evidence Map from seeded data", async ({
     await expect(page.getByText("Actions", { exact: true })).toBeVisible();
     await expect(page.getByText("Draft GitHub comment")).toBeVisible();
     await expect(page.getByText("Dismissal", { exact: true })).toHaveCount(0);
+    await expectRightPanelScrollable(page);
     const actionsSection = page
       .locator("section")
       .filter({ has: page.getByText("Actions", { exact: true }) })
@@ -219,4 +221,26 @@ async function expectResizableRightPanel(page: Page) {
   const after = await handle.boundingBox();
   expect(after).toBeTruthy();
   expect(after!.x).toBeLessThan(before!.x - 48);
+}
+
+async function expectRightPanelScrollable(page: Page) {
+  const panel = page.locator('[data-review-panel="true"]').first();
+  await expect(panel).toBeVisible();
+  await expect
+    .poll(async () =>
+      panel.evaluate((node) => {
+        const scrollable = Array.from(
+          node.querySelectorAll<HTMLElement>("div"),
+        ).find((element) => element.scrollHeight > element.clientHeight + 16);
+        if (!scrollable) {
+          return false;
+        }
+        const before = scrollable.scrollTop;
+        scrollable.scrollTop = scrollable.scrollHeight;
+        const moved = scrollable.scrollTop > before;
+        scrollable.scrollTop = before;
+        return moved;
+      }),
+    )
+    .toBe(true);
 }

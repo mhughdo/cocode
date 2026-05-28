@@ -610,7 +610,7 @@ export function ReviewFindingsBoard({
             )}
         </div>
         {selectedFinding && (
-          <div className="relative min-w-0 border-t bg-surface p-4 xl:border-t-0 xl:border-l">
+          <div className="bg-surface relative flex min-h-0 min-w-0 overflow-hidden border-t p-4 xl:border-t-0 xl:border-l">
             <ResizableRightPanelHandle
               onPointerDown={inspectorPanel.startResize}
             />
@@ -625,6 +625,7 @@ export function ReviewFindingsBoard({
                   status: actionState.status,
                   message: actionState.message,
                 }}
+                className="h-full flex-1"
                 detail={
                   selectedDetail.status === "success"
                     ? selectedDetail.data

@@ -4,6 +4,7 @@ import {
   ChevronDownIcon,
   CircleIcon,
   GitBranchIcon,
+  RefreshCwIcon,
   UsersIcon,
   XIcon,
   type LucideIcon,
@@ -11,6 +12,7 @@ import {
 
 import { LoadingRows } from "@/components/app/chrome";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -122,7 +124,7 @@ export function SetupSegment({
       </span>
       <span
         className={cn(
-          "border-border-strong flex size-3.5 shrink-0 items-center justify-center rounded-full border bg-card",
+          "border-border-strong bg-card flex size-3.5 shrink-0 items-center justify-center rounded-full border",
           active && "border-foreground bg-foreground",
         )}
       >
@@ -136,16 +138,19 @@ export function SetupBranchSelector({
   branches,
   disabled,
   label,
+  onRefresh,
   value,
   onSelect,
 }: {
   branches: Loadable<RepositoryBranch[]>;
   disabled: boolean;
   label: string;
+  onRefresh?: () => void;
   value: string;
   onSelect: (value: string) => void;
 }) {
   const [query, setQuery] = useState("");
+  const loading = branches.status === "loading";
   const options = branches.status === "success" ? branches.data : [];
   const filtered = options.filter((branch) =>
     branch.name.toLowerCase().includes(query.trim().toLowerCase()),
@@ -153,7 +158,13 @@ export function SetupBranchSelector({
   return (
     <label className="flex min-w-0 flex-col gap-1.5 text-xs font-medium">
       {label}
-      <DropdownMenu>
+      <DropdownMenu
+        onOpenChange={(open) => {
+          if (open) {
+            onRefresh?.();
+          }
+        }}
+      >
         <DropdownMenuTrigger asChild>
           <button
             aria-label={`${label}: ${value}`}
@@ -169,14 +180,35 @@ export function SetupBranchSelector({
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent className="w-80 p-2">
-          <Input
-            aria-label={`Search ${label.toLowerCase()}`}
-            className="mb-2 h-8"
-            placeholder="Search branches..."
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={(event) => event.stopPropagation()}
-          />
+          <div className="mb-2 flex items-center gap-2">
+            <Input
+              aria-label={`Search ${label.toLowerCase()}`}
+              className="h-8 min-w-0 flex-1"
+              placeholder="Search branches..."
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => event.stopPropagation()}
+            />
+            {onRefresh ? (
+              <Button
+                aria-label={`Refresh ${label.toLowerCase()} list`}
+                className="size-8 shrink-0"
+                disabled={disabled || loading}
+                size="icon-sm"
+                type="button"
+                variant="ghost"
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onRefresh();
+                }}
+              >
+                <RefreshCwIcon
+                  className={cn("size-3.5", loading && "animate-spin")}
+                />
+              </Button>
+            ) : null}
+          </div>
           <div className="max-h-60 overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {branches.status === "loading" && (
               <div className="px-2 py-2">
@@ -233,7 +265,7 @@ export function SetupFocusChip({
     <button
       aria-pressed={active}
       className={cn(
-        "border-transparent text-muted-foreground bg-surface-sunken hover:bg-muted hover:text-foreground inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-full border px-3 text-sm font-medium transition-colors",
+        "text-muted-foreground bg-surface-sunken hover:bg-muted hover:text-foreground inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-full border border-transparent px-3 text-sm font-medium transition-colors",
         active && "border-border bg-card text-foreground",
       )}
       type="button"
@@ -673,7 +705,7 @@ export function SetupPresetTile({
     <button
       aria-pressed={active}
       className={cn(
-        "bg-card border-border-subtle hover:border-border hover:bg-surface-muted/30 focus-visible:ring-ring focus-visible:ring-2 focus-visible:outline-none flex min-h-[80px] cursor-pointer items-start gap-3 rounded-lg border px-3.5 py-3 text-left transition-colors",
+        "bg-card border-border-subtle hover:border-border hover:bg-surface-muted/30 focus-visible:ring-ring flex min-h-[80px] cursor-pointer items-start gap-3 rounded-lg border px-3.5 py-3 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none",
         active && "border-foreground/30 bg-surface-muted/40",
       )}
       type="button"

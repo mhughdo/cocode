@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FolderOpenIcon,
   GitBranchIcon,
@@ -84,6 +84,8 @@ export function App() {
     useState<SetupNavContext | null>(null);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState("");
   const [activeRepositoryId, setActiveRepositoryId] = useState("");
+  const workspaceDetailsLoadSequence = useRef(0);
+  const [loadingWorkspaceId, setLoadingWorkspaceId] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [deletingReviewSessionId, setDeletingReviewSessionId] = useState("");
 
@@ -138,6 +140,9 @@ export function App() {
       workspace: Workspace,
       preferredRepositoryId = "",
     ) => {
+      const requestId = (workspaceDetailsLoadSequence.current += 1);
+      setLoadingWorkspaceId(workspace.id);
+      setActiveRepositoryId("");
       setRepositories(loadingApiState());
       setReviewSessions(loadingApiState());
       setReviewSessionsByWorkspace((current) => ({
@@ -148,6 +153,10 @@ export function App() {
         loadApiResource(() => api.listRepositories(workspace.id)),
         loadApiResource(() => api.listReviewSessions(workspace.id)),
       ]);
+
+      if (workspaceDetailsLoadSequence.current !== requestId) {
+        return;
+      }
 
       setRepositories(repositoryState);
       setReviewSessions(sessionState);
@@ -164,6 +173,9 @@ export function App() {
           ) ?? repositoryState.data[0];
         setActiveRepositoryId(nextRepository?.id ?? "");
       }
+      setLoadingWorkspaceId((current) =>
+        current === workspace.id ? "" : current,
+      );
     },
     [],
   );
@@ -175,11 +187,13 @@ export function App() {
       setWorkspaces(workspaceState);
 
       if (workspaceState.status !== "success") {
+        workspaceDetailsLoadSequence.current += 1;
         setRepositories(successApiState([]));
         setReviewSessions(successApiState([]));
         setReviewSessionsByWorkspace({});
         setActiveWorkspaceId("");
         setActiveRepositoryId("");
+        setLoadingWorkspaceId("");
         return;
       }
 
@@ -190,10 +204,12 @@ export function App() {
         : undefined;
 
       if (!nextWorkspace) {
+        workspaceDetailsLoadSequence.current += 1;
         setRepositories(successApiState([]));
         setReviewSessions(idleApiState());
         setActiveWorkspaceId("");
         setActiveRepositoryId("");
+        setLoadingWorkspaceId("");
         return;
       }
 
@@ -319,6 +335,9 @@ export function App() {
     currentReviewSession ?? (mainView === "review" ? activeSession : undefined);
   const displayedSnapshot =
     activeSnapshot.status === "success" ? activeSnapshot.data : undefined;
+  const isWorkspaceDetailsLoading = Boolean(
+    activeWorkspaceId && loadingWorkspaceId === activeWorkspaceId,
+  );
 
   useEffect(() => {
     const snapshotId = displayedSession?.snapshot_id;
@@ -447,18 +466,21 @@ export function App() {
     client,
   ]);
 
-  const handleSelectReviewSession = useCallback((session: ReviewSession) => {
-    const workspace = workspaceList.find(
-      (item) => item.id === session.workspace_id,
-    );
-    if (client && workspace && session.workspace_id !== activeWorkspaceId) {
-      setActiveWorkspaceId(session.workspace_id);
-      void loadWorkspaceDetails(client, workspace, session.repository_id);
-    }
-    setCurrentReviewSession(session);
-    setSetupNavContext(null);
-    setMainView("review");
-  }, [activeWorkspaceId, client, loadWorkspaceDetails, workspaceList]);
+  const handleSelectReviewSession = useCallback(
+    (session: ReviewSession) => {
+      const workspace = workspaceList.find(
+        (item) => item.id === session.workspace_id,
+      );
+      if (client && workspace && session.workspace_id !== activeWorkspaceId) {
+        setActiveWorkspaceId(session.workspace_id);
+        void loadWorkspaceDetails(client, workspace, session.repository_id);
+      }
+      setCurrentReviewSession(session);
+      setSetupNavContext(null);
+      setMainView("review");
+    },
+    [activeWorkspaceId, client, loadWorkspaceDetails, workspaceList],
+  );
 
   const handleDeleteReviewSession = useCallback(
     async (session: ReviewSession) => {
@@ -567,7 +589,8 @@ export function App() {
         commands: [
           {
             title: "Configure CLI agents",
-            description: "Codex, Gemini, Antigravity, OpenCode, and custom CLIs",
+            description:
+              "Codex, Gemini, Antigravity, OpenCode, and custom CLIs",
             icon: TerminalIcon,
             onSelect: () => setMainView("agent-settings"),
           },
@@ -617,30 +640,39 @@ export function App() {
             activeSession={displayedSession}
             activeSnapshot={displayedSnapshot}
             activeWorkspace={activeWorkspace}
-            setupContext={setupNavContext}
+            setupContext={
+              isWorkspaceDetailsLoading
+                ? {
+                    subtitle: "Loading project",
+                    title: activeWorkspace?.name ?? "Loading project",
+                  }
+                : setupNavContext
+            }
           />
         }
         statusBanner={<AppConnectionNotice apiSession={apiSession} />}
       >
         {mainView === "new-thread" &&
-          (activeWorkspace && activeRepository ? (
-          <NewThreadScreen
-            activeRepository={activeRepository}
-            activeWorkspace={activeWorkspace}
-            agentConfigs={agentConfigs}
-            agentModelCatalogs={agentModelCatalogs}
-            client={client}
-            onSetupContextChange={setSetupNavContext}
-            onReviewStarted={(session) => {
-              setCurrentReviewSession(session);
-              setSetupNavContext(null);
-              setMainView("review");
-              if (client) {
-                void refreshNavigation(client, session.workspace_id);
-              }
-            }}
-            onOpenRepository={handleOpenRepository}
-          />
+          (isWorkspaceDetailsLoading ? (
+            <ProjectLoadingScreen workspaceName={activeWorkspace?.name} />
+          ) : activeWorkspace && activeRepository ? (
+            <NewThreadScreen
+              activeRepository={activeRepository}
+              activeWorkspace={activeWorkspace}
+              agentConfigs={agentConfigs}
+              agentModelCatalogs={agentModelCatalogs}
+              client={client}
+              onSetupContextChange={setSetupNavContext}
+              onReviewStarted={(session) => {
+                setCurrentReviewSession(session);
+                setSetupNavContext(null);
+                setMainView("review");
+                if (client) {
+                  void refreshNavigation(client, session.workspace_id);
+                }
+              }}
+              onOpenRepository={handleOpenRepository}
+            />
           ) : (
             <NoProjectSelectedScreen onOpenRepository={handleOpenRepository} />
           ))}
@@ -669,6 +701,26 @@ export function App() {
       )}
       <Toaster position="bottom-right" />
     </>
+  );
+}
+
+function ProjectLoadingScreen({ workspaceName }: { workspaceName?: string }) {
+  return (
+    <section className="flex h-full min-h-0 flex-1 items-center justify-center px-6 py-10">
+      <div className="flex max-w-md flex-col items-center text-center">
+        <div className="bg-surface-raised border-border-subtle mb-4 flex size-12 items-center justify-center rounded-xl border">
+          <FolderOpenIcon className="text-muted-foreground size-5 animate-pulse" />
+        </div>
+        <h1 className="text-xl font-semibold tracking-tight">
+          Loading project
+        </h1>
+        <p className="text-muted-foreground mt-2 text-sm leading-6">
+          {workspaceName
+            ? `Refreshing ${workspaceName} without changing screens.`
+            : "Refreshing project details without changing screens."}
+        </p>
+      </div>
+    </section>
   );
 }
 

@@ -12,14 +12,14 @@ export function ReviewBreadcrumb({ items }: { items: ReviewBreadcrumbItem[] }) {
   return (
     <nav
       aria-label="Review breadcrumb"
-      className="text-muted-foreground mb-2 flex min-w-0 flex-wrap items-center gap-1 text-xs"
+      className="text-muted-foreground mb-2 flex min-w-0 flex-wrap items-center gap-1.5 text-sm"
     >
       {items.map((item, index) => {
         const isLast = index === items.length - 1;
         return (
           <Fragment key={`${item.label}:${index}`}>
             {index > 0 ? (
-              <ChevronDownIcon className="size-3 shrink-0 -rotate-90" />
+              <ChevronDownIcon className="size-3.5 shrink-0 -rotate-90" />
             ) : null}
             {item.onClick && !isLast ? (
               <button

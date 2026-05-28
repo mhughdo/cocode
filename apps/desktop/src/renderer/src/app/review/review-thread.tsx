@@ -114,6 +114,11 @@ export function ReviewThread({
     setActiveTab("follow-up");
   }, []);
 
+  const openFindingDetail = useCallback((finding: Finding) => {
+    setDetailFinding(finding);
+    setActiveTab("finding-detail");
+  }, []);
+
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       <div className="min-h-0 flex-1 overflow-hidden px-6 py-5">
@@ -202,6 +207,7 @@ export function ReviewThread({
                   client={client}
                   events={live.events}
                   findings={live.findings}
+                  onOpenFindingDetail={openFindingDetail}
                   onOpenFindings={() => setActiveTab("findings")}
                   session={live.session ?? session}
                   summary={live.summary}
@@ -251,10 +257,7 @@ export function ReviewThread({
               <ReviewFindingsBoard
                 client={client}
                 findings={live.findings}
-                onOpenDetail={(finding) => {
-                  setDetailFinding(finding);
-                  setActiveTab("finding-detail");
-                }}
+                onOpenDetail={openFindingDetail}
                 onOpenEvidenceMap={openEvidenceMap}
                 onOpenFollowUp={openFollowUp}
                 session={live.session ?? session}
@@ -294,10 +297,7 @@ export function ReviewThread({
                   client={client}
                   finding={evidenceMapFinding}
                   onBack={() => setActiveTab("findings")}
-                  onOpenFindingDetail={(finding) => {
-                    setDetailFinding(finding);
-                    setActiveTab("finding-detail");
-                  }}
+                  onOpenFindingDetail={openFindingDetail}
                 />
               ) : (
                 <EmptyState

@@ -302,13 +302,161 @@ func pickTokenPrice(prices *[2]*float64) float64 {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	line, column := goCallHierarchyTarget(
+	line, column := callHierarchyTarget(
 		repoRoot,
 		"internal/app/aggregatedposition/fetcher/kyberdata/kem_rewards.go",
 		7,
 	)
 	if line != 3 || column <= 0 {
-		t.Fatalf("goCallHierarchyTarget() = %d:%d, want 3:>0", line, column)
+		t.Fatalf("callHierarchyTarget() = %d:%d, want 3:>0", line, column)
+	}
+}
+
+func TestSelectGoplsHierarchyEntriesKeepsMoreCallerContext(t *testing.T) {
+	t.Parallel()
+
+	entries := []goplsHierarchyEntry{
+		{direction: "caller", symbol: "callerOne", path: "internal/caller_one.go", line: 11},
+		{direction: "caller", symbol: "callerTwo", path: "internal/caller_two.go", line: 12},
+		{direction: "caller", symbol: "callerThree", path: "internal/caller_three.go", line: 13},
+		{direction: "caller", symbol: "callerFour", path: "internal/caller_four.go", line: 14},
+		{direction: "callee", symbol: "calleeOne", path: "internal/callee_one.go", line: 20},
+		{direction: "caller", symbol: "callerOne", path: "internal/caller_one.go", line: 11},
+	}
+
+	selected := selectGoplsHierarchyEntries(entries, 4)
+	if len(selected) != 4 {
+		t.Fatalf("selected len = %d, want 4: %+v", len(selected), selected)
+	}
+	callers := 0
+	callees := 0
+	for _, entry := range selected {
+		switch entry.direction {
+		case "caller":
+			callers++
+		case "callee":
+			callees++
+		}
+	}
+	if callers != 3 || callees != 1 {
+		t.Fatalf("selected = %+v, want caller-heavy context with callee coverage", selected)
+	}
+}
+
+func TestRebuildEvidenceMapWithContextFallsBackToLocalGoCallScan(t *testing.T) {
+	env := setupEvidenceEnv(t)
+	repoRoot := t.TempDir()
+	sourceDir := filepath.Join(repoRoot, "internal", "app", "aggregatedposition", "fetcher", "kyberdata")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(sourceDir) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "kem_rewards.go"), []byte(`package kyberdata
+
+func pickTokenPrice(prices *[2]*float64) float64 {
+	if prices == nil {
+		return 0
+	}
+	if prices[0] != nil && *prices[0] > 0 {
+		return (float64(*prices[0]) + float64(*prices[1])) / float64(2)
+	}
+	return 0
+}
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile(kem_rewards.go) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "fetcher.go"), []byte(`package kyberdata
+
+func fetchRewardTokenInfo(prices *[2]*float64) float64 {
+	return pickTokenPrice(prices)
+}
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile(fetcher.go) error = %v", err)
+	}
+
+	finding := createEvidenceFinding(t, env.Queries, testFindingParams("finding_local_scan_map", "pickTokenPrice dereferences prices[1]", "correctness", "high", 0.85))
+	finding.PrimaryPath = nullableTestString("internal/app/aggregatedposition/fetcher/kyberdata/kem_rewards.go")
+	finding.PrimaryStartLine = nullableTestInt64(7)
+	finding.PrimaryEndLine = nullableTestInt64(8)
+	createMapEvidenceItem(t, env, "evidence_local_scan_primary", finding.ID, KindSupporting, "Changed average", "The changed line dereferences prices[1].", "internal/app/aggregatedposition/fetcher/kyberdata/kem_rewards.go", 7, 8, 0.85, `{"producer":"local_verifier","source":"primary_location"}`)
+
+	view, err := env.Service.RebuildEvidenceMapWithContext(context.Background(), finding, MapContext{RepositoryLocalPath: repoRoot})
+	if err != nil {
+		t.Fatalf("RebuildEvidenceMapWithContext() error = %v", err)
+	}
+	if !hasMapNode(view.Nodes, NodeHandler, "internal/app/aggregatedposition/fetcher/kyberdata/fetcher.go") ||
+		len(view.CallPaths) == 0 ||
+		!strings.Contains(view.Panel.ConnectionSummary, "local Go AST call-site analysis") {
+		t.Fatalf("view = %+v", view)
+	}
+	var layout struct {
+		CallHierarchy struct {
+			Available bool   `json:"available"`
+			Source    string `json:"source"`
+			Reason    string `json:"reason"`
+		} `json:"call_hierarchy"`
+	}
+	if err := json.Unmarshal(view.Graph.Layout, &layout); err != nil {
+		t.Fatalf("Unmarshal(layout) error = %v", err)
+	}
+	if !layout.CallHierarchy.Available ||
+		layout.CallHierarchy.Source != "go_ast_call_scan" ||
+		!strings.Contains(layout.CallHierarchy.Reason, "local Go AST call-site analysis") {
+		t.Fatalf("layout = %+v", layout)
+	}
+}
+
+func TestRebuildEvidenceMapWithContextUsesHeuristicCallScanForTypeScript(t *testing.T) {
+	env := setupEvidenceEnv(t)
+	repoRoot := t.TempDir()
+	sourceDir := filepath.Join(repoRoot, "src")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(sourceDir) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "prices.ts"), []byte(`export function pickTokenPrice(prices: number[]): number {
+  if (!prices.length) {
+    return 0
+  }
+  return prices[0]
+}
+
+export class RewardFetcher {
+  fetchRewardTokenInfo(prices: number[]) {
+    return pickTokenPrice(prices)
+  }
+}
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile(prices.ts) error = %v", err)
+	}
+
+	finding := createEvidenceFinding(t, env.Queries, testFindingParams("finding_ts_map", "pickTokenPrice trusts the first price", "correctness", "medium", 0.8))
+	finding.PrimaryPath = nullableTestString("src/prices.ts")
+	finding.PrimaryStartLine = nullableTestInt64(4)
+	finding.PrimaryEndLine = nullableTestInt64(5)
+	createMapEvidenceItem(t, env, "evidence_ts_primary", finding.ID, KindSupporting, "Changed return", "The changed line returns prices[0].", "src/prices.ts", 4, 5, 0.8, `{"producer":"local_verifier","source":"primary_location"}`)
+
+	view, err := env.Service.RebuildEvidenceMapWithContext(context.Background(), finding, MapContext{RepositoryLocalPath: repoRoot})
+	if err != nil {
+		t.Fatalf("RebuildEvidenceMapWithContext() error = %v", err)
+	}
+	if !hasMapNode(view.Nodes, NodeHandler, "src/prices.ts") ||
+		len(view.CallPaths) == 0 ||
+		!strings.Contains(view.Panel.ConnectionSummary, "bundled heuristic call-site scan") {
+		t.Fatalf("view = %+v", view)
+	}
+	var layout struct {
+		CallHierarchy struct {
+			Available bool   `json:"available"`
+			Source    string `json:"source"`
+			Reason    string `json:"reason"`
+		} `json:"call_hierarchy"`
+	}
+	if err := json.Unmarshal(view.Graph.Layout, &layout); err != nil {
+		t.Fatalf("Unmarshal(layout) error = %v", err)
+	}
+	if !layout.CallHierarchy.Available ||
+		layout.CallHierarchy.Source != "heuristic_call_scan" ||
+		!strings.Contains(layout.CallHierarchy.Reason, "TypeScript LSP call hierarchy is not configured") {
+		t.Fatalf("layout = %+v", layout)
 	}
 }
 

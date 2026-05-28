@@ -6,9 +6,12 @@ import {
   EvidenceCardList,
   FindingCard,
 } from "../findings/finding-components";
+import { ChatMessageCard } from "../chat/chat-message-card";
 import { EvidenceMapGraphCanvas } from "../evidence/review-evidence-map";
 import { EvidenceMapInspectorPanel } from "../evidence/evidence-map-inspector-panel";
+import { MarkdownMessage } from "../shared/markdown-message";
 import type {
+  ChatMessage,
   EvidenceItem,
   EvidenceMapResponse,
   Finding,
@@ -140,6 +143,50 @@ describe("review component surfaces", () => {
     expect(html).toContain("Mount requireWorkspaceAdmin");
     expect(html).not.toContain("Open in editor");
   });
+
+  it("renders diff fences with addition and deletion highlighting", () => {
+    const html = renderToStaticMarkup(
+      <MarkdownMessage
+        content={[
+          "```diff",
+          " if len(filter.Protocols) == 1 {",
+          "-  sources = []aggregatedposition.PositionSource{targetSource}",
+          "+  if cfg.Mode != config.ProtocolSourceModeHybrid {",
+          "+    sources = []aggregatedposition.PositionSource{targetSource}",
+          "+  }",
+          " }",
+          "```",
+        ].join("\n")}
+      />,
+    );
+
+    expect(html).toContain("bg-red-50");
+    expect(html).toContain("bg-emerald-50");
+    expect(html).toContain("sources = []aggregatedposition.PositionSource");
+  });
+
+  it("only shows chat expansion controls while a message is still processing", () => {
+    const longBody = Array.from(
+      { length: 18 },
+      (_, index) => `Line ${index + 1} with enough detail to keep.`,
+    ).join("\n");
+    const completed = renderToStaticMarkup(
+      <ChatMessageCard
+        events={[]}
+        message={{ ...chatMessageFixture, body: longBody, status: "completed" }}
+      />,
+    );
+    const streaming = renderToStaticMarkup(
+      <ChatMessageCard
+        events={[]}
+        message={{ ...chatMessageFixture, body: longBody, status: "streaming" }}
+      />,
+    );
+
+    expect(completed).not.toContain("See more");
+    expect(completed).toContain("Line 18");
+    expect(streaming).toContain("See more");
+  });
 });
 
 const findingFixture = {
@@ -174,6 +221,18 @@ const findingFixture = {
     },
   ],
 } satisfies Finding;
+
+const chatMessageFixture: ChatMessage = {
+  id: "message_1",
+  thread_id: "thread_1",
+  author_type: "orchestrator",
+  author_display_name: "Orchestrator",
+  body: "Reviewed the diff.",
+  status: "completed",
+  metadata: {},
+  created_at: "2026-05-04T00:01:00Z",
+  updated_at: "2026-05-04T00:01:00Z",
+};
 
 const evidenceItems = [
   {

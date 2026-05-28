@@ -361,6 +361,9 @@ function renderHeading(depth: number, text: string, key: string) {
 function CodeBlock({ language, lines }: { language: string; lines: string[] }) {
   const normalizedLanguage =
     language || (looksLikeDiffBlock(lines) ? "diff" : "plaintext");
+  if (isDiffLanguage(normalizedLanguage)) {
+    return <DiffCodeBlock lines={lines} />;
+  }
   return (
     <SyntaxCodeBlock code={lines.join("\n")} language={normalizedLanguage} />
   );
@@ -490,6 +493,68 @@ function looksLikeDiffBlock(lines: string[]) {
       trimmed.startsWith("---")
     );
   });
+}
+
+function isDiffLanguage(language: string) {
+  const normalized = normalizeSyntaxLanguage(language).toLowerCase();
+  return normalized === "diff" || normalized === "patch";
+}
+
+function DiffCodeBlock({ lines }: { lines: string[] }) {
+  const renderedLines = trimOuterEmptyLines(lines);
+  return (
+    <div className="cocode-shiki-block border-border/70 bg-muted/55 max-w-full overflow-hidden rounded-lg border">
+      <div className="cocode-shiki cocode-diff">
+        <pre className="min-w-0 overflow-auto bg-transparent">
+          <code className="block min-w-full">
+            {renderedLines.map((line, index) => (
+              <span
+                className={cn(
+                  "block px-1 whitespace-pre",
+                  diffLineClass(line),
+                )}
+                key={`${index}-${line}`}
+              >
+                {line || " "}
+              </span>
+            ))}
+          </code>
+        </pre>
+      </div>
+    </div>
+  );
+}
+
+function trimOuterEmptyLines(lines: string[]) {
+  let start = 0;
+  let end = lines.length;
+  while (start < end && !lines[start]?.trim()) {
+    start++;
+  }
+  while (end > start && !lines[end - 1]?.trim()) {
+    end--;
+  }
+  return lines.slice(start, end);
+}
+
+function diffLineClass(line: string) {
+  const trimmed = line.trimStart();
+  if (trimmed.startsWith("@@")) {
+    return "bg-sky-50 text-sky-700";
+  }
+  if (trimmed.startsWith("diff --git") || trimmed.startsWith("index ")) {
+    return "text-muted-foreground font-semibold";
+  }
+  if (trimmed.startsWith("+++") || trimmed.startsWith("---")) {
+    return "text-muted-foreground";
+  }
+  if (trimmed.startsWith("+")) {
+    return "bg-emerald-50 text-emerald-700";
+  }
+  if (trimmed.startsWith("-")) {
+    return "bg-red-50 text-red-700";
+  }
+  return "text-foreground";
 }
 
 function MarkdownTable({ lines }: { lines: string[] }) {

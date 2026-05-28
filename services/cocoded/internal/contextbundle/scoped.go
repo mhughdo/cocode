@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hughdo/cocode/services/cocoded/internal/codeintel"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
 )
 
@@ -253,7 +254,7 @@ func (s Service) buildScopedContext(ctx context.Context, params scopedContextBui
 			items = append(items, contentItems...)
 		}
 	}
-	symbols := findingContextSymbols(source.finding, source.evidence)
+	symbols := findingContextSymbols(source.repository.LocalPath, source.finding, source.evidence)
 	if params.policy.IncludeRelatedCallSites && len(scopedFiles) > 0 {
 		relatedInputs := relatedSearchInputs(scopedFiles)
 		for index := range relatedInputs {
@@ -681,8 +682,13 @@ func findingScopedChangedFiles(finding dbgen.Finding, evidence []dbgen.EvidenceI
 	return scoped
 }
 
-func findingContextSymbols(finding dbgen.Finding, evidence []dbgen.EvidenceItem) []string {
+func findingContextSymbols(repoRoot string, finding dbgen.Finding, evidence []dbgen.EvidenceItem) []string {
 	terms := []string{}
+	if symbol, ok := codeintel.ResolveEnclosingSymbol(repoRoot, nullableString(finding.PrimaryPath), nullableInt64(finding.PrimaryStartLine)); ok {
+		addScopedTerm(&terms, symbol.QualifiedName)
+		addScopedTerm(&terms, symbol.Name)
+		addScopedTerm(&terms, symbol.Receiver)
+	}
 	for _, value := range []string{
 		finding.CanonicalClaim,
 		nullableString(finding.SuggestedFix),

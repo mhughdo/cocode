@@ -8,9 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hughdo/cocode/services/cocoded/internal/codeintel"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
 )
 
@@ -68,7 +66,7 @@ const (
 const (
 	defaultEvidenceMapItemLimit = 80
 	defaultCallPathStepLimit    = 8
-	goplsCallHierarchyLimit     = 4
+	goplsCallHierarchyLimit     = 8
 	goplsCallHierarchyTimeout   = 8 * time.Second
 )
 
@@ -242,6 +240,7 @@ type mapBuildPlan struct {
 	callPathUnavailableReason string
 	callHierarchyAttempted    bool
 	callHierarchyAvailable    bool
+	callHierarchySource       string
 	callHierarchyTarget       string
 	callHierarchyReason       string
 	connectionSummary         string
@@ -552,7 +551,7 @@ func finalizeMapPlan(finding dbgen.Finding, plan *mapBuildPlan) {
 		"call_path_unavailable_reason": plan.callPathUnavailableReason,
 		"connection_summary":           plan.connectionSummary,
 		"call_hierarchy": map[string]any{
-			"source":    "gopls",
+			"source":    trimOrDefault(plan.callHierarchySource, "gopls"),
 			"attempted": plan.callHierarchyAttempted,
 			"available": plan.callHierarchyAvailable,
 			"target":    plan.callHierarchyTarget,
@@ -590,20 +589,20 @@ func (s *Service) enrichMapPlanWithGopls(ctx context.Context, plan *mapBuildPlan
 	}
 	repoRoot := strings.TrimSpace(mapCtx.RepositoryLocalPath)
 	if repoRoot == "" {
-		plan.callHierarchyReason = "repository local path was not available for gopls"
+		plan.callHierarchyReason = "repository local path was not available for call-site enrichment"
 		return
 	}
 	primary := mapPlanNode(plan, plan.primaryNodeKey)
-	if primary == nil || primary.path == "" || primary.startLine <= 0 || filepath.Ext(primary.path) != ".go" {
-		plan.callHierarchyReason = "primary location is not a Go file with a line anchor"
+	if primary == nil || primary.path == "" || primary.startLine <= 0 {
+		plan.callHierarchyReason = "primary location is not a source file with a line anchor"
+		return
+	}
+	language := codeintel.DetectLanguage(primary.path)
+	if language == "" {
+		plan.callHierarchyReason = "primary location language is not supported for call-site enrichment"
 		return
 	}
 	plan.callHierarchyAttempted = true
-	goplsPath, err := lookPathGopls("gopls")
-	if err != nil {
-		plan.callHierarchyReason = "gopls executable was not found"
-		return
-	}
 	targetPath := primary.path
 	if filepath.IsAbs(targetPath) {
 		if rel, err := filepath.Rel(repoRoot, targetPath); err == nil {
@@ -612,11 +611,38 @@ func (s *Service) enrichMapPlanWithGopls(ctx context.Context, plan *mapBuildPlan
 	}
 	targetPath = filepath.ToSlash(targetPath)
 	if _, err := os.Stat(filepath.Join(repoRoot, filepath.FromSlash(targetPath))); err != nil {
-		plan.callHierarchyReason = "primary Go file was not found in the local repository"
+		plan.callHierarchyReason = "primary source file was not found in the local repository"
+		return
+	}
+	targetLine, targetColumn := callHierarchyTarget(repoRoot, targetPath, primary.startLine)
+	var symbol codeintel.Symbol
+	if resolved, ok := codeintel.ResolveEnclosingSymbol(repoRoot, targetPath, primary.startLine); ok {
+		symbol = resolved
+		annotatePrimarySymbol(primary, resolved)
+		targetLine = resolved.NameLine
+		targetColumn = resolved.NameColumn
+	}
+	plan.callHierarchyTarget = fmt.Sprintf("%s:%d:%d", targetPath, targetLine, targetColumn)
+	if language != "go" {
+		if enrichMapPlanWithLocalCallers(plan, repoRoot, symbol, fmt.Sprintf("%s LSP call hierarchy is not configured", codeintel.LanguageLabel(language))) {
+			return
+		}
+		plan.callHierarchyReason = fmt.Sprintf("no local %s caller evidence was found", codeintel.LanguageLabel(language))
+		return
+	}
+	goplsPath, err := lookPathGopls("gopls")
+	if err != nil {
+		if enrichMapPlanWithLocalCallers(plan, repoRoot, symbol, "gopls executable was not found") {
+			return
+		}
+		plan.callHierarchyReason = "gopls executable was not found"
 		return
 	}
 	moduleRoot, ok := findGoModuleRoot(repoRoot, targetPath)
 	if !ok {
+		if enrichMapPlanWithLocalCallers(plan, repoRoot, symbol, "no Go module root was found for the primary file") {
+			return
+		}
 		plan.callHierarchyReason = "no Go module root was found for the primary file"
 		return
 	}
@@ -627,20 +653,30 @@ func (s *Service) enrichMapPlanWithGopls(ctx context.Context, plan *mapBuildPlan
 
 	commandCtx, cancel := context.WithTimeout(ctx, goplsCallHierarchyTimeout)
 	defer cancel()
-	targetLine, targetColumn := goCallHierarchyTarget(repoRoot, targetPath, primary.startLine)
 	target := fmt.Sprintf("%s:%d:%d", moduleTargetPath, targetLine, targetColumn)
 	plan.callHierarchyTarget = target
 	output, err := runGoplsCallHierarchy(commandCtx, goplsPath, moduleRoot, target)
 	if commandCtx.Err() != nil {
+		if enrichMapPlanWithLocalCallers(plan, repoRoot, symbol, fmt.Sprintf("gopls call_hierarchy timed out after %s", goplsCallHierarchyTimeout)) {
+			return
+		}
 		plan.callHierarchyReason = fmt.Sprintf("gopls call_hierarchy timed out after %s", goplsCallHierarchyTimeout)
 		return
 	}
 	if err != nil {
 		detail := strings.TrimSpace(string(output))
 		if detail != "" {
-			plan.callHierarchyReason = "gopls call_hierarchy failed: " + truncateText(detail, 180)
+			reason := "gopls call_hierarchy failed: " + truncateText(detail, 180)
+			if enrichMapPlanWithLocalCallers(plan, repoRoot, symbol, reason) {
+				return
+			}
+			plan.callHierarchyReason = reason
 		} else {
-			plan.callHierarchyReason = "gopls call_hierarchy returned no usable result"
+			reason := "gopls call_hierarchy returned no usable result"
+			if enrichMapPlanWithLocalCallers(plan, repoRoot, symbol, reason) {
+				return
+			}
+			plan.callHierarchyReason = reason
 		}
 		return
 	}
@@ -651,100 +687,159 @@ func (s *Service) enrichMapPlanWithGopls(ctx context.Context, plan *mapBuildPlan
 		primary.metadata["gopls_call_hierarchy"] = true
 	}
 	if len(entries) == 0 {
+		if enrichMapPlanWithLocalCallers(plan, repoRoot, symbol, "gopls found the symbol but no callers or callees") {
+			return
+		}
 		plan.callHierarchyReason = "gopls found the symbol but no callers or callees"
 		return
 	}
+	entries = selectGoplsHierarchyEntries(entries, goplsCallHierarchyLimit)
+	if len(entries) == 0 {
+		if enrichMapPlanWithLocalCallers(plan, repoRoot, symbol, "gopls found only duplicate caller/callee entries") {
+			return
+		}
+		plan.callHierarchyReason = "gopls found only duplicate caller/callee entries"
+		return
+	}
 	plan.callHierarchyAvailable = true
+	plan.callHierarchySource = "gopls_call_hierarchy"
 	plan.callHierarchyReason = ""
-	var callers, callees []goplsHierarchyEntry
 	for _, entry := range entries {
 		switch entry.direction {
 		case "caller":
-			callers = append(callers, entry)
+			key := fmt.Sprintf("gopls:caller:%s:%d:%s", entry.path, entry.line, entry.symbol)
+			plan.nodes = append(plan.nodes, goplsNodeSpec(key, entry, NodeHandler))
+			plan.edges = append(plan.edges, edgeSpec{
+				key:        "gopls:caller:" + key,
+				sourceKey:  key,
+				targetKey:  plan.primaryNodeKey,
+				kind:       EdgeCalls,
+				status:     EdgeStatusObserved,
+				label:      "calls changed code",
+				confidence: 0.78,
+				metadata: map[string]any{
+					"source":      "gopls_call_hierarchy",
+					"direction":   "incoming",
+					"explanation": fmt.Sprintf("%s calls into the issue function, so it is a likely entry point for reproducing or understanding the finding.", trimOrDefault(entry.symbol, "This function")),
+				},
+			})
 		case "callee":
-			callees = append(callees, entry)
+			key := fmt.Sprintf("gopls:callee:%s:%d:%s", entry.path, entry.line, entry.symbol)
+			plan.nodes = append(plan.nodes, goplsNodeSpec(key, entry, NodeRelatedCode))
+			plan.edges = append(plan.edges, edgeSpec{
+				key:        "gopls:callee:" + key,
+				sourceKey:  plan.primaryNodeKey,
+				targetKey:  key,
+				kind:       EdgeCalls,
+				status:     EdgeStatusObserved,
+				label:      "calls",
+				confidence: 0.72,
+				metadata: map[string]any{
+					"source":      "gopls_call_hierarchy",
+					"direction":   "outgoing",
+					"explanation": fmt.Sprintf("The issue function calls %s, which helps explain the downstream behavior involved in the finding.", trimOrDefault(entry.symbol, "this function")),
+				},
+			})
 		}
 	}
-	callers = limitGoplsEntries(callers, goplsCallHierarchyLimit/2)
-	callees = limitGoplsEntries(callees, goplsCallHierarchyLimit-len(callers))
-	for index, entry := range callers {
-		key := fmt.Sprintf("gopls:caller:%d:%s:%d", index, entry.path, entry.line)
-		plan.nodes = append(plan.nodes, goplsNodeSpec(key, entry, NodeHandler))
+}
+
+func callHierarchyTarget(repoRoot string, targetPath string, line int64) (int64, int) {
+	symbol, ok := codeintel.ResolveEnclosingSymbol(repoRoot, targetPath, line)
+	if !ok || symbol.NameLine <= 0 || symbol.NameColumn <= 0 {
+		return line, 1
+	}
+	return symbol.NameLine, symbol.NameColumn
+}
+
+func annotatePrimarySymbol(primary *nodeSpec, symbol codeintel.Symbol) {
+	if primary == nil || symbol.Name == "" {
+		return
+	}
+	if primary.metadata == nil {
+		primary.metadata = map[string]any{}
+	}
+	displayName := trimOrDefault(symbol.QualifiedName, symbol.Name)
+	primary.symbol = displayName
+	primary.metadata["symbol"] = displayName
+	primary.metadata["enclosing_symbol"] = displayName
+	primary.metadata["symbol_kind"] = symbol.Kind
+	primary.metadata["symbol_language"] = symbol.Language
+	primary.metadata["symbol_provenance"] = symbol.Provenance
+	primary.metadata["symbol_start_line"] = symbol.StartLine
+	primary.metadata["symbol_end_line"] = symbol.EndLine
+}
+
+func enrichMapPlanWithLocalCallers(plan *mapBuildPlan, repoRoot string, symbol codeintel.Symbol, fallbackReason string) bool {
+	if plan == nil || symbol.Name == "" {
+		return false
+	}
+	callers := codeintel.FindCallers(repoRoot, symbol, goplsCallHierarchyLimit)
+	if len(callers) == 0 {
+		return false
+	}
+	plan.callHierarchyAvailable = true
+	source := localCallScanSource(symbol)
+	plan.callHierarchySource = source
+	reason := strings.TrimSpace(fallbackReason)
+	if reason != "" {
+		plan.callHierarchyReason = reason + "; " + callHierarchySourceLabel(source) + " added direct callers"
+	} else {
+		plan.callHierarchyReason = callHierarchySourceLabel(source) + " added direct callers"
+	}
+	if plan.callHierarchyTarget == "" {
+		plan.callHierarchyTarget = fmt.Sprintf("%s:%d:%d", symbol.Path, symbol.NameLine, symbol.NameColumn)
+	}
+	for index, caller := range callers {
+		key := fmt.Sprintf("%s:caller:%d:%s:%d", source, index, caller.Path, caller.Line)
+		plan.nodes = append(plan.nodes, localCallSiteNodeSpec(key, caller, source))
 		plan.edges = append(plan.edges, edgeSpec{
-			key:        "gopls:caller:" + key,
+			key:        source + ":caller:" + key,
 			sourceKey:  key,
 			targetKey:  plan.primaryNodeKey,
 			kind:       EdgeCalls,
 			status:     EdgeStatusObserved,
 			label:      "calls changed code",
-			confidence: 0.78,
+			confidence: 0.68,
 			metadata: map[string]any{
-				"source":      "gopls_call_hierarchy",
+				"source":      source,
 				"direction":   "incoming",
-				"explanation": fmt.Sprintf("%s calls into the issue function, so it is a likely entry point for reproducing or understanding the finding.", trimOrDefault(entry.symbol, "This function")),
+				"explanation": fmt.Sprintf("%s directly calls %s. This bundled fallback is syntax-based, so it is useful reachability evidence to inspect when an LSP call hierarchy is unavailable or incomplete.", trimOrDefault(caller.Caller.QualifiedName, "This function"), trimOrDefault(symbol.QualifiedName, symbol.Name)),
 			},
 		})
 	}
-	for index, entry := range callees {
-		key := fmt.Sprintf("gopls:callee:%d:%s:%d", index, entry.path, entry.line)
-		plan.nodes = append(plan.nodes, goplsNodeSpec(key, entry, NodeRelatedCode))
-		plan.edges = append(plan.edges, edgeSpec{
-			key:        "gopls:callee:" + key,
-			sourceKey:  plan.primaryNodeKey,
-			targetKey:  key,
-			kind:       EdgeCalls,
-			status:     EdgeStatusObserved,
-			label:      "calls",
-			confidence: 0.72,
-			metadata: map[string]any{
-				"source":      "gopls_call_hierarchy",
-				"direction":   "outgoing",
-				"explanation": fmt.Sprintf("The issue function calls %s, which helps explain the downstream behavior involved in the finding.", trimOrDefault(entry.symbol, "this function")),
-			},
-		})
+	return true
+}
+
+func localCallSiteNodeSpec(key string, caller codeintel.CallSite, source string) nodeSpec {
+	label := trimOrDefault(caller.Caller.QualifiedName, lineLabel(caller.Path, caller.Line, caller.Line))
+	return nodeSpec{
+		key:        key,
+		kind:       NodeHandler,
+		label:      label,
+		path:       caller.Path,
+		symbol:     caller.Caller.QualifiedName,
+		startLine:  caller.Line,
+		endLine:    caller.Line,
+		confidence: 0.68,
+		metadata: map[string]any{
+			"source":            source,
+			"direction":         "caller",
+			"enclosing_symbol":  caller.Caller.QualifiedName,
+			"symbol_language":   caller.Caller.Language,
+			"symbol_start_line": caller.Caller.StartLine,
+			"symbol_end_line":   caller.Caller.EndLine,
+			"call_line":         caller.Line,
+			"explanation":       "Bundled local code-intelligence found a direct call to the issue function. This baseline does not require system tree-sitter, gopls, or another language server.",
+		},
 	}
 }
 
-func goCallHierarchyTarget(repoRoot string, targetPath string, line int64) (int64, int) {
-	targetAbs := filepath.Join(repoRoot, filepath.FromSlash(targetPath))
-	source, err := os.ReadFile(targetAbs)
-	if err != nil {
-		return line, 1
+func localCallScanSource(symbol codeintel.Symbol) string {
+	if symbol.Language == "go" || symbol.Provenance == "go_ast" {
+		return "go_ast_call_scan"
 	}
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, targetAbs, source, 0)
-	if err != nil {
-		return line, 1
-	}
-	var (
-		bestDecl *ast.FuncDecl
-		bestSpan int
-	)
-	ast.Inspect(file, func(node ast.Node) bool {
-		decl, ok := node.(*ast.FuncDecl)
-		if !ok || decl == nil || decl.Name == nil {
-			return true
-		}
-		start := fset.Position(decl.Pos()).Line
-		end := fset.Position(decl.End()).Line
-		if line < int64(start) || line > int64(end) {
-			return true
-		}
-		span := end - start
-		if bestDecl == nil || span < bestSpan {
-			bestDecl = decl
-			bestSpan = span
-		}
-		return true
-	})
-	if bestDecl == nil {
-		return line, 1
-	}
-	position := fset.Position(bestDecl.Name.Pos())
-	if position.Line <= 0 || position.Column <= 0 {
-		return line, 1
-	}
-	return int64(position.Line), position.Column
+	return "heuristic_call_scan"
 }
 
 func mapPlanNode(plan *mapBuildPlan, key string) *nodeSpec {
@@ -780,11 +875,94 @@ func goplsNodeSpec(key string, entry goplsHierarchyEntry, kind string) nodeSpec 
 	}
 }
 
-func limitGoplsEntries(entries []goplsHierarchyEntry, limit int) []goplsHierarchyEntry {
+func selectGoplsHierarchyEntries(entries []goplsHierarchyEntry, limit int) []goplsHierarchyEntry {
+	if len(entries) == 0 || limit == 0 {
+		return nil
+	}
+	deduped := make([]goplsHierarchyEntry, 0, len(entries))
+	seen := map[string]struct{}{}
+	for _, entry := range entries {
+		if entry.direction != "caller" && entry.direction != "callee" {
+			continue
+		}
+		key := entry.direction + "|" + entry.path + "|" + strconv.FormatInt(entry.line, 10) + "|" + entry.symbol
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		deduped = append(deduped, entry)
+	}
+	sort.SliceStable(deduped, func(i, j int) bool {
+		leftRank := goplsHierarchyEntryRank(deduped[i])
+		rightRank := goplsHierarchyEntryRank(deduped[j])
+		if leftRank != rightRank {
+			return leftRank < rightRank
+		}
+		leftTest := strings.HasSuffix(deduped[i].path, "_test.go")
+		rightTest := strings.HasSuffix(deduped[j].path, "_test.go")
+		if leftTest != rightTest {
+			return !leftTest
+		}
+		if deduped[i].path != deduped[j].path {
+			return deduped[i].path < deduped[j].path
+		}
+		if deduped[i].line != deduped[j].line {
+			return deduped[i].line < deduped[j].line
+		}
+		return deduped[i].symbol < deduped[j].symbol
+	})
+	if limit > 0 && len(deduped) > limit {
+		return keepGoplsDirectionCoverage(deduped, limit)
+	}
+	return deduped
+}
+
+func keepGoplsDirectionCoverage(entries []goplsHierarchyEntry, limit int) []goplsHierarchyEntry {
 	if limit <= 0 || len(entries) <= limit {
 		return entries
 	}
-	return entries[:limit]
+	selected := make([]goplsHierarchyEntry, 0, limit)
+	selectedKeys := map[string]struct{}{}
+	add := func(entry goplsHierarchyEntry) {
+		if len(selected) >= limit {
+			return
+		}
+		key := entry.direction + "|" + entry.path + "|" + strconv.FormatInt(entry.line, 10) + "|" + entry.symbol
+		if _, ok := selectedKeys[key]; ok {
+			return
+		}
+		selectedKeys[key] = struct{}{}
+		selected = append(selected, entry)
+	}
+	if limit >= 2 {
+		for _, entry := range entries {
+			if entry.direction == "caller" {
+				add(entry)
+				break
+			}
+		}
+		for _, entry := range entries {
+			if entry.direction == "callee" {
+				add(entry)
+				break
+			}
+		}
+	}
+	for _, entry := range entries {
+		add(entry)
+	}
+	return selected
+}
+
+func goplsHierarchyEntryRank(entry goplsHierarchyEntry) int {
+	switch entry.direction {
+	case "caller":
+		return 0
+	case "callee":
+		return 1
+	default:
+		return 9
+	}
 }
 
 func parseGoplsCallHierarchy(output string, repoRoot string) (*goplsHierarchyEntry, []goplsHierarchyEntry) {
@@ -1743,7 +1921,7 @@ func evidenceMapConnectionSummary(finding dbgen.Finding, plan mapBuildPlan) stri
 		}
 	}
 	if callSteps > 0 {
-		return fmt.Sprintf("The map anchors the claim at %s, then uses gopls call hierarchy to show %d caller/callee relationship(s) and %d verification check(s).", issue, callSteps, checks)
+		return fmt.Sprintf("The map anchors the claim at %s, then uses %s to show %d caller/callee relationship(s) and %d verification check(s).", issue, callHierarchySourceLabel(plan.callHierarchySource), callSteps, checks)
 	}
 	if contradictions > 0 {
 		return fmt.Sprintf("The map anchors the claim at %s and highlights %d verified contradiction(s) to compare before accepting the finding.", issue, contradictions)
@@ -1815,7 +1993,20 @@ func callPathStepExplanation(step dbgen.CallPathStep) string {
 	if step.StepIndex == 0 {
 		return fmt.Sprintf("%s is the issue anchor for this finding.", label)
 	}
-	return fmt.Sprintf("%s is connected to the issue anchor through the evidence graph or gopls call hierarchy.", label)
+	return fmt.Sprintf("%s is connected to the issue anchor through the evidence graph or static call-site analysis.", label)
+}
+
+func callHierarchySourceLabel(source string) string {
+	switch source {
+	case "go_ast_call_scan":
+		return "local Go AST call-site analysis"
+	case "heuristic_call_scan":
+		return "bundled heuristic call-site scan"
+	case "gopls_call_hierarchy":
+		return "gopls call hierarchy"
+	default:
+		return "static call-site analysis"
+	}
 }
 
 func callPathStepShortLabel(step dbgen.CallPathStep) string {

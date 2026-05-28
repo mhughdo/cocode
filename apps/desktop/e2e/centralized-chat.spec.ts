@@ -89,7 +89,7 @@ async function addFakeReviewer(page: Page) {
   ).toBeVisible();
 }
 
-test("routes a centralized chat follow-up to a selected CLI reviewer", async ({
+test("routes centralized chat follow-ups through the orchestrator", async ({
   browserName,
 }, testInfo) => {
   test.setTimeout(90_000);
@@ -130,13 +130,12 @@ test("routes a centralized chat follow-up to a selected CLI reviewer", async ({
       page.getByTestId("orchestrator-agent-badge").first(),
     ).toBeVisible();
 
-    await page
-      .getByRole("button", { name: "Choose centralized chat responder" })
-      .click();
-    await page
-      .getByRole("menuitem", { name: /E2E Fake Reviewer/ })
-      .first()
-      .click();
+    await expect(
+      page.getByRole("button", { name: "Choose centralized chat responder" }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Choose centralized chat ask target" }),
+    ).toBeVisible();
     await page
       .getByLabel("Centralized review message")
       .fill("Can you re-check the authorization delta?");
@@ -151,6 +150,10 @@ test("routes a centralized chat follow-up to a selected CLI reviewer", async ({
       page.getByText("Found one deterministic branch comparison issue.").last(),
     ).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText("completed").last()).toBeVisible();
+    await expect(page.getByLabel("Finalized findings")).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: /Open Findings/ }),
+    ).toBeVisible();
 
     const workspaces = await apiRequest<Workspace[]>(
       backendInfo,
@@ -212,6 +215,13 @@ test("routes a centralized chat follow-up to a selected CLI reviewer", async ({
     await page.getByRole("tab", { name: "Findings" }).click();
     const findingsBoard = page.getByLabel("Review findings board");
     await expect(findingsBoard).toBeVisible({ timeout: 20_000 });
+    await page.getByRole("tab", { name: "Chat" }).click();
+    await expect(page.getByText("Scroll probe 8")).toBeVisible();
+    await expect(
+      page.getByText("Can you re-check the authorization delta?"),
+    ).toBeVisible();
+    await page.getByRole("tab", { name: "Findings" }).click();
+    await expect(findingsBoard).toBeVisible();
     const findingsBounds = await findingsBoard.boundingBox();
     expect(chatBounds).toBeTruthy();
     expect(findingsBounds).toBeTruthy();
@@ -238,7 +248,7 @@ test("routes a centralized chat follow-up to a selected CLI reviewer", async ({
       /Please keep repository settings updates admin-only\./,
     );
     await findingsBoard
-      .getByRole("button", { exact: true, name: "Accept" })
+      .getByRole("button", { exact: true, name: "Accept finding" })
       .click();
     await expect(page.getByText("Accepted saved")).toBeVisible();
 

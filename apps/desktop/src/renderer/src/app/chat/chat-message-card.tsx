@@ -110,6 +110,7 @@ export function ChatMessageCard({
           )}
         </div>
         <ExpandableMarkdownMessage
+          collapsible={streaming}
           content={message.body}
           muted={isSystem || streaming}
         />
@@ -128,9 +129,11 @@ export function ChatMessageCard({
 }
 
 function ExpandableMarkdownMessage({
+  collapsible,
   content,
   muted,
 }: {
+  collapsible: boolean;
   content: string;
   muted?: boolean;
 }) {
@@ -140,21 +143,22 @@ function ExpandableMarkdownMessage({
     .trim();
   const lineCount = normalizedContent.split("\n").length;
   const needsExpansion = normalizedContent.length > 900 || lineCount > 14;
+  const collapsed = collapsible && needsExpansion && !expanded;
 
   return (
     <div className="min-w-0">
       <div
         className={cn(
           "relative min-w-0",
-          needsExpansion && !expanded && "max-h-56 overflow-hidden",
+          collapsed && "max-h-56 overflow-hidden",
         )}
       >
         <MarkdownMessage content={normalizedContent || content} muted={muted} />
-        {needsExpansion && !expanded && (
+        {collapsed && (
           <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-white to-transparent" />
         )}
       </div>
-      {needsExpansion && (
+      {collapsible && needsExpansion && (
         <Button
           className="mt-2 h-7 px-2 text-xs"
           size="sm"

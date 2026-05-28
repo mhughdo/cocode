@@ -16,6 +16,7 @@ import {
   type ApiClient,
   type ChatMessage,
   type ChatThreadView,
+  type Finding,
   type FindingListResponse,
   type Loadable,
   type ReviewEvent,
@@ -27,32 +28,28 @@ import {
   loadingApiState,
   successApiState,
 } from "@/lib/api";
-import {
-  AskTargetDropdown,
-  ChatMessageCard,
-  ResponderDropdown,
-} from "./chat-message-card";
+import { AskTargetDropdown, ChatMessageCard } from "./chat-message-card";
 import {
   pendingChatMessages,
   withLiveAgentRunMessages,
 } from "./chat-live-messages";
 import { CentralizedChatRail } from "./chat-rail";
-import {
-  agentByID,
-  compactAgentLabel,
-  isOrchestratorEntry,
-} from "./chat-message-utils";
+import { agentByID, isOrchestratorEntry } from "./chat-message-utils";
 import type {
   ChatAskTargetOption,
   ChatAudience,
   ChatResponderOption,
 } from "./chat-types";
+import { FinalFindingsMessage } from "./final-findings-message";
+
+const chatThreadCache = new Map<string, ChatThreadView>();
 
 export function CentralizedChatScreen({
   agentConfigs,
   client,
   events,
   findings,
+  onOpenFindingDetail,
   onOpenFindings,
   session,
   summary,
@@ -61,15 +58,17 @@ export function CentralizedChatScreen({
   client: ApiClient | null;
   events: ReviewEvent[];
   findings: Loadable<FindingListResponse>;
+  onOpenFindingDetail: (finding: Finding) => void;
   onOpenFindings: () => void;
   session: ReviewSession;
   summary: Loadable<ReviewSessionSummary>;
 }) {
-  const [thread, setThread] =
-    useState<Loadable<ChatThreadView>>(loadingApiState());
+  const [thread, setThread] = useState<Loadable<ChatThreadView>>(() => {
+    const cached = chatThreadCache.get(session.id);
+    return cached ? successApiState(cached) : loadingApiState();
+  });
   const [message, setMessage] = useState("");
   const [askTargetID, setAskTargetID] = useState<ChatAudience>("all_agents");
-  const [responderID, setResponderID] = useState("orchestrator");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [pendingAgentMessages, setPendingAgentMessages] = useState<
@@ -132,70 +131,80 @@ export function CentralizedChatScreen({
         description: "Ask cocode to answer from review state.",
         icon: "orchestrator",
       },
-      {
-        id: "selected_agent",
-        label: "Selected reviewer",
-        description: "Route to one configured CLI reviewer.",
-        icon: "agent",
-      },
     ],
     [agents.length],
   );
 
-  const responderOptions = useMemo<ChatResponderOption[]>(
-    () => [
-      {
-        id: "orchestrator",
-        label: "Orchestrator",
-        description: "cocode synthesizer",
-        icon: "orchestrator",
-        agentConfigId: orchestratorAgent?.id,
-      },
-      ...agents.map((agent) => ({
-        id: `agent:${agent.id}`,
-        label: compactAgentLabel(agent),
-        description: agent.role || "Reviewer",
-        agentConfigId: agent.id,
-        icon: "agent" as const,
-      })),
-    ],
-    [agents, orchestratorAgent?.id],
+  const selectedResponder = useMemo<ChatResponderOption>(
+    () => ({
+      id: "orchestrator",
+      label: "Orchestrator",
+      description: "cocode synthesizer",
+      icon: "orchestrator",
+      agentConfigId: orchestratorAgent?.id,
+    }),
+    [orchestratorAgent?.id],
   );
-  const selectedResponder =
-    responderOptions.find((option) => option.id === responderID) ??
-    responderOptions[0];
   const effectiveAskTargetID =
     agents.length === 0 && askTargetID === "all_agents"
       ? "orchestrator"
       : askTargetID;
   const selectedAskTarget =
     askTargetOptions.find((option) => option.id === effectiveAskTargetID) ??
-    askTargetOptions[0];
+      askTargetOptions[0];
+
+  const setSuccessfulThread = useCallback(
+    (view: ChatThreadView) => {
+      chatThreadCache.set(session.id, view);
+      setThread(successApiState(view));
+    },
+    [session.id],
+  );
 
   const refreshThread = useCallback(async () => {
+    const cached = chatThreadCache.get(session.id);
     const next = await loadApiResource(() =>
       client
         ? client.getReviewSessionChatThread(session.id)
         : Promise.reject(new Error("Backend client is unavailable")),
     );
-    setThread(next);
-  }, [client, session.id]);
+    if (next.status === "success") {
+      setSuccessfulThread(next.data);
+      return;
+    }
+    if (!cached) {
+      setThread(next);
+    }
+  }, [client, session.id, setSuccessfulThread]);
 
   useEffect(() => {
     let canceled = false;
+    const cached = chatThreadCache.get(session.id);
+    queueMicrotask(() => {
+      if (!canceled) {
+        setThread(cached ? successApiState(cached) : loadingApiState());
+      }
+    });
     void loadApiResource(() =>
       client
         ? client.getReviewSessionChatThread(session.id)
         : Promise.reject(new Error("Backend client is unavailable")),
     ).then((state) => {
-      if (!canceled) {
+      if (canceled) {
+        return;
+      }
+      if (state.status === "success") {
+        setSuccessfulThread(state.data);
+        return;
+      }
+      if (!cached) {
         setThread(state);
       }
     });
     return () => {
       canceled = true;
     };
-  }, [client, session.id]);
+  }, [client, session.id, setSuccessfulThread]);
 
   useEffect(() => {
     if (events.length === 0 && session.status !== "queued") {
@@ -245,7 +254,11 @@ export function CentralizedChatScreen({
     }
     return next;
   }, [events]);
-  const messageCount = displayedMessages.length;
+  const finalizedFindings =
+    session.status === "completed" && findings.status === "success"
+      ? findings.data.items
+      : [];
+  const messageCount = displayedMessages.length + finalizedFindings.length;
   useEffect(() => {
     const node = messageListRef.current;
     if (!node || !shouldStickToBottomRef.current) {
@@ -274,19 +287,13 @@ export function CentralizedChatScreen({
       updated_at: new Date().toISOString(),
     };
     if (thread.status === "success") {
-      setThread(
-        successApiState({
-          ...thread.data,
-          messages: [...thread.data.messages, optimisticMessage],
-        }),
-      );
+      setSuccessfulThread({
+        ...thread.data,
+        messages: [...thread.data.messages, optimisticMessage],
+      });
     }
     setMessage("");
-    const audience =
-      effectiveAskTargetID === "selected_agent" &&
-      !selectedResponder.agentConfigId
-        ? "orchestrator"
-        : effectiveAskTargetID;
+    const audience = effectiveAskTargetID;
     setPendingAgentMessages(
       pendingChatMessages({
         agentByConfigID,
@@ -310,26 +317,27 @@ export function CentralizedChatScreen({
       client.createReviewSessionChatTurn(session.id, request),
     );
     if (next.status === "success") {
-      setThread(
-        successApiState({
-          thread: next.data.thread,
-          messages: next.data.messages,
-        }),
-      );
+      setSuccessfulThread({
+        thread: next.data.thread,
+        messages: next.data.messages,
+      });
     } else if (next.status === "error") {
       setSubmitError(next.error.message);
-      setThread((current) =>
-        current.status === "success"
-          ? successApiState({
-              ...current.data,
-              messages: current.data.messages.map((item) =>
-                item.id === optimisticMessage.id
-                  ? { ...item, status: "failed" }
-                  : item,
-              ),
-            })
-          : errorApiState(next.error),
-      );
+      setThread((current) => {
+        if (current.status !== "success") {
+          return errorApiState(next.error);
+        }
+        const failedView = {
+          ...current.data,
+          messages: current.data.messages.map((item) =>
+            item.id === optimisticMessage.id
+              ? { ...item, status: "failed" }
+              : item,
+          ),
+        };
+        chatThreadCache.set(session.id, failedView);
+        return successApiState(failedView);
+      });
     }
     setPendingAgentMessages([]);
     setSubmitting(false);
@@ -356,14 +364,17 @@ export function CentralizedChatScreen({
               icon={MessageSquareIcon}
             />
           )}
-          {thread.status === "success" && displayedMessages.length === 0 && (
+          {thread.status === "success" &&
+            displayedMessages.length === 0 &&
+            finalizedFindings.length === 0 && (
             <EmptyState
               title="No chat messages yet"
-              description="Start with a question for the orchestrator or a reviewer."
+              description="Start with a question for the orchestrator."
               icon={MessageSquareIcon}
             />
           )}
-          {thread.status === "success" && displayedMessages.length > 0 && (
+          {thread.status === "success" &&
+            (displayedMessages.length > 0 || finalizedFindings.length > 0) && (
             <div className="flex flex-col gap-3">
               {displayedMessages.map((item) => (
                 <ChatMessageCard
@@ -377,6 +388,13 @@ export function CentralizedChatScreen({
                   message={item}
                 />
               ))}
+              {finalizedFindings.length > 0 && (
+                <FinalFindingsMessage
+                  findings={finalizedFindings}
+                  onOpenFindingDetail={onOpenFindingDetail}
+                  onOpenFindings={onOpenFindings}
+                />
+              )}
               {submitting && pendingAgentMessages.length === 0 && (
                 <div className="text-muted-foreground flex items-center gap-2 rounded-xl border bg-white px-4 py-3 text-xs">
                   <Loader2Icon className="size-3.5 animate-spin" />
@@ -407,22 +425,7 @@ export function CentralizedChatScreen({
                 <AskTargetDropdown
                   options={askTargetOptions}
                   selected={selectedAskTarget}
-                  onSelect={(id) => {
-                    setAskTargetID(id);
-                    if (id !== "selected_agent") {
-                      setResponderID("orchestrator");
-                    }
-                  }}
-                />
-                <ResponderDropdown
-                  options={responderOptions}
-                  selected={selectedResponder}
-                  onSelect={(id) => {
-                    setResponderID(id);
-                    if (id !== "orchestrator") {
-                      setAskTargetID("selected_agent");
-                    }
-                  }}
+                  onSelect={setAskTargetID}
                 />
               </div>
               <Button

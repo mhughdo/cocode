@@ -110,6 +110,58 @@ func TestServiceBuildEvidenceMapContextIncludesGraph(t *testing.T) {
 	}
 }
 
+func TestFindingContextSymbolsIncludeEnclosingGoFunction(t *testing.T) {
+	t.Parallel()
+
+	repoPath := t.TempDir()
+	writeRepoFile(t, repoPath, "app/auth.go", `package app
+
+type Service struct{}
+
+func (s *Service) UpdateSettings() {
+	if s == nil {
+		return
+	}
+}
+`)
+	finding := dbgen.Finding{
+		CanonicalClaim:   "Settings mutation lacks admin guard",
+		PrimaryPath:      sql.NullString{String: "app/auth.go", Valid: true},
+		PrimaryStartLine: sql.NullInt64{Int64: 6, Valid: true},
+	}
+
+	symbols := findingContextSymbols(repoPath, finding, nil)
+	for _, want := range []string{"Service.UpdateSettings", "UpdateSettings", "Service"} {
+		if !slices.Contains(symbols, want) {
+			t.Fatalf("symbols = %+v, missing %q", symbols, want)
+		}
+	}
+}
+
+func TestFindingContextSymbolsIncludeHeuristicLanguageSymbol(t *testing.T) {
+	t.Parallel()
+
+	repoPath := t.TempDir()
+	writeRepoFile(t, repoPath, "src/prices.ts", `export class RewardFetcher {
+  pickTokenPrice(prices: number[]) {
+    return prices[0]
+  }
+}
+`)
+	finding := dbgen.Finding{
+		CanonicalClaim:   "Price picker trusts the first price",
+		PrimaryPath:      sql.NullString{String: "src/prices.ts", Valid: true},
+		PrimaryStartLine: sql.NullInt64{Int64: 3, Valid: true},
+	}
+
+	symbols := findingContextSymbols(repoPath, finding, nil)
+	for _, want := range []string{"RewardFetcher.pickTokenPrice", "pickTokenPrice", "RewardFetcher"} {
+		if !slices.Contains(symbols, want) {
+			t.Fatalf("symbols = %+v, missing %q", symbols, want)
+		}
+	}
+}
+
 func createScopedPatch(t *testing.T, store *artifact.Store, queries *dbgen.Queries, artifactID string, fileID string, path string, patchContent string) {
 	t.Helper()
 

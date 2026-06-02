@@ -63,11 +63,13 @@ import { agentEgress, agentProvider } from "./agent-utils";
 export function AgentSettingsScreen({
   activeWorkspace,
   client,
+  onAgentConfigsChanged,
   onBack,
 }: {
   activeWorkspace?: Workspace;
   client: ApiClient | null;
-  onBack: () => void;
+  onAgentConfigsChanged?: () => Promise<unknown> | unknown;
+  onBack: () => Promise<void> | void;
 }) {
   const [presets, setPresets] =
     useState<Loadable<AgentPreset[]>>(idleApiState());
@@ -357,6 +359,7 @@ export function AgentSettingsScreen({
       ]);
       setConfigs(configState);
       setReviewRules(ruleState);
+      await onAgentConfigsChanged?.();
     }
   }
 
@@ -400,6 +403,7 @@ export function AgentSettingsScreen({
           : [nextState.data, ...current.data],
       );
     });
+    await onAgentConfigsChanged?.();
   }
 
   async function testHealth(configId: string) {
@@ -426,7 +430,7 @@ export function AgentSettingsScreen({
                 portability stay tucked away until you need them.
               </p>
             </div>
-            <Button variant="outline" onClick={onBack}>
+            <Button variant="outline" onClick={() => void onBack()}>
               New thread
               <ArrowUpIcon data-icon="inline-end" />
             </Button>
@@ -689,26 +693,6 @@ export function AgentSettingsScreen({
                         One argument per line. Use {"{{prompt}}"} only for
                         arg-mode CLIs.
                       </span>
-                    </label>
-                    <label className="flex flex-col gap-2 text-sm font-medium">
-                      CWD mode
-                      <NativeSelect
-                        className="w-full"
-                        value={form.cwdMode}
-                        onChange={(event) =>
-                          setForm((current) => ({
-                            ...current,
-                            cwdMode: event.target.value,
-                          }))
-                        }
-                      >
-                        <NativeSelectOption value="repo_root">
-                          Repository root
-                        </NativeSelectOption>
-                        <NativeSelectOption value="workspace_root">
-                          Project root
-                        </NativeSelectOption>
-                      </NativeSelect>
                     </label>
                     <label className="flex flex-col gap-2 text-sm font-medium">
                       Prompt delivery

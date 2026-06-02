@@ -323,6 +323,8 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.GET("/workspaces/:id/repositories", listWorkspaceRepositoriesHandler(services))
 	api.GET("/repositories/:id/branches", listRepositoryBranchesHandler(services))
 	api.GET("/repositories/:id/files", searchRepositoryFilesHandler(services))
+	api.GET("/repositories/:id/files/tree", repositoryFileTreeHandler(services))
+	api.GET("/repositories/:id/files/content", repositoryFileContentHandler(services))
 	api.GET("/workspaces/:id/review-rules", listReviewRulesHandler(queries))
 	api.POST("/workspaces/:id/review-rules", createReviewRuleHandler(queries))
 	api.GET("/workspaces/:id/settings-export", exportWorkspaceSettingsHandler(services))

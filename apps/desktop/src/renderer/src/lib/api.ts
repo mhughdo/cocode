@@ -86,6 +86,23 @@ export interface RepositoryFile {
   score: number;
 }
 
+export interface RepositoryFileContent {
+  path: string;
+  name: string;
+  directory?: string;
+  content?: string;
+  content_type: string;
+  size_bytes: number;
+  content_truncated: boolean;
+  binary: boolean;
+}
+
+export interface RepositoryFileTree {
+  files: RepositoryFile[];
+  truncated: boolean;
+  limit: number;
+}
+
 export interface OpenRepositoryResponse {
   workspace: Workspace;
   repository: Repository;
@@ -1151,6 +1168,48 @@ export class ApiClient {
           workspace_id: workspaceId,
           q: query,
           limit,
+        },
+      },
+    );
+  }
+
+  listRepositoryFileTree(
+    repositoryId: string,
+    options: Omit<ApiRequestOptions, "method" | "body" | "query"> & {
+      workspaceId?: string;
+      limit?: number;
+    } = {},
+  ) {
+    const { workspaceId, limit, ...requestOptions } = options;
+    return this.get<RepositoryFileTree>(
+      `/api/repositories/${encodeURIComponent(repositoryId)}/files/tree`,
+      {
+        ...requestOptions,
+        query: {
+          workspace_id: workspaceId,
+          limit,
+        },
+      },
+    );
+  }
+
+  getRepositoryFileContent(
+    repositoryId: string,
+    options: Omit<ApiRequestOptions, "method" | "body" | "query"> & {
+      workspaceId?: string;
+      path: string;
+      maxBytes?: number;
+    },
+  ) {
+    const { workspaceId, path, maxBytes, ...requestOptions } = options;
+    return this.get<RepositoryFileContent>(
+      `/api/repositories/${encodeURIComponent(repositoryId)}/files/content`,
+      {
+        ...requestOptions,
+        query: {
+          workspace_id: workspaceId,
+          path,
+          max_bytes: maxBytes,
         },
       },
     );

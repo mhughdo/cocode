@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -198,6 +199,55 @@ func TestSearchRepositoryFilesReturnsFuzzyRepoFiles(t *testing.T) {
 	ignoredMatches := decodeHTTPAPIData[[]RepositoryFileResponse](t, ignoredResponse.Body.Bytes())
 	if len(ignoredMatches) != 0 {
 		t.Fatalf("ignored matches = %+v, want none", ignoredMatches)
+	}
+
+	treeRequest := httptest.NewRequest(http.MethodGet, "/api/repositories/"+opened.Repository.ID+"/files/tree?workspace_id="+opened.Workspace.ID+"&limit=10", nil)
+	treeRequest.Header.Set("X-Cocode-Token", "test-token")
+	treeResponse := httptest.NewRecorder()
+	router.ServeHTTP(treeResponse, treeRequest)
+	if treeResponse.Code != http.StatusOK {
+		t.Fatalf("tree status = %d, body = %s", treeResponse.Code, treeResponse.Body.String())
+	}
+	tree := decodeHTTPAPIData[RepositoryFileTreeResponse](t, treeResponse.Body.Bytes())
+	treePaths := map[string]bool{}
+	for _, file := range tree.Files {
+		treePaths[file.Path] = true
+	}
+	if !treePaths["AGENTS.md"] || !treePaths["docs/prd.md"] || !treePaths["src/server.go"] {
+		t.Fatalf("tree files = %+v, want tracked project files", tree.Files)
+	}
+	if tree.Truncated {
+		t.Fatalf("tree truncated = true, want false")
+	}
+
+	contentURL := "/api/repositories/" + opened.Repository.ID + "/files/content?workspace_id=" + opened.Workspace.ID + "&path=" + url.QueryEscape("AGENTS.md")
+	contentRequest := httptest.NewRequest(http.MethodGet, contentURL, nil)
+	contentRequest.Header.Set("X-Cocode-Token", "test-token")
+	contentResponse := httptest.NewRecorder()
+	router.ServeHTTP(contentResponse, contentRequest)
+	if contentResponse.Code != http.StatusOK {
+		t.Fatalf("content status = %d, body = %s", contentResponse.Code, contentResponse.Body.String())
+	}
+	content := decodeHTTPAPIData[RepositoryFileContentResponse](t, contentResponse.Body.Bytes())
+	if content.Path != "AGENTS.md" ||
+		content.Name != "AGENTS.md" ||
+		content.ContentType != "text/plain; charset=utf-8" ||
+		content.Content != "# Agent guide\n" ||
+		content.Binary ||
+		content.ContentTruncated {
+		t.Fatalf("content = %+v", content)
+	}
+
+	traversalRequest := httptest.NewRequest(
+		http.MethodGet,
+		"/api/repositories/"+opened.Repository.ID+"/files/content?workspace_id="+opened.Workspace.ID+"&path="+url.QueryEscape("../secret.txt"),
+		nil,
+	)
+	traversalRequest.Header.Set("X-Cocode-Token", "test-token")
+	traversalResponse := httptest.NewRecorder()
+	router.ServeHTTP(traversalResponse, traversalRequest)
+	if traversalResponse.Code != http.StatusBadRequest {
+		t.Fatalf("traversal status = %d, body = %s", traversalResponse.Code, traversalResponse.Body.String())
 	}
 }
 

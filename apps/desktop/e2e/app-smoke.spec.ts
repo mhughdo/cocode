@@ -60,6 +60,45 @@ test("launches Electron app with backend bridge", async ({
     await expect(
       page.getByRole("button", { name: "Set up review" }),
     ).toHaveCount(1);
+    await page.getByRole("button", { name: "Show right panel" }).click();
+    const appRightPanel = page.getByRole("complementary", {
+      name: "App right panel",
+    });
+    await expect(appRightPanel).toBeVisible();
+    await appRightPanel
+      .getByRole("button", { exact: true, name: "Files" })
+      .click();
+    await expect(
+      appRightPanel.getByRole("button", { name: "src", expanded: false }),
+    ).toBeVisible();
+    await appRightPanel
+      .getByRole("textbox", { name: "Filter files" })
+      .fill("auth");
+    await expect(
+      appRightPanel.getByRole("button", { name: /auth\.ts/ }).first(),
+    ).toBeVisible();
+    await appRightPanel
+      .getByRole("button", { name: /auth\.ts/ })
+      .first()
+      .click();
+    await expect(
+      appRightPanel.getByText("canUpdateRepository").first(),
+    ).toBeVisible();
+    await expect(
+      appRightPanel.getByRole("button", { name: "Close auth.ts" }),
+    ).toBeVisible();
+    await appRightPanel.getByRole("button", { name: "Hide file tree" }).click();
+    await expect(
+      appRightPanel.getByRole("textbox", { name: "Filter files" }),
+    ).toHaveCount(0);
+    await appRightPanel.getByRole("button", { name: "Show file tree" }).click();
+    await expect(
+      appRightPanel.getByRole("textbox", { name: "Filter files" }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "Hide right panel" })
+      .first()
+      .click();
 
     let releaseSecondRepositoryLoad = () => undefined;
     const secondRepositoryLoadReleased = new Promise<void>((resolve) => {
@@ -100,6 +139,35 @@ test("launches Electron app with backend bridge", async ({
     await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
     await expect(
       page.getByRole("button", { name: /Kiro CLI Runs Kiro CLI/ }),
+    ).toBeVisible();
+
+    await page.getByRole("button", { name: /Custom CLI Template for/ }).click();
+    await page.getByRole("button", { name: "Advanced CLI settings" }).click();
+    await expect(page.getByText("Prompt delivery")).toBeVisible();
+    await expect(page.getByText("Project root")).toHaveCount(0);
+    await page.getByLabel("Name").fill("E2E Fresh CLI");
+    await page.getByLabel("Role").fill("e2e_fresh_reviewer");
+    await page.getByRole("textbox", { name: "Command" }).fill("codex");
+    const enabledSwitch = page.getByRole("switch", { name: "Enabled" });
+    if (!(await enabledSwitch.isChecked())) {
+      await enabledSwitch.click();
+    }
+    await page.getByRole("button", { name: "Save" }).click();
+    await expect(
+      page.getByRole("button", { name: /E2E Fresh CLI/ }),
+    ).toBeVisible();
+
+    await page
+      .getByRole("main")
+      .getByRole("button", { name: "New thread" })
+      .last()
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "Set up review" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Add agent" }).click();
+    await expect(
+      page.getByRole("menuitem", { name: /E2E Fresh CLI/ }),
     ).toBeVisible();
   } finally {
     await electronApp.close();

@@ -105,23 +105,21 @@ describe("ApiClient", () => {
 
   it("searches repository files with workspace and query params", async () => {
     let seenUrl = "";
-    const fetcher = vi.fn(
-      async (input: RequestInfo | URL) => {
-        seenUrl = String(input);
-        return jsonResponse({
-          data: [
-            {
-              path: "docs/prd.md",
-              name: "prd.md",
-              directory: "docs",
-              kind: "file",
-              score: 123,
-            },
-          ],
-          error: null,
-        });
-      },
-    );
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      seenUrl = String(input);
+      return jsonResponse({
+        data: [
+          {
+            path: "docs/prd.md",
+            name: "prd.md",
+            directory: "docs",
+            kind: "file",
+            score: 123,
+          },
+        ],
+        error: null,
+      });
+    });
     const client = createCocodeClient({
       baseUrl: "http://127.0.0.1:17658",
       authToken: "local-token",
@@ -145,6 +143,87 @@ describe("ApiClient", () => {
     ]);
     expect(seenUrl).toBe(
       "http://127.0.0.1:17658/api/repositories/repo_1/files?workspace_id=workspace_1&q=prd&limit=8",
+    );
+  });
+
+  it("loads repository file content with workspace, path, and budget params", async () => {
+    let seenUrl = "";
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      seenUrl = String(input);
+      return jsonResponse({
+        data: {
+          path: "src/auth.ts",
+          name: "auth.ts",
+          directory: "src",
+          content: "export function canUpdateRepository() {}",
+          content_type: "text/plain; charset=utf-8",
+          size_bytes: 39,
+          content_truncated: false,
+          binary: false,
+        },
+        error: null,
+      });
+    });
+    const client = createCocodeClient({
+      baseUrl: "http://127.0.0.1:17658",
+      authToken: "local-token",
+      fetch: fetcher,
+    });
+
+    await expect(
+      client.getRepositoryFileContent("repo_1", {
+        workspaceId: "workspace_1",
+        path: "src/auth.ts",
+        maxBytes: 4096,
+      }),
+    ).resolves.toMatchObject({
+      path: "src/auth.ts",
+      binary: false,
+      content: "export function canUpdateRepository() {}",
+    });
+    expect(seenUrl).toBe(
+      "http://127.0.0.1:17658/api/repositories/repo_1/files/content?workspace_id=workspace_1&path=src%2Fauth.ts&max_bytes=4096",
+    );
+  });
+
+  it("loads repository file trees with workspace and limit params", async () => {
+    let seenUrl = "";
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      seenUrl = String(input);
+      return jsonResponse({
+        data: {
+          files: [
+            {
+              path: "src/auth.ts",
+              name: "auth.ts",
+              directory: "src",
+              kind: "file",
+              score: 980,
+            },
+          ],
+          truncated: false,
+          limit: 2000,
+        },
+        error: null,
+      });
+    });
+    const client = createCocodeClient({
+      baseUrl: "http://127.0.0.1:17658",
+      authToken: "local-token",
+      fetch: fetcher,
+    });
+
+    await expect(
+      client.listRepositoryFileTree("repo_1", {
+        workspaceId: "workspace_1",
+        limit: 2000,
+      }),
+    ).resolves.toMatchObject({
+      files: [{ path: "src/auth.ts" }],
+      truncated: false,
+    });
+    expect(seenUrl).toBe(
+      "http://127.0.0.1:17658/api/repositories/repo_1/files/tree?workspace_id=workspace_1&limit=2000",
     );
   });
 

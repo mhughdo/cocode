@@ -43,6 +43,8 @@ export type AgentConfigFormState = {
   allowRiskyCommand: boolean;
 };
 
+const DEFAULT_CWD_MODE = "repo_root";
+
 export async function loadAgentConfigs(
   client: ApiClient,
   options: {
@@ -127,7 +129,7 @@ export function defaultAgentConfigForm(): AgentConfigFormState {
     adapterKind: "cli_non_interactive",
     command: "",
     argsText: "",
-    cwdMode: "repo_root",
+    cwdMode: DEFAULT_CWD_MODE,
     envAllowlistText: "",
     outputMode: "text",
     modelLabel: "custom",
@@ -205,7 +207,7 @@ function formFromAgentLike(
     adapterKind: source.adapter_kind,
     command: source.command ?? "",
     argsText: (source.args ?? []).join("\n"),
-    cwdMode: source.cwd_mode || "repo_root",
+    cwdMode: DEFAULT_CWD_MODE,
     envAllowlistText: (source.env_allowlist ?? []).join(", "),
     outputMode: source.output_mode || "text",
     modelLabel: source.model_label ?? "",
@@ -277,7 +279,7 @@ export function agentConfigBodyFromForm(
     adapter_kind: form.adapterKind,
     command,
     args: parseArgLines(form.argsText),
-    cwd_mode: form.cwdMode.trim() || "repo_root",
+    cwd_mode: DEFAULT_CWD_MODE,
     env_allowlist: parseInlineList(form.envAllowlistText),
     output_mode: form.outputMode,
     model_label: form.modelLabel.trim(),

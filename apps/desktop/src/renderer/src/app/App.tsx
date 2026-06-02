@@ -48,6 +48,9 @@ import {
 } from "./agents/agent-config-model";
 import { NewThreadScreen } from "./setup/new-thread-screen";
 import { ReviewThread } from "./review/review-thread";
+import { AppRightPanel } from "./right-panel/app-right-panel";
+import { useAppRightPanelState } from "./right-panel/use-app-right-panel";
+import { useResizableRightPanel } from "./shared/resizable-right-panel";
 import { formatRelativeAge } from "./shared/time-format";
 
 const MAX_SEARCH_RESULTS = 5;
@@ -88,6 +91,13 @@ export function App() {
   const [loadingWorkspaceId, setLoadingWorkspaceId] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [deletingReviewSessionId, setDeletingReviewSessionId] = useState("");
+  const [rightPanelOpen, setRightPanelOpen] = useState(false);
+  const appRightPanel = useAppRightPanelState();
+  const appRightPanelSize = useResizableRightPanel({
+    defaultWidth: 700,
+    maxWidth: 1120,
+    minWidth: 420,
+  });
 
   useEffect(() => {
     let appZoom = 1;
@@ -217,6 +227,33 @@ export function App() {
       await loadWorkspaceDetails(api, nextWorkspace);
     },
     [loadWorkspaceDetails],
+  );
+
+  const refreshAgentConfigs = useCallback(
+    async (options: { showLoading?: boolean } = {}) => {
+      if (!client) {
+        const state = errorApiState<AgentConfig[]>(
+          new Error("Backend client is unavailable"),
+        );
+        setAgentConfigs(state);
+        return state;
+      }
+
+      if (options.showLoading) {
+        setAgentConfigs(loadingApiState());
+      }
+
+      const catalogs =
+        agentModelCatalogs.status === "success" ? agentModelCatalogs.data : [];
+      const nextAgentConfigs = await loadAgentConfigs(client, {
+        bootstrapBuiltIns: true,
+        modelCatalogs: catalogs,
+      });
+      setAgentConfigs(nextAgentConfigs);
+      setAgentBootstrapState("done");
+      return nextAgentConfigs;
+    },
+    [agentModelCatalogs, client],
   );
 
   useEffect(() => {
@@ -410,18 +447,20 @@ export function App() {
     setRepositories(successApiState(state.data.repositories));
     setMainView("new-thread");
     await refreshNavigation(client, state.data.workspace.id);
-    setAgentConfigs(loadingApiState());
-    const catalogs =
-      agentModelCatalogs.status === "success"
-        ? agentModelCatalogs.data
-        : undefined;
-    const nextAgentConfigs = await loadAgentConfigs(client, {
-      bootstrapBuiltIns: true,
-      modelCatalogs: catalogs ?? [],
-    });
-    setAgentConfigs(nextAgentConfigs);
-    setAgentBootstrapState("done");
-  }, [agentModelCatalogs, client, refreshNavigation]);
+    await refreshAgentConfigs({ showLoading: true });
+  }, [client, refreshAgentConfigs, refreshNavigation]);
+
+  const handleOpenNewThread = useCallback(() => {
+    setCurrentReviewSession(null);
+    setSetupNavContext(null);
+    if (mainView === "agent-settings") {
+      void refreshAgentConfigs().finally(() => {
+        setMainView("new-thread");
+      });
+      return;
+    }
+    setMainView("new-thread");
+  }, [mainView, refreshAgentConfigs]);
 
   useEffect(() => {
     if (
@@ -553,10 +592,7 @@ export function App() {
                 "Start from PR URL, local changes, or branch compare",
               shortcut: "N",
               icon: PlusIcon,
-              onSelect: () => {
-                setCurrentReviewSession(null);
-                setMainView("new-thread");
-              },
+              onSelect: handleOpenNewThread,
             },
           ];
 
@@ -605,6 +641,7 @@ export function App() {
     ];
   }, [
     handleOpenRepository,
+    handleOpenNewThread,
     handleSelectReviewSession,
     handleSelectWorkspace,
     sessionList,
@@ -614,6 +651,20 @@ export function App() {
   return (
     <>
       <AppShell
+        detailPane={
+          rightPanelOpen ? (
+            <AppRightPanel
+              activeRepository={activeRepository}
+              activeSnapshot={displayedSnapshot}
+              activeWorkspace={activeWorkspace}
+              client={client}
+              panel={appRightPanel}
+              onClose={() => setRightPanelOpen(false)}
+              onResizePointerDown={appRightPanelSize.startResize}
+            />
+          ) : undefined
+        }
+        detailPaneStyle={appRightPanelSize.gridStyle}
         sidebar={
           <Sidebar
             activeSessionId={displayedSession?.id}
@@ -625,10 +676,7 @@ export function App() {
             onOpenRepository={handleOpenRepository}
             onOpenSearch={() => setSearchOpen(true)}
             onOpenAgentSettings={() => setMainView("agent-settings")}
-            onOpenNewThread={() => {
-              setCurrentReviewSession(null);
-              setMainView("new-thread");
-            }}
+            onOpenNewThread={handleOpenNewThread}
             onDeleteReviewSession={handleDeleteReviewSession}
             onSelectReviewSession={handleSelectReviewSession}
             onSelectWorkspace={handleSelectWorkspace}
@@ -640,6 +688,8 @@ export function App() {
             activeSession={displayedSession}
             activeSnapshot={displayedSnapshot}
             activeWorkspace={activeWorkspace}
+            onToggleRightPanel={() => setRightPanelOpen((open) => !open)}
+            rightPanelOpen={rightPanelOpen}
             setupContext={
               isWorkspaceDetailsLoading
                 ? {
@@ -688,7 +738,8 @@ export function App() {
           <AgentSettingsScreen
             activeWorkspace={activeWorkspace}
             client={client}
-            onBack={() => setMainView("new-thread")}
+            onAgentConfigsChanged={refreshAgentConfigs}
+            onBack={handleOpenNewThread}
           />
         )}
       </AppShell>

@@ -11,6 +11,8 @@ import (
 
 const defaultFileSearchLimit = 20
 const maxFileSearchLimit = 50
+const defaultFileTreeLimit = 2000
+const maxFileTreeLimit = 5000
 
 type FileMatch struct {
 	Path      string
@@ -33,11 +35,10 @@ func (c Collector) SearchFiles(ctx context.Context, selectedPath string, query s
 		limit = maxFileSearchLimit
 	}
 
-	result, err := runner.RunRaw(ctx, info.RootPath, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+	paths, err := listRepositoryFilePaths(ctx, runner, info.RootPath)
 	if err != nil {
 		return nil, err
 	}
-	paths := parseGitFileList(result.Stdout)
 	matches := make([]FileMatch, 0, min(len(paths), limit))
 	for _, path := range paths {
 		score, ok := scoreFileMatch(path, query)
@@ -69,6 +70,53 @@ func (c Collector) SearchFiles(ctx context.Context, selectedPath string, query s
 		matches = matches[:limit]
 	}
 	return matches, nil
+}
+
+func (c Collector) ListFiles(ctx context.Context, selectedPath string, limit int) ([]FileMatch, bool, error) {
+	runner := c.runner()
+	info, err := validate(ctx, runner, selectedPath)
+	if err != nil {
+		return nil, false, err
+	}
+	if limit <= 0 {
+		limit = defaultFileTreeLimit
+	}
+	if limit > maxFileTreeLimit {
+		limit = maxFileTreeLimit
+	}
+
+	paths, err := listRepositoryFilePaths(ctx, runner, info.RootPath)
+	if err != nil {
+		return nil, false, err
+	}
+	sort.Slice(paths, func(i, j int) bool {
+		return strings.ToLower(paths[i]) < strings.ToLower(paths[j])
+	})
+	truncated := len(paths) > limit
+	if truncated {
+		paths = paths[:limit]
+	}
+	files := make([]FileMatch, 0, len(paths))
+	for _, path := range paths {
+		name := filepath.Base(filepath.FromSlash(path))
+		directory := strings.TrimSuffix(filepath.ToSlash(filepath.Dir(path)), ".")
+		files = append(files, FileMatch{
+			Path:      path,
+			Name:      name,
+			Directory: strings.Trim(directory, "/"),
+			Kind:      "file",
+			Score:     defaultFileMatchScore(path),
+		})
+	}
+	return files, truncated, nil
+}
+
+func listRepositoryFilePaths(ctx context.Context, runner Runner, rootPath string) ([]string, error) {
+	result, err := runner.RunRaw(ctx, rootPath, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+	if err != nil {
+		return nil, err
+	}
+	return parseGitFileList(result.Stdout), nil
 }
 
 func parseGitFileList(output string) []string {

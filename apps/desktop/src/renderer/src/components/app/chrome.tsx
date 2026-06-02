@@ -1,4 +1,4 @@
-import type { ComponentProps, ReactNode } from "react";
+import type { ComponentProps, CSSProperties, ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 import { InboxIcon, LoaderCircleIcon, TriangleAlertIcon } from "lucide-react";
 
@@ -42,6 +42,7 @@ export interface AppShellProps {
   header: ReactNode;
   children: ReactNode;
   detailPane?: ReactNode;
+  detailPaneStyle?: CSSProperties;
   statusBanner?: ReactNode;
 }
 
@@ -50,6 +51,7 @@ export function AppShell({
   header,
   children,
   detailPane,
+  detailPaneStyle,
   statusBanner,
 }: AppShellProps) {
   return (
@@ -62,10 +64,11 @@ export function AppShell({
           {header}
           {statusBanner}
           <div
+            style={detailPane ? detailPaneStyle : undefined}
             className={cn(
               "grid min-h-0 flex-1",
               detailPane
-                ? "grid-cols-[minmax(0,1fr)_minmax(420px,37vw)]"
+                ? "grid-cols-[minmax(0,1fr)_minmax(420px,var(--right-panel-width,44vw))]"
                 : "grid-cols-1",
             )}
           >
@@ -119,8 +122,7 @@ export function SidebarNavButton({
     <button
       className={cn(
         "text-sidebar-foreground/80 hover:bg-surface-muted/70 hover:text-sidebar-foreground flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[0.84rem] transition-colors [&_svg]:size-3.5 [&_svg]:shrink-0",
-        active &&
-          "bg-surface-muted text-sidebar-foreground font-medium",
+        active && "bg-surface-muted text-sidebar-foreground font-medium",
         className,
       )}
       type="button"

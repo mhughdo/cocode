@@ -5,6 +5,8 @@ import {
   FileTextIcon,
   FolderOpenIcon,
   GitBranchIcon,
+  PanelRightCloseIcon,
+  PanelRightOpenIcon,
   PlusIcon,
   SearchIcon,
   SettingsIcon,
@@ -17,6 +19,7 @@ import {
   SidebarNavButton,
   SidebarSection,
 } from "@/components/app/chrome";
+import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import type {
   ApiSessionResponse,
@@ -228,7 +231,7 @@ export function Sidebar({
                 }}
               />
               {expanded && (
-                <div className="border-border-subtle ml-3.5 mt-1 mb-2 flex flex-col gap-1 border-l pl-3">
+                <div className="border-border-subtle mt-1 mb-2 ml-3.5 flex flex-col gap-1 border-l pl-3">
                   {workspaceSessions.status === "idle" && (
                     <div className="text-sidebar-muted px-2 py-1 text-xs">
                       Select project to load threads
@@ -337,12 +340,16 @@ export function TopNav({
   activeSession,
   activeSnapshot,
   activeWorkspace,
+  onToggleRightPanel,
+  rightPanelOpen,
   setupContext,
 }: {
   activeRepository?: Repository;
   activeSession?: ReviewSession;
   activeSnapshot?: Snapshot;
   activeWorkspace?: Workspace;
+  onToggleRightPanel?: () => void;
+  rightPanelOpen?: boolean;
   setupContext?: SetupNavContext | null;
 }) {
   const repositoryLabel = activeRepository?.owner
@@ -379,9 +386,29 @@ export function TopNav({
         </div>
       </div>
 
-      <div className="app-no-drag text-muted-foreground bg-surface-raised border-border-subtle flex h-7 max-w-[220px] min-w-0 items-center gap-1.5 rounded-md border px-2.5 text-xs">
-        <GitBranchIcon className="size-[13px] shrink-0" />
-        <span className="truncate">{branchLabel}</span>
+      <div className="app-no-drag flex min-w-0 shrink-0 items-center gap-2">
+        <div className="text-muted-foreground bg-surface-raised border-border-subtle flex h-7 max-w-[220px] min-w-0 items-center gap-1.5 rounded-md border px-2.5 text-xs">
+          <GitBranchIcon className="size-[13px] shrink-0" />
+          <span className="truncate">{branchLabel}</span>
+        </div>
+        {onToggleRightPanel ? (
+          <Button
+            aria-label={
+              rightPanelOpen ? "Hide right panel" : "Show right panel"
+            }
+            className="size-8"
+            size="icon-sm"
+            type="button"
+            variant={rightPanelOpen ? "secondary" : "ghost"}
+            onClick={onToggleRightPanel}
+          >
+            {rightPanelOpen ? (
+              <PanelRightCloseIcon className="size-4" />
+            ) : (
+              <PanelRightOpenIcon className="size-4" />
+            )}
+          </Button>
+        ) : null}
       </div>
     </div>
   );

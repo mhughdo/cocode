@@ -32,6 +32,44 @@ test("opens finding detail and Evidence Map from seeded data", async ({
     ).toBeVisible();
     await expect(page.getByText("Ana Lee")).toHaveCount(0);
     await expect(page.getByText("Backend ready")).toHaveCount(0);
+    await page.getByRole("button", { name: "Show right panel" }).click();
+    const appRightPanel = page.getByRole("complementary", {
+      name: "App right panel",
+    });
+    await expect(appRightPanel).toBeVisible();
+    await expect(
+      appRightPanel.getByRole("button", { name: "Review" }).first(),
+    ).toBeEnabled();
+    await appRightPanel.getByRole("button", { name: "Review" }).first().click();
+    await appRightPanel
+      .getByRole("textbox", { name: "Filter changed files" })
+      .fill("repositories");
+    await expect(
+      appRightPanel
+        .getByRole("button", {
+          name: /apps\/api\/src\/routes\/repositories\.ts/,
+        })
+        .first(),
+    ).toBeVisible();
+    await appRightPanel
+      .getByRole("button", {
+        name: /apps\/api\/src\/routes\/repositories\.ts/,
+      })
+      .first()
+      .click();
+    await expect(
+      appRightPanel.getByText("repositoryService.updateSettings").first(),
+    ).toBeVisible();
+    await expect(
+      appRightPanel.getByRole("button", { name: "Hide file tree" }),
+    ).toBeVisible();
+    await expect(
+      appRightPanel.getByRole("button", { name: "Close repositories.ts" }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "Hide right panel" })
+      .first()
+      .click();
 
     await page.getByRole("tab", { name: "Findings" }).click();
     const findingsBoard = page.getByLabel("Review findings board");

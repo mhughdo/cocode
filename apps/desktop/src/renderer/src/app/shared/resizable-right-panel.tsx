@@ -19,6 +19,7 @@ export function useResizableRightPanel({
   minWidth: number;
 }) {
   const [width, setWidth] = useState(defaultWidth);
+  const [resizing, setResizing] = useState(false);
   const dragRef = useRef<{ startWidth: number; startX: number } | null>(null);
 
   useEffect(() => {
@@ -36,6 +37,7 @@ export function useResizableRightPanel({
         return;
       }
       dragRef.current = null;
+      setResizing(false);
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
     }
@@ -59,6 +61,7 @@ export function useResizableRightPanel({
         startWidth: width,
         startX: event.clientX,
       };
+      setResizing(true);
       document.body.style.cursor = "col-resize";
       document.body.style.userSelect = "none";
     },
@@ -67,6 +70,7 @@ export function useResizableRightPanel({
 
   return {
     gridStyle: { "--right-panel-width": `${width}px` } as CSSProperties,
+    resizing,
     startResize,
     width,
   };

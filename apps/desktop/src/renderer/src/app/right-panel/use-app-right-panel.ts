@@ -6,6 +6,8 @@ export type AppRightPanelTool = "home" | "files" | "review";
 
 export type AppRightPanelTab =
   | {
+      highlightEndLine?: number;
+      highlightStartLine?: number;
       id: string;
       kind: "file";
       path: string;
@@ -37,8 +39,16 @@ export function useAppRightPanelState() {
   }, []);
 
   const openFile = useCallback(
-    (repositoryId: string, workspaceId: string, path: string) => {
-      const tab = fileTab(repositoryId, workspaceId, path);
+    (
+      repositoryId: string,
+      workspaceId: string,
+      path: string,
+      options: {
+        highlightEndLine?: number;
+        highlightStartLine?: number;
+      } = {},
+    ) => {
+      const tab = fileTab(repositoryId, workspaceId, path, options);
       setTabs((current) => upsertTab(current, tab));
       setActive({ id: tab.id, kind: "tab" });
     },
@@ -90,18 +100,25 @@ export function useAppRightPanelState() {
 export type AppRightPanelState = ReturnType<typeof useAppRightPanelState>;
 
 function upsertTab(tabs: AppRightPanelTab[], tab: AppRightPanelTab) {
-  if (tabs.some((item) => item.id === tab.id)) {
-    return tabs;
+  const existingIndex = tabs.findIndex((item) => item.id === tab.id);
+  if (existingIndex < 0) {
+    return [...tabs, tab];
   }
-  return [...tabs, tab];
+  return tabs.map((item, index) => (index === existingIndex ? tab : item));
 }
 
 function fileTab(
   repositoryId: string,
   workspaceId: string,
   path: string,
+  options: {
+    highlightEndLine?: number;
+    highlightStartLine?: number;
+  },
 ): AppRightPanelTab {
   return {
+    highlightEndLine: options.highlightEndLine,
+    highlightStartLine: options.highlightStartLine,
     id: `file:${repositoryId}:${path}`,
     kind: "file",
     path,

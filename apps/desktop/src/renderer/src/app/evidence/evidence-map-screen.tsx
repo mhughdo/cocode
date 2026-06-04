@@ -15,7 +15,9 @@ import {
   loadingApiState,
   type Repository,
 } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import { ReviewBreadcrumb } from "../shared/review-breadcrumb";
+import { panelMotionClass, usePanelPresence } from "../shared/panel-motion";
 import {
   EvidenceMapGraphCanvas,
   firstEvidenceMapSelection,
@@ -28,12 +30,14 @@ export function EvidenceMapScreen({
   activeRepository,
   client,
   finding,
+  globalRightPanelOpen,
   onBack,
   onOpenFindingDetail,
 }: {
   activeRepository?: Repository;
   client: ApiClient | null;
   finding: Finding;
+  globalRightPanelOpen?: boolean;
   onBack: () => void;
   onOpenFindingDetail: (finding: Finding) => void;
 }) {
@@ -87,6 +91,11 @@ export function EvidenceMapScreen({
       ? map.call_paths.find((path) => path.id === selection.id)
       : undefined;
   const displayFinding = map?.finding ?? finding;
+  const inspectorPresence = usePanelPresence(
+    Boolean(map && !globalRightPanelOpen),
+  );
+  const inspectorLayoutActive = Boolean(map && inspectorPresence.rendered);
+  const inspectorVisible = inspectorPresence.visible && !globalRightPanelOpen;
 
   async function rebuildMap() {
     if (!client) {
@@ -152,7 +161,15 @@ export function EvidenceMapScreen({
         />
       )}
       {map && (
-        <div className="cocode-panel evidence-map-layout min-h-0 min-w-0 flex-1 overflow-hidden">
+        <div
+          className={cn(
+            "cocode-panel min-h-0 min-w-0 flex-1 overflow-hidden transition-[grid-template-columns]",
+            panelMotionClass,
+            inspectorLayoutActive
+              ? "evidence-map-layout"
+              : "grid h-full grid-cols-1",
+          )}
+        >
           <div className="flex min-h-0 min-w-0 flex-col bg-white">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
               <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -197,13 +214,26 @@ export function EvidenceMapScreen({
             </div>
           </div>
 
-          <EvidenceMapInspectorPanel
-            activeRepositoryPath={activeRepository?.local_path}
-            map={map}
-            selectedCallPath={selectedCallPath}
-            selectedEdge={selectedEdge}
-            selectedNode={selectedNode}
-          />
+          {inspectorLayoutActive && (
+            <div
+              aria-hidden={!inspectorVisible}
+              className={cn(
+                "min-h-0 min-w-0 transform-gpu transition-[opacity,transform] will-change-transform",
+                panelMotionClass,
+                inspectorVisible
+                  ? "translate-x-0 opacity-100"
+                  : "pointer-events-none translate-x-8 opacity-0",
+              )}
+            >
+              <EvidenceMapInspectorPanel
+                activeRepositoryPath={activeRepository?.local_path}
+                map={map}
+                selectedCallPath={selectedCallPath}
+                selectedEdge={selectedEdge}
+                selectedNode={selectedNode}
+              />
+            </div>
+          )}
         </div>
       )}
     </div>

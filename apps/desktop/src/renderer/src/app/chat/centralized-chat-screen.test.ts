@@ -3,12 +3,14 @@ import { describe, expect, it } from "vitest";
 import type {
   AgentConfig,
   ChatMessage,
+  Finding,
   ReviewEvent,
   ReviewSession,
   ReviewSessionSummary,
 } from "@/lib/api";
 import { successApiState } from "@/lib/api";
 
+import { buildCentralizedChatTimeline } from "./centralized-chat-screen";
 import { withLiveAgentRunMessages } from "./chat-live-messages";
 
 describe("withLiveAgentRunMessages", () => {
@@ -231,6 +233,127 @@ describe("withLiveAgentRunMessages", () => {
     expect(messages[0]?.body).toContain("Unchecked sell-price dereference");
     expect(messages[0]?.body).toContain("fetchRewardTokenInfo caller");
     expect(messages[0]?.body).not.toContain('"clusters"');
+  });
+
+  it("formats nested Codex item.completed agent message JSON", () => {
+    const clusterOutput = {
+      clusters: [
+        {
+          candidate_ids: ["finding_candidate_1"],
+          canonical_claim:
+            "Migration backfill uses the same inserted_at value for historical rows.",
+          category: "data_integrity",
+          severity: "medium",
+          confidence: 0.86,
+          verification_status: "locally_supported",
+          primary_location: {
+            path: "migrations/clickhouse/008_dedup_pool_active_apr_snapshots.sql",
+            start_line: 54,
+            end_line: 55,
+          },
+          evidence_summary:
+            "The backfill explicitly inserts now() for all copied rows.",
+        },
+      ],
+    };
+    const messages = withLiveAgentRunMessages({
+      agentConfigs: successApiState([orchestratorConfig]),
+      events: [
+        reviewEvent("event_1", "AgentRunOutput", {
+          text_preview: JSON.stringify({
+            type: "item.completed",
+            item: {
+              id: "item_43",
+              type: "agent_message",
+              text: JSON.stringify(clusterOutput),
+            },
+          }),
+        }),
+        reviewEvent("event_2", "AgentRunCompleted", {
+          message: "command completed",
+        }),
+      ],
+      messages: [],
+      session: reviewSession,
+      summary: successApiState({
+        ...summaryFixture,
+        agent_runs: [
+          {
+            id: "agent_run_orchestrator",
+            review_session_id: reviewSession.id,
+            agent_config_id: orchestratorConfig.id,
+            status: "succeeded",
+            role: "orchestrator",
+            completed_at: "2026-05-14T02:01:00Z",
+          },
+        ],
+      }),
+      threadID: "thread_1",
+    });
+
+    expect(messages[0]?.body).toContain("## Findings (1)");
+    expect(messages[0]?.body).toContain(
+      "Migration backfill uses the same inserted_at value",
+    );
+    expect(messages[0]?.body).toContain("**Status:** Locally Supported");
+    expect(messages[0]?.body).not.toContain("item.completed");
+    expect(messages[0]?.body).not.toContain('"clusters"');
+  });
+
+  it("suppresses Claude signature deltas from live message bodies", () => {
+    const runningSession = reviewSessionWithReviewer("running");
+    const messages = withLiveAgentRunMessages({
+      agentConfigs: successApiState([orchestratorConfig, reviewerConfig]),
+      events: [
+        sessionEvent("event_started", "ReviewSessionStarted", {
+          status: "running",
+        }),
+        agentEvent(
+          "event_output_1",
+          "agent_run_reviewer",
+          "AgentRunOutput",
+          {
+            stream: "stdout",
+            text_preview: JSON.stringify({
+              type: "stream_event",
+              event: {
+                type: "content_block_delta",
+                index: 0,
+                delta: {
+                  type: "signature_delta",
+                  signature: "EoyNAQpjCA4YAipAr48AuWx35QMatCF5q",
+                },
+              },
+            }),
+          },
+          "2026-05-14T02:04:00Z",
+        ),
+      ],
+      messages: [],
+      session: runningSession,
+      summary: successApiState({
+        ...summaryFixture,
+        status: "running",
+        agent_runs: [
+          {
+            id: "agent_run_reviewer",
+            review_session_id: reviewSession.id,
+            agent_config_id: reviewerConfig.id,
+            status: "running",
+            role: "primary_reviewer",
+            started_at: "2026-05-14T02:02:00Z",
+          },
+        ],
+      }),
+      threadID: "thread_1",
+    });
+
+    const reviewerMessage = messages.find(
+      (message) => message.agent_run_id === "agent_run_reviewer",
+    );
+    expect(reviewerMessage?.body).toContain("streaming stdout back to cocode");
+    expect(reviewerMessage?.body).not.toContain("signature_delta");
+    expect(reviewerMessage?.body).not.toContain("EoyNAQpj");
   });
 
   it("does not duplicate completed runs that already have persisted messages", () => {
@@ -485,6 +608,32 @@ describe("withLiveAgentRunMessages", () => {
       "Orchestrator is enriching findings with evidence maps and source context.",
     ]);
   });
+
+  it("keeps finalized findings at the review completion point after follow-up chat", () => {
+    const timeline = buildCentralizedChatTimeline({
+      events: [
+        sessionEvent("event_completed", "ReviewSessionCompleted", {
+          status: "completed",
+        }),
+      ],
+      findings: [findingFixture],
+      messages: [
+        chatMessage("message_review_done", "Review completed.", "cocode", {
+          createdAt: "2026-05-14T02:01:00Z",
+        }),
+        chatMessage("message_follow_up", "Explain finding one again.", "user", {
+          createdAt: "2026-05-14T02:05:00Z",
+        }),
+      ],
+      session: reviewSession,
+    });
+
+    expect(
+      timeline.map((item) =>
+        item.kind === "final-findings" ? item.kind : item.message.id,
+      ),
+    ).toEqual(["message_review_done", "final-findings", "message_follow_up"]);
+  });
 });
 
 function reviewEvent(
@@ -537,6 +686,26 @@ function agentEvent(
     sequence: id === "event_output_2" ? 3 : 2,
     payload,
     created_at: createdAt,
+  };
+}
+
+function chatMessage(
+  id: string,
+  body: string,
+  authorType: ChatMessage["author_type"],
+  { createdAt }: { createdAt: string },
+): ChatMessage {
+  return {
+    id,
+    thread_id: "thread_1",
+    author_type: authorType,
+    author_display_name:
+      authorType === "user" ? "You" : authorType === "cocode" ? "cocode" : "",
+    body,
+    status: "completed",
+    metadata: {},
+    created_at: createdAt,
+    updated_at: createdAt,
   };
 }
 
@@ -632,4 +801,28 @@ const summaryFixture: ReviewSessionSummary = {
   active_agents: 0,
   agent_status_counts: { succeeded: 1 },
   agent_runs: [],
+};
+
+const findingFixture: Finding = {
+  id: "finding_1",
+  review_session_id: reviewSession.id,
+  canonical_claim: "Migration backfill uses one inserted_at timestamp.",
+  category: "data_integrity",
+  severity: "medium",
+  confidence: 0.86,
+  verification_status: "locally_supported",
+  decision_status: "needs_triage",
+  trust_state: "verifier_survived",
+  publishable: false,
+  publish_blockers: [],
+  primary_path: "migrations/clickhouse/008_dedup_pool_active_apr_snapshots.sql",
+  primary_start_line: 31,
+  primary_end_line: 57,
+  evidence_summary: "The migration inserts now() for copied rows.",
+  suggested_fix: "Use a deterministic version column.",
+  fingerprint: "finding-1",
+  merged_from_count: 1,
+  first_seen_at: "2026-05-14T02:00:30Z",
+  updated_at: "2026-05-14T02:00:45Z",
+  source_agents: [],
 };

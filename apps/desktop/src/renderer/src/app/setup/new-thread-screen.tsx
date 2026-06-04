@@ -44,6 +44,7 @@ import {
   type Workspace,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { panelMotionClass } from "../shared/panel-motion";
 import { ReviewFocusComposer } from "./review-focus-composer";
 import {
   AgentProviderGlyph,
@@ -717,7 +718,8 @@ export function NewThreadScreen({
         >
           <div
             className={cn(
-              "min-w-0 overflow-hidden px-4 py-4 transition-all duration-[220ms] ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none min-[900px]:px-6",
+              "min-w-0 overflow-hidden px-4 py-4 transition-all min-[900px]:px-6",
+              panelMotionClass,
               sourceInspectorLayoutActive &&
                 "min-[1180px]:pr-[calc(var(--source-inspector-width)+1.5rem)]",
             )}
@@ -1301,10 +1303,10 @@ export function NewThreadScreen({
                 "border-border/60 absolute inset-y-0 right-0 z-20 flex h-full max-h-full min-h-0 min-w-0 transform-gpu flex-col overflow-hidden border-l bg-white shadow-[-18px_0_36px_rgb(17_18_20/0.08)] will-change-transform motion-reduce:transition-none",
                 sourceInspectorResizing
                   ? "transition-none"
-                  : "transition-all duration-[220ms] ease-[cubic-bezier(0.16,1,0.3,1)]",
+                  : `transition-all ${panelMotionClass}`,
                 sourceInspectorVisualOpen
                   ? "pointer-events-auto translate-x-0 opacity-100"
-                  : "pointer-events-none translate-x-full opacity-0",
+                  : "pointer-events-none translate-x-[110%] opacity-0",
               )}
               style={sourceInspectorPanelStyle}
             >

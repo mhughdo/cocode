@@ -3,6 +3,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -712,6 +713,8 @@ function PanelTabView({
     return (
       <FileTabView
         client={client}
+        highlightEndLine={tab.highlightEndLine}
+        highlightStartLine={tab.highlightStartLine}
         path={tab.path}
         repositoryId={tab.repositoryId}
         workspaceId={tab.workspaceId}
@@ -723,11 +726,15 @@ function PanelTabView({
 
 function FileTabView({
   client,
+  highlightEndLine,
+  highlightStartLine,
   path,
   repositoryId,
   workspaceId,
 }: {
   client: ApiClient | null;
+  highlightEndLine?: number;
+  highlightStartLine?: number;
   path: string;
   repositoryId: string;
   workspaceId: string;
@@ -786,6 +793,8 @@ function FileTabView({
             ) : (
               <CodePreview
                 content={content.data.content ?? ""}
+                highlightEndLine={highlightEndLine}
+                highlightStartLine={highlightStartLine}
                 path={content.data.path}
                 truncated={content.data.content_truncated}
               />
@@ -868,23 +877,40 @@ function DiffTabView({
 
 function CodePreview({
   content,
+  highlightEndLine,
+  highlightStartLine,
   path,
   truncated,
 }: {
   content: string;
+  highlightEndLine?: number;
+  highlightStartLine?: number;
   path: string;
   truncated: boolean;
 }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const lines = useMemo(() => content.split(/\r?\n/), [content]);
   const rendered = useMemo(
     () => lines.slice(0, renderedFileLineLimit).join("\n"),
     [lines],
   );
   const clipped = truncated || lines.length > renderedFileLineLimit;
+  useEffect(() => {
+    if (!highlightStartLine) {
+      return;
+    }
+    const line = containerRef.current?.querySelector(
+      `[data-line-number="${highlightStartLine}"]`,
+    );
+    line?.scrollIntoView({ block: "center", inline: "nearest" });
+  }, [highlightStartLine, rendered]);
+
   return (
-    <div className="grid gap-2">
+    <div ref={containerRef} className="grid gap-2">
       <SyntaxCodeBlock
         code={rendered}
+        highlightEndLine={highlightEndLine}
+        highlightStartLine={highlightStartLine}
         language={languageForFilePath(path)}
         lineNumbers
       />

@@ -85,13 +85,14 @@ export function formatKnownAgentJSONPayload(
   if (!isPlainRecord(value)) {
     return null;
   }
-  if (isIgnorableAgentEvent(value)) {
-    return "";
-  }
 
   const wrapped = extractWrappedAgentPayload(value, depth);
   if (wrapped !== null) {
     return wrapped;
+  }
+
+  if (isIgnorableAgentEvent(value)) {
+    return "";
   }
 
   const verification = formatVerificationMarkdown(value);
@@ -180,11 +181,17 @@ function isIgnorableAgentEvent(value: Record<string, unknown>) {
   const item = isPlainRecord(value.item) ? value.item : undefined;
   const part = isPlainRecord(value.part) ? value.part : undefined;
   const delta = isPlainRecord(value.delta) ? value.delta : undefined;
+  const event = isPlainRecord(value.event) ? value.event : undefined;
+  const contentBlock = isPlainRecord(event?.content_block)
+    ? event.content_block
+    : undefined;
   const typeBundle = [
     type,
     textFromUnknown(item?.type).toLowerCase(),
     textFromUnknown(part?.type).toLowerCase(),
     textFromUnknown(delta?.type).toLowerCase(),
+    textFromUnknown(event?.type).toLowerCase(),
+    textFromUnknown(contentBlock?.type).toLowerCase(),
   ].join(" ");
   return (
     (type === "system" &&
@@ -194,7 +201,15 @@ function isIgnorableAgentEvent(value: Record<string, unknown>) {
         hookEvent.includes("sessionstart"))) ||
     type === "thread.started" ||
     type === "turn.started" ||
+    type === "stream_event" ||
+    type === "message_start" ||
+    type === "message_delta" ||
+    type === "message_stop" ||
+    type === "content_block_start" ||
+    type === "content_block_stop" ||
+    type === "content_block_delta" ||
     type === "session.update" ||
+    typeBundle.includes("signature_delta") ||
     typeBundle.includes("command_execution") ||
     typeBundle.includes("tool_call") ||
     typeBundle.includes("tool_use") ||

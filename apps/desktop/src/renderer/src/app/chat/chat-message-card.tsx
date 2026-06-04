@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   BotIcon,
   CheckIcon,
   ChevronDownIcon,
   ClockIcon,
+  CopyIcon,
   Loader2Icon,
   SparklesIcon,
   UserIcon,
@@ -41,6 +42,7 @@ import type {
   ChatResponderOption,
 } from "./chat-types";
 import { MarkdownMessage } from "../shared/markdown-message";
+import { extractDisplayableAgentOutput } from "../shared/agent-output-formatting";
 
 export function ChatMessageCard({
   agent,
@@ -60,11 +62,62 @@ export function ChatMessageCard({
     () => summarizeRuntimeTraceEvents(events),
     [events],
   );
+  const displayBody = useMemo(
+    () =>
+      isUser || !message.agent_run_id
+        ? message.body
+        : displayableAgentRunMessageBody({
+            authorDisplayName: message.author_display_name,
+            authorType: message.author_type,
+            body: message.body,
+            status: message.status,
+          }),
+    [
+      isUser,
+      message.agent_run_id,
+      message.author_display_name,
+      message.author_type,
+      message.body,
+      message.status,
+    ],
+  );
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">(
+    "idle",
+  );
+  const canCopy = displayBody.trim().length > 0;
+
+  useEffect(() => {
+    if (copyState !== "copied" && copyState !== "failed") {
+      return;
+    }
+    const timeout = window.setTimeout(() => setCopyState("idle"), 1400);
+    return () => window.clearTimeout(timeout);
+  }, [copyState]);
+
+  async function copyMessage() {
+    const text = displayBody.trim();
+    if (!text) {
+      return;
+    }
+    try {
+      if (window.cocode?.writeClipboard) {
+        await window.cocode.writeClipboard(text);
+      } else if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        throw new Error("Clipboard API is unavailable");
+      }
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+  }
+
   return (
     <article
       className={cn(
         "bg-card border-border-subtle flex gap-3 rounded-xl border px-4 py-3",
-        isSystem && "bg-transparent border-transparent",
+        isSystem && "border-transparent bg-transparent",
         streaming && "bg-surface",
         failed && "border-destructive/30 bg-destructive/5",
       )}
@@ -75,43 +128,67 @@ export function ChatMessageCard({
         logo={logo}
       />
       <div className="min-w-0 flex-1">
-        <div className="mb-1 flex min-w-0 flex-wrap items-center gap-2 text-[13px]">
-          <span className="font-semibold">
-            {message.author_display_name ||
-              displayNameForAuthor(message.author_type)}
-          </span>
-          <span className="text-muted-foreground text-xs">
-            {formatClockTime(message.created_at)}
-          </span>
-          {message.agent_run_id && (
-            <AgentRunBadges
-              agent={agent}
-              authorType={message.author_type}
-              failed={failed}
-              modelLabel={metadataString(message.metadata, "model_label")}
-              reasoningLabel={metadataString(
-                message.metadata,
-                "reasoning_label",
+        <div className="mb-1 flex min-w-0 items-start gap-2">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 text-[13px]">
+            <span className="font-semibold">
+              {message.author_display_name ||
+                displayNameForAuthor(message.author_type)}
+            </span>
+            <span className="text-muted-foreground text-xs">
+              {formatClockTime(message.created_at)}
+            </span>
+            {message.agent_run_id && (
+              <AgentRunBadges
+                agent={agent}
+                authorType={message.author_type}
+                failed={failed}
+                modelLabel={metadataString(message.metadata, "model_label")}
+                reasoningLabel={metadataString(
+                  message.metadata,
+                  "reasoning_label",
+                )}
+                runtimeSummary={runtimeSummary}
+                streaming={streaming}
+              />
+            )}
+            {!message.agent_run_id && streaming && (
+              <Badge variant="outline" className="h-4 gap-1 px-1.5 text-[10px]">
+                <Loader2Icon className="size-3 animate-spin" />
+                streaming
+              </Badge>
+            )}
+            {!message.agent_run_id && failed && (
+              <Badge variant="destructive" className="h-4 px-1.5 text-[10px]">
+                failed
+              </Badge>
+            )}
+          </div>
+          {canCopy && (
+            <Button
+              aria-label={`Copy message from ${
+                message.author_display_name ||
+                displayNameForAuthor(message.author_type)
+              }`}
+              className="text-muted-foreground hover:text-foreground -mt-1 size-7 shrink-0 rounded-md"
+              size="icon"
+              title={copyState === "failed" ? "Copy failed" : "Copy message"}
+              type="button"
+              variant="ghost"
+              onClick={() => void copyMessage()}
+            >
+              {copyState === "copied" ? (
+                <CheckIcon className="size-3.5" />
+              ) : (
+                <CopyIcon className="size-3.5" />
               )}
-              runtimeSummary={runtimeSummary}
-              streaming={streaming}
-            />
-          )}
-          {!message.agent_run_id && streaming && (
-            <Badge variant="outline" className="h-4 gap-1 px-1.5 text-[10px]">
-              <Loader2Icon className="size-3 animate-spin" />
-              streaming
-            </Badge>
-          )}
-          {!message.agent_run_id && failed && (
-            <Badge variant="destructive" className="h-4 px-1.5 text-[10px]">
-              failed
-            </Badge>
+            </Button>
           )}
         </div>
         <ExpandableMarkdownMessage
-          collapsible={streaming}
-          content={message.body}
+          key={`${message.id}:${streaming ? "streaming" : "final"}`}
+          collapsible={!isUser}
+          content={displayBody}
+          defaultExpanded={!streaming}
           muted={isSystem || streaming}
         />
         <ReasoningSummary metadata={message.metadata} />
@@ -128,16 +205,48 @@ export function ChatMessageCard({
   );
 }
 
+function displayableAgentRunMessageBody({
+  authorDisplayName,
+  authorType,
+  body,
+  status,
+}: {
+  authorDisplayName?: string;
+  authorType: ChatMessage["author_type"];
+  body: string;
+  status: ChatMessage["status"];
+}) {
+  const raw = body.trim();
+  if (!raw) {
+    return body;
+  }
+  const displayable = extractDisplayableAgentOutput(raw).trim();
+  if (displayable) {
+    return displayable;
+  }
+
+  const label = authorDisplayName || displayNameForAuthor(authorType);
+  if (status === "failed") {
+    return `${label} failed before returning displayable text. Open the trace to inspect raw events and diagnostics.`;
+  }
+  if (status === "completed") {
+    return `${label} completed without displayable text. Open the trace to inspect raw events and diagnostics.`;
+  }
+  return `${label} is streaming output back to cocode. Open the trace to inspect live events and diagnostics.`;
+}
+
 function ExpandableMarkdownMessage({
   collapsible,
   content,
+  defaultExpanded,
   muted,
 }: {
   collapsible: boolean;
   content: string;
+  defaultExpanded: boolean;
   muted?: boolean;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const normalizedContent = content
     .replace(/\n{0,2}\.\.\.\[truncated\]\s*$/i, "")
     .trim();
@@ -210,11 +319,7 @@ function AgentRunBadges({
       )}
       <Badge
         variant={
-          failed
-            ? "destructive"
-            : streaming
-              ? "outline"
-              : "status-verified"
+          failed ? "destructive" : streaming ? "outline" : "status-verified"
         }
         className="h-4 gap-1 px-1.5 text-[10px]"
       >

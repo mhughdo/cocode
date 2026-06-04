@@ -16,13 +16,15 @@ export type SetupPreviewStats = {
   excluded: number;
 };
 
+import { panelMotionDurationMs } from "../shared/panel-motion";
+
 export const sourceInspectorMinWidth = 380;
 export const sourceInspectorDefaultWidth = 760;
 export const sourceInspectorMaxWidth = 1280;
 export const sourceInspectorMainMinWidth = 520;
 export const sourceInspectorOverlayGutter = 16;
 export const sourceInspectorSideBySideMinWidth = 1180;
-export const sourceInspectorTransitionMs = 220;
+export const sourceInspectorTransitionMs = panelMotionDurationMs;
 export const setupInitialDiffFileRenderCount = 6;
 export const setupDiffFileRenderBatchSize = 6;
 export const setupMaxRenderedDiffFiles = 200;

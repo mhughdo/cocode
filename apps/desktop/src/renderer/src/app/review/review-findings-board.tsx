@@ -39,6 +39,7 @@ import {
   ResizableRightPanelHandle,
   useResizableRightPanel,
 } from "../shared/resizable-right-panel";
+import { panelMotionClass, usePanelPresence } from "../shared/panel-motion";
 
 const MAX_FINDINGS_RENDERED = 150;
 
@@ -62,6 +63,7 @@ type FindingSeverityFilter =
 export function ReviewFindingsBoard({
   client,
   findings,
+  globalRightPanelOpen,
   onOpenDetail,
   onOpenEvidenceMap,
   onOpenFollowUp,
@@ -69,6 +71,7 @@ export function ReviewFindingsBoard({
 }: {
   client: ApiClient | null;
   findings: Loadable<FindingListResponse>;
+  globalRightPanelOpen?: boolean;
   onOpenDetail: (finding: Finding) => void;
   onOpenEvidenceMap: (finding: Finding) => void;
   onOpenFollowUp: (finding: Finding) => void;
@@ -269,6 +272,12 @@ export function ReviewFindingsBoard({
     (selectedDetail.status === "idle" || selectedDetail.status === "loading"
       ? selectedFindingFromList
       : undefined);
+  const showInspectorPanel = Boolean(selectedFinding && !globalRightPanelOpen);
+  const inspectorPresence = usePanelPresence(showInspectorPanel);
+  const inspectorLayoutActive = Boolean(
+    inspectorPresence.rendered && selectedFinding,
+  );
+  const inspectorVisible = inspectorPresence.visible && showInspectorPanel;
   async function updateDecision(
     decision: FindingDecisionMutation,
     finding = selectedFinding,
@@ -546,10 +555,11 @@ export function ReviewFindingsBoard({
       )}
 
       <div
-        style={selectedFinding ? inspectorPanel.gridStyle : undefined}
+        style={inspectorLayoutActive ? inspectorPanel.gridStyle : undefined}
         className={cn(
-          "grid min-h-0 flex-1 bg-white",
-          selectedFinding
+          "grid min-h-0 flex-1 bg-white transition-[grid-template-columns]",
+          inspectorPanel.resizing ? "transition-none" : panelMotionClass,
+          inspectorLayoutActive
             ? "xl:grid-cols-[minmax(0,1fr)_minmax(360px,var(--right-panel-width))]"
             : "grid-cols-1",
         )}
@@ -558,16 +568,16 @@ export function ReviewFindingsBoard({
           <div
             className={cn(
               "bg-surface/60 text-muted-foreground grid gap-3 border-b px-4 py-2 text-xs font-medium max-lg:hidden",
-              selectedFinding
+              inspectorLayoutActive
                 ? "grid-cols-[72px_minmax(0,1fr)_132px_72px]"
                 : "grid-cols-[72px_minmax(0,1.35fr)_minmax(96px,0.64fr)_132px_minmax(112px,0.64fr)_72px]",
             )}
           >
             <span>Severity</span>
             <span>Finding</span>
-            {!selectedFinding ? <span>Location</span> : null}
+            {!showInspectorPanel ? <span>Location</span> : null}
             <span>Status</span>
-            {!selectedFinding ? <span>Source / agents</span> : null}
+            {!showInspectorPanel ? <span>Source / agents</span> : null}
             <span>Confidence</span>
           </div>
           {listState.status === "loading" && (
@@ -593,7 +603,7 @@ export function ReviewFindingsBoard({
               key={finding.id}
               actionState={actionState}
               finding={finding}
-              layout={selectedFinding ? "inspector" : "wide"}
+              layout={inspectorLayoutActive ? "inspector" : "wide"}
               selected={finding.id === selectedFindingId}
               onDecisionChange={(decision) => {
                 void updateDecision(decision, finding);
@@ -609,8 +619,17 @@ export function ReviewFindingsBoard({
               </div>
             )}
         </div>
-        {selectedFinding && (
-          <div className="bg-surface relative flex min-h-0 min-w-0 overflow-hidden border-t p-4 xl:border-t-0 xl:border-l">
+        {inspectorLayoutActive && selectedFinding && (
+          <div
+            aria-hidden={!inspectorVisible}
+            className={cn(
+              "bg-surface relative flex min-h-0 min-w-0 transform-gpu overflow-hidden border-t p-4 transition-[opacity,transform] will-change-transform xl:border-t-0 xl:border-l",
+              panelMotionClass,
+              inspectorVisible
+                ? "translate-x-0 opacity-100"
+                : "pointer-events-none translate-x-8 opacity-0",
+            )}
+          >
             <ResizableRightPanelHandle
               onPointerDown={inspectorPanel.startResize}
             />

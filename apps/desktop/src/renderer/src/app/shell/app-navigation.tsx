@@ -5,6 +5,8 @@ import {
   FileTextIcon,
   FolderOpenIcon,
   GitBranchIcon,
+  PanelLeftCloseIcon,
+  PanelLeftOpenIcon,
   PanelRightCloseIcon,
   PanelRightOpenIcon,
   PlusIcon,
@@ -340,16 +342,20 @@ export function TopNav({
   activeSession,
   activeSnapshot,
   activeWorkspace,
+  onToggleSidebar,
   onToggleRightPanel,
   rightPanelOpen,
+  sidebarCollapsed,
   setupContext,
 }: {
   activeRepository?: Repository;
   activeSession?: ReviewSession;
   activeSnapshot?: Snapshot;
   activeWorkspace?: Workspace;
+  onToggleSidebar?: () => void;
   onToggleRightPanel?: () => void;
   rightPanelOpen?: boolean;
+  sidebarCollapsed?: boolean;
   setupContext?: SetupNavContext | null;
 }) {
   const repositoryLabel = activeRepository?.owner
@@ -373,8 +379,30 @@ export function TopNav({
     : (setupContext?.subtitle ?? "Set up review");
 
   return (
-    <div className="app-drag bg-background border-border-subtle flex h-14 shrink-0 items-center justify-between gap-4 border-b px-5">
+    <div
+      className={cn(
+        "app-drag bg-background border-border-subtle flex h-14 shrink-0 items-center justify-between gap-4 border-b pr-5",
+        sidebarCollapsed ? "pl-[152px]" : "pl-5",
+      )}
+    >
       <div className="flex min-w-0 items-center gap-3">
+        {onToggleSidebar ? (
+          <Button
+            aria-label={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+            className="app-no-drag size-8 shrink-0"
+            size="icon-sm"
+            title="Toggle sidebar (⌘B)"
+            type="button"
+            variant={sidebarCollapsed ? "secondary" : "ghost"}
+            onClick={onToggleSidebar}
+          >
+            {sidebarCollapsed ? (
+              <PanelLeftOpenIcon className="size-4" />
+            ) : (
+              <PanelLeftCloseIcon className="size-4" />
+            )}
+          </Button>
+        ) : null}
         <div className="min-w-0">
           <div className="truncate text-[0.94rem] font-semibold tracking-[-0.005em]">
             {titleLabel}

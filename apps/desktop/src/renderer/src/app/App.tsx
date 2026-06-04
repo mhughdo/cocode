@@ -50,6 +50,7 @@ import { NewThreadScreen } from "./setup/new-thread-screen";
 import { ReviewThread } from "./review/review-thread";
 import { AppRightPanel } from "./right-panel/app-right-panel";
 import { useAppRightPanelState } from "./right-panel/use-app-right-panel";
+import { FileReferenceActionsProvider } from "./shared/file-reference-actions";
 import { useResizableRightPanel } from "./shared/resizable-right-panel";
 import { formatRelativeAge } from "./shared/time-format";
 
@@ -91,8 +92,10 @@ export function App() {
   const [loadingWorkspaceId, setLoadingWorkspaceId] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [deletingReviewSessionId, setDeletingReviewSessionId] = useState("");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
   const appRightPanel = useAppRightPanelState();
+  const { openFile: openRightPanelFile } = appRightPanel;
   const appRightPanelSize = useResizableRightPanel({
     defaultWidth: 700,
     maxWidth: 1120,
@@ -119,6 +122,11 @@ export function App() {
       if (key === "k") {
         event.preventDefault();
         setSearchOpen(true);
+        return;
+      }
+      if (key === "b") {
+        event.preventDefault();
+        setSidebarCollapsed((collapsed) => !collapsed);
         return;
       }
       if (key === "=" || key === "+" || code === "Equal") {
@@ -372,6 +380,9 @@ export function App() {
     currentReviewSession ?? (mainView === "review" ? activeSession : undefined);
   const displayedSnapshot =
     activeSnapshot.status === "success" ? activeSnapshot.data : undefined;
+  const activeRepositoryIdForFileRefs = activeRepository?.id ?? "";
+  const activeRepositoryRootForFileRefs = activeRepository?.local_path ?? "";
+  const activeWorkspaceIdForFileRefs = activeWorkspace?.id ?? "";
   const isWorkspaceDetailsLoading = Boolean(
     activeWorkspaceId && loadingWorkspaceId === activeWorkspaceId,
   );
@@ -647,102 +658,148 @@ export function App() {
     sessionList,
     workspaceList,
   ]);
+  const fileReferenceActions = useMemo(() => {
+    if (!activeRepositoryIdForFileRefs || !activeWorkspaceIdForFileRefs) {
+      return null;
+    }
+    return {
+      openFileReference: (target: {
+        endLine?: number;
+        path: string;
+        startLine?: number;
+      }) => {
+        const path = repositoryRelativeFilePath(
+          target.path,
+          activeRepositoryRootForFileRefs,
+        );
+        if (!path) {
+          return;
+        }
+        openRightPanelFile(
+          activeRepositoryIdForFileRefs,
+          activeWorkspaceIdForFileRefs,
+          path,
+          {
+            highlightEndLine: target.endLine,
+            highlightStartLine: target.startLine,
+          },
+        );
+        setRightPanelOpen(true);
+      },
+    };
+  }, [
+    activeRepositoryIdForFileRefs,
+    activeRepositoryRootForFileRefs,
+    activeWorkspaceIdForFileRefs,
+    openRightPanelFile,
+  ]);
 
   return (
     <>
-      <AppShell
-        detailPane={
-          rightPanelOpen ? (
-            <AppRightPanel
+      <FileReferenceActionsProvider value={fileReferenceActions}>
+        <AppShell
+          detailPane={
+            rightPanelOpen ? (
+              <AppRightPanel
+                activeRepository={activeRepository}
+                activeSnapshot={displayedSnapshot}
+                activeWorkspace={activeWorkspace}
+                client={client}
+                panel={appRightPanel}
+                onClose={() => setRightPanelOpen(false)}
+                onResizePointerDown={appRightPanelSize.startResize}
+              />
+            ) : undefined
+          }
+          detailPaneResizing={appRightPanelSize.resizing}
+          detailPaneStyle={appRightPanelSize.gridStyle}
+          sidebarCollapsed={sidebarCollapsed}
+          sidebar={
+            <Sidebar
+              activeSessionId={displayedSession?.id}
+              activeWorkspaceId={activeWorkspaceId}
+              workspaces={workspaces}
+              reviewSessionsByWorkspace={reviewSessionsByWorkspace}
+              repositoryOpenState={repositoryOpenState}
+              deletingReviewSessionId={deletingReviewSessionId}
+              onOpenRepository={handleOpenRepository}
+              onOpenSearch={() => setSearchOpen(true)}
+              onOpenAgentSettings={() => setMainView("agent-settings")}
+              onOpenNewThread={handleOpenNewThread}
+              onDeleteReviewSession={handleDeleteReviewSession}
+              onSelectReviewSession={handleSelectReviewSession}
+              onSelectWorkspace={handleSelectWorkspace}
+            />
+          }
+          header={
+            <TopNav
               activeRepository={activeRepository}
+              activeSession={displayedSession}
               activeSnapshot={displayedSnapshot}
               activeWorkspace={activeWorkspace}
-              client={client}
-              panel={appRightPanel}
-              onClose={() => setRightPanelOpen(false)}
-              onResizePointerDown={appRightPanelSize.startResize}
+              onToggleSidebar={() =>
+                setSidebarCollapsed((collapsed) => !collapsed)
+              }
+              onToggleRightPanel={() => setRightPanelOpen((open) => !open)}
+              rightPanelOpen={rightPanelOpen}
+              sidebarCollapsed={sidebarCollapsed}
+              setupContext={
+                isWorkspaceDetailsLoading
+                  ? {
+                      subtitle: "Loading project",
+                      title: activeWorkspace?.name ?? "Loading project",
+                    }
+                  : setupNavContext
+              }
             />
-          ) : undefined
-        }
-        detailPaneStyle={appRightPanelSize.gridStyle}
-        sidebar={
-          <Sidebar
-            activeSessionId={displayedSession?.id}
-            activeWorkspaceId={activeWorkspaceId}
-            workspaces={workspaces}
-            reviewSessionsByWorkspace={reviewSessionsByWorkspace}
-            repositoryOpenState={repositoryOpenState}
-            deletingReviewSessionId={deletingReviewSessionId}
-            onOpenRepository={handleOpenRepository}
-            onOpenSearch={() => setSearchOpen(true)}
-            onOpenAgentSettings={() => setMainView("agent-settings")}
-            onOpenNewThread={handleOpenNewThread}
-            onDeleteReviewSession={handleDeleteReviewSession}
-            onSelectReviewSession={handleSelectReviewSession}
-            onSelectWorkspace={handleSelectWorkspace}
-          />
-        }
-        header={
-          <TopNav
-            activeRepository={activeRepository}
-            activeSession={displayedSession}
-            activeSnapshot={displayedSnapshot}
-            activeWorkspace={activeWorkspace}
-            onToggleRightPanel={() => setRightPanelOpen((open) => !open)}
-            rightPanelOpen={rightPanelOpen}
-            setupContext={
-              isWorkspaceDetailsLoading
-                ? {
-                    subtitle: "Loading project",
-                    title: activeWorkspace?.name ?? "Loading project",
+          }
+          statusBanner={<AppConnectionNotice apiSession={apiSession} />}
+        >
+          {mainView === "new-thread" &&
+            (isWorkspaceDetailsLoading ? (
+              <ProjectLoadingScreen workspaceName={activeWorkspace?.name} />
+            ) : activeWorkspace && activeRepository ? (
+              <NewThreadScreen
+                activeRepository={activeRepository}
+                activeWorkspace={activeWorkspace}
+                agentConfigs={agentConfigs}
+                agentModelCatalogs={agentModelCatalogs}
+                client={client}
+                onSetupContextChange={setSetupNavContext}
+                onReviewStarted={(session) => {
+                  setCurrentReviewSession(session);
+                  setSetupNavContext(null);
+                  setMainView("review");
+                  if (client) {
+                    void refreshNavigation(client, session.workspace_id);
                   }
-                : setupNavContext
-            }
-          />
-        }
-        statusBanner={<AppConnectionNotice apiSession={apiSession} />}
-      >
-        {mainView === "new-thread" &&
-          (isWorkspaceDetailsLoading ? (
-            <ProjectLoadingScreen workspaceName={activeWorkspace?.name} />
-          ) : activeWorkspace && activeRepository ? (
-            <NewThreadScreen
+                }}
+                onOpenRepository={handleOpenRepository}
+              />
+            ) : (
+              <NoProjectSelectedScreen
+                onOpenRepository={handleOpenRepository}
+              />
+            ))}
+          {mainView === "review" && (
+            <ReviewThread
               activeRepository={activeRepository}
-              activeWorkspace={activeWorkspace}
               agentConfigs={agentConfigs}
-              agentModelCatalogs={agentModelCatalogs}
               client={client}
-              onSetupContextChange={setSetupNavContext}
-              onReviewStarted={(session) => {
-                setCurrentReviewSession(session);
-                setSetupNavContext(null);
-                setMainView("review");
-                if (client) {
-                  void refreshNavigation(client, session.workspace_id);
-                }
-              }}
-              onOpenRepository={handleOpenRepository}
+              globalRightPanelOpen={rightPanelOpen}
+              session={displayedSession}
             />
-          ) : (
-            <NoProjectSelectedScreen onOpenRepository={handleOpenRepository} />
-          ))}
-        {mainView === "review" && (
-          <ReviewThread
-            activeRepository={activeRepository}
-            agentConfigs={agentConfigs}
-            client={client}
-            session={displayedSession}
-          />
-        )}
-        {mainView === "agent-settings" && (
-          <AgentSettingsScreen
-            activeWorkspace={activeWorkspace}
-            client={client}
-            onAgentConfigsChanged={refreshAgentConfigs}
-            onBack={handleOpenNewThread}
-          />
-        )}
-      </AppShell>
+          )}
+          {mainView === "agent-settings" && (
+            <AgentSettingsScreen
+              activeWorkspace={activeWorkspace}
+              client={client}
+              onAgentConfigsChanged={refreshAgentConfigs}
+              onBack={handleOpenNewThread}
+            />
+          )}
+        </AppShell>
+      </FileReferenceActionsProvider>
       {searchOpen && (
         <SearchCommandDialog
           open={searchOpen}
@@ -753,6 +810,27 @@ export function App() {
       <Toaster position="bottom-right" />
     </>
   );
+}
+
+function repositoryRelativeFilePath(path: string, repositoryRoot: string) {
+  const normalizedPath = path
+    .trim()
+    .replace(/^file:\/\//, "")
+    .replaceAll("\\", "/");
+  const normalizedRoot = repositoryRoot
+    .trim()
+    .replaceAll("\\", "/")
+    .replace(/\/+$/, "");
+  if (!normalizedPath) {
+    return "";
+  }
+  if (normalizedRoot && normalizedPath.startsWith(`${normalizedRoot}/`)) {
+    return normalizedPath.slice(normalizedRoot.length + 1);
+  }
+  if (normalizedPath.startsWith("./")) {
+    return normalizedPath.slice(2);
+  }
+  return normalizedPath;
 }
 
 function ProjectLoadingScreen({ workspaceName }: { workspaceName?: string }) {

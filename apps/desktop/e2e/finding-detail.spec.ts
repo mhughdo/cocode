@@ -262,23 +262,36 @@ async function expectResizableRightPanel(page: Page) {
 }
 
 async function expectRightPanelScrollable(page: Page) {
+  const viewport = page.viewportSize();
+  if (viewport) {
+    await page.setViewportSize({
+      width: viewport.width,
+      height: Math.min(viewport.height, 620),
+    });
+  }
   const panel = page.locator('[data-review-panel="true"]').first();
   await expect(panel).toBeVisible();
-  await expect
-    .poll(async () =>
-      panel.evaluate((node) => {
-        const scrollable = Array.from(
-          node.querySelectorAll<HTMLElement>("div"),
-        ).find((element) => element.scrollHeight > element.clientHeight + 16);
-        if (!scrollable) {
-          return false;
-        }
-        const before = scrollable.scrollTop;
-        scrollable.scrollTop = scrollable.scrollHeight;
-        const moved = scrollable.scrollTop > before;
-        scrollable.scrollTop = before;
-        return moved;
-      }),
-    )
-    .toBe(true);
+  try {
+    await expect
+      .poll(async () =>
+        panel.evaluate((node) => {
+          const scrollable = Array.from(
+            node.querySelectorAll<HTMLElement>("div"),
+          ).find((element) => element.scrollHeight > element.clientHeight + 16);
+          if (!scrollable) {
+            return false;
+          }
+          const before = scrollable.scrollTop;
+          scrollable.scrollTop = scrollable.scrollHeight;
+          const moved = scrollable.scrollTop > before;
+          scrollable.scrollTop = before;
+          return moved;
+        }),
+      )
+      .toBe(true);
+  } finally {
+    if (viewport) {
+      await page.setViewportSize(viewport);
+    }
+  }
 }

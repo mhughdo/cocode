@@ -8,6 +8,8 @@ import {
   useState,
 } from "react";
 
+import { CheckIcon, CopyIcon } from "lucide-react";
+
 import {
   highlightCodeLines,
   languageForFilePath,
@@ -19,6 +21,11 @@ import {
   extractDisplayableAgentOutput,
   formatKnownAgentJSONPayload,
 } from "./agent-output-formatting";
+import {
+  type FileReferenceActions,
+  type FileReferenceTarget,
+  useFileReferenceActions,
+} from "./file-reference-actions";
 
 export function MarkdownMessage({
   className,
@@ -30,6 +37,7 @@ export function MarkdownMessage({
   muted?: boolean;
 }) {
   const displayContent = normalizeMarkdownMessageContent(content);
+  const fileReferenceActions = useFileReferenceActions();
   return (
     <div
       className={cn(
@@ -38,7 +46,7 @@ export function MarkdownMessage({
         className,
       )}
     >
-      {renderMarkdownBlocks(displayContent)}
+      {renderMarkdownBlocks(displayContent, fileReferenceActions)}
     </div>
   );
 }
@@ -154,7 +162,10 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function renderMarkdownBlocks(content: string) {
+function renderMarkdownBlocks(
+  content: string,
+  fileReferenceActions: FileReferenceActions | null,
+) {
   const lines = content.replace(/\r\n/g, "\n").split("\n");
   const blocks: ReactElement[] = [];
   let paragraph: string[] = [];
@@ -175,7 +186,7 @@ function renderMarkdownBlocks(content: string) {
         className="min-w-0 [overflow-wrap:anywhere]"
         key={`p-${blocks.length}`}
       >
-        {renderInline(paragraph.join(" "))}
+        {renderInline(paragraph.join(" "), fileReferenceActions)}
       </p>,
     );
     paragraph = [];
@@ -199,7 +210,7 @@ function renderMarkdownBlocks(content: string) {
             className="min-w-0 [overflow-wrap:anywhere]"
             key={`${index}-${item}`}
           >
-            {renderInline(item)}
+            {renderInline(item, fileReferenceActions)}
           </li>
         ))}
       </Tag>,
@@ -222,7 +233,7 @@ function renderMarkdownBlocks(content: string) {
             className="min-w-0 [overflow-wrap:anywhere]"
             key={`${index}-${line}`}
           >
-            {renderInline(line)}
+            {renderInline(line, fileReferenceActions)}
           </p>
         ))}
       </blockquote>,
@@ -281,7 +292,11 @@ function renderMarkdownBlocks(content: string) {
       }
       index--;
       blocks.push(
-        <MarkdownTable key={`table-${blocks.length}`} lines={tableLines} />,
+        <MarkdownTable
+          fileReferenceActions={fileReferenceActions}
+          key={`table-${blocks.length}`}
+          lines={tableLines}
+        />,
       );
       continue;
     }
@@ -289,7 +304,14 @@ function renderMarkdownBlocks(content: string) {
       flushLoose();
       const depth = Math.min(4, trimmed.match(/^#+/)?.[0].length ?? 2);
       const text = trimmed.replace(/^#{1,4}\s+/, "");
-      blocks.push(renderHeading(depth, text, `heading-${blocks.length}`));
+      blocks.push(
+        renderHeading(
+          depth,
+          text,
+          `heading-${blocks.length}`,
+          fileReferenceActions,
+        ),
+      );
       continue;
     }
     const ordered = trimmed.match(/^(\d+)[.)]\s+(.*)$/);
@@ -325,12 +347,17 @@ function renderMarkdownBlocks(content: string) {
   return blocks.length > 0 ? blocks : <p>{content}</p>;
 }
 
-function renderHeading(depth: number, text: string, key: string) {
+function renderHeading(
+  depth: number,
+  text: string,
+  key: string,
+  fileReferenceActions: FileReferenceActions | null,
+) {
   const className = cn(
     "font-semibold text-balance break-words [overflow-wrap:anywhere]",
     depth <= 2 ? "mt-3 text-base" : "mt-2 text-sm",
   );
-  const children = renderInline(text);
+  const children = renderInline(text, fileReferenceActions);
   if (depth <= 1) {
     return (
       <h2 className={className} key={key}>
@@ -366,13 +393,18 @@ function CodeBlock({ language, lines }: { language: string; lines: string[] }) {
     return <DiffCodeBlock lines={lines} />;
   }
   return (
-    <SyntaxCodeBlock code={lines.join("\n")} language={normalizedLanguage} />
+    <SyntaxCodeBlock
+      code={lines.join("\n")}
+      copyable
+      language={normalizedLanguage}
+    />
   );
 }
 
 export function SyntaxCodeBlock({
   className,
   code,
+  copyable,
   highlightEndLine,
   highlightStartLine,
   language,
@@ -381,6 +413,7 @@ export function SyntaxCodeBlock({
 }: {
   className?: string;
   code: string;
+  copyable?: boolean;
   highlightEndLine?: number;
   highlightStartLine?: number;
   language?: string;
@@ -403,6 +436,9 @@ export function SyntaxCodeBlock({
     key: string;
     lines: HighlightedCodeLine[];
   } | null>(null);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">(
+    "idle",
+  );
 
   useEffect(() => {
     let canceled = false;
@@ -421,6 +457,29 @@ export function SyntaxCodeBlock({
     };
   }, [highlightKey, normalizedCode, normalizedLanguage, plainLines]);
 
+  useEffect(() => {
+    if (copyState !== "copied" && copyState !== "failed") {
+      return;
+    }
+    const timeout = window.setTimeout(() => setCopyState("idle"), 1400);
+    return () => window.clearTimeout(timeout);
+  }, [copyState]);
+
+  async function copyCode() {
+    try {
+      if (window.cocode?.writeClipboard) {
+        await window.cocode.writeClipboard(normalizedCode);
+      } else if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(normalizedCode);
+      } else {
+        throw new Error("Clipboard API is unavailable");
+      }
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+  }
+
   const highlightedLines =
     highlightResult?.key === highlightKey ? highlightResult.lines : plainLines;
 
@@ -434,11 +493,26 @@ export function SyntaxCodeBlock({
   return (
     <div
       className={cn(
-        "cocode-shiki-block border-border/70 bg-muted/55 max-w-full overflow-hidden rounded-lg border",
+        "cocode-shiki-block border-border/70 bg-muted/55 relative max-w-full overflow-hidden rounded-lg border",
         className,
       )}
       style={style}
     >
+      {copyable ? (
+        <button
+          aria-label="Copy code snippet"
+          className="bg-background/80 hover:bg-background focus-visible:border-ring focus-visible:ring-ring/50 text-muted-foreground hover:text-foreground absolute top-2 right-2 z-10 flex size-7 cursor-pointer items-center justify-center rounded-md border shadow-sm transition-colors focus-visible:ring-2 focus-visible:outline-none"
+          title={copyState === "failed" ? "Copy failed" : "Copy code"}
+          type="button"
+          onClick={() => void copyCode()}
+        >
+          {copyState === "copied" ? (
+            <CheckIcon className="size-3.5" />
+          ) : (
+            <CopyIcon className="size-3.5" />
+          )}
+        </button>
+      ) : null}
       <div className={cn("cocode-shiki", lineNumbers && "rs-has-line-numbers")}>
         <pre className="min-w-0 overflow-auto bg-transparent">
           <code className="block min-w-max">
@@ -507,7 +581,10 @@ function DiffCodeBlock({ lines }: { lines: string[] }) {
     () => renderedLines.map(diffCodeContent).join("\n") || " ",
     [renderedLines],
   );
-  const language = useMemo(() => inferDiffLanguage(renderedLines), [renderedLines]);
+  const language = useMemo(
+    () => inferDiffLanguage(renderedLines),
+    [renderedLines],
+  );
   const plainLines = useMemo<HighlightedCodeLine[]>(
     () => code.split(/\r?\n/).map((line) => [{ content: line || " " }]),
     [code],
@@ -517,6 +594,9 @@ function DiffCodeBlock({ lines }: { lines: string[] }) {
     key: string;
     lines: HighlightedCodeLine[];
   } | null>(null);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">(
+    "idle",
+  );
 
   useEffect(() => {
     let canceled = false;
@@ -533,11 +613,48 @@ function DiffCodeBlock({ lines }: { lines: string[] }) {
     };
   }, [code, highlightKey, language, plainLines]);
 
+  useEffect(() => {
+    if (copyState !== "copied" && copyState !== "failed") {
+      return;
+    }
+    const timeout = window.setTimeout(() => setCopyState("idle"), 1400);
+    return () => window.clearTimeout(timeout);
+  }, [copyState]);
+
+  async function copyCode() {
+    const rawDiff = renderedLines.join("\n") || " ";
+    try {
+      if (window.cocode?.writeClipboard) {
+        await window.cocode.writeClipboard(rawDiff);
+      } else if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(rawDiff);
+      } else {
+        throw new Error("Clipboard API is unavailable");
+      }
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+  }
+
   const highlightedLines =
     highlightResult?.key === highlightKey ? highlightResult.lines : plainLines;
 
   return (
-    <div className="cocode-shiki-block border-border/70 bg-muted/55 max-w-full overflow-hidden rounded-lg border">
+    <div className="cocode-shiki-block border-border/70 bg-muted/55 relative max-w-full overflow-hidden rounded-lg border">
+      <button
+        aria-label="Copy code snippet"
+        className="bg-background/80 hover:bg-background focus-visible:border-ring focus-visible:ring-ring/50 text-muted-foreground hover:text-foreground absolute top-2 right-2 z-10 flex size-7 cursor-pointer items-center justify-center rounded-md border shadow-sm transition-colors focus-visible:ring-2 focus-visible:outline-none"
+        title={copyState === "failed" ? "Copy failed" : "Copy code"}
+        type="button"
+        onClick={() => void copyCode()}
+      >
+        {copyState === "copied" ? (
+          <CheckIcon className="size-3.5" />
+        ) : (
+          <CopyIcon className="size-3.5" />
+        )}
+      </button>
       <div className="cocode-shiki cocode-diff">
         <pre className="min-w-0 overflow-auto bg-transparent">
           <code className="block min-w-full">
@@ -546,7 +663,10 @@ function DiffCodeBlock({ lines }: { lines: string[] }) {
               const lineTokens = highlightedLines[index] ?? [{ content: " " }];
               return (
                 <span
-                  className={cn("block px-1 whitespace-pre", diffLineClass(line))}
+                  className={cn(
+                    "block px-1 whitespace-pre",
+                    diffLineClass(line),
+                  )}
                   key={`${index}-${line}`}
                 >
                   {prefix ? (
@@ -641,7 +761,9 @@ function diffPrefixClass(prefix: string) {
 function inferDiffLanguage(lines: string[]) {
   const headerPath = lines
     .map((line) => {
-      const match = line.match(/^(?:diff --git a\/\S+ b\/(\S+)|\+\+\+ b\/(\S+)|--- a\/(\S+))/);
+      const match = line.match(
+        /^(?:diff --git a\/\S+ b\/(\S+)|\+\+\+ b\/(\S+)|--- a\/(\S+))/,
+      );
       return match?.[1] ?? match?.[2] ?? match?.[3] ?? "";
     })
     .find(Boolean);
@@ -649,7 +771,9 @@ function inferDiffLanguage(lines: string[]) {
     return languageForFilePath(headerPath);
   }
   const content = lines.map(diffCodeContent).join("\n");
-  if (/\bfunc\s+\w+|\bpackage\s+\w+|:=|\bnil\b|\berr\s*!=\s*nil/.test(content)) {
+  if (
+    /\bfunc\s+\w+|\bpackage\s+\w+|:=|\bnil\b|\berr\s*!=\s*nil/.test(content)
+  ) {
     return "go";
   }
   if (/\b(?:const|let|var|function)\b|=>|import\s+.*from/.test(content)) {
@@ -661,7 +785,13 @@ function inferDiffLanguage(lines: string[]) {
   return "plaintext";
 }
 
-function MarkdownTable({ lines }: { lines: string[] }) {
+function MarkdownTable({
+  fileReferenceActions,
+  lines,
+}: {
+  fileReferenceActions: FileReferenceActions | null;
+  lines: string[];
+}) {
   const header = splitTableRow(lines[0] ?? "");
   const rows = lines
     .slice(2)
@@ -674,7 +804,7 @@ function MarkdownTable({ lines }: { lines: string[] }) {
           <tr>
             {header.map((cell, index) => (
               <th className="border-b px-3 py-2 font-semibold" key={index}>
-                {renderInline(cell)}
+                {renderInline(cell, fileReferenceActions)}
               </th>
             ))}
           </tr>
@@ -684,7 +814,7 @@ function MarkdownTable({ lines }: { lines: string[] }) {
             <tr className="border-b last:border-b-0" key={rowIndex}>
               {row.map((cell, cellIndex) => (
                 <td className="px-3 py-2 align-top" key={cellIndex}>
-                  {renderInline(cell)}
+                  {renderInline(cell, fileReferenceActions)}
                 </td>
               ))}
             </tr>
@@ -713,53 +843,83 @@ function splitTableRow(line: string) {
     .map((cell) => cell.trim());
 }
 
-function renderInline(text: string): ReactNode[] {
+function renderInline(
+  text: string,
+  fileReferenceActions: FileReferenceActions | null,
+): ReactNode[] {
+  const normalizedText = normalizeInlineFileReferences(text);
   const nodes: ReactNode[] = [];
   const pattern =
     /(`[^`]+`)|(\*\*[^*]+\*\*)|(\[[^\]]+\]\([^)]+\))|((?:\.{0,2}\/)?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\.[A-Za-z0-9]+(?::L?\d+(?:-L?\d+)?)?)/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
-  while ((match = pattern.exec(text))) {
+  while ((match = pattern.exec(normalizedText))) {
     if (match.index > lastIndex) {
-      nodes.push(text.slice(lastIndex, match.index));
+      nodes.push(normalizedText.slice(lastIndex, match.index));
     }
     const token = match[0];
     if (token.startsWith("`")) {
+      const inlineCode = token.slice(1, -1);
+      const reference = parseFileReference(inlineCode);
       nodes.push(
-        <code
-          className="bg-muted rounded px-1.5 py-0.5 font-mono text-[0.9em] [overflow-wrap:anywhere] break-words whitespace-normal"
-          key={`${match.index}-code`}
-        >
-          {token.slice(1, -1)}
-        </code>,
+        reference ? (
+          renderFileReference(
+            reference,
+            inlineCode,
+            match.index,
+            fileReferenceActions,
+          )
+        ) : (
+          <code
+            className="bg-muted rounded px-1.5 py-0.5 font-mono text-[0.9em] [overflow-wrap:anywhere] break-words whitespace-normal"
+            key={`${match.index}-code`}
+          >
+            {inlineCode}
+          </code>
+        ),
       );
     } else if (token.startsWith("**")) {
       nodes.push(
         <strong className="font-semibold" key={`${match.index}-strong`}>
-          {renderInline(token.slice(2, -2))}
+          {renderInline(token.slice(2, -2), fileReferenceActions)}
         </strong>,
       );
     } else if (token.startsWith("[")) {
-      nodes.push(renderLinkToken(token, match.index));
+      nodes.push(renderLinkToken(token, match.index, fileReferenceActions));
     } else {
       nodes.push(
-        <code
-          className="bg-muted rounded px-1.5 py-0.5 font-mono text-[0.9em] [overflow-wrap:anywhere] break-words whitespace-normal"
-          key={`${match.index}-file`}
-        >
-          {token}
-        </code>,
+        renderFileReferenceToken(token, match.index, fileReferenceActions),
       );
     }
     lastIndex = match.index + token.length;
   }
-  if (lastIndex < text.length) {
-    nodes.push(text.slice(lastIndex));
+  if (lastIndex < normalizedText.length) {
+    nodes.push(normalizedText.slice(lastIndex));
   }
   return nodes.map((node, index) => <Fragment key={index}>{node}</Fragment>);
 }
 
-function renderLinkToken(token: string, index: number) {
+function normalizeInlineFileReferences(text: string) {
+  return text
+    .replace(/\[`([^`]+)`\](?!\()/g, (match, reference: string) =>
+      isFileReference(reference) ? `\`${reference}\`` : match,
+    )
+    .replace(/\[([^\]\n]+)\](?!\()/g, (match, reference: string) =>
+      isFileReference(reference) ? `\`${reference}\`` : match,
+    );
+}
+
+function isFileReference(reference: string) {
+  return /^(?:\.{0,2}\/)?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\.[A-Za-z0-9]+(?::L?\d+(?:-L?\d+)?|:\d+(?:-\d+)?)?$/.test(
+    reference.trim(),
+  );
+}
+
+function renderLinkToken(
+  token: string,
+  index: number,
+  fileReferenceActions: FileReferenceActions | null,
+) {
   const match = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
   if (!match) {
     return token;
@@ -778,6 +938,10 @@ function renderLinkToken(token: string, index: number) {
       </a>
     );
   }
+  const reference = parseFileReference(href) ?? parseFileReference(label);
+  if (reference) {
+    return renderFileReference(reference, label, index, fileReferenceActions);
+  }
   return (
     <code
       className="bg-muted rounded px-1.5 py-0.5 font-mono text-[0.9em] [overflow-wrap:anywhere] break-words whitespace-normal"
@@ -787,4 +951,91 @@ function renderLinkToken(token: string, index: number) {
       {label}
     </code>
   );
+}
+
+function renderFileReferenceToken(
+  token: string,
+  index: number,
+  fileReferenceActions: FileReferenceActions | null,
+) {
+  const reference = parseFileReference(token);
+  if (!reference) {
+    return (
+      <code
+        className="bg-muted rounded px-1.5 py-0.5 font-mono text-[0.9em] [overflow-wrap:anywhere] break-words whitespace-normal"
+        key={`${index}-file`}
+      >
+        {token}
+      </code>
+    );
+  }
+  return renderFileReference(reference, token, index, fileReferenceActions);
+}
+
+function renderFileReference(
+  reference: FileReferenceTarget,
+  label: string,
+  index: number,
+  fileReferenceActions: FileReferenceActions | null,
+) {
+  const displayLabel = isFileReference(label)
+    ? fileReferenceDisplayLabel(reference)
+    : label;
+  if (!fileReferenceActions) {
+    return (
+      <code
+        className="bg-muted rounded px-1.5 py-0.5 font-mono text-[0.9em] [overflow-wrap:anywhere] break-words whitespace-normal"
+        key={`${index}-file-reference`}
+        title={reference.raw}
+      >
+        {displayLabel}
+      </code>
+    );
+  }
+  return (
+    <button
+      className="bg-muted hover:bg-muted/80 focus-visible:border-ring focus-visible:ring-ring/50 inline cursor-pointer rounded px-1.5 py-0.5 text-left font-mono text-[0.9em] [overflow-wrap:anywhere] break-words whitespace-normal underline-offset-2 transition-colors hover:underline focus-visible:ring-2 focus-visible:outline-none"
+      key={`${index}-file-reference-button`}
+      aria-label={`Open ${reference.raw} in the right panel`}
+      title={`Open ${reference.raw} in the right panel`}
+      type="button"
+      onClick={() => fileReferenceActions.openFileReference(reference)}
+    >
+      {displayLabel}
+    </button>
+  );
+}
+
+function fileReferenceDisplayLabel(reference: FileReferenceTarget) {
+  return reference.path.split(/[\\/]/).filter(Boolean).at(-1) || reference.path;
+}
+
+export function parseFileReference(value: string): FileReferenceTarget | null {
+  const raw = value.trim().replace(/^<|>$/g, "");
+  if (!isFileReference(raw)) {
+    return null;
+  }
+  const match = raw.match(
+    /^(.*?)(?::L?(\d+)(?:-L?(\d+))?|:(\d+)(?:-(\d+))?)?$/,
+  );
+  const path = match?.[1]?.trim() ?? raw;
+  const startLine = numberFromMatch(match?.[2] ?? match?.[4]);
+  const endLine = numberFromMatch(match?.[3] ?? match?.[5]) ?? startLine;
+  if (!path) {
+    return null;
+  }
+  return {
+    endLine,
+    path,
+    raw,
+    startLine,
+  };
+}
+
+function numberFromMatch(value: string | undefined) {
+  if (!value) {
+    return undefined;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }

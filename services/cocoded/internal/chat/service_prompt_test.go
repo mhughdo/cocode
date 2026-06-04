@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -59,6 +60,66 @@ func TestUserVisibleChatFindingsFiltersMachineEvents(t *testing.T) {
 	}
 	if filtered[0].ID != "finding_real" {
 		t.Fatalf("filtered[0].ID = %q, want finding_real", filtered[0].ID)
+	}
+}
+
+func TestPromptVisibleChatMessagesDropsSystemAndTransientFailures(t *testing.T) {
+	messages := []Message{
+		{
+			ID:                "system_progress",
+			AuthorType:        AuthorSystem,
+			AuthorDisplayName: "System",
+			Body:              "Workflow phase failed: context canceled",
+			Status:            MessageStatusFailed,
+		},
+		{
+			ID:                "review_progress",
+			AuthorType:        AuthorOrchestrator,
+			AuthorDisplayName: "Orchestrator",
+			Body:              "Review started. I will coordinate reviewers.",
+			Status:            MessageStatusCompleted,
+			Metadata:          json.RawMessage(`{"answer_source":"review_progress"}`),
+		},
+		{
+			ID:                "agent_failure",
+			AuthorType:        AuthorAgent,
+			AuthorDisplayName: "Codex CLI",
+			Body:              "Codex CLI could not complete its review.\n\n```text\ncontext canceled\n```",
+			Status:            MessageStatusFailed,
+		},
+		{
+			ID:                "orchestrator_answer_with_transient_detail",
+			AuthorType:        AuthorOrchestrator,
+			AuthorDisplayName: "Orchestrator",
+			Body:              "Reviewer coverage: Codex CLI previously failed with context canceled.",
+			Status:            MessageStatusCompleted,
+		},
+		{
+			ID:                "user_question",
+			AuthorType:        AuthorUser,
+			AuthorDisplayName: "You",
+			Body:              "Can you explain finding 1 again?",
+			Status:            MessageStatusCompleted,
+		},
+		{
+			ID:                "agent_answer",
+			AuthorType:        AuthorAgent,
+			AuthorDisplayName: "Codex CLI",
+			Body:              "Finding 1 is anchored at `internal/app/server.go:42`.",
+			Status:            MessageStatusCompleted,
+		},
+	}
+
+	filtered := promptVisibleChatMessages(messages, 10)
+	if got, want := len(filtered), 2; got != want {
+		t.Fatalf("filtered len = %d, want %d: %+v", got, want, filtered)
+	}
+	if filtered[0].ID != "user_question" || filtered[1].ID != "agent_answer" {
+		t.Fatalf("filtered IDs = [%s, %s], want user_question and agent_answer", filtered[0].ID, filtered[1].ID)
+	}
+	rendered := renderChatMessages(filtered)
+	if strings.Contains(rendered, "context canceled") || strings.Contains(rendered, "Review started") {
+		t.Fatalf("rendered prompt context leaked system diagnostics:\n%s", rendered)
 	}
 }
 

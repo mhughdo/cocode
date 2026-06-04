@@ -32,6 +32,14 @@ test("launches Electron app with backend bridge", async ({
     await expect(
       page.getByRole("heading", { name: "Choose a project to get started" }),
     ).toBeVisible();
+    await page.getByRole("button", { name: "Hide sidebar" }).click();
+    const showSidebarButton = page.getByRole("button", {
+      name: "Show sidebar",
+    });
+    await expect(showSidebarButton).toBeVisible();
+    const showSidebarBox = await showSidebarButton.boundingBox();
+    expect(showSidebarBox?.x ?? 0).toBeGreaterThan(130);
+    await showSidebarButton.click();
 
     const firstRepo = createBranchReviewRepo(
       testInfo.outputPath("smoke-repo-one"),

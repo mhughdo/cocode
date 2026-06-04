@@ -381,9 +381,13 @@ function collectCodexStreamValue(
   }
   const itemType = stringFromUnknown(item.type).toLowerCase();
   if (itemType === "agent_message" || itemType === "message") {
+    const text = stringFromUnknown(item.text);
     flushAccumulatorTextBuffer(accumulator, "output");
     accumulator.outputBuffer = "";
-    pushTraceItem(accumulator.output, stringFromUnknown(item.text));
+    pushTraceItem(
+      accumulator.output,
+      formatKnownAgentJSONPayload(text) ?? text,
+    );
     return true;
   }
   if (isReasoningType(itemType)) {

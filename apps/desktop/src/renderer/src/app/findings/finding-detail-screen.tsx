@@ -17,6 +17,7 @@ import {
   type ReviewEvent,
   successApiState,
 } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import { AgentRuntimeTrace } from "../chat/agent-runtime-trace";
 import { CodeSnippetViewer } from "./finding-components";
 import { detailedFindingDraftComment } from "./finding-copy";
@@ -32,12 +33,14 @@ import {
   ResizableRightPanelHandle,
   useResizableRightPanel,
 } from "../shared/resizable-right-panel";
+import { panelMotionClass, usePanelPresence } from "../shared/panel-motion";
 
 export function FindingDetailScreen({
   agentConfigs,
   client,
   events,
   finding,
+  globalRightPanelOpen,
   onBack,
   onOpenEvidenceMap,
   onOpenFollowUp,
@@ -46,6 +49,7 @@ export function FindingDetailScreen({
   client: ApiClient | null;
   events: ReviewEvent[];
   finding: Finding;
+  globalRightPanelOpen?: boolean;
   onBack: () => void;
   onOpenEvidenceMap: (finding: Finding) => void;
   onOpenFollowUp: (finding: Finding) => void;
@@ -120,6 +124,12 @@ export function FindingDetailScreen({
     maxWidth: 760,
     minWidth: 360,
   });
+  const showInspectorPanel = !globalRightPanelOpen;
+  const inspectorPresence = usePanelPresence(
+    Boolean(detail && showInspectorPanel),
+  );
+  const inspectorLayoutActive = Boolean(inspectorPresence.rendered && detail);
+  const inspectorVisible = inspectorPresence.visible && showInspectorPanel;
   const agents = agentConfigs.status === "success" ? agentConfigs.data : [];
   const followUpAgents = agents.filter(
     (agent) => agent.enabled && !agent.capabilities.can_write,
@@ -234,8 +244,14 @@ export function FindingDetailScreen({
       )}
       {detail && (
         <div
-          className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(360px,var(--right-panel-width))]"
-          style={inspectorPanel.gridStyle}
+          className={cn(
+            "grid min-w-0 gap-4 transition-[grid-template-columns]",
+            inspectorPanel.resizing ? "transition-none" : panelMotionClass,
+            inspectorLayoutActive
+              ? "xl:grid-cols-[minmax(0,1fr)_minmax(360px,var(--right-panel-width))]"
+              : "grid-cols-1",
+          )}
+          style={inspectorLayoutActive ? inspectorPanel.gridStyle : undefined}
         >
           <div className="flex min-w-0 flex-col gap-4">
             <section className="cocode-panel min-w-0 overflow-hidden">
@@ -302,38 +318,51 @@ export function FindingDetailScreen({
             </section>
           </div>
 
-          <div className="relative min-w-0">
-            <ResizableRightPanelHandle
-              onPointerDown={inspectorPanel.startResize}
-            />
-            <FindingsInspectorPanel
-              actionState={{
-                status:
-                  actionState.status === "error" ? "error" : actionState.status,
-                message:
-                  actionState.status === "error"
-                    ? actionState.error.message
-                    : actionState.status === "success"
-                      ? "Changes saved"
-                      : undefined,
-              }}
-              detail={detail}
-              draftComment={draftComment}
-              finding={activeFinding}
-              onAccept={() => void updateDecision("accepted")}
-              onCopyFixPacket={() => void copyDraftComment()}
-              onCopyPath={() => {
-                void window.cocode?.writeClipboard?.(
-                  formatFindingLocation(activeFinding),
-                );
-              }}
-              onDismiss={() => void updateDecision("dismissed")}
-              onDraftCommentChange={setDraftComment}
-              onOpenEvidenceMap={() => onOpenEvidenceMap(activeFinding)}
-              onOpenFollowUp={() => onOpenFollowUp(activeFinding)}
-              onSaveDraftComment={() => void saveDraftComment()}
-            />
-          </div>
+          {inspectorLayoutActive && (
+            <div
+              aria-hidden={!inspectorVisible}
+              className={cn(
+                "relative min-w-0 transform-gpu transition-[opacity,transform] will-change-transform",
+                panelMotionClass,
+                inspectorVisible
+                  ? "translate-x-0 opacity-100"
+                  : "pointer-events-none translate-x-8 opacity-0",
+              )}
+            >
+              <ResizableRightPanelHandle
+                onPointerDown={inspectorPanel.startResize}
+              />
+              <FindingsInspectorPanel
+                actionState={{
+                  status:
+                    actionState.status === "error"
+                      ? "error"
+                      : actionState.status,
+                  message:
+                    actionState.status === "error"
+                      ? actionState.error.message
+                      : actionState.status === "success"
+                        ? "Changes saved"
+                        : undefined,
+                }}
+                detail={detail}
+                draftComment={draftComment}
+                finding={activeFinding}
+                onAccept={() => void updateDecision("accepted")}
+                onCopyFixPacket={() => void copyDraftComment()}
+                onCopyPath={() => {
+                  void window.cocode?.writeClipboard?.(
+                    formatFindingLocation(activeFinding),
+                  );
+                }}
+                onDismiss={() => void updateDecision("dismissed")}
+                onDraftCommentChange={setDraftComment}
+                onOpenEvidenceMap={() => onOpenEvidenceMap(activeFinding)}
+                onOpenFollowUp={() => onOpenFollowUp(activeFinding)}
+                onSaveDraftComment={() => void saveDraftComment()}
+              />
+            </div>
+          )}
         </div>
       )}
     </div>

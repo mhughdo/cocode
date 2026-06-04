@@ -1,4 +1,10 @@
-import type { ComponentProps, CSSProperties, ReactNode } from "react";
+import {
+  useEffect,
+  useState,
+  type ComponentProps,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import type { LucideIcon } from "lucide-react";
 import { InboxIcon, LoaderCircleIcon, TriangleAlertIcon } from "lucide-react";
 
@@ -35,6 +41,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { panelMotionClass, usePanelPresence } from "@/app/shared/panel-motion";
 import { cn } from "@/lib/utils";
 
 export interface AppShellProps {
@@ -42,7 +49,9 @@ export interface AppShellProps {
   header: ReactNode;
   children: ReactNode;
   detailPane?: ReactNode;
+  detailPaneResizing?: boolean;
   detailPaneStyle?: CSSProperties;
+  sidebarCollapsed?: boolean;
   statusBanner?: ReactNode;
 }
 
@@ -51,29 +60,129 @@ export function AppShell({
   header,
   children,
   detailPane,
+  detailPaneResizing = false,
   detailPaneStyle,
+  sidebarCollapsed = false,
   statusBanner,
 }: AppShellProps) {
+  const [sidebarPreviewOpen, setSidebarPreviewOpen] = useState(false);
+  const sidebarPresence = usePanelPresence(!sidebarCollapsed);
+  const sidebarPreviewPresence = usePanelPresence(
+    sidebarCollapsed && sidebarPreviewOpen,
+  );
+  const detailPanePresence = usePanelPresence(Boolean(detailPane));
+  const [renderedDetailPane, setRenderedDetailPane] =
+    useState<ReactNode>(detailPane);
+  const [renderedDetailPaneStyle, setRenderedDetailPaneStyle] = useState<
+    CSSProperties | undefined
+  >(detailPaneStyle);
+
+  useEffect(() => {
+    if (!detailPane) {
+      return;
+    }
+    setRenderedDetailPane(detailPane);
+    setRenderedDetailPaneStyle(detailPaneStyle);
+  }, [detailPane, detailPaneStyle]);
+
+  useEffect(() => {
+    if (detailPanePresence.rendered) {
+      return;
+    }
+    setRenderedDetailPane(undefined);
+    setRenderedDetailPaneStyle(undefined);
+  }, [detailPanePresence.rendered]);
+
+  const detailPaneRendered = detailPanePresence.rendered && renderedDetailPane;
+  const shellStyle = {
+    "--app-sidebar-width": "266px",
+    gridTemplateColumns: sidebarPresence.visible
+      ? "var(--app-sidebar-width) minmax(0, 1fr)"
+      : "0px minmax(0, 1fr)",
+  } as CSSProperties;
+  const detailGridStyle = detailPaneRendered
+    ? ({
+        ...renderedDetailPaneStyle,
+        gridTemplateColumns: detailPanePresence.visible
+          ? "minmax(0, 1fr) minmax(0, var(--right-panel-width, 44vw))"
+          : "minmax(0, 1fr) 0px",
+      } as CSSProperties)
+    : undefined;
+
   return (
     <TooltipProvider>
-      <main className="bg-background text-foreground flex h-screen min-h-0 overflow-hidden">
-        <aside className="bg-sidebar text-sidebar-foreground border-border-subtle flex w-[266px] shrink-0 flex-col border-r">
-          {sidebar}
-        </aside>
-        <section className="bg-background flex min-w-0 flex-1 flex-col">
+      <main
+        className={cn(
+          "bg-background text-foreground relative grid h-screen min-h-0 overflow-hidden transition-[grid-template-columns]",
+          panelMotionClass,
+        )}
+        style={shellStyle}
+      >
+        {sidebarPresence.rendered && (
+          <aside
+            aria-hidden={!sidebarPresence.visible}
+            className={cn(
+              "bg-sidebar text-sidebar-foreground border-border-subtle col-start-1 row-start-1 min-h-0 min-w-0 transform-gpu overflow-hidden border-r transition-[opacity,transform] will-change-transform",
+              panelMotionClass,
+              sidebarPresence.visible
+                ? "translate-x-0 opacity-100"
+                : "pointer-events-none -translate-x-6 opacity-0",
+            )}
+          >
+            <div className="flex h-full w-[266px] flex-col">{sidebar}</div>
+          </aside>
+        )}
+        {sidebarCollapsed && (
+          <>
+            <div
+              aria-hidden="true"
+              className="app-no-drag fixed inset-y-0 left-0 z-40 w-2"
+              onMouseEnter={() => setSidebarPreviewOpen(true)}
+            />
+            {sidebarPreviewPresence.rendered && (
+              <aside
+                aria-hidden={!sidebarPreviewPresence.visible}
+                className={cn(
+                  "app-no-drag bg-sidebar text-sidebar-foreground border-border-subtle fixed inset-y-0 left-0 z-50 flex w-[266px] transform-gpu flex-col border-r shadow-2xl transition-[opacity,transform] will-change-transform",
+                  panelMotionClass,
+                  sidebarPreviewPresence.visible
+                    ? "translate-x-0 opacity-100"
+                    : "pointer-events-none -translate-x-6 opacity-0",
+                )}
+                onMouseEnter={() => setSidebarPreviewOpen(true)}
+                onMouseLeave={() => setSidebarPreviewOpen(false)}
+              >
+                {sidebar}
+              </aside>
+            )}
+          </>
+        )}
+        <section className="bg-background col-start-2 row-start-1 flex min-h-0 min-w-0 flex-1 flex-col">
           {header}
           {statusBanner}
           <div
-            style={detailPane ? detailPaneStyle : undefined}
+            style={detailGridStyle}
             className={cn(
-              "grid min-h-0 flex-1",
-              detailPane
-                ? "grid-cols-[minmax(0,1fr)_minmax(420px,var(--right-panel-width,44vw))]"
-                : "grid-cols-1",
+              "grid min-h-0 flex-1 transition-[grid-template-columns]",
+              detailPaneResizing ? "transition-none" : panelMotionClass,
+              !detailPaneRendered && "grid-cols-1",
             )}
           >
             {children}
-            {detailPane}
+            {detailPaneRendered && (
+              <div
+                aria-hidden={!detailPanePresence.visible}
+                className={cn(
+                  "h-full min-h-0 min-w-0 transform-gpu overflow-hidden transition-[opacity,transform] will-change-transform",
+                  panelMotionClass,
+                  detailPanePresence.visible
+                    ? "translate-x-0 opacity-100"
+                    : "pointer-events-none translate-x-8 opacity-0",
+                )}
+              >
+                {renderedDetailPane}
+              </div>
+            )}
           </div>
         </section>
       </main>

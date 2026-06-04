@@ -1085,10 +1085,60 @@ func (s Service) recentThreadMessages(ctx context.Context, threadID string, limi
 	if err != nil {
 		return nil, err
 	}
-	if limit <= 0 || len(messages) <= limit {
-		return messages, nil
+	return promptVisibleChatMessages(messages, limit), nil
+}
+
+func promptVisibleChatMessages(messages []Message, limit int) []Message {
+	filtered := make([]Message, 0, len(messages))
+	for _, message := range messages {
+		if promptVisibleChatMessage(message) {
+			filtered = append(filtered, message)
+		}
 	}
-	return messages[len(messages)-limit:], nil
+	if limit <= 0 || len(filtered) <= limit {
+		return filtered
+	}
+	return filtered[len(filtered)-limit:]
+}
+
+func promptVisibleChatMessage(message Message) bool {
+	if message.Status != MessageStatusCompleted {
+		return false
+	}
+	switch message.AuthorType {
+	case AuthorUser, AuthorCocode, AuthorOrchestrator, AuthorAgent, AuthorVerifier:
+	default:
+		return false
+	}
+	metadata := messageMetadata(message.Metadata)
+	if source, _ := metadata["answer_source"].(string); source == "review_progress" {
+		return false
+	}
+	if failed, _ := metadata["failed"].(bool); failed {
+		return false
+	}
+	return !transientSystemDiagnosticText(message.Body)
+}
+
+func transientSystemDiagnosticText(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	if lower == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"context canceled",
+		"context cancelled",
+		"context deadline exceeded",
+		"operation was canceled",
+		"operation was cancelled",
+		"request canceled",
+		"request cancelled",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s Service) agentMessagesForRuns(ctx context.Context, threadID string, runIDs []string) ([]Message, error) {
@@ -1107,7 +1157,7 @@ func (s Service) agentMessagesForRuns(ctx context.Context, threadID string, runI
 	}
 	matches := make([]Message, 0, len(runSet))
 	for _, message := range messages {
-		if _, ok := runSet[message.AgentRunID]; ok {
+		if _, ok := runSet[message.AgentRunID]; ok && promptVisibleChatMessage(message) {
 			matches = append(matches, message)
 		}
 	}

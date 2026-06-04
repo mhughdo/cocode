@@ -74,11 +74,13 @@ export function ReviewThread({
   activeRepository,
   agentConfigs,
   client,
+  globalRightPanelOpen,
   session,
 }: {
   activeRepository?: Repository;
   agentConfigs: Loadable<AgentConfig[]>;
   client: ApiClient | null;
+  globalRightPanelOpen?: boolean;
   session?: ReviewSession;
 }) {
   const [activeTab, setActiveTab] = useState("chat");
@@ -207,6 +209,7 @@ export function ReviewThread({
                   client={client}
                   events={live.events}
                   findings={live.findings}
+                  globalRightPanelOpen={globalRightPanelOpen}
                   onOpenFindingDetail={openFindingDetail}
                   onOpenFindings={() => setActiveTab("findings")}
                   session={live.session ?? session}
@@ -253,10 +256,14 @@ export function ReviewThread({
               />
             </TabsContent>
 
-            <TabsContent value="findings" className={REVIEW_THREAD_TAB_CLASS}>
+            <TabsContent
+              value="findings"
+              className={cn(REVIEW_THREAD_TAB_CLASS, "overflow-hidden")}
+            >
               <ReviewFindingsBoard
                 client={client}
                 findings={live.findings}
+                globalRightPanelOpen={globalRightPanelOpen}
                 onOpenDetail={openFindingDetail}
                 onOpenEvidenceMap={openEvidenceMap}
                 onOpenFollowUp={openFollowUp}
@@ -274,6 +281,7 @@ export function ReviewThread({
                   client={client}
                   events={live.events}
                   finding={detailFinding}
+                  globalRightPanelOpen={globalRightPanelOpen}
                   onBack={() => setActiveTab("findings")}
                   onOpenEvidenceMap={openEvidenceMap}
                   onOpenFollowUp={openFollowUp}
@@ -296,6 +304,7 @@ export function ReviewThread({
                   activeRepository={activeRepository}
                   client={client}
                   finding={evidenceMapFinding}
+                  globalRightPanelOpen={globalRightPanelOpen}
                   onBack={() => setActiveTab("findings")}
                   onOpenFindingDetail={openFindingDetail}
                 />

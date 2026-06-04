@@ -7,11 +7,17 @@ import {
   useRef,
   useState,
 } from "react";
-import { Loader2Icon, MessageSquareIcon, SendIcon } from "lucide-react";
+import {
+  Loader2Icon,
+  MessageSquareIcon,
+  SendIcon,
+  SquareIcon,
+} from "lucide-react";
 
 import { EmptyState, LoadingRows } from "@/components/app/chrome";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
 import {
   type AgentConfig,
   type ApiClient,
@@ -51,6 +57,7 @@ export function CentralizedChatScreen({
   client,
   events,
   findings,
+  globalRightPanelOpen,
   onOpenFindingDetail,
   onOpenFindings,
   session,
@@ -60,6 +67,7 @@ export function CentralizedChatScreen({
   client: ApiClient | null;
   events: ReviewEvent[];
   findings: Loadable<FindingListResponse>;
+  globalRightPanelOpen?: boolean;
   onOpenFindingDetail: (finding: Finding) => void;
   onOpenFindings: () => void;
   session: ReviewSession;
@@ -76,6 +84,7 @@ export function CentralizedChatScreen({
   const [pendingAgentMessages, setPendingAgentMessages] = useState<
     ChatMessage[]
   >([]);
+  const activeSubmitAbortControllerRef = useRef<AbortController | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const shouldStickToBottomRef = useRef(true);
 
@@ -131,8 +140,9 @@ export function CentralizedChatScreen({
         }),
     [sessionAgentEntries],
   );
-  const selectedResponder =
-    responderOptions.find((option) => option.id === responderID) ??
+  const selectedResponder = responderOptions.find(
+    (option) => option.id === responderID,
+  ) ??
     responderOptions.find((option) => option.id === "orchestrator") ??
     responderOptions[0] ?? {
       id: "orchestrator",
@@ -212,6 +222,13 @@ export function CentralizedChatScreen({
     return () => window.clearInterval(interval);
   }, [refreshThread, session.status]);
 
+  useEffect(() => {
+    return () => {
+      activeSubmitAbortControllerRef.current?.abort();
+      activeSubmitAbortControllerRef.current = null;
+    };
+  }, []);
+
   const liveMessages = useMemo(
     () =>
       thread.status === "success"
@@ -245,11 +262,24 @@ export function CentralizedChatScreen({
     }
     return next;
   }, [events]);
-  const finalizedFindings =
-    session.status === "completed" && findings.status === "success"
-      ? findings.data.items
-      : [];
-  const messageCount = displayedMessages.length + finalizedFindings.length;
+  const finalizedFindings = useMemo(
+    () =>
+      session.status === "completed" && findings.status === "success"
+        ? findings.data.items
+        : [],
+    [findings, session.status],
+  );
+  const timelineItems = useMemo(
+    () =>
+      buildCentralizedChatTimeline({
+        events,
+        findings: finalizedFindings,
+        messages: displayedMessages,
+        session,
+      }),
+    [displayedMessages, events, finalizedFindings, session],
+  );
+  const messageCount = timelineItems.length;
   useEffect(() => {
     const node = messageListRef.current;
     if (!node || !shouldStickToBottomRef.current) {
@@ -264,6 +294,9 @@ export function CentralizedChatScreen({
     if (!client || !body || !selectedResponder || submitting) {
       return;
     }
+    activeSubmitAbortControllerRef.current?.abort();
+    const abortController = new AbortController();
+    activeSubmitAbortControllerRef.current = abortController;
     setSubmitting(true);
     setSubmitError(null);
     const optimisticMessage: ChatMessage = {
@@ -304,9 +337,17 @@ export function CentralizedChatScreen({
         : {}),
     };
     const next = await loadApiResource(() =>
-      client.createReviewSessionChatTurn(session.id, request),
+      client.createReviewSessionChatTurn(session.id, request, {
+        signal: abortController.signal,
+      }),
     );
-    if (next.status === "success") {
+    if (activeSubmitAbortControllerRef.current !== abortController) {
+      return;
+    }
+    activeSubmitAbortControllerRef.current = null;
+    if (abortController.signal.aborted) {
+      void refreshThread();
+    } else if (next.status === "success") {
       setSuccessfulThread({
         thread: next.data.thread,
         messages: next.data.messages,
@@ -333,6 +374,15 @@ export function CentralizedChatScreen({
     setSubmitting(false);
   }
 
+  function stopSubmitting() {
+    activeSubmitAbortControllerRef.current?.abort();
+    activeSubmitAbortControllerRef.current = null;
+    setSubmitError(null);
+    setPendingAgentMessages([]);
+    setSubmitting(false);
+    void refreshThread();
+  }
+
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.nativeEvent.isComposing) {
       return;
@@ -345,7 +395,14 @@ export function CentralizedChatScreen({
   }
 
   return (
-    <div className="grid h-full min-h-0 grid-cols-[minmax(0,1fr)_280px] gap-6 overflow-hidden max-xl:grid-cols-1">
+    <div
+      className={cn(
+        "grid h-full min-h-0 gap-6 overflow-hidden",
+        globalRightPanelOpen
+          ? "grid-cols-1"
+          : "grid-cols-[minmax(0,1fr)_280px] max-xl:grid-cols-1",
+      )}
+    >
       <div className="flex min-h-0 min-w-0 flex-col gap-3">
         <div
           aria-label="Centralized chat messages"
@@ -368,70 +425,85 @@ export function CentralizedChatScreen({
           {thread.status === "success" &&
             displayedMessages.length === 0 &&
             finalizedFindings.length === 0 && (
-            <EmptyState
-              title="No chat messages yet"
-              description="Start with a question for the orchestrator."
-              icon={MessageSquareIcon}
-            />
-          )}
+              <EmptyState
+                title="No chat messages yet"
+                description="Start with a question for the orchestrator."
+                icon={MessageSquareIcon}
+              />
+            )}
           {thread.status === "success" &&
             (displayedMessages.length > 0 || finalizedFindings.length > 0) && (
-            <div className="flex flex-col gap-3">
-              {displayedMessages.map((item) => (
-                <ChatMessageCard
-                  agent={agentByID(allSessionAgents, item.agent_config_id)}
-                  events={
-                    item.agent_run_id
-                      ? (eventsByRunID.get(item.agent_run_id) ?? [])
-                      : []
-                  }
-                  key={item.id}
-                  message={item}
-                />
-              ))}
-              {finalizedFindings.length > 0 && (
-                <FinalFindingsMessage
-                  findings={finalizedFindings}
-                  onOpenFindingDetail={onOpenFindingDetail}
-                  onOpenFindings={onOpenFindings}
-                />
-              )}
-              {submitting && pendingAgentMessages.length === 0 && (
-                <div className="text-muted-foreground flex items-center gap-2 rounded-xl border bg-white px-4 py-3 text-xs">
-                  <Loader2Icon className="size-3.5 animate-spin" />
-                  Waiting for {selectedResponder.label}
-                </div>
-              )}
-            </div>
-          )}
+              <div className="flex flex-col gap-3">
+                {timelineItems.map((item) =>
+                  item.kind === "message" ? (
+                    <ChatMessageCard
+                      agent={agentByID(
+                        allSessionAgents,
+                        item.message.agent_config_id,
+                      )}
+                      events={
+                        item.message.agent_run_id
+                          ? (eventsByRunID.get(item.message.agent_run_id) ?? [])
+                          : []
+                      }
+                      key={item.key}
+                      message={item.message}
+                    />
+                  ) : (
+                    <FinalFindingsMessage
+                      findings={item.findings}
+                      key={item.key}
+                      onOpenFindingDetail={onOpenFindingDetail}
+                      onOpenFindings={onOpenFindings}
+                    />
+                  ),
+                )}
+                {submitting && pendingAgentMessages.length === 0 && (
+                  <div className="text-muted-foreground flex items-center gap-2 rounded-xl border bg-white px-4 py-3 text-xs">
+                    <Loader2Icon className="size-3.5 animate-spin" />
+                    Waiting for {selectedResponder.label}
+                  </div>
+                )}
+              </div>
+            )}
         </div>
 
         <form className="shrink-0" onSubmit={submitMessage}>
-          <div className="border-border bg-surface-raised focus-within:border-foreground/35 rounded-xl border shadow-[0_1px_2px_rgba(17,18,20,0.04)]">
+          <div className="border-border bg-card focus-within:border-foreground/35 overflow-hidden rounded-xl border shadow-[0_1px_2px_rgba(17,18,20,0.04)]">
             <Textarea
               aria-label="Centralized review message"
-              className="max-h-36 min-h-18 resize-none border-0 bg-transparent px-4 py-3 text-[13px] shadow-none focus-visible:ring-0"
-              disabled={!client || submitting}
+              className="bg-card placeholder:text-muted-foreground/70 disabled:bg-card max-h-40 min-h-24 resize-none rounded-none border-0 px-4 py-3 text-[15px] leading-6 shadow-none placeholder:text-[15px] focus-visible:ring-0 disabled:opacity-100 md:text-[15px]"
+              disabled={!client}
               onChange={(event) => setMessage(event.target.value)}
               onKeyDown={handleComposerKeyDown}
               placeholder="Ask cocode anything about this review..."
               value={message}
             />
-            <div className="flex flex-wrap items-center justify-end gap-2 px-3 pb-3">
+            <div className="bg-card flex flex-wrap items-center justify-end gap-2 px-3 pb-3">
               <ResponderDropdown
                 options={responderOptions}
                 selected={selectedResponder}
                 onSelect={setResponderID}
               />
               <Button
-                aria-label="Send centralized chat message"
+                aria-label={
+                  submitting
+                    ? `Stop ${selectedResponder.label}`
+                    : "Send centralized chat message"
+                }
                 className="size-9 rounded-full bg-[#141414] text-white hover:bg-[#2a2a2a]"
-                disabled={!message.trim() || submitting || !client}
+                disabled={!submitting && (!message.trim() || !client)}
                 size="icon"
-                type="submit"
+                title={
+                  submitting
+                    ? `Stop ${selectedResponder.label}`
+                    : "Send message"
+                }
+                type={submitting ? "button" : "submit"}
+                onClick={submitting ? stopSubmitting : undefined}
               >
                 {submitting ? (
-                  <Loader2Icon className="size-4 animate-spin" />
+                  <SquareIcon className="size-3.5 fill-current" />
                 ) : (
                   <SendIcon className="size-4" />
                 )}
@@ -444,13 +516,139 @@ export function CentralizedChatScreen({
         </form>
       </div>
 
-      <CentralizedChatRail
-        events={events}
-        findings={findings}
-        onOpenFindings={onOpenFindings}
-        session={session}
-        summary={summary}
-      />
+      {!globalRightPanelOpen && (
+        <CentralizedChatRail
+          events={events}
+          findings={findings}
+          onOpenFindings={onOpenFindings}
+          session={session}
+          summary={summary}
+        />
+      )}
     </div>
   );
+}
+
+export type CentralizedChatTimelineItem =
+  | {
+      createdAt: string;
+      key: string;
+      kind: "message";
+      message: ChatMessage;
+    }
+  | {
+      createdAt: string;
+      findings: Finding[];
+      key: string;
+      kind: "final-findings";
+    };
+
+export function buildCentralizedChatTimeline({
+  events,
+  findings,
+  messages,
+  session,
+}: {
+  events: ReviewEvent[];
+  findings: Finding[];
+  messages: ChatMessage[];
+  session: ReviewSession;
+}): CentralizedChatTimelineItem[] {
+  const items: CentralizedChatTimelineItem[] = messages.map((message) => ({
+    createdAt: message.created_at,
+    key: `message:${message.id}`,
+    kind: "message" as const,
+    message,
+  }));
+  if (session.status === "completed" && findings.length > 0) {
+    items.push({
+      createdAt: finalizedFindingsCreatedAt({ events, findings, session }),
+      findings,
+      key: `final-findings:${session.id}`,
+      kind: "final-findings",
+    });
+  }
+  return items.sort(compareTimelineItems);
+}
+
+function finalizedFindingsCreatedAt({
+  events,
+  findings,
+  session,
+}: {
+  events: ReviewEvent[];
+  findings: Finding[];
+  session: ReviewSession;
+}) {
+  return (
+    latestEventTime(
+      events,
+      (event) => event.type === "ReviewSessionCompleted",
+    ) ??
+    latestEventTime(
+      events,
+      (event) =>
+        event.type === "WorkflowPhaseCompleted" &&
+        ["draft_comments", "build_evidence_maps", "verify_findings"].includes(
+          eventPayloadString(event.payload.phase),
+        ),
+    ) ??
+    latestTimestamp(
+      findings.flatMap((finding) => [
+        finding.updated_at,
+        finding.first_seen_at,
+      ]),
+    ) ??
+    session.updated_at ??
+    session.created_at
+  );
+}
+
+function latestEventTime(
+  events: ReviewEvent[],
+  predicate: (event: ReviewEvent) => boolean,
+) {
+  return latestTimestamp(
+    events
+      .filter(predicate)
+      .map((event) => event.created_at)
+      .filter(Boolean),
+  );
+}
+
+function latestTimestamp(values: string[]) {
+  let latest = "";
+  let latestTime = Number.NEGATIVE_INFINITY;
+  for (const value of values) {
+    const time = Date.parse(value);
+    if (!Number.isFinite(time) || time < latestTime) {
+      continue;
+    }
+    latest = value;
+    latestTime = time;
+  }
+  return latest || null;
+}
+
+function compareTimelineItems(
+  left: CentralizedChatTimelineItem,
+  right: CentralizedChatTimelineItem,
+) {
+  const byTime = timelineTime(left.createdAt) - timelineTime(right.createdAt);
+  if (byTime !== 0) {
+    return byTime;
+  }
+  if (left.kind !== right.kind) {
+    return left.kind === "message" ? -1 : 1;
+  }
+  return left.key.localeCompare(right.key);
+}
+
+function timelineTime(value: string) {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function eventPayloadString(value: unknown) {
+  return typeof value === "string" ? value : "";
 }

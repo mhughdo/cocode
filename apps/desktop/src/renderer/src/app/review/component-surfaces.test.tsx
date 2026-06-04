@@ -10,7 +10,11 @@ import { ChatMessageCard } from "../chat/chat-message-card";
 import { FinalFindingsMessage } from "../chat/final-findings-message";
 import { EvidenceMapGraphCanvas } from "../evidence/review-evidence-map";
 import { EvidenceMapInspectorPanel } from "../evidence/evidence-map-inspector-panel";
-import { MarkdownMessage } from "../shared/markdown-message";
+import {
+  MarkdownMessage,
+  parseFileReference,
+} from "../shared/markdown-message";
+import { FileReferenceActionsProvider } from "../shared/file-reference-actions";
 import type {
   ChatMessage,
   EvidenceItem,
@@ -163,10 +167,55 @@ describe("review component surfaces", () => {
 
     expect(html).toContain("bg-red-50");
     expect(html).toContain("bg-emerald-50");
+    expect(html).toContain('aria-label="Copy code snippet"');
     expect(html).toContain("sources = []aggregatedposition.PositionSource");
   });
 
-  it("only shows chat expansion controls while a message is still processing", () => {
+  it("renders markdown code fences with a copy action", () => {
+    const html = renderToStaticMarkup(
+      <MarkdownMessage content={"```go\nreturn nil\n```"} />,
+    );
+
+    expect(html).toContain('aria-label="Copy code snippet"');
+    expect(html).toContain("return nil");
+  });
+
+  it("unwraps bracketed inline file references in markdown", () => {
+    const openFileReference = vi.fn();
+    const html = renderToStaticMarkup(
+      <FileReferenceActionsProvider value={{ openFileReference }}>
+        <MarkdownMessage content="In [migrations/clickhouse/008_dedup_pool_active_apr_snapshots.sql:31-57], and [`migrations/clickhouse/009_cleanup_active_apr_spikes.sql:70-70`], the new table is:" />
+      </FileReferenceActionsProvider>,
+    );
+
+    expect(html).toContain(
+      "migrations/clickhouse/008_dedup_pool_active_apr_snapshots.sql:31-57",
+    );
+    expect(html).toContain(
+      "migrations/clickhouse/009_cleanup_active_apr_spikes.sql:70-70",
+    );
+    expect(html).toContain(">008_dedup_pool_active_apr_snapshots.sql</button>");
+    expect(html).toContain(">009_cleanup_active_apr_spikes.sql</button>");
+    expect(html).toContain("<button");
+    expect(html).toContain("Open migrations/clickhouse");
+    expect(html).not.toContain("In [<code");
+    expect(html).not.toContain("In [<button");
+    expect(html).not.toContain("</code>],");
+  });
+
+  it("parses file reference line ranges for right panel highlighting", () => {
+    expect(
+      parseFileReference(
+        "migrations/clickhouse/008_dedup_pool_active_apr_snapshots.sql:31-57",
+      ),
+    ).toMatchObject({
+      endLine: 57,
+      path: "migrations/clickhouse/008_dedup_pool_active_apr_snapshots.sql",
+      startLine: 31,
+    });
+  });
+
+  it("keeps finalized chat output expanded while allowing collapse", () => {
     const longBody = Array.from(
       { length: 18 },
       (_, index) => `Line ${index + 1} with enough detail to keep.`,
@@ -184,9 +233,106 @@ describe("review component surfaces", () => {
       />,
     );
 
-    expect(completed).not.toContain("See more");
+    expect(completed).toContain("Show less");
     expect(completed).toContain("Line 18");
     expect(streaming).toContain("See more");
+  });
+
+  it("renders a copy action for finalized agent messages", () => {
+    const html = renderToStaticMarkup(
+      <ChatMessageCard
+        events={[]}
+        message={{ ...chatMessageFixture, body: "Readable agent output." }}
+      />,
+    );
+
+    expect(html).toContain('aria-label="Copy message from Orchestrator"');
+  });
+
+  it("renders a copy action for user messages", () => {
+    const html = renderToStaticMarkup(
+      <ChatMessageCard
+        events={[]}
+        message={{
+          ...chatMessageFixture,
+          author_display_name: "You",
+          author_type: "user",
+          body: "Can you explain this finding again?",
+        }}
+      />,
+    );
+
+    expect(html).toContain('aria-label="Copy message from You"');
+  });
+
+  it("formats persisted raw agent event bodies before rendering", () => {
+    const codexBody = JSON.stringify({
+      type: "item.completed",
+      item: {
+        id: "item_43",
+        type: "agent_message",
+        text: JSON.stringify({
+          clusters: [
+            {
+              canonical_claim:
+                "Migration backfill uses the same inserted_at value for historical rows.",
+              severity: "medium",
+              confidence: 0.86,
+              verification_status: "locally_supported",
+              primary_location: {
+                path: "migrations/clickhouse/008_dedup_pool_active_apr_snapshots.sql",
+                start_line: 54,
+                end_line: 55,
+              },
+              evidence_summary:
+                "The backfill explicitly inserts now() for all copied rows.",
+            },
+          ],
+        }),
+      },
+    });
+    const claudeSignatureBody = JSON.stringify({
+      type: "stream_event",
+      event: {
+        type: "content_block_delta",
+        index: 0,
+        delta: {
+          type: "signature_delta",
+          signature: "EoyNAQpjCA4YAipAr48AuWx35QMatCF5q",
+        },
+      },
+    });
+
+    const codex = renderToStaticMarkup(
+      <ChatMessageCard
+        events={[]}
+        message={{
+          ...chatMessageFixture,
+          agent_run_id: "agent_run_1",
+          body: codexBody,
+          status: "completed",
+        }}
+      />,
+    );
+    const claude = renderToStaticMarkup(
+      <ChatMessageCard
+        events={[]}
+        message={{
+          ...chatMessageFixture,
+          agent_run_id: "agent_run_2",
+          body: claudeSignatureBody,
+          status: "streaming",
+        }}
+      />,
+    );
+
+    expect(codex).toContain("Findings (1)");
+    expect(codex).toContain("Migration backfill uses the same inserted_at");
+    expect(codex).not.toContain("item.completed");
+    expect(codex).not.toContain("&quot;clusters&quot;");
+    expect(claude).toContain("streaming output back to cocode");
+    expect(claude).not.toContain("signature_delta");
+    expect(claude).not.toContain("EoyNAQpj");
   });
 
   it("brands finalized findings as Cocode instead of a generic system message", () => {

@@ -479,7 +479,16 @@ pre,
 
   .cocode-shiki-block .rs-line-number::before {
     border-right: 1px solid var(--border);
+    color: var(--line-numbers-foreground);
+    content: attr(data-line-number);
+    display: inline-block;
+    font-size: var(--line-numbers-font-size);
+    margin-left: var(--line-numbers-padding-left);
     margin-right: 0.75rem;
+    min-width: var(--line-numbers-width);
+    padding-right: var(--line-numbers-padding-right);
+    text-align: right;
+    user-select: none;
   }
 
   .cocode-shiki-block .rs-highlighted-line {

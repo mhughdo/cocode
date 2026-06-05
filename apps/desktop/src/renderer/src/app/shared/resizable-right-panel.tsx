@@ -88,7 +88,7 @@ export function ResizableRightPanelHandle({
       aria-label="Resize right panel"
       aria-orientation="vertical"
       className={cn(
-        "group absolute top-0 bottom-0 left-0 z-10 hidden w-3 -translate-x-1/2 cursor-col-resize items-stretch justify-center xl:flex",
+        "group absolute inset-y-0 left-0 z-10 hidden w-3 -translate-x-1/2 cursor-col-resize items-stretch justify-center xl:flex",
         className,
       )}
       role="separator"

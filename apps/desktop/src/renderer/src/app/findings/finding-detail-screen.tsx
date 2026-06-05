@@ -1,53 +1,40 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { ErrorState, LoadingRows } from "@/components/app/chrome";
 import {
-  type AgentConfig,
   type ApiClient,
-  type AskFindingQuestionResponse,
   errorApiState,
   type Finding,
   type FindingDetailResponse,
-  type FindingThreadView,
   idleApiState,
   type Loadable,
   loadApiResource,
   loadingApiState,
-  type ReviewContextPolicy,
-  type ReviewEvent,
-  successApiState,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { AgentRuntimeTrace } from "../chat/agent-runtime-trace";
-import { CodeSnippetViewer } from "./finding-components";
-import { detailedFindingDraftComment } from "./finding-copy";
-import { FollowUpMessages, followUpRuntimeEvents } from "./finding-thread";
-import { MessageComposer } from "../chat/message-composer";
-import { ReviewBreadcrumb } from "../shared/review-breadcrumb";
+import { FindingsInspectorPanel } from "../evidence/findings-inspector-panel";
 import {
   formatFindingLocation,
   truncate,
 } from "../evidence/review-evidence-utils";
-import { FindingsInspectorPanel } from "../evidence/findings-inspector-panel";
+import { panelMotionClass, usePanelPresence } from "../shared/panel-motion";
 import {
   ResizableRightPanelHandle,
   useResizableRightPanel,
 } from "../shared/resizable-right-panel";
-import { panelMotionClass, usePanelPresence } from "../shared/panel-motion";
+import { ReviewBreadcrumb } from "../shared/review-breadcrumb";
+import { CodeSnippetViewer } from "./finding-components";
+import { detailedFindingDraftComment } from "./finding-copy";
 
 export function FindingDetailScreen({
-  agentConfigs,
   client,
-  events,
   finding,
   globalRightPanelOpen,
   onBack,
   onOpenEvidenceMap,
   onOpenFollowUp,
 }: {
-  agentConfigs: Loadable<AgentConfig[]>;
   client: ApiClient | null;
-  events: ReviewEvent[];
   finding: Finding;
   globalRightPanelOpen?: boolean;
   onBack: () => void;
@@ -56,15 +43,9 @@ export function FindingDetailScreen({
 }) {
   const [detailState, setDetailState] =
     useState<Loadable<FindingDetailResponse>>(loadingApiState());
-  const [threadState, setThreadState] =
-    useState<Loadable<FindingThreadView>>(loadingApiState());
   const [draftComment, setDraftComment] = useState("");
-  const [question, setQuestion] = useState("");
-  const [selectedAgentId, setSelectedAgentId] = useState("");
   const [actionState, setActionState] =
-    useState<Loadable<FindingDetailResponse | AskFindingQuestionResponse>>(
-      idleApiState(),
-    );
+    useState<Loadable<FindingDetailResponse>>(idleApiState());
 
   useEffect(() => {
     let canceled = false;
@@ -75,37 +56,34 @@ export function FindingDetailScreen({
         return;
       }
       if (!api) {
-        const error = new Error("Backend client is unavailable");
-        setDetailState(errorApiState(error));
-        setThreadState(errorApiState(error));
+        setDetailState(
+          errorApiState(new Error("Backend client is unavailable")),
+        );
         return;
       }
       setDetailState(loadingApiState());
-      setThreadState(loadingApiState());
       setDraftComment("");
       setActionState(idleApiState());
-      void Promise.all([
-        loadApiResource(() => api.getFindingDetail(findingId)),
-        loadApiResource(() => api.getFindingThread(findingId)),
-      ]).then(([detail, thread]) => {
-        if (canceled) {
-          return;
-        }
-        if (
-          detail.status === "success" &&
-          detail.data.finding.id !== findingId
-        ) {
-          return;
-        }
-        setDetailState(detail);
-        setThreadState(thread);
-        if (detail.status === "success") {
-          setDraftComment(
-            detail.data.finding.draft_comment ||
-              detailedFindingDraftComment(detail.data.finding, detail.data),
-          );
-        }
-      });
+      void loadApiResource(() => api.getFindingDetail(findingId)).then(
+        (detail) => {
+          if (canceled) {
+            return;
+          }
+          if (
+            detail.status === "success" &&
+            detail.data.finding.id !== findingId
+          ) {
+            return;
+          }
+          setDetailState(detail);
+          if (detail.status === "success") {
+            setDraftComment(
+              detail.data.finding.draft_comment ||
+                detailedFindingDraftComment(detail.data.finding, detail.data),
+            );
+          }
+        },
+      );
     });
     return () => {
       canceled = true;
@@ -115,10 +93,6 @@ export function FindingDetailScreen({
   const detail =
     detailState.status === "success" ? detailState.data : undefined;
   const activeFinding = detail?.finding ?? finding;
-  const runtimeEvents = useMemo(
-    () => followUpRuntimeEvents(events, activeFinding.id),
-    [activeFinding.id, events],
-  );
   const inspectorPanel = useResizableRightPanel({
     defaultWidth: 500,
     maxWidth: 760,
@@ -130,10 +104,6 @@ export function FindingDetailScreen({
   );
   const inspectorLayoutActive = Boolean(inspectorPresence.rendered && detail);
   const inspectorVisible = inspectorPresence.visible && showInspectorPanel;
-  const agents = agentConfigs.status === "success" ? agentConfigs.data : [];
-  const followUpAgents = agents.filter(
-    (agent) => agent.enabled && !agent.capabilities.can_write,
-  );
 
   async function updateDecision(decision: "accepted" | "dismissed") {
     if (!client) {
@@ -193,29 +163,6 @@ export function FindingDetailScreen({
     setActionState(state);
   }
 
-  async function askQuestion(
-    nextQuestion: string,
-    contextPolicy: ReviewContextPolicy,
-    agentConfigId?: string,
-  ) {
-    if (!client || !nextQuestion.trim()) {
-      return;
-    }
-    setActionState(loadingApiState());
-    const state = await loadApiResource(() =>
-      client.askFindingQuestion(activeFinding.id, {
-        question: nextQuestion.trim(),
-        agent_config_id: agentConfigId || selectedAgentId || undefined,
-        context_policy: contextPolicy,
-      }),
-    );
-    setActionState(state);
-    if (state.status === "success") {
-      setQuestion("");
-      setThreadState(successApiState(state.data.thread));
-    }
-  }
-
   return (
     <div className="flex min-h-0 flex-col gap-4">
       <div className="min-w-0">
@@ -253,70 +200,25 @@ export function FindingDetailScreen({
           )}
           style={inspectorLayoutActive ? inspectorPanel.gridStyle : undefined}
         >
-          <div className="flex min-w-0 flex-col gap-4">
-            <section className="cocode-panel min-w-0 overflow-hidden">
-              <div className="border-b px-4 py-3">
-                <div className="text-sm font-semibold">Issue location</div>
-                <div className="text-muted-foreground mt-1 font-mono text-xs break-all">
-                  {activeFinding.primary_path || "No primary file"}
-                </div>
+          <section className="cocode-panel min-w-0 overflow-hidden">
+            <div className="border-b px-4 py-3">
+              <div className="text-sm font-semibold">Issue location</div>
+              <div className="text-muted-foreground mt-1 font-mono text-xs break-all">
+                {activeFinding.primary_path || "No primary file"}
               </div>
-              <div className="p-4">
-                <CodeSnippetViewer
-                  evidence={detail.evidence_items}
-                  finding={activeFinding}
-                  onCopyPath={() => {
-                    void window.cocode?.writeClipboard?.(
-                      formatFindingLocation(activeFinding),
-                    );
-                  }}
-                />
-              </div>
-            </section>
-
-            <section className="cocode-panel">
-              <div className="border-b px-4 py-3">
-                <div className="text-sm font-semibold">Finding thread</div>
-                <div className="text-muted-foreground mt-1 text-xs">
-                  Ask scoped questions and keep the answers attached to this
-                  finding.
-                </div>
-              </div>
-              {threadState.status === "loading" && <LoadingRows rows={3} />}
-              {threadState.status === "error" && (
-                <ErrorState
-                  className="m-4"
-                  title="Finding thread unavailable"
-                  description={threadState.error.message}
-                />
-              )}
-              {threadState.status === "success" && (
-                <FollowUpMessages messages={threadState.data.messages} />
-              )}
-              <AgentRuntimeTrace
-                events={runtimeEvents}
-                loading={actionState.status === "loading"}
+            </div>
+            <div className="p-4">
+              <CodeSnippetViewer
+                evidence={detail.evidence_items}
+                finding={activeFinding}
+                onCopyPath={() => {
+                  void window.cocode?.writeClipboard?.(
+                    formatFindingLocation(activeFinding),
+                  );
+                }}
               />
-              <MessageComposer
-                agents={followUpAgents}
-                backendDetail="Uses finding evidence and prior thread messages."
-                defaultMode="finding follow-up"
-                disabled={!client}
-                onQuestionChange={setQuestion}
-                onSelectedAgentIdChange={setSelectedAgentId}
-                onSubmit={(nextQuestion, options) =>
-                  askQuestion(
-                    nextQuestion,
-                    options.contextPolicy,
-                    options.agentConfigId,
-                  )
-                }
-                question={question}
-                selectedAgentId={selectedAgentId}
-                submitting={actionState.status === "loading"}
-              />
-            </section>
-          </div>
+            </div>
+          </section>
 
           {inspectorLayoutActive && (
             <div

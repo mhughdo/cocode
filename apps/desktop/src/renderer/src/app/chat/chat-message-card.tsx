@@ -531,6 +531,15 @@ function AskTargetIcon({ option }: { option: ChatAskTargetOption }) {
 }
 
 function ResponderIcon({ option }: { option: ChatResponderOption }) {
+  if (option.logoUrl) {
+    return (
+      <img
+        alt=""
+        className="size-4 shrink-0 rounded-[3px]"
+        src={option.logoUrl}
+      />
+    );
+  }
   if (option.icon === "orchestrator") {
     return <SparklesIcon className="size-4 shrink-0" />;
   }

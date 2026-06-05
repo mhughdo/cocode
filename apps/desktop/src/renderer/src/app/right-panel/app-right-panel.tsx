@@ -104,7 +104,7 @@ export function AppRightPanel({
   return (
     <aside
       aria-label="App right panel"
-      className="bg-background @container/right-panel relative flex min-h-0 min-w-0 flex-col border-l"
+      className="bg-background @container/right-panel relative flex h-full min-h-0 min-w-0 flex-col border-l"
     >
       <ResizableRightPanelHandle onPointerDown={onResizePointerDown} />
       <div className="border-border-subtle flex h-11 shrink-0 items-center gap-1 border-b px-2">

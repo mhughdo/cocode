@@ -277,9 +277,7 @@ export function ReviewThread({
             >
               {detailFinding ? (
                 <FindingDetailScreen
-                  agentConfigs={agentConfigs}
                   client={client}
-                  events={live.events}
                   finding={detailFinding}
                   globalRightPanelOpen={globalRightPanelOpen}
                   onBack={() => setActiveTab("findings")}

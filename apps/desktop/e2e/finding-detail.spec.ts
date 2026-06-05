@@ -160,7 +160,7 @@ test("opens finding detail and Evidence Map from seeded data", async ({
     await expect(page.getByText("Evidence story")).toBeVisible();
     await expect(page.getByText("Primary code").last()).toBeVisible();
     await expect(page.getByText("Draft GitHub comment")).toBeVisible();
-    await expect(page.getByText("Finding thread")).toBeVisible();
+    await expect(page.getByText("Finding thread")).toHaveCount(0);
     const detailBreadcrumb = page.getByRole("navigation", {
       name: "Review breadcrumb",
     });

@@ -6,6 +6,7 @@ export type ChatResponderOption = {
   description: string;
   agentConfigId?: string;
   icon: "orchestrator" | "agent";
+  logoUrl?: string;
 };
 
 export type ChatAskTargetOption = {

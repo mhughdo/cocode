@@ -389,7 +389,7 @@ export function TopNav({
         {onToggleSidebar ? (
           <Button
             aria-label={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
-            className="app-no-drag size-8 shrink-0"
+            className="app-no-drag relative z-[60] size-8 shrink-0"
             size="icon-sm"
             title="Toggle sidebar (⌘B)"
             type="button"

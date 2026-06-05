@@ -18,6 +18,7 @@ import { EmptyState, LoadingRows } from "@/components/app/chrome";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { agentLogoUrl } from "../agents/agent-utils";
 import {
   type AgentConfig,
   type ApiClient,
@@ -136,6 +137,7 @@ export function CentralizedChatScreen({
               : `${compactRoleLabel(assignment.role || agent.role || "Reviewer")} in this review.`,
             icon: isOrchestrator ? "orchestrator" : "agent",
             agentConfigId: agent.id,
+            logoUrl: agentLogoUrl(agent),
           } satisfies ChatResponderOption;
         }),
     [sessionAgentEntries],
@@ -150,6 +152,7 @@ export function CentralizedChatScreen({
       description: "Coordinate and synthesize review state.",
       icon: "orchestrator",
       agentConfigId: orchestratorAgent?.id,
+      logoUrl: orchestratorAgent ? agentLogoUrl(orchestratorAgent) : undefined,
     };
   const selectedAudience: ChatAudience =
     selectedResponder.id === "orchestrator" ? "orchestrator" : "selected_agent";
@@ -472,7 +475,7 @@ export function CentralizedChatScreen({
           <div className="border-border bg-card focus-within:border-foreground/35 overflow-hidden rounded-xl border shadow-[0_1px_2px_rgba(17,18,20,0.04)]">
             <Textarea
               aria-label="Centralized review message"
-              className="bg-card placeholder:text-muted-foreground/70 disabled:bg-card max-h-40 min-h-24 resize-none rounded-none border-0 px-4 py-3 text-[15px] leading-6 shadow-none placeholder:text-[15px] focus-visible:ring-0 disabled:opacity-100 md:text-[15px]"
+              className="bg-card placeholder:text-muted-foreground/70 disabled:bg-card max-h-40 min-h-24 resize-none rounded-none border-0 px-4 py-3 text-[17px] leading-7 shadow-none placeholder:text-[14px] focus-visible:ring-0 disabled:opacity-100 md:text-[17px]"
               disabled={!client}
               onChange={(event) => setMessage(event.target.value)}
               onKeyDown={handleComposerKeyDown}

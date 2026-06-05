@@ -265,7 +265,15 @@ test("routes centralized chat follow-ups to a selected participant agent", async
         name: "Repository update permissions now allow members to mutate settings.",
       }),
     ).toBeVisible();
-    await expect(page.getByText("Finding thread")).toBeVisible();
+    await expect(page.getByText("Finding thread")).toHaveCount(0);
+    await page
+      .locator('[data-review-panel="true"]')
+      .getByRole("button", { name: "Follow-up" })
+      .click();
+    await expect(
+      page.getByText("Finding follow-up", { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByText("Thread", { exact: true })).toBeVisible();
     await page
       .getByLabel("Follow-up prompt")
       .fill("What evidence supports this finding?");
@@ -282,7 +290,17 @@ test("routes centralized chat follow-ups to a selected participant agent", async
       page.getByText("Found one deterministic branch comparison issue.").last(),
     ).toBeVisible({ timeout: 20_000 });
 
-    await page.getByRole("button", { name: "Evidence map" }).first().click();
+    await page.getByRole("button", { name: "Findings" }).click();
+    await expect(findingsBoard).toBeVisible();
+    await expect(firstFindingRow).toBeVisible();
+    await firstFindingRow.click({ position: { x: 12, y: 12 } });
+    await expect(
+      findingsBoard.getByLabel("Draft GitHub comment"),
+    ).toBeVisible();
+    await page
+      .locator('[data-review-panel="true"]')
+      .getByRole("button", { exact: true, name: "Evidence map" })
+      .click();
     await expect(
       page.getByRole("heading", { name: "Evidence Map" }),
     ).toBeVisible();

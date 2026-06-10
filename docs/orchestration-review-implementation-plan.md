@@ -51,6 +51,8 @@ Update rules:
 | 2026-06-10 | Added bounded orchestration observability and duplicate/noise eval metrics. | `OBS-01`, `OBS-05` | `go test ./internal/orchestrator -run 'TestWorkflowPhase(CheckpointOrderInvariant\|CompletedIncludesMetricsSnapshot\|FailedIncludesFailureMetrics)'`; `go test ./internal/httpapi -run 'TestReviewSessionAuditLogEndpointCombinesReviewActions'`; `go test ./internal/evalharness ./internal/findingengine` | Phase events now expose status, duration, failure reason, and finding-count snapshots; audit-log entries lift those fields; eval reports include duplicate cluster/count/rate metrics with a duplicate fixture. |
 | 2026-06-10 | Persisted structured centralized-chat context references. | `CHAT-12` | `go test ./internal/chat`; `go test ./internal/httpapi -run 'TestReviewSessionChatThreadEndpointSeedsAndAnswers|TestReviewSessionChatThreadEndpointUsesOrchestratorResponder'` | User-selected finding/evidence/file refs now write to `chat_message_context_refs` and render as concise structured prompt context instead of raw ad hoc JSON only. |
 | 2026-06-10 | Added durable adapter external-session metadata on agent runs. | `ADAPT-06` | `go test ./internal/agents ./internal/agentrun` | App Server/ACP event mappers emit normalized `external_session` metadata and the runner persists the latest session identity into `agent_runs.metadata_json`; chat-turn-scoped reuse wiring remains open. |
+| 2026-06-10 | Reused compatible persisted review context bundles for centralized chat. | `CHAT-06` | `go test ./internal/chat`; `go test ./internal/httpapi -run 'TestReviewSessionChatThreadEndpointSeedsAndAnswers|TestReviewSessionChatThreadEndpointUsesOrchestratorResponder'` | Chat turns now reuse persisted review-scope bundles when session, recipient agent, policy JSON, and snapshot match, including hydrated item content from artifacts. |
+| 2026-06-10 | Added ephemeral git worktree isolation for review-mode filesystem adapters. | `SAFE-02` | `go test ./internal/agents ./internal/agentrun ./internal/gitrepo`; `go test ./internal/chat ./internal/httpapi -run 'TestReviewSessionChatThreadEndpointSeedsAndAnswers|TestReviewSessionChatThreadEndpointUsesOrchestratorResponder|TestBuildOrReuseChatContextUsesPersistedBundle'` | Review-mode CLI/JSON-RPC/ACP runs execute from a detached temporary worktree and clean it up after adapter execution; HTTP fixtures now provide a real git HEAD for isolated fake-agent runs. |
 
 ## Assumptions And Boundaries
 
@@ -210,7 +212,7 @@ This phase implements the architecture already sketched in `docs/centralized-cha
 | CHAT-03 | done | Add cancel endpoint and real cancellation handling. | Stop button marks turn `cancel_requested`/`canceled` and cancels active work where supported. | `go test ./internal/chat ./internal/httpapi -run 'TestCancelTurnMarksRequestAndRunExitsCanceled|TestReviewSessionChatThreadEndpointSeedsAndAnswers|TestReviewSessionChatThreadEndpointUsesOrchestratorResponder'`; `pnpm --filter @cocode/desktop typecheck` from repo root. | `services/cocoded/internal/httpapi/chat.go`, `services/cocoded/internal/chat/service.go`, `apps/desktop/src/renderer/src/app/chat/centralized-chat-screen.tsx`, `apps/desktop/src/renderer/src/lib/api.ts` |
 | CHAT-04 | done | Build one shared context bundle per chat turn. | Multi-agent chat fan-out reuses one bundle instead of rebuilding/persisting per agent. | `go test ./internal/chat` from `services/cocoded`. | `services/cocoded/internal/chat/service.go`, `services/cocoded/internal/contextbundle` |
 | CHAT-05 | done | Parallelize all-agent fan-out. | Asking all reviewers runs independent agent calls concurrently with bounded concurrency. | `go test ./internal/chat`; `go test ./internal/httpapi -run 'TestReviewSessionChatThreadEndpointSeedsAndAnswers|TestReviewSessionChatThreadEndpointUsesOrchestratorResponder'` from `services/cocoded`. | `services/cocoded/internal/chat/service.go` |
-| CHAT-06 | todo | Add chat context caching by session/policy/snapshot. | Repeated follow-ups reuse compatible context artifacts where safe. | Cache key/unit tests. | `services/cocoded/internal/chat`, `services/cocoded/internal/contextbundle`, `services/cocoded/internal/db` |
+| CHAT-06 | done | Add chat context caching by session/policy/snapshot. | Repeated follow-ups reuse compatible context artifacts where safe. | `go test ./internal/chat`; `go test ./internal/httpapi -run 'TestReviewSessionChatThreadEndpointSeedsAndAnswers|TestReviewSessionChatThreadEndpointUsesOrchestratorResponder'` from `services/cocoded`. | `services/cocoded/internal/chat`, `services/cocoded/internal/contextbundle`, `services/cocoded/internal/db` |
 | CHAT-07 | todo | Add thread summaries and compaction. | Long chats include compact summaries and recent turns instead of unbounded raw history. | Chat prompt context tests around summary threshold. | `services/cocoded/internal/chat` |
 | CHAT-08 | todo | Add SSE `thread.message.delta` / turn events. | Renderer receives incremental updates without refetching the full thread on every event. | HTTP/SSE tests and desktop e2e. | `services/cocoded/internal/httpapi`, `apps/desktop/src/renderer/src` |
 | CHAT-09 | todo | Debounce or remove full-thread refresh loops. | Chat UI no longer does high-frequency full refetches during streaming. | Playwright trace or e2e assertion. | `apps/desktop/src/renderer/src` |
@@ -253,7 +255,7 @@ This phase is part of the first implementation batch. It closes the gap where re
 | ID | Status | Task | Acceptance Criteria | Verification | Likely Files |
 | --- | --- | --- | --- | --- | --- |
 | SAFE-01 | done | Replace instruction-only read-only mode with enforced read-only execution. | Review-mode agents cannot write to the working tree even if prompted by untrusted repo content. | `go test ./internal/agents ./internal/agentpreset ./internal/agentrun ./internal/db ./internal/httpapi -run 'ReviewMode|CodexCLI|Antigravity|JSONRPC|PromotesDefaultCodex|AgentPresets'` from `services/cocoded`. | `services/cocoded/internal/agents`, `services/cocoded/internal/agentpreset/presets.go` |
-| SAFE-02 | todo | Evaluate ephemeral worktree execution for adapters that need filesystem access. | Agents can inspect code in an isolated copy without mutating the user workspace. | Integration test with temporary worktree cleanup. | `services/cocoded/internal/agents`, `services/cocoded/internal/git` |
+| SAFE-02 | done | Evaluate ephemeral worktree execution for adapters that need filesystem access. | Agents can inspect code in an isolated copy without mutating the user workspace. | `go test ./internal/agents ./internal/agentrun ./internal/gitrepo` from `services/cocoded`. | `services/cocoded/internal/agents`, `services/cocoded/internal/gitrepo` |
 | SAFE-03 | done | Align Codex App Server sandbox defaults with review mode. | App Server review sessions do not default to `workspace-write` when the task is read-only. | `go test ./internal/agents ./internal/agentpreset ./internal/agentrun ./internal/db ./internal/httpapi -run 'ReviewMode|CodexCLI|Antigravity|JSONRPC|PromotesDefaultCodex|AgentPresets'` from `services/cocoded`. | `services/cocoded/internal/agents/jsonrpc_stdio.go` |
 
 Checkpoint after Phase 6:
@@ -325,7 +327,7 @@ End-to-end manual checks:
 | --- | --- | --- | --- |
 | Architecture is fundamentally sound and should stay deterministic/checkpointed. | `BASE-01`, `BASE-03` | done | Protects current backbone instead of replacing it. |
 | Parsing is robust and should be preserved. | `BASE-02` | done | Regression tests cover tolerant parsing and raw artifacts. |
-| Cocode owns state; CLIs are workers. | `BASE-03`, `CHAT-12`, `ADAPT-06` | doing | Local-first contract is documented; structured chat refs and external session metadata remain open. |
+| Cocode owns state; CLIs are workers. | `BASE-03`, `CHAT-12`, `ADAPT-06` | doing | Local-first contract and structured chat refs are done; external session metadata is durable at run level and still needs chat-turn reuse wiring. |
 | H1: Roles/presets never reach prompts. | `PROMPT-05` | done | Selected role overlays alter prompts and prompt hashes. |
 | H2: `blocker` severity gets worst verification priority. | `ORCH-01` | done | Fixed in verifier prioritization and curator candidate scoring. |
 | H3: Resume after mid-phase crash can permanently fail session. | `ORCH-02`, `ORCH-03` | done | Candidate, finding, and candidate-link writes are idempotent across retries. |
@@ -340,7 +342,7 @@ End-to-end manual checks:
 | Project rules dropped at default depth. | `CTX-01` | done | Standard reviews include requested rules. |
 | Rule discovery misses common instruction files. | `CTX-02` | done | Adds `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `.cursor/rules`. |
 | Project rules may be noisy if used naively. | `PROMPT-10` | done | Reviewers are told how to treat project rules as guidance rather than review truth. |
-| Read-only is instruction-only. | `SAFE-01`, `SAFE-02`, `SAFE-03` | doing | `SAFE-01` and `SAFE-03` are complete; disposable worktree isolation remains open as `SAFE-02`. |
+| Read-only is instruction-only. | `SAFE-01`, `SAFE-02`, `SAFE-03` | done | Review-mode runtime settings are read-only and filesystem-backed adapters run from disposable worktrees. |
 | Verified means file/line exists, not code content match. | `VERIFY-03` | done | Local verifier checks matchable quoted code against the cited source window and flags stale observations. |
 | Deterministic counter-evidence path is unreachable/weak. | `VERIFY-04` | done | Direct counter-evidence heuristics can now produce `likely_false_positive` without an LLM verifier. |
 | No consensus signal across agents. | `VERIFY-05` | done | Distinct-agent confidence is combined using a simple independence-style formula. |
@@ -351,15 +353,15 @@ End-to-end manual checks:
 | `draft_comments` is checkpointed no-op. | `VERIFY-10` | done | The phase now fills missing finding draft comments and emits preparation events. |
 | Chat POST is synchronous/blocking. | `CHAT-02` | done | POST now creates a turn, returns `202`, and runs the turn from persisted state in the background. |
 | Chat has no real cancel. | `CHAT-03` | done | Stop button calls a cancel endpoint; backend marks cancel state and cancels matching active chat agent runs. |
-| Chat rebuilds context per agent. | `CHAT-04`, `CHAT-06` | doing | All-agent fan-out now shares one bundle; durable cache key remains open. |
+| Chat rebuilds context per agent. | `CHAT-04`, `CHAT-06` | done | All-agent fan-out shares one bundle, and compatible later turns reuse persisted context bundles. |
 | Chat fan-out is serial. | `CHAT-05` | done | All-agent fan-out uses bounded parallel execution. |
-| Chat sends very large prompt/context every turn. | `CHAT-06`, `CHAT-07`, `ADAPT-04` | todo | Cache, summarize, and route to compact finding context when enough. |
+| Chat sends very large prompt/context every turn. | `CHAT-06`, `CHAT-07`, `ADAPT-04` | doing | Compatible context bundles are cached; summaries and compact finding/investigation routing remain open. |
 | Chat turn states exist but are underused. | `CHAT-02`, `CHAT-16` | done | Turn creation/execution now uses and validates the persisted state machine. |
 | `chat_message_context_refs` exists but is unused. | `CHAT-12` | done | User-selected finding/evidence/file context refs are persisted and rendered into follow-up prompts. |
 | Chat answer survives only via client-side preview reconstruction. | `CHAT-01`, `CHAT-14` | todo | Persist full answer and stream durable deltas. |
 | Renderer refetches full thread too often. | `CHAT-08`, `CHAT-09` | todo | SSE deltas and UI debounce. |
 | Thread GET does cleanup/sync work and can cause N+1 behavior. | `CHAT-13` | todo | Makes reads cheap and side-effect-free. |
-| Client abort leaves turns stuck running. | `CHAT-03`, `CHAT-15` | todo | Adds cancel and reconcile paths. |
+| Client abort leaves turns stuck running. | `CHAT-03`, `CHAT-15` | doing | Explicit cancel exists; startup/load reconciliation remains open. |
 | Finding follow-ups are separate/cold. | `CHAT-10`, `CHAT-11` | todo | Unified central thread with history/context refs. |
 | App Server/ACP session reuse unavailable for chat. | `ADAPT-01`, `ADAPT-02`, `ADAPT-03`, `ADAPT-04` | todo | Structural follow-up efficiency work. |
 | App Server adapter is a disabled stub / adapter readiness is unclear. | `ADAPT-05` | todo | Capability and health state should be explicit. |

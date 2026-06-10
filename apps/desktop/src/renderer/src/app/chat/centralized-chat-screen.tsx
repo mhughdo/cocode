@@ -49,6 +49,11 @@ import {
   isOrchestratorEntry,
 } from "./chat-message-utils";
 import type { ChatAudience, ChatResponderOption } from "./chat-types";
+import {
+  applyChatEventsToThread,
+  chatEventTurnStatus,
+  isChatThreadEvent,
+} from "./chat-thread-events";
 import { FinalFindingsMessage } from "./final-findings-message";
 
 const chatThreadCache = new Map<string, ChatThreadView>();
@@ -88,6 +93,7 @@ export function CentralizedChatScreen({
   >([]);
   const activeSubmitAbortControllerRef = useRef<AbortController | null>(null);
   const activeTurnIDRef = useRef<string | null>(null);
+  const appliedChatEventSequenceRef = useRef(0);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const shouldStickToBottomRef = useRef(true);
 
@@ -184,6 +190,7 @@ export function CentralizedChatScreen({
   }, [client, session.id, setSuccessfulThread]);
 
   useEffect(() => {
+    appliedChatEventSequenceRef.current = 0;
     let canceled = false;
     const cached = chatThreadCache.get(session.id);
     queueMicrotask(() => {
@@ -213,19 +220,57 @@ export function CentralizedChatScreen({
   }, [client, session.id, setSuccessfulThread]);
 
   useEffect(() => {
-    if (events.length === 0 && session.status !== "queued") {
+    const nextEvents = events.filter(
+      (event) =>
+        event.sequence > appliedChatEventSequenceRef.current &&
+        isChatThreadEvent(event),
+    );
+    if (nextEvents.length === 0) {
       return;
     }
-    queueMicrotask(() => void refreshThread());
-  }, [events.length, refreshThread, session.status]);
-
-  useEffect(() => {
-    if (!["queued", "running", "canceling"].includes(session.status)) {
+    let applied = false;
+    let nextThreadView: ChatThreadView | null = null;
+    setThread((current) => {
+      if (current.status !== "success") {
+        return current;
+      }
+      applied = true;
+      const patched = applyChatEventsToThread(current.data, nextEvents);
+      if (patched === current.data) {
+        return current;
+      }
+      chatThreadCache.set(session.id, patched);
+      nextThreadView = patched;
+      return successApiState(patched);
+    });
+    if (!applied) {
       return;
     }
-    const interval = window.setInterval(() => void refreshThread(), 2000);
-    return () => window.clearInterval(interval);
-  }, [refreshThread, session.status]);
+    appliedChatEventSequenceRef.current = Math.max(
+      appliedChatEventSequenceRef.current,
+      ...nextEvents.map((event) => event.sequence),
+    );
+    if (nextEvents.some(isResponderMessageEvent)) {
+      setPendingAgentMessages([]);
+    }
+    const terminalTurnEvent = nextEvents
+      .map(chatEventTurnStatus)
+      .find(
+        (turn) =>
+          turn &&
+          turn.id === (activeTurnIDRef.current ?? activeTurnID) &&
+          ["completed", "failed", "canceled"].includes(turn.status),
+      );
+    if (terminalTurnEvent) {
+      activeTurnIDRef.current = null;
+      setActiveTurnID(null);
+      setPendingAgentMessages([]);
+      setSubmitting(false);
+    }
+    if (nextThreadView) {
+      shouldStickToBottomRef.current = true;
+    }
+  }, [activeTurnID, events, session.id]);
 
   useEffect(() => {
     return () => {
@@ -255,8 +300,7 @@ export function CentralizedChatScreen({
     setActiveTurnID(null);
     setPendingAgentMessages([]);
     setSubmitting(false);
-    void refreshThread();
-  }, [activeTurnID, events, refreshThread]);
+  }, [activeTurnID, events]);
 
   const liveMessages = useMemo(
     () =>
@@ -703,4 +747,19 @@ function timelineTime(value: string) {
 
 function eventPayloadString(value: unknown) {
   return typeof value === "string" ? value : "";
+}
+
+function isResponderMessageEvent(event: ReviewEvent) {
+  if (
+    event.type !== "ChatMessageCreated" &&
+    event.type !== "ChatMessageUpdated"
+  ) {
+    return false;
+  }
+  const message = event.payload.message;
+  if (!message || typeof message !== "object" || Array.isArray(message)) {
+    return false;
+  }
+  const authorType = (message as { author_type?: unknown }).author_type;
+  return typeof authorType === "string" && authorType !== "user";
 }

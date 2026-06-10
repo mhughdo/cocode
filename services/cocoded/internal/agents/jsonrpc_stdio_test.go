@@ -101,6 +101,10 @@ done
 	if got[0].Type != EventStarted {
 		t.Fatalf("first event = %+v, want started", got[0])
 	}
+	session, ok := ExtractExternalSessionMetadata("", got[0].Metadata)
+	if !ok || session.Protocol != "codex_app_server" || session.ThreadID != "thread_1" {
+		t.Fatalf("started external session = %+v, ok = %v", session, ok)
+	}
 	if stdout := outputText(got, "stdout"); stdout != `{"findings":[]}` {
 		t.Fatalf("stdout = %q, want findings JSON", stdout)
 	}
@@ -148,6 +152,10 @@ done
 
 	if got[0].Type != EventStarted {
 		t.Fatalf("first event = %+v, want started", got[0])
+	}
+	session, ok := ExtractExternalSessionMetadata("", got[0].Metadata)
+	if !ok || session.Protocol != "acp" || session.SessionID != "session_1" {
+		t.Fatalf("started external session = %+v, ok = %v", session, ok)
 	}
 	if stdout := outputText(got, "stdout"); stdout != `{"findings":[]}` {
 		t.Fatalf("stdout = %q, want findings JSON", stdout)

@@ -56,18 +56,30 @@ func TestMapCodexAppServerEvent(t *testing.T) {
 			t.Parallel()
 
 			got := MapCodexAppServerEvent(CodexAppServerEvent{
-				Type:    tt.inputType,
-				RunID:   "run_1",
-				Message: "message",
-				Payload: []byte(`{"ok":true}`),
-				Error:   "error",
+				Type:      tt.inputType,
+				RunID:     "run_1",
+				AdapterID: "agent_codex_app_server",
+				ThreadID:  "thread_1",
+				TurnID:    "turn_1",
+				Message:   "message",
+				Payload:   []byte(`{"ok":true}`),
+				Error:     "error",
 			})
 			if got.Type != tt.wantType ||
 				got.RunID != "run_1" ||
 				got.Message != "message" ||
 				got.ErrorCode != tt.wantCode ||
-				string(got.Payload) != `{"ok":true}` {
+				string(got.Payload) != `{"ok":true}` ||
+				got.Metadata[ExternalSessionMetadataKey] == nil {
 				t.Fatalf("mapped event = %+v", got)
+			}
+			session, ok := ExtractExternalSessionMetadata("", got.Metadata)
+			if !ok ||
+				session.AdapterID != "agent_codex_app_server" ||
+				session.Protocol != "codex_app_server" ||
+				session.ThreadID != "thread_1" ||
+				session.TurnID != "turn_1" {
+				t.Fatalf("external session = %+v, ok = %v", session, ok)
 			}
 		})
 	}

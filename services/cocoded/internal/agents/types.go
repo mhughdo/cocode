@@ -162,6 +162,21 @@ type AgentCapabilities struct {
 	Metadata          map[string]any `json:"metadata,omitempty"`
 }
 
+const ExternalSessionMetadataKey = "external_session"
+
+type ExternalSessionMetadata struct {
+	AdapterID          string `json:"adapter_id,omitempty"`
+	Protocol           string `json:"protocol,omitempty"`
+	SessionID          string `json:"session_id,omitempty"`
+	ThreadID           string `json:"thread_id,omitempty"`
+	TurnID             string `json:"turn_id,omitempty"`
+	Source             string `json:"source,omitempty"`
+	ExpiresAt          string `json:"expires_at,omitempty"`
+	InvalidatedAt      string `json:"invalidated_at,omitempty"`
+	InvalidationReason string `json:"invalidation_reason,omitempty"`
+	LastSeenAt         string `json:"last_seen_at,omitempty"`
+}
+
 type capabilityJSON struct {
 	SupportsJSON      *bool          `json:"supports_json"`
 	SupportsStreaming *bool          `json:"supports_streaming"`
@@ -428,4 +443,128 @@ func (c ConnectionConfig) Validate() error {
 		return errors.New("connection prompt delivery is invalid")
 	}
 	return nil
+}
+
+func ExternalSessionMetadataMap(session ExternalSessionMetadata) map[string]any {
+	session = session.Normalize()
+	metadata := map[string]any{}
+	add := func(key string, value string) {
+		if value = strings.TrimSpace(value); value != "" {
+			metadata[key] = value
+		}
+	}
+	add("adapter_id", session.AdapterID)
+	add("protocol", session.Protocol)
+	add("session_id", session.SessionID)
+	add("thread_id", session.ThreadID)
+	add("turn_id", session.TurnID)
+	add("source", session.Source)
+	add("expires_at", session.ExpiresAt)
+	add("invalidated_at", session.InvalidatedAt)
+	add("invalidation_reason", session.InvalidationReason)
+	add("last_seen_at", session.LastSeenAt)
+	return metadata
+}
+
+func ExternalSessionEventMetadata(session ExternalSessionMetadata, metadata map[string]any) map[string]any {
+	session = session.Normalize()
+	if !session.HasIdentity() {
+		return metadata
+	}
+	sessionMap := ExternalSessionMetadataMap(session)
+	merged := make(map[string]any, len(metadata)+1)
+	for key, value := range metadata {
+		merged[key] = value
+	}
+	merged[ExternalSessionMetadataKey] = sessionMap
+	return merged
+}
+
+func ExtractExternalSessionMetadata(adapterID string, metadata map[string]any) (ExternalSessionMetadata, bool) {
+	if len(metadata) == 0 {
+		return ExternalSessionMetadata{}, false
+	}
+	session := ExternalSessionMetadata{AdapterID: adapterID}
+	if nested, ok := metadata[ExternalSessionMetadataKey].(map[string]any); ok {
+		session.mergeMap(nested)
+	}
+	session.mergeMap(metadata)
+	session = session.Normalize()
+	return session, session.HasIdentity()
+}
+
+func (s ExternalSessionMetadata) Normalize() ExternalSessionMetadata {
+	s.AdapterID = strings.TrimSpace(s.AdapterID)
+	s.Protocol = strings.TrimSpace(s.Protocol)
+	s.SessionID = strings.TrimSpace(s.SessionID)
+	s.ThreadID = strings.TrimSpace(s.ThreadID)
+	s.TurnID = strings.TrimSpace(s.TurnID)
+	s.Source = strings.TrimSpace(s.Source)
+	s.ExpiresAt = strings.TrimSpace(s.ExpiresAt)
+	s.InvalidatedAt = strings.TrimSpace(s.InvalidatedAt)
+	s.InvalidationReason = strings.TrimSpace(s.InvalidationReason)
+	s.LastSeenAt = strings.TrimSpace(s.LastSeenAt)
+	return s
+}
+
+func (s ExternalSessionMetadata) HasIdentity() bool {
+	s = s.Normalize()
+	return s.SessionID != "" || s.ThreadID != ""
+}
+
+func (s ExternalSessionMetadata) ReusableAt(now time.Time) bool {
+	s = s.Normalize()
+	if !s.HasIdentity() || s.InvalidatedAt != "" || s.InvalidationReason != "" {
+		return false
+	}
+	if s.ExpiresAt == "" {
+		return true
+	}
+	expiresAt, err := time.Parse(time.RFC3339Nano, s.ExpiresAt)
+	if err != nil {
+		return false
+	}
+	return now.Before(expiresAt)
+}
+
+func (s *ExternalSessionMetadata) mergeMap(metadata map[string]any) {
+	if s == nil || len(metadata) == 0 {
+		return
+	}
+	set := func(target *string, keys ...string) {
+		if strings.TrimSpace(*target) != "" {
+			return
+		}
+		for _, key := range keys {
+			if value := metadataStringValue(metadata, key); value != "" {
+				*target = value
+				return
+			}
+		}
+	}
+	set(&s.AdapterID, "adapter_id")
+	set(&s.Protocol, "protocol")
+	set(&s.SessionID, "session_id", "external_session_id", "acp_session_id")
+	set(&s.ThreadID, "thread_id", "threadId")
+	set(&s.TurnID, "turn_id", "turnId")
+	set(&s.Source, "source")
+	set(&s.ExpiresAt, "expires_at")
+	set(&s.InvalidatedAt, "invalidated_at")
+	set(&s.InvalidationReason, "invalidation_reason")
+	set(&s.LastSeenAt, "last_seen_at")
+}
+
+func metadataStringValue(metadata map[string]any, key string) string {
+	value, ok := metadata[key]
+	if !ok {
+		return ""
+	}
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case fmt.Stringer:
+		return strings.TrimSpace(v.String())
+	default:
+		return ""
+	}
 }

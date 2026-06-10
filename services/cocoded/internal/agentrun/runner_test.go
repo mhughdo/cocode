@@ -308,6 +308,60 @@ func TestRunnerPersistsTimedOutCommandRun(t *testing.T) {
 	assertRunTimeoutMetadata(t, result.Run.MetadataJson, "review")
 }
 
+func TestRunnerPersistsExternalSessionMetadataFromAgentEvents(t *testing.T) {
+	t.Parallel()
+
+	env := setupOutputRecorder(t)
+	task := runnerTask(env, "agent_run_external_session")
+	eventAt := time.Date(2026, 5, 3, 0, 0, 1, 0, time.UTC)
+	driver := &scriptedDriver{
+		events: []agents.AgentEvent{
+			{
+				Type:  agents.EventStarted,
+				RunID: task.RunID,
+				At:    eventAt,
+				Metadata: agents.ExternalSessionEventMetadata(agents.ExternalSessionMetadata{
+					Protocol:  "acp",
+					SessionID: "session_1",
+					Source:    "session/new",
+				}, map[string]any{"acp_session_id": "session_1"}),
+			},
+			{
+				Type:     agents.EventCompleted,
+				RunID:    task.RunID,
+				ExitCode: intPtr(0),
+			},
+		},
+	}
+	runner := runnerWithClock(env)
+	runner.Driver = driver
+
+	result, err := runner.Execute(context.Background(), RunParams{
+		WorkspaceID: env.WorkspaceID,
+		Config:      runnerConfig("fake-agent"),
+		Task:        task,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if result.Run.Status != RunStatusSucceeded {
+		t.Fatalf("run = %+v", result.Run)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(result.Run.MetadataJson), &metadata); err != nil {
+		t.Fatalf("Unmarshal(metadata) error = %v", err)
+	}
+	session, ok := metadata[agents.ExternalSessionMetadataKey].(map[string]any)
+	if !ok ||
+		session["adapter_id"] != task.AgentConfigID ||
+		session["protocol"] != "acp" ||
+		session["session_id"] != "session_1" ||
+		session["source"] != "session/new" ||
+		session["last_seen_at"] != eventAt.Format(time.RFC3339Nano) {
+		t.Fatalf("external session metadata = %+v in %+v", session, metadata)
+	}
+}
+
 func TestRunnerMarksExpiredReviewLimitWithoutLaunchingCommand(t *testing.T) {
 	t.Parallel()
 
@@ -535,6 +589,10 @@ func assertRunTimeoutMetadata(t *testing.T, raw string, source string) {
 	if policy["effective_timeout_source"] != source {
 		t.Fatalf("timeout source = %v, want %s; policy = %+v", policy["effective_timeout_source"], source, policy)
 	}
+}
+
+func intPtr(value int) *int {
+	return &value
 }
 
 type scriptedDriver struct {

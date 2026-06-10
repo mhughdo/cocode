@@ -502,10 +502,15 @@ func (c *JSONRPCStdioConnection) runCodexAppServerTask(ctx context.Context, task
 		RunID:   task.RunID,
 		At:      time.Now().UTC(),
 		Message: "codex app-server turn started",
-		Metadata: map[string]any{
+		Metadata: ExternalSessionEventMetadata(ExternalSessionMetadata{
+			AdapterID: configAdapterID(c.config, task),
+			Protocol:  "codex_app_server",
+			ThreadID:  threadID,
+			Source:    "thread/start",
+		}, map[string]any{
 			"protocol":  "codex_app_server",
 			"thread_id": threadID,
-		},
+		}),
 	}
 
 	turnParams := map[string]any{
@@ -600,10 +605,15 @@ func (c *JSONRPCStdioConnection) runACPTask(ctx context.Context, task AgentTask,
 		RunID:   task.RunID,
 		At:      time.Now().UTC(),
 		Message: "acp session prompt started",
-		Metadata: map[string]any{
+		Metadata: ExternalSessionEventMetadata(ExternalSessionMetadata{
+			AdapterID: configAdapterID(c.config, task),
+			Protocol:  "acp",
+			SessionID: sessionID,
+			Source:    "session/new",
+		}, map[string]any{
 			"protocol":       "acp",
 			"acp_session_id": sessionID,
-		},
+		}),
 	}
 
 	resultCh := make(chan jsonRPCResult, 1)
@@ -665,12 +675,17 @@ func mapCodexNotification(runID string, turnID string, notification jsonRPCNotif
 				At:     time.Now().UTC(),
 				Stream: "stdout",
 				Text:   delta,
-				Metadata: map[string]any{
+				Metadata: ExternalSessionEventMetadata(ExternalSessionMetadata{
+					Protocol: "codex_app_server",
+					ThreadID: rawStringAt(notification.Params, "threadId"),
+					TurnID:   rawStringAt(notification.Params, "turnId"),
+					Source:   notification.Method,
+				}, map[string]any{
 					"protocol": "codex_app_server",
 					"method":   notification.Method,
 					"turn_id":  rawStringAt(notification.Params, "turnId"),
 					"item_id":  rawStringAt(notification.Params, "itemId"),
-				},
+				}),
 			}
 		}
 	case "turn/started":
@@ -748,12 +763,16 @@ func mapACPNotification(runID string, sessionID string, notification jsonRPCNoti
 			At:     time.Now().UTC(),
 			Stream: "stdout",
 			Text:   text,
-			Metadata: map[string]any{
+			Metadata: ExternalSessionEventMetadata(ExternalSessionMetadata{
+				Protocol:  "acp",
+				SessionID: sessionID,
+				Source:    notification.Method,
+			}, map[string]any{
 				"protocol":       "acp",
 				"method":         notification.Method,
 				"session_update": updateType,
 				"acp_session_id": sessionID,
-			},
+			}),
 		}
 	case "agent_thought_chunk", "plan", "tool_call", "tool_call_update", "available_commands_update", "current_mode_update", "config_option_update", "session_info_update", "usage_update":
 		events <- AgentEvent{
@@ -784,6 +803,13 @@ func mapACPNotification(runID string, sessionID string, notification jsonRPCNoti
 			},
 		}
 	}
+}
+
+func configAdapterID(config ConnectionConfig, task AgentTask) string {
+	if strings.TrimSpace(config.AdapterID) != "" {
+		return strings.TrimSpace(config.AdapterID)
+	}
+	return strings.TrimSpace(task.AgentConfigID)
 }
 
 func readJSONRPCFrame(reader *bufio.Reader, maxBytes int64) ([]byte, error) {

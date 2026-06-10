@@ -174,6 +174,11 @@ func (r Runner) Execute(ctx context.Context, params RunParams) (RunResult, error
 	for event := range eventStream {
 		r.appendEvent(persistCtx, &result, params.EventSink, event)
 	}
+	run, err = r.runWithExternalSessionMetadata(run, task, config.AdapterID, result.Events)
+	if err != nil {
+		return result, err
+	}
+	result.Run = run
 
 	completedAt := r.now()
 	recorder := OutputRecorder{Artifacts: r.Artifacts, Queries: r.Queries, Now: r.Now}
@@ -196,6 +201,10 @@ func (r Runner) Execute(ctx context.Context, params RunParams) (RunResult, error
 	}
 	result.OutputArtifacts = outputs
 	run = outputs.Run
+	run, err = r.runWithExternalSessionMetadata(run, task, config.AdapterID, result.Events)
+	if err != nil {
+		return result, err
+	}
 
 	finished, err := r.finishRun(persistCtx, run, startedAt, completedAt, outcomeFromEvents(result.Events, ctx.Err()))
 	if err != nil {
@@ -371,6 +380,11 @@ func runMetadataJSON(metadata map[string]any, task agents.AgentTask) (string, er
 	if _, exists := value["agent_config_id"]; !exists {
 		value["agent_config_id"] = task.AgentConfigID
 	}
+	if _, exists := value[agents.ExternalSessionMetadataKey]; !exists {
+		if session, ok := agents.ExtractExternalSessionMetadata(task.AgentConfigID, task.Metadata); ok {
+			value[agents.ExternalSessionMetadataKey] = agents.ExternalSessionMetadataMap(session)
+		}
+	}
 	data, err := json.Marshal(value)
 	if err != nil {
 		return "", fmt.Errorf("encode agent run metadata: %w", err)
@@ -399,6 +413,46 @@ func mergeRunMetadata(base map[string]any, extra map[string]any) map[string]any 
 		}
 	}
 	return merged
+}
+
+func (r Runner) runWithExternalSessionMetadata(run dbgen.AgentRun, task agents.AgentTask, adapterID string, events []agents.AgentEvent) (dbgen.AgentRun, error) {
+	session, ok := latestExternalSessionMetadata(task, adapterID, events)
+	if !ok {
+		return run, nil
+	}
+	metadata := map[string]any{}
+	if strings.TrimSpace(run.MetadataJson) != "" {
+		if err := json.Unmarshal([]byte(run.MetadataJson), &metadata); err != nil {
+			return run, fmt.Errorf("decode agent run metadata for external session: %w", err)
+		}
+	}
+	metadata[agents.ExternalSessionMetadataKey] = agents.ExternalSessionMetadataMap(session)
+	data, err := json.Marshal(metadata)
+	if err != nil {
+		return run, fmt.Errorf("encode agent run external session metadata: %w", err)
+	}
+	run.MetadataJson = string(data)
+	return run, nil
+}
+
+func latestExternalSessionMetadata(task agents.AgentTask, adapterID string, events []agents.AgentEvent) (agents.ExternalSessionMetadata, bool) {
+	adapterID = firstNonEmpty(adapterID, task.AgentConfigID)
+	session, ok := agents.ExtractExternalSessionMetadata(adapterID, task.Metadata)
+	if ok && session.Source == "" {
+		session.Source = "task"
+	}
+	for _, event := range events {
+		next, eventOK := agents.ExtractExternalSessionMetadata(adapterID, event.Metadata)
+		if !eventOK {
+			continue
+		}
+		if next.LastSeenAt == "" && !event.At.IsZero() {
+			next.LastSeenAt = event.At.UTC().Format(time.RFC3339Nano)
+		}
+		session = next
+		ok = true
+	}
+	return session.Normalize(), ok
 }
 
 func (r Runner) driver(kind agents.AdapterKind) agents.ConnectionDriver {

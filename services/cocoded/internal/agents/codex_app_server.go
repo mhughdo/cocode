@@ -15,11 +15,14 @@ type CodexAppServerAdapter struct {
 }
 
 type CodexAppServerEvent struct {
-	Type    string
-	RunID   string
-	Message string
-	Payload []byte
-	Error   string
+	Type      string
+	RunID     string
+	ThreadID  string
+	TurnID    string
+	Message   string
+	Payload   []byte
+	Error     string
+	AdapterID string
 }
 
 func (a CodexAppServerAdapter) ID() string {
@@ -76,6 +79,13 @@ func MapCodexAppServerEvent(event CodexAppServerEvent) AgentEvent {
 	if len(event.Payload) > 0 {
 		mapped.Payload = append([]byte(nil), event.Payload...)
 	}
+	mapped.Metadata = ExternalSessionEventMetadata(ExternalSessionMetadata{
+		AdapterID: event.AdapterID,
+		Protocol:  "codex_app_server",
+		ThreadID:  event.ThreadID,
+		TurnID:    event.TurnID,
+		Source:    event.Type,
+	}, nil)
 	switch event.Type {
 	case "session.started", "turn.started":
 		mapped.Type = EventStarted

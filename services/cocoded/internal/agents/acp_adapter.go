@@ -20,6 +20,7 @@ type ACPAdapter struct {
 type ACPEvent struct {
 	Type      string
 	RunID     string
+	AdapterID string
 	SessionID string
 	Message   string
 	Text      string
@@ -87,7 +88,12 @@ func MapACPEvent(event ACPEvent) AgentEvent {
 		mapped.Payload = append([]byte(nil), event.Payload...)
 	}
 	if event.SessionID != "" {
-		mapped.Metadata = map[string]any{"acp_session_id": event.SessionID}
+		mapped.Metadata = ExternalSessionEventMetadata(ExternalSessionMetadata{
+			AdapterID: event.AdapterID,
+			Protocol:  "acp",
+			SessionID: event.SessionID,
+			Source:    event.Type,
+		}, map[string]any{"acp_session_id": event.SessionID})
 	}
 
 	switch event.Type {

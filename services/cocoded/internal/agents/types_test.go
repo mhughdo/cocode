@@ -171,6 +171,36 @@ func TestAgentTaskValidate(t *testing.T) {
 	}
 }
 
+func TestExternalSessionMetadataExtractionAndReuse(t *testing.T) {
+	t.Parallel()
+
+	expiresAt := time.Date(2026, 5, 3, 1, 0, 0, 0, time.UTC)
+	session, ok := ExtractExternalSessionMetadata("agent_1", map[string]any{
+		ExternalSessionMetadataKey: map[string]any{
+			"protocol":   "acp",
+			"session_id": "session_1",
+			"expires_at": expiresAt.Format(time.RFC3339Nano),
+		},
+	})
+	if !ok ||
+		session.AdapterID != "agent_1" ||
+		session.Protocol != "acp" ||
+		session.SessionID != "session_1" ||
+		!session.ReusableAt(expiresAt.Add(-time.Second)) ||
+		session.ReusableAt(expiresAt) {
+		t.Fatalf("session = %+v, ok = %v", session, ok)
+	}
+
+	invalidated, ok := ExtractExternalSessionMetadata("agent_1", map[string]any{
+		"protocol":            "codex_app_server",
+		"thread_id":           "thread_1",
+		"invalidation_reason": "adapter_unhealthy",
+	})
+	if !ok || invalidated.ReusableAt(expiresAt.Add(-time.Second)) {
+		t.Fatalf("invalidated session = %+v, ok = %v", invalidated, ok)
+	}
+}
+
 func TestDecodeCapabilitiesJSONAppliesDefaultsAndOverrides(t *testing.T) {
 	t.Parallel()
 

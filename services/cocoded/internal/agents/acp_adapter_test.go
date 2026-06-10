@@ -74,6 +74,7 @@ func TestMapACPEvent(t *testing.T) {
 			got := MapACPEvent(ACPEvent{
 				Type:      tt.inputType,
 				RunID:     "run_1",
+				AdapterID: "agent_acp",
 				SessionID: "session_1",
 				Message:   "message",
 				Text:      "delta",
@@ -87,8 +88,16 @@ func TestMapACPEvent(t *testing.T) {
 				got.Text != "delta" ||
 				got.ErrorCode != tt.wantCode ||
 				string(got.Payload) != `{"ok":true}` ||
-				got.Metadata["acp_session_id"] != "session_1" {
+				got.Metadata["acp_session_id"] != "session_1" ||
+				got.Metadata[ExternalSessionMetadataKey] == nil {
 				t.Fatalf("mapped event = %+v", got)
+			}
+			session, ok := ExtractExternalSessionMetadata("", got.Metadata)
+			if !ok ||
+				session.AdapterID != "agent_acp" ||
+				session.Protocol != "acp" ||
+				session.SessionID != "session_1" {
+				t.Fatalf("external session = %+v, ok = %v", session, ok)
 			}
 		})
 	}

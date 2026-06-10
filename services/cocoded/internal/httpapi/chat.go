@@ -61,6 +61,21 @@ func createReviewSessionChatTurnHandler(services routerServices) gin.HandlerFunc
 	}
 }
 
+func cancelReviewSessionChatTurnHandler(services routerServices) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		service := services.chat
+		if service == nil {
+			service = &chat.Service{Database: services.database, Queries: services.queries}
+		}
+		turn, err := service.CancelTurn(c.Request.Context(), c.Param("turn_id"))
+		if err != nil {
+			respondError(c, chatError(err))
+			return
+		}
+		respondOK(c, turn)
+	}
+}
+
 func chatError(err error) *apperror.Error {
 	switch {
 	case errors.Is(err, chat.ErrServiceNotConfigured):

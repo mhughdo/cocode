@@ -1748,6 +1748,18 @@ export class ApiClient {
     );
   }
 
+  cancelReviewSessionChatTurn(
+    reviewSessionId: string,
+    turnId: string,
+    options: Omit<ApiRequestOptions, "method" | "body"> = {},
+  ) {
+    return this.post<ChatTurn>(
+      `/api/review-sessions/${encodeURIComponent(reviewSessionId)}/chat-turns/${encodeURIComponent(turnId)}/cancel`,
+      {},
+      options,
+    );
+  }
+
   getChatThread(
     threadId: string,
     options: Omit<ApiRequestOptions, "method" | "body"> = {},

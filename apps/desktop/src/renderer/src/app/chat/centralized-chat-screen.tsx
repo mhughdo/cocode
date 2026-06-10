@@ -82,10 +82,12 @@ export function CentralizedChatScreen({
   const [responderID, setResponderID] = useState("orchestrator");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [activeTurnID, setActiveTurnID] = useState<string | null>(null);
   const [pendingAgentMessages, setPendingAgentMessages] = useState<
     ChatMessage[]
   >([]);
   const activeSubmitAbortControllerRef = useRef<AbortController | null>(null);
+  const activeTurnIDRef = useRef<string | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const shouldStickToBottomRef = useRef(true);
 
@@ -232,6 +234,30 @@ export function CentralizedChatScreen({
     };
   }, []);
 
+  useEffect(() => {
+    if (!activeTurnID) {
+      return;
+    }
+    const terminalEvent = events.find((event) => {
+      if (
+        event.type !== "ChatTurnCompleted" &&
+        event.type !== "ChatTurnFailed" &&
+        event.type !== "ChatTurnCanceled"
+      ) {
+        return false;
+      }
+      return event.payload.chat_turn_id === activeTurnID;
+    });
+    if (!terminalEvent) {
+      return;
+    }
+    activeTurnIDRef.current = null;
+    setActiveTurnID(null);
+    setPendingAgentMessages([]);
+    setSubmitting(false);
+    void refreshThread();
+  }, [activeTurnID, events, refreshThread]);
+
   const liveMessages = useMemo(
     () =>
       thread.status === "success"
@@ -344,6 +370,7 @@ export function CentralizedChatScreen({
         signal: abortController.signal,
       }),
     );
+    let keepTurnActive = false;
     if (activeSubmitAbortControllerRef.current !== abortController) {
       return;
     }
@@ -351,6 +378,13 @@ export function CentralizedChatScreen({
     if (abortController.signal.aborted) {
       void refreshThread();
     } else if (next.status === "success") {
+      keepTurnActive = !["completed", "failed", "canceled"].includes(
+        next.data.turn.status,
+      );
+      if (keepTurnActive) {
+        activeTurnIDRef.current = next.data.turn.id;
+        setActiveTurnID(next.data.turn.id);
+      }
       setSuccessfulThread({
         thread: next.data.thread,
         messages: next.data.messages,
@@ -373,14 +407,29 @@ export function CentralizedChatScreen({
         return successApiState(failedView);
       });
     }
-    setPendingAgentMessages([]);
-    setSubmitting(false);
+    if (!keepTurnActive) {
+      activeTurnIDRef.current = null;
+      setActiveTurnID(null);
+      setPendingAgentMessages([]);
+      setSubmitting(false);
+    }
   }
 
-  function stopSubmitting() {
+  async function stopSubmitting() {
+    const turnID = activeTurnIDRef.current ?? activeTurnID;
     activeSubmitAbortControllerRef.current?.abort();
     activeSubmitAbortControllerRef.current = null;
     setSubmitError(null);
+    if (client && turnID) {
+      const canceled = await loadApiResource(() =>
+        client.cancelReviewSessionChatTurn(session.id, turnID),
+      );
+      if (canceled.status === "error") {
+        setSubmitError(canceled.error.message);
+      }
+    }
+    activeTurnIDRef.current = null;
+    setActiveTurnID(null);
     setPendingAgentMessages([]);
     setSubmitting(false);
     void refreshThread();

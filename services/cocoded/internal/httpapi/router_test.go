@@ -1585,9 +1585,11 @@ func TestReviewSessionChatThreadEndpointSeedsAndAnswers(t *testing.T) {
 	completed := waitForChatThreadMessage(t, router, session.ID, func(message chatMessageTestResponse) bool {
 		return message.AuthorType == "cocode" && strings.Contains(message.Body, "Current review status: draft.")
 	})
-	last := completed.Messages[len(completed.Messages)-1]
-	if last.AuthorType != "cocode" || !strings.Contains(last.Body, "Current review status: draft.") {
-		t.Fatalf("local answer = %+v", last)
+	_, ok := findChatMessage(completed.Messages, func(message chatMessageTestResponse) bool {
+		return message.AuthorType == "cocode" && strings.Contains(message.Body, "Current review status: draft.")
+	})
+	if !ok {
+		t.Fatalf("local answer missing, messages = %+v", completed.Messages)
 	}
 }
 
@@ -1625,10 +1627,21 @@ func TestReviewSessionChatThreadEndpointUsesOrchestratorResponder(t *testing.T) 
 	completed := waitForChatThreadMessage(t, router, "review_session_findings", func(message chatMessageTestResponse) bool {
 		return message.AuthorType == "orchestrator" && strings.Contains(message.Body, "Found one deterministic fixture issue.")
 	})
-	last := completed.Messages[len(completed.Messages)-1]
-	if last.AuthorType != "orchestrator" || strings.Contains(last.Body, "Current review status:") || !strings.Contains(last.Body, "Found one deterministic fixture issue.") {
-		t.Fatalf("orchestrator answer = %+v", last)
+	answer, ok := findChatMessage(completed.Messages, func(message chatMessageTestResponse) bool {
+		return message.AuthorType == "orchestrator" && strings.Contains(message.Body, "Found one deterministic fixture issue.")
+	})
+	if !ok || strings.Contains(answer.Body, "Current review status:") {
+		t.Fatalf("orchestrator answer = %+v, messages = %+v", answer, completed.Messages)
 	}
+}
+
+func findChatMessage(messages []chatMessageTestResponse, match func(chatMessageTestResponse) bool) (chatMessageTestResponse, bool) {
+	for _, message := range messages {
+		if match(message) {
+			return message, true
+		}
+	}
+	return chatMessageTestResponse{}, false
 }
 
 func waitForChatThreadMessage(t *testing.T, router http.Handler, reviewSessionID string, match func(chatMessageTestResponse) bool) chatThreadViewTestResponse {

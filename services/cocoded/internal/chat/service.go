@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -338,6 +339,45 @@ func (s Service) RunTurn(ctx context.Context, turnID string, params AskParams) {
 	}
 }
 
+func (s Service) CancelTurn(ctx context.Context, turnID string) (Turn, error) {
+	turn, err := s.turnByID(ctx, strings.TrimSpace(turnID))
+	if err != nil {
+		return Turn{}, err
+	}
+	if turnStatusTerminal(turn.Status) {
+		return turn, nil
+	}
+	if turn.Status != TurnStatusCancelReq {
+		turn, err = s.updateTurn(ctx, turn, TurnStatusCancelReq, "", "")
+		if err != nil {
+			return Turn{}, err
+		}
+	}
+	thread, err := s.threadByID(ctx, turn.ThreadID)
+	if err != nil {
+		return Turn{}, err
+	}
+	runIDs, err := s.cancelableRunIDsForTurn(ctx, thread.ReviewSessionID, turn)
+	if err != nil {
+		return Turn{}, err
+	}
+	for _, runID := range runIDs {
+		if s.AgentManager == nil {
+			continue
+		}
+		if err := s.AgentManager.Cancel(ctx, runID); err != nil && !errors.Is(err, agentrun.ErrRunNotActive) {
+			return Turn{}, fmt.Errorf("cancel chat agent run %s: %w", runID, err)
+		}
+	}
+	s.emit(ctx, thread.ReviewSessionID, "ChatTurnCancelRequested", map[string]any{
+		"thread_id":       turn.ThreadID,
+		"chat_turn_id":    turn.ID,
+		"user_message_id": turn.UserMessageID,
+		"agent_run_ids":   runIDs,
+	})
+	return turn, nil
+}
+
 func (s Service) runTurn(ctx context.Context, turnID string, params AskParams) (AskResult, error) {
 	turn, err := s.turnByID(ctx, strings.TrimSpace(turnID))
 	if err != nil {
@@ -360,6 +400,16 @@ func (s Service) runTurn(ctx context.Context, turnID string, params AskParams) (
 	if body == "" {
 		return AskResult{}, fmt.Errorf("%w: user message is empty", ErrInvalidMessage)
 	}
+	if turnStatusTerminal(turn.Status) {
+		messages, err := s.listMessages(ctx, thread.ID)
+		if err != nil {
+			return AskResult{}, err
+		}
+		return AskResult{Thread: thread, Messages: messages, Turn: turn}, nil
+	}
+	if turn.Status == TurnStatusCancelReq {
+		return s.cancelTurnResult(ctx, session, thread, turn, normalizeAudience(params.Audience), nil)
+	}
 	turn, err = s.updateTurn(ctx, turn, TurnStatusRouting, "", "")
 	if err != nil {
 		return AskResult{}, err
@@ -367,15 +417,24 @@ func (s Service) runTurn(ctx context.Context, turnID string, params AskParams) (
 
 	agentRuns := []string{}
 	audience := normalizeAudience(params.Audience)
+	if s.turnCancelRequested(ctx, turn.ID) {
+		return s.cancelTurnResult(ctx, session, thread, turn, audience, agentRuns)
+	}
 	switch audience {
 	case AudienceSelected:
 		turn, _ = s.updateTurn(ctx, turn, TurnStatusContextBuild, "", "")
+		if s.turnCancelRequested(ctx, turn.ID) {
+			return s.cancelTurnResult(ctx, session, thread, turn, audience, agentRuns)
+		}
 		agentRunID, runErr := s.answerWithAgent(ctx, session, thread, userMessage, params, body)
 		if agentRunID != "" {
 			agentRuns = append(agentRuns, agentRunID)
 			_ = s.linkTurnAgentRun(ctx, turn.ID, agentRunID, "chat")
 		}
 		if runErr != nil {
+			if s.turnCancelRequested(ctx, turn.ID) {
+				return s.cancelTurnResult(ctx, session, thread, turn, audience, agentRuns)
+			}
 			turn, _ = s.updateTurn(ctx, turn, TurnStatusFailed, "agent_run_failed", runErr.Error())
 			messages, _ := s.listMessages(ctx, thread.ID)
 			s.emit(ctx, session.ID, "ChatTurnFailed", map[string]any{
@@ -390,6 +449,9 @@ func (s Service) runTurn(ctx context.Context, turnID string, params AskParams) (
 		if responderID := strings.TrimSpace(params.ResponderAgentConfigID); responderID != "" {
 			if config, err := s.agentConfig(ctx, responderID); err == nil {
 				turn, _ = s.updateTurn(ctx, turn, TurnStatusSynthesizing, "", "")
+				if s.turnCancelRequested(ctx, turn.ID) {
+					return s.cancelTurnResult(ctx, session, thread, turn, audience, agentRuns)
+				}
 				synthesisRunID, synthesisErr := s.answerWithSynthesisAgentConfig(ctx, session, thread, userMessage, config, params, body, nil, nil)
 				if synthesisRunID != "" {
 					agentRuns = append(agentRuns, synthesisRunID)
@@ -397,6 +459,9 @@ func (s Service) runTurn(ctx context.Context, turnID string, params AskParams) (
 				}
 				if synthesisErr == nil {
 					break
+				}
+				if s.turnCancelRequested(ctx, turn.ID) {
+					return s.cancelTurnResult(ctx, session, thread, turn, audience, agentRuns)
 				}
 				findings, _ := s.Queries.ListFindingsBySession(ctx, session.ID)
 				if _, err := s.appendMessage(ctx, appendMessageParams{
@@ -414,18 +479,27 @@ func (s Service) runTurn(ctx context.Context, turnID string, params AskParams) (
 			}
 		}
 		turn, _ = s.updateTurn(ctx, turn, TurnStatusRunning, "", "")
+		if s.turnCancelRequested(ctx, turn.ID) {
+			return s.cancelTurnResult(ctx, session, thread, turn, audience, agentRuns)
+		}
 		if _, err := s.appendLocalAnswer(ctx, session, thread, body); err != nil {
 			turn, _ = s.updateTurn(ctx, turn, TurnStatusFailed, "local_answer_failed", err.Error())
 			return AskResult{}, err
 		}
 	case AudienceAllAgents:
 		turn, _ = s.updateTurn(ctx, turn, TurnStatusContextBuild, "", "")
+		if s.turnCancelRequested(ctx, turn.ID) {
+			return s.cancelTurnResult(ctx, session, thread, turn, audience, agentRuns)
+		}
 		ids, runErr := s.answerWithAllAgents(ctx, session, thread, userMessage, params, body)
 		agentRuns = append(agentRuns, ids...)
 		for _, id := range ids {
 			_ = s.linkTurnAgentRun(ctx, turn.ID, id, "chat")
 		}
 		if runErr != nil {
+			if s.turnCancelRequested(ctx, turn.ID) {
+				return s.cancelTurnResult(ctx, session, thread, turn, audience, agentRuns)
+			}
 			turn, _ = s.updateTurn(ctx, turn, TurnStatusFailed, "agent_run_failed", runErr.Error())
 			messages, _ := s.listMessages(ctx, thread.ID)
 			s.emit(ctx, session.ID, "ChatTurnFailed", map[string]any{
@@ -438,12 +512,18 @@ func (s Service) runTurn(ctx context.Context, turnID string, params AskParams) (
 		}
 	default:
 		turn, _ = s.updateTurn(ctx, turn, TurnStatusRunning, "", "")
+		if s.turnCancelRequested(ctx, turn.ID) {
+			return s.cancelTurnResult(ctx, session, thread, turn, audience, agentRuns)
+		}
 		if _, err := s.appendLocalAnswer(ctx, session, thread, body); err != nil {
 			turn, _ = s.updateTurn(ctx, turn, TurnStatusFailed, "local_answer_failed", err.Error())
 			return AskResult{}, err
 		}
 	}
 
+	if s.turnCancelRequested(ctx, turn.ID) {
+		return s.cancelTurnResult(ctx, session, thread, turn, audience, agentRuns)
+	}
 	turn, err = s.updateTurn(ctx, turn, TurnStatusCompleted, "", "")
 	if err != nil {
 		return AskResult{}, err
@@ -1360,6 +1440,88 @@ VALUES (?, ?, ?)`, turnID, agentRunID, role)
 	return err
 }
 
+func (s Service) cancelableRunIDsForTurn(ctx context.Context, reviewSessionID string, turn Turn) ([]string, error) {
+	seen := map[string]bool{}
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			seen[id] = true
+		}
+	}
+	rows, err := s.Database.QueryContext(ctx, `
+SELECT agent_run_id
+FROM chat_turn_agent_runs
+WHERE chat_turn_id = ?`, turn.ID)
+	if err != nil {
+		return nil, fmt.Errorf("list linked chat agent runs: %w", err)
+	}
+	for rows.Next() {
+		var runID string
+		if err := rows.Scan(&runID); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan linked chat agent run: %w", err)
+		}
+		add(runID)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close linked chat agent runs: %w", err)
+	}
+	runs, err := s.Queries.ListAgentRunsBySession(ctx, reviewSessionID)
+	if err != nil {
+		return nil, fmt.Errorf("list session agent runs for chat cancel: %w", err)
+	}
+	for _, run := range runs {
+		if run.Status != agentrun.RunStatusRunning {
+			continue
+		}
+		role := strings.TrimSpace(strings.ToLower(run.Role))
+		if role != "chat" && role != "chat_synthesis" {
+			continue
+		}
+		metadata := eventPayload(run.MetadataJson)
+		if stringValue(metadata["thread_id"]) == turn.ThreadID &&
+			stringValue(metadata["user_message_id"]) == turn.UserMessageID {
+			add(run.ID)
+		}
+	}
+	return sortedMapKeys(seen), nil
+}
+
+func (s Service) turnCancelRequested(ctx context.Context, turnID string) bool {
+	turn, err := s.turnByID(ctx, turnID)
+	return err == nil && turn.Status == TurnStatusCancelReq
+}
+
+func (s Service) cancelTurnResult(ctx context.Context, session dbgen.ReviewSession, thread Thread, turn Turn, audience string, agentRuns []string) (AskResult, error) {
+	latest, err := s.turnByID(ctx, turn.ID)
+	if err == nil {
+		turn = latest
+	}
+	if !turnStatusTerminal(turn.Status) {
+		if turn.Status != TurnStatusCancelReq {
+			turn, err = s.updateTurn(ctx, turn, TurnStatusCancelReq, "", "")
+			if err != nil {
+				return AskResult{}, err
+			}
+		}
+		turn, err = s.updateTurn(ctx, turn, TurnStatusCanceled, "", "")
+		if err != nil {
+			return AskResult{}, err
+		}
+	}
+	messages, err := s.listMessages(ctx, thread.ID)
+	if err != nil {
+		return AskResult{}, err
+	}
+	s.emit(ctx, session.ID, "ChatTurnCanceled", map[string]any{
+		"thread_id":     thread.ID,
+		"chat_turn_id":  turn.ID,
+		"message_count": len(messages),
+		"audience":      audience,
+	})
+	return AskResult{Thread: thread, Messages: messages, Turn: turn, AgentRunIDs: agentRuns}, nil
+}
+
 func (s Service) session(ctx context.Context, reviewSessionID string) (dbgen.ReviewSession, error) {
 	reviewSessionID = strings.TrimSpace(reviewSessionID)
 	if reviewSessionID == "" {
@@ -1945,6 +2107,17 @@ func stringValue(value any) string {
 	default:
 		return ""
 	}
+}
+
+func sortedMapKeys(values map[string]bool) []string {
+	keys := make([]string, 0, len(values))
+	for key, ok := range values {
+		if ok {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func orchestratorPhaseStartMessage(phase string) (string, bool) {

@@ -152,6 +152,49 @@ func TestChatTurnStateMachine(t *testing.T) {
 	}
 }
 
+func TestCancelTurnMarksRequestAndRunExitsCanceled(t *testing.T) {
+	ctx := context.Background()
+	database, err := cocodedb.Open(ctx, cocodedb.MemoryDatabase)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = database.Close()
+	})
+	if err := cocodedb.Apply(ctx, database, cocodedb.Migrations); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	queries := dbgen.New(database)
+	createChatSessionFixture(t, queries, "review_session_cancel")
+	service := Service{Database: database, Queries: queries}
+
+	created, err := service.CreateTurn(ctx, AskParams{
+		ReviewSessionID: "review_session_cancel",
+		Body:            "Please stop this follow-up.",
+		Audience:        AudienceOrchestrator,
+	})
+	if err != nil {
+		t.Fatalf("CreateTurn() error = %v", err)
+	}
+	canceled, err := service.CancelTurn(ctx, created.Turn.ID)
+	if err != nil {
+		t.Fatalf("CancelTurn() error = %v", err)
+	}
+	if canceled.Status != TurnStatusCancelReq {
+		t.Fatalf("canceled status = %s, want %s", canceled.Status, TurnStatusCancelReq)
+	}
+	completed, err := service.runTurn(ctx, created.Turn.ID, AskParams{})
+	if err != nil {
+		t.Fatalf("runTurn() error = %v", err)
+	}
+	if completed.Turn.Status != TurnStatusCanceled {
+		t.Fatalf("completed status = %s, want %s", completed.Turn.Status, TurnStatusCanceled)
+	}
+	if len(completed.Messages) != len(created.Messages) {
+		t.Fatalf("runTurn appended messages after cancellation: before=%d after=%d", len(created.Messages), len(completed.Messages))
+	}
+}
+
 func TestLocalAnswerExplainsMatchingFinding(t *testing.T) {
 	session := dbgen.ReviewSession{
 		ID:     "review_session_1",
@@ -476,5 +519,56 @@ func TestSessionReviewerAgentConfigsUsesAssignmentRole(t *testing.T) {
 	}
 	if len(configs) != 1 || configs[0].ID != "agent_config_orchestrator" {
 		t.Fatalf("sessionReviewerAgentConfigs() = %+v, want assigned reviewer config", configs)
+	}
+}
+
+func createChatSessionFixture(t *testing.T, queries *dbgen.Queries, sessionID string) {
+	t.Helper()
+
+	ctx := context.Background()
+	now := "2026-05-03T00:00:00Z"
+	if _, err := queries.CreateWorkspace(ctx, dbgen.CreateWorkspaceParams{
+		ID:           "workspace_" + sessionID,
+		Name:         "Workspace",
+		RootPath:     t.TempDir(),
+		SettingsJson: "{}",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}); err != nil {
+		t.Fatalf("CreateWorkspace() error = %v", err)
+	}
+	if _, err := queries.CreateRepository(ctx, dbgen.CreateRepositoryParams{
+		ID:          "repo_" + sessionID,
+		WorkspaceID: "workspace_" + sessionID,
+		Name:        "repo",
+		LocalPath:   t.TempDir(),
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatalf("CreateRepository() error = %v", err)
+	}
+	if _, err := queries.CreatePullRequestSnapshot(ctx, dbgen.CreatePullRequestSnapshotParams{
+		ID:           "snapshot_" + sessionID,
+		RepositoryID: "repo_" + sessionID,
+		SourceType:   "branch_compare",
+		MetadataJson: "{}",
+		CreatedAt:    now,
+	}); err != nil {
+		t.Fatalf("CreatePullRequestSnapshot() error = %v", err)
+	}
+	if _, err := queries.CreateReviewSession(ctx, dbgen.CreateReviewSessionParams{
+		ID:                  sessionID,
+		WorkspaceID:         "workspace_" + sessionID,
+		RepositoryID:        "repo_" + sessionID,
+		SnapshotID:          "snapshot_" + sessionID,
+		Title:               "Cancel test",
+		Status:              "running",
+		ReviewDepth:         "standard",
+		RuntimeLimitSeconds: 0,
+		ContextPolicyJson:   "{}",
+		CreatedAt:           now,
+		UpdatedAt:           now,
+	}); err != nil {
+		t.Fatalf("CreateReviewSession() error = %v", err)
 	}
 }

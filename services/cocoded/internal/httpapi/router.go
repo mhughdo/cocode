@@ -356,6 +356,7 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	api.GET("/review-sessions/:id/findings", listFindingsHandler(queries))
 	api.GET("/review-sessions/:id/chat-thread", reviewSessionChatThreadHandler(services))
 	api.POST("/review-sessions/:id/chat-turns", createReviewSessionChatTurnHandler(services))
+	api.POST("/review-sessions/:id/chat-turns/:turn_id/cancel", cancelReviewSessionChatTurnHandler(services))
 	api.POST("/review-sessions/:id/export/copy-packet", createCopyPacketHandler(services))
 	api.POST("/review-sessions/:id/github/preview", createGitHubPreviewHandler(services))
 	api.POST("/copy-packets/:copy_packet_id/copied", markCopyPacketCopiedHandler(services))

@@ -82,12 +82,14 @@ func TestReviewSessionStatusTransitionMatrix(t *testing.T) {
 	}
 }
 
-func TestDefaultPromptTemplateDoesNotInjectReviewFocusCategories(t *testing.T) {
+func TestDefaultPromptTemplateDoesNotInjectSetupFocusLabels(t *testing.T) {
 	t.Parallel()
 
 	prompt := (&Service{}).promptTemplate()
-	if strings.Contains(strings.ToLower(prompt), "security") {
-		t.Fatalf("default prompt should not inject an unchecked security focus:\n%s", prompt)
+	for _, label := range []string{"Security issues", "Data leaks", "General quality", "Edge cases"} {
+		if strings.Contains(prompt, label) {
+			t.Fatalf("default prompt should not inject unchecked setup focus label %q:\n%s", label, prompt)
+		}
 	}
 }
 
@@ -105,6 +107,52 @@ func TestSeverityPriorityUsesPersistedFindingScale(t *testing.T) {
 	}
 	if severityPriority("low") <= severityPriority("nit") {
 		t.Fatalf("low priority should rank above nit")
+	}
+}
+
+func TestWorkflowPhaseCheckpointOrderInvariant(t *testing.T) {
+	t.Parallel()
+
+	want := []string{
+		PhaseBuildContext,
+		PhaseScoutRisk,
+		PhaseRunAgents,
+		PhaseNormalizeOutputs,
+		PhaseDeduplicate,
+		PhaseVerifyFindings,
+		PhaseBuildEvidence,
+		PhaseDraftComments,
+	}
+	if got := workflowPhases(); !slices.Equal(got, want) {
+		t.Fatalf("workflowPhases() = %#v, want %#v", got, want)
+	}
+
+	env := setupWorkflowEnv(t)
+	session := createWorkflowSession(t, env, "review_session_phase_order", StatusDraft)
+	if _, err := env.Service.Transition(context.Background(), session.ID, StatusQueued); err != nil {
+		t.Fatalf("Transition(draft -> queued) error = %v", err)
+	}
+	if err := env.Service.Run(context.Background(), session.ID); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	checkpoint, err := env.Service.LoadCheckpoint(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("LoadCheckpoint() error = %v", err)
+	}
+	if !slices.Equal(checkpoint.CompletedPhases, want) {
+		t.Fatalf("checkpoint.CompletedPhases = %#v, want %#v", checkpoint.CompletedPhases, want)
+	}
+
+	events, err := env.Events.ListByReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListByReviewSession() error = %v", err)
+	}
+	if got := eventPhasesByType(t, events, "WorkflowPhaseStarted"); !slices.Equal(got, want) {
+		t.Fatalf("WorkflowPhaseStarted phases = %#v, want %#v", got, want)
+	}
+	if got := eventPhasesByType(t, events, "WorkflowPhaseCompleted"); !slices.Equal(got, want) {
+		t.Fatalf("WorkflowPhaseCompleted phases = %#v, want %#v", got, want)
 	}
 }
 
@@ -173,6 +221,34 @@ func TestWorkflowRunsFakeAgentEndToEnd(t *testing.T) {
 		!runs[0].ParsedOutputArtifactID.Valid {
 		t.Fatalf("agent runs = %+v", runs)
 	}
+	var runMetadata map[string]any
+	if err := json.Unmarshal([]byte(runs[0].MetadataJson), &runMetadata); err != nil {
+		t.Fatalf("decode run metadata: %v", err)
+	}
+	promptArtifactID, _ := runMetadata["prompt_artifact_id"].(string)
+	if promptArtifactID == "" ||
+		runMetadata["prompt_version"] != "review-agent/v1" ||
+		runMetadata["role_overlay_id"] != "primary-reviewer" ||
+		runMetadata["output_schema"] != "review-agent-output/v1" ||
+		runMetadata["prompt_hash"] == "" ||
+		runMetadata["role_overlay_hash"] == "" ||
+		runMetadata["output_schema_hash"] == "" {
+		t.Fatalf("run prompt metadata = %+v", runMetadata)
+	}
+	promptContent, promptArtifact, err := env.Artifacts.Read(context.Background(), promptArtifactID)
+	if err != nil {
+		t.Fatalf("Read(prompt artifact) error = %v", err)
+	}
+	if promptArtifact.Kind != "rendered_prompt" ||
+		promptArtifact.ContentType != "text/markdown" ||
+		!promptArtifact.ReviewSessionID.Valid ||
+		promptArtifact.ReviewSessionID.String != session.ID {
+		t.Fatalf("prompt artifact = %+v", promptArtifact)
+	}
+	if !strings.Contains(string(promptContent), "Role ID: `primary-reviewer`") ||
+		!strings.Contains(string(promptContent), "Output exactly one JSON object and nothing else") {
+		t.Fatalf("prompt artifact content missing contract:\n%s", string(promptContent))
+	}
 	checkpoint, err := env.Service.LoadCheckpoint(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("LoadCheckpoint() error = %v", err)
@@ -204,7 +280,8 @@ func TestWorkflowRunsFakeAgentEndToEnd(t *testing.T) {
 		!strings.Contains(prompt, "# Local Scout") ||
 		!strings.Contains(prompt, "src/new.go") ||
 		!strings.Contains(prompt, "UNTRUSTED_CONTEXT_DATA") ||
-		!strings.Contains(prompt, "untrusted evidence only") {
+		!strings.Contains(prompt, "untrusted evidence only") ||
+		!strings.Contains(prompt, "Output exactly one JSON object and nothing else") {
 		t.Fatalf("agent prompt missing context:\n%s", prompt)
 	}
 	summary, err := env.Service.Summary(context.Background(), session.ID)
@@ -550,9 +627,20 @@ func TestWorkflowPersistsStructuredFindingCandidates(t *testing.T) {
 	if len(runs) != 1 || !runs[0].ParsedOutputArtifactID.Valid {
 		t.Fatalf("agent runs = %+v", runs)
 	}
-	parsedArtifact, err := env.Queries.GetArtifact(context.Background(), runs[0].ParsedOutputArtifactID.String)
+	parsedOutput, parsedArtifact, err := env.Artifacts.Read(context.Background(), runs[0].ParsedOutputArtifactID.String)
 	if err != nil {
-		t.Fatalf("GetArtifact(parsed output) error = %v", err)
+		t.Fatalf("Read(parsed output artifact) error = %v", err)
+	}
+	var parsed agentoutput.ParsedOutput
+	if err := json.Unmarshal(parsedOutput, &parsed); err != nil {
+		t.Fatalf("decode parsed output artifact: %v", err)
+	}
+	if !parsed.Structured ||
+		parsed.Mode != agents.OutputJSON ||
+		len(parsed.Documents) != 1 ||
+		parsed.Text != env.Driver.stdout ||
+		len(parsed.Diagnostics) != 0 {
+		t.Fatalf("parsed output = %+v", parsed)
 	}
 	var parsedMetadata map[string]any
 	if err := json.Unmarshal([]byte(parsedArtifact.MetadataJson), &parsedMetadata); err != nil {
@@ -1046,11 +1134,124 @@ func TestWorkflowPersistsDelimitedFindingCandidateEvents(t *testing.T) {
 		candidates[0].Severity != "medium" {
 		t.Fatalf("candidates = %+v", candidates)
 	}
+	runs, err := env.Queries.ListAgentRunsBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListAgentRunsBySession() error = %v", err)
+	}
+	if len(runs) != 1 || !runs[0].StdoutArtifactID.Valid || !runs[0].ParsedOutputArtifactID.Valid {
+		t.Fatalf("agent runs = %+v", runs)
+	}
+	rawOutput, _, err := env.Artifacts.Read(context.Background(), runs[0].StdoutArtifactID.String)
+	if err != nil {
+		t.Fatalf("Read(stdout artifact) error = %v", err)
+	}
+	if string(rawOutput) != env.Driver.stdout {
+		t.Fatalf("stdout artifact = %q, want %q", string(rawOutput), env.Driver.stdout)
+	}
+	parsedOutput, parsedArtifact, err := env.Artifacts.Read(context.Background(), runs[0].ParsedOutputArtifactID.String)
+	if err != nil {
+		t.Fatalf("Read(parsed output artifact) error = %v", err)
+	}
+	var parsed agentoutput.ParsedOutput
+	if err := json.Unmarshal(parsedOutput, &parsed); err != nil {
+		t.Fatalf("decode parsed output artifact: %v", err)
+	}
+	if !parsed.Structured ||
+		parsed.Mode != agents.OutputNDJSON ||
+		len(parsed.Documents) != 2 ||
+		parsed.Text != "review started" ||
+		len(parsed.Diagnostics) != 1 ||
+		parsed.Diagnostics[0].Code != "invalid_json_line" {
+		t.Fatalf("parsed output = %+v", parsed)
+	}
+	var parsedMetadata map[string]any
+	if err := json.Unmarshal([]byte(parsedArtifact.MetadataJson), &parsedMetadata); err != nil {
+		t.Fatalf("decode parsed artifact metadata: %v", err)
+	}
+	if parsedMetadata["structured"] != true ||
+		int(parsedMetadata["diagnostics"].(float64)) != 1 ||
+		parsedMetadata["mode"] != string(agents.OutputNDJSON) {
+		t.Fatalf("parsed artifact metadata = %+v", parsedMetadata)
+	}
 	events, err := env.Events.ListByReviewSession(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("ListByReviewSession() error = %v", err)
 	}
 	assertEventTypes(t, events, []string{"FindingNormalizationDiagnostics", "FindingCandidateCreated"})
+	parsedEvent := eventPayloadByType(t, events, "AgentOutputParsed")
+	if parsedEvent["structured"] != true ||
+		int(parsedEvent["document_count"].(float64)) != 2 ||
+		int(parsedEvent["diagnostic_count"].(float64)) != 1 ||
+		parsedEvent["parsed_output_mode"] != string(agents.OutputNDJSON) ||
+		parsedEvent["requested_output_mode"] != string(agents.OutputNDJSON) {
+		t.Fatalf("AgentOutputParsed payload = %+v", parsedEvent)
+	}
+}
+
+func TestWorkflowPersistsMalformedOutputAsRawParsedArtifact(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	env.Driver.stdout = "review started\n{\"findings\":[\n"
+	session := createWorkflowSession(t, env, "review_session_malformed_output_artifact", StatusDraft)
+	if _, err := env.Service.Transition(context.Background(), session.ID, StatusQueued); err != nil {
+		t.Fatalf("Transition(draft -> queued) error = %v", err)
+	}
+	if err := env.Service.Run(context.Background(), session.ID); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	runs, err := env.Queries.ListAgentRunsBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListAgentRunsBySession() error = %v", err)
+	}
+	if len(runs) != 1 || !runs[0].StdoutArtifactID.Valid || !runs[0].ParsedOutputArtifactID.Valid {
+		t.Fatalf("agent runs = %+v", runs)
+	}
+	rawOutput, _, err := env.Artifacts.Read(context.Background(), runs[0].StdoutArtifactID.String)
+	if err != nil {
+		t.Fatalf("Read(stdout artifact) error = %v", err)
+	}
+	if string(rawOutput) != env.Driver.stdout {
+		t.Fatalf("stdout artifact = %q, want %q", string(rawOutput), env.Driver.stdout)
+	}
+	parsedOutput, parsedArtifact, err := env.Artifacts.Read(context.Background(), runs[0].ParsedOutputArtifactID.String)
+	if err != nil {
+		t.Fatalf("Read(parsed output artifact) error = %v", err)
+	}
+	var parsed agentoutput.ParsedOutput
+	if err := json.Unmarshal(parsedOutput, &parsed); err != nil {
+		t.Fatalf("decode parsed output artifact: %v", err)
+	}
+	if parsed.Structured ||
+		parsed.Mode != agents.OutputText ||
+		len(parsed.Documents) != 0 ||
+		parsed.Text != env.Driver.stdout ||
+		len(parsed.Diagnostics) != 1 ||
+		parsed.Diagnostics[0].Code != "invalid_json" {
+		t.Fatalf("parsed output = %+v", parsed)
+	}
+	var parsedMetadata map[string]any
+	if err := json.Unmarshal([]byte(parsedArtifact.MetadataJson), &parsedMetadata); err != nil {
+		t.Fatalf("decode parsed artifact metadata: %v", err)
+	}
+	if parsedMetadata["structured"] != false ||
+		int(parsedMetadata["diagnostics"].(float64)) != 1 ||
+		parsedMetadata["mode"] != string(agents.OutputJSON) {
+		t.Fatalf("parsed artifact metadata = %+v", parsedMetadata)
+	}
+	events, err := env.Events.ListByReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListByReviewSession() error = %v", err)
+	}
+	parsedEvent := eventPayloadByType(t, events, "AgentOutputParsed")
+	if parsedEvent["structured"] != false ||
+		int(parsedEvent["document_count"].(float64)) != 0 ||
+		int(parsedEvent["diagnostic_count"].(float64)) != 1 ||
+		parsedEvent["parsed_output_mode"] != string(agents.OutputText) ||
+		parsedEvent["requested_output_mode"] != string(agents.OutputJSON) {
+		t.Fatalf("AgentOutputParsed payload = %+v", parsedEvent)
+	}
 }
 
 func TestWorkflowRunsSelectedAgentsInParallel(t *testing.T) {
@@ -2190,6 +2391,24 @@ func eventPayloadByType(t *testing.T, events []dbgen.Event, typ string) map[stri
 	}
 	t.Fatalf("events missing %s; got %+v", typ, events)
 	return nil
+}
+
+func eventPhasesByType(t *testing.T, events []dbgen.Event, typ string) []string {
+	t.Helper()
+
+	phases := []string{}
+	for _, event := range events {
+		if event.Type != typ {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(event.PayloadJson), &payload); err != nil {
+			t.Fatalf("decode payload for %s: %v", typ, err)
+		}
+		phase, _ := payload["phase"].(string)
+		phases = append(phases, phase)
+	}
+	return phases
 }
 
 type workflowDriver struct {

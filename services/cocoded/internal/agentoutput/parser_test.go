@@ -170,6 +170,72 @@ func TestParseAutoPrefersJSONThenDelimitedJSONThenText(t *testing.T) {
 	}
 }
 
+func TestParsePreservesMixedCLIOutputContracts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		raw             string
+		mode            agents.OutputMode
+		wantStructured  bool
+		wantMode        agents.OutputMode
+		wantDocuments   int
+		wantText        string
+		wantDiagnostics []string
+	}{
+		{
+			name:           "structured json preserves raw text",
+			raw:            "  {\"summary\":\"ok\",\"findings\":[]}\n",
+			mode:           agents.OutputJSON,
+			wantStructured: true,
+			wantMode:       agents.OutputJSON,
+			wantDocuments:  1,
+			wantText:       "  {\"summary\":\"ok\",\"findings\":[]}\n",
+		},
+		{
+			name:           "json line embedded in cli text preserves both",
+			raw:            "review started\n{\"event\":\"done\",\"count\":1}\nstill noisy\n",
+			mode:           agents.OutputNDJSON,
+			wantStructured: true,
+			wantMode:       agents.OutputNDJSON,
+			wantDocuments:  1,
+			wantText:       "review started\nstill noisy",
+			wantDiagnostics: []string{
+				"invalid_json_line",
+				"invalid_json_line",
+			},
+		},
+		{
+			name:            "malformed raw output stays text with parse diagnostic",
+			raw:             "review started\n{\"findings\":[\n",
+			mode:            agents.OutputJSON,
+			wantMode:        agents.OutputText,
+			wantText:        "review started\n{\"findings\":[\n",
+			wantDiagnostics: []string{"invalid_json"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			parsed := Parse([]byte(tt.raw), tt.mode)
+			if parsed.Structured != tt.wantStructured ||
+				parsed.Mode != tt.wantMode ||
+				len(parsed.Documents) != tt.wantDocuments ||
+				parsed.Text != tt.wantText ||
+				len(parsed.Diagnostics) != len(tt.wantDiagnostics) {
+				t.Fatalf("parsed = %+v", parsed)
+			}
+			for i, wantCode := range tt.wantDiagnostics {
+				if parsed.Diagnostics[i].Code != wantCode {
+					t.Fatalf("diagnostic[%d] = %+v, want code %q", i, parsed.Diagnostics[i], wantCode)
+				}
+			}
+		})
+	}
+}
+
 func assertJSONField(t *testing.T, document json.RawMessage, key string, want string) {
 	t.Helper()
 

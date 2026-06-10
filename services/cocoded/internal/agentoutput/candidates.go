@@ -14,6 +14,29 @@ var trailingJSONCommaRE = regexp.MustCompile(`,\s*([}\]])`)
 var jsonFenceRE = regexp.MustCompile("(?is)```(?:json)?\\s*(.*?)\\s*```")
 var lineRangeTextRE = regexp.MustCompile(`(?i)\bL?(\d+)\s*(?:[-–—]\s*L?(\d+))?`)
 
+var (
+	knownCategories = []string{"security", "correctness", "testing", "reliability", "data_integrity", "performance", "maintainability", "api", "docs", "style", "other"}
+	knownSeverities = []string{"blocker", "high", "medium", "low", "nit"}
+	knownSides      = []string{"RIGHT", "LEFT", "UNKNOWN"}
+	knownKinds      = []string{"changed_code", "related_code", "middleware", "guard", "handler", "test", "config", "counter_evidence", "missing_guard", "unknown"}
+)
+
+func KnownCategories() []string {
+	return append([]string{}, knownCategories...)
+}
+
+func KnownSeverities() []string {
+	return append([]string{}, knownSeverities...)
+}
+
+func KnownSides() []string {
+	return append([]string{}, knownSides...)
+}
+
+func KnownEvidenceKinds() []string {
+	return append([]string{}, knownKinds...)
+}
+
 type CandidateParseResult struct {
 	Candidates  []Candidate  `json:"candidates"`
 	Diagnostics []Diagnostic `json:"diagnostics,omitempty"`
@@ -447,17 +470,23 @@ func textFields(text string) (map[string]string, string) {
 
 func textCategory(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, "-", "_")
+	value = strings.ReplaceAll(value, " ", "_")
 	if knownCategory(value) {
 		return value
 	}
 	switch value {
-	case "bug", "logic", "correctness issue":
+	case "bug", "logic", "correctness_issue":
 		return "correctness"
 	case "test", "tests":
 		return "testing"
 	case "perf":
 		return "performance"
-	case "maintainability issue":
+	case "data", "integrity":
+		return "data_integrity"
+	case "api_compat", "api_compatibility", "client_impact":
+		return "api"
+	case "maintainability_issue":
 		return "maintainability"
 	default:
 		return "other"
@@ -1115,39 +1144,28 @@ func validateCandidate(candidate Candidate, documentIndex int, findingIndex int)
 }
 
 func knownCategory(category string) bool {
-	switch category {
-	case "security", "correctness", "testing", "reliability", "performance", "maintainability", "api", "docs", "style", "other":
-		return true
-	default:
-		return false
-	}
+	return stringInSet(category, knownCategories)
 }
 
 func knownSeverity(severity string) bool {
-	switch severity {
-	case "blocker", "high", "medium", "low", "nit":
-		return true
-	default:
-		return false
-	}
+	return stringInSet(severity, knownSeverities)
 }
 
 func knownSide(side string) bool {
-	switch side {
-	case "RIGHT", "LEFT", "UNKNOWN":
-		return true
-	default:
-		return false
-	}
+	return stringInSet(side, knownSides)
 }
 
 func knownEvidenceKind(kind string) bool {
-	switch kind {
-	case "changed_code", "related_code", "middleware", "guard", "handler", "test", "config", "counter_evidence", "missing_guard", "unknown":
-		return true
-	default:
-		return false
+	return stringInSet(kind, knownKinds)
+}
+
+func stringInSet(value string, values []string) bool {
+	for _, candidate := range values {
+		if value == candidate {
+			return true
+		}
 	}
+	return false
 }
 
 func documentDiagnostic(documentIndex int, code string, message string) Diagnostic {

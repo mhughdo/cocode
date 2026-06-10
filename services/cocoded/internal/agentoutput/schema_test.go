@@ -2,7 +2,10 @@ package agentoutput
 
 import (
 	"bytes"
+	"encoding/json"
+	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"testing"
 
@@ -67,6 +70,18 @@ func TestFindingCandidateSchema(t *testing.T) {
 	assertInvalidJSONSchema(t, "finding-candidate.schema.json", invalidConfidence)
 }
 
+func TestParserKnownEnumsMatchPackageSchemas(t *testing.T) {
+	t.Parallel()
+
+	for _, schemaName := range []string{"review-agent-output.schema.json", "finding-candidate.schema.json"} {
+		schema := readTestSchema(t, schemaName)
+		assertStringSlicesEqual(t, schemaName+" category", KnownCategories(), schemaEnum(t, schema, "category"))
+		assertStringSlicesEqual(t, schemaName+" severity", KnownSeverities(), schemaEnum(t, schema, "severity"))
+		assertStringSlicesEqual(t, schemaName+" evidence_kind", KnownEvidenceKinds(), schemaEnum(t, schema, "evidence_kind"))
+		assertStringSlicesEqual(t, schemaName+" location side", KnownSides(), schemaNestedEnum(t, schema, "location", "side"))
+	}
+}
+
 func validateJSONSchema(t *testing.T, schemaName string, document []byte) {
 	t.Helper()
 
@@ -90,6 +105,54 @@ func assertInvalidJSONSchema(t *testing.T, schemaName string, document []byte) {
 	}
 	if err := schema.Validate(instance); err == nil {
 		t.Fatalf("Validate(%s) succeeded for invalid instance", schemaName)
+	}
+}
+
+func readTestSchema(t *testing.T, name string) map[string]any {
+	t.Helper()
+
+	content, err := os.ReadFile(schemaPath(t, name))
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", name, err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(content, &schema); err != nil {
+		t.Fatalf("Unmarshal(%s) error = %v", name, err)
+	}
+	return schema
+}
+
+func schemaEnum(t *testing.T, schema map[string]any, defName string) []string {
+	t.Helper()
+
+	defs := schema["$defs"].(map[string]any)
+	definition := defs[defName].(map[string]any)
+	return interfaceStrings(definition["enum"].([]any))
+}
+
+func schemaNestedEnum(t *testing.T, schema map[string]any, defName string, propertyName string) []string {
+	t.Helper()
+
+	defs := schema["$defs"].(map[string]any)
+	definition := defs[defName].(map[string]any)
+	properties := definition["properties"].(map[string]any)
+	property := properties[propertyName].(map[string]any)
+	return interfaceStrings(property["enum"].([]any))
+}
+
+func interfaceStrings(values []any) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		result = append(result, value.(string))
+	}
+	return result
+}
+
+func assertStringSlicesEqual(t *testing.T, label string, got []string, want []string) {
+	t.Helper()
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("%s = %#v, want %#v", label, got, want)
 	}
 }
 

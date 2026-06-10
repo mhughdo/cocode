@@ -1083,6 +1083,14 @@ func respondOK(c *gin.Context, data any) {
 	})
 }
 
+func respondAccepted(c *gin.Context, data any) {
+	c.JSON(http.StatusAccepted, Envelope{
+		Data:      data,
+		Error:     nil,
+		RequestID: requestID(c),
+	})
+}
+
 func respondError(c *gin.Context, err *apperror.Error) {
 	c.JSON(err.Status, Envelope{
 		Data:      nil,

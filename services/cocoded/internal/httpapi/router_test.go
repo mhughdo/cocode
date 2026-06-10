@@ -1572,17 +1572,20 @@ func TestReviewSessionChatThreadEndpointSeedsAndAnswers(t *testing.T) {
 	})
 	askResponse := httptest.NewRecorder()
 	router.ServeHTTP(askResponse, askRequest)
-	if askResponse.Code != http.StatusOK {
+	if askResponse.Code != http.StatusAccepted {
 		t.Fatalf("chat turn status = %d, body = %s", askResponse.Code, askResponse.Body.String())
 	}
 	answered := decodeChatTurnResponse(t, askResponse.Body.Bytes())
-	if answered.Turn.Status != "completed" || answered.Turn.Audience != "orchestrator" {
+	if answered.Turn.Status != "created" || answered.Turn.Audience != "orchestrator" {
 		t.Fatalf("chat turn = %+v", answered.Turn)
 	}
-	if len(answered.Messages) < 5 {
-		t.Fatalf("answered message count = %d, messages = %+v", len(answered.Messages), answered.Messages)
+	if len(answered.Messages) < 4 {
+		t.Fatalf("accepted message count = %d, messages = %+v", len(answered.Messages), answered.Messages)
 	}
-	last := answered.Messages[len(answered.Messages)-1]
+	completed := waitForChatThreadMessage(t, router, session.ID, func(message chatMessageTestResponse) bool {
+		return message.AuthorType == "cocode" && strings.Contains(message.Body, "Current review status: draft.")
+	})
+	last := completed.Messages[len(completed.Messages)-1]
 	if last.AuthorType != "cocode" || !strings.Contains(last.Body, "Current review status: draft.") {
 		t.Fatalf("local answer = %+v", last)
 	}
@@ -1612,19 +1615,44 @@ func TestReviewSessionChatThreadEndpointUsesOrchestratorResponder(t *testing.T) 
 	})
 	askResponse := httptest.NewRecorder()
 	router.ServeHTTP(askResponse, askRequest)
-	if askResponse.Code != http.StatusOK {
+	if askResponse.Code != http.StatusAccepted {
 		t.Fatalf("chat turn status = %d, body = %s", askResponse.Code, askResponse.Body.String())
 	}
 	answered := decodeChatTurnResponse(t, askResponse.Body.Bytes())
-	if answered.Turn.Status != "completed" || answered.Turn.Audience != "orchestrator" {
+	if answered.Turn.Status != "created" || answered.Turn.Audience != "orchestrator" {
 		t.Fatalf("chat turn = %+v", answered.Turn)
 	}
-	if len(answered.Messages) == 0 {
-		t.Fatalf("answered messages = %+v", answered.Messages)
-	}
-	last := answered.Messages[len(answered.Messages)-1]
+	completed := waitForChatThreadMessage(t, router, "review_session_findings", func(message chatMessageTestResponse) bool {
+		return message.AuthorType == "orchestrator" && strings.Contains(message.Body, "Found one deterministic fixture issue.")
+	})
+	last := completed.Messages[len(completed.Messages)-1]
 	if last.AuthorType != "orchestrator" || strings.Contains(last.Body, "Current review status:") || !strings.Contains(last.Body, "Found one deterministic fixture issue.") {
 		t.Fatalf("orchestrator answer = %+v", last)
+	}
+}
+
+func waitForChatThreadMessage(t *testing.T, router http.Handler, reviewSessionID string, match func(chatMessageTestResponse) bool) chatThreadViewTestResponse {
+	t.Helper()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		request := httptest.NewRequest(http.MethodGet, "/api/review-sessions/"+reviewSessionID+"/chat-thread", nil)
+		request.Header.Set("X-Cocode-Token", "test-token")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("chat thread status = %d, body = %s", response.Code, response.Body.String())
+		}
+		view := decodeChatThreadViewResponse(t, response.Body.Bytes())
+		for _, message := range view.Messages {
+			if match(message) {
+				return view
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for chat message, messages = %+v", view.Messages)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

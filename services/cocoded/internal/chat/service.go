@@ -35,10 +35,14 @@ const (
 	MessageStatusFailed    = "failed"
 
 	TurnStatusCreated      = "created"
+	TurnStatusRouting      = "routing"
+	TurnStatusContextBuild = "context_building"
 	TurnStatusRunning      = "running"
 	TurnStatusSynthesizing = "synthesizing"
 	TurnStatusCompleted    = "completed"
 	TurnStatusFailed       = "failed"
+	TurnStatusCancelReq    = "cancel_requested"
+	TurnStatusCanceled     = "canceled"
 
 	AudienceOrchestrator = "orchestrator"
 	AudienceAllAgents    = "all_agents"
@@ -170,6 +174,48 @@ type chatPromptContext struct {
 	IncludeRecentMessages bool
 }
 
+var allowedTurnTransitions = map[string]map[string]bool{
+	TurnStatusCreated: {
+		TurnStatusRouting:   true,
+		TurnStatusCancelReq: true,
+		TurnStatusFailed:    true,
+	},
+	TurnStatusRouting: {
+		TurnStatusContextBuild: true,
+		TurnStatusRunning:      true,
+		TurnStatusSynthesizing: true,
+		TurnStatusCancelReq:    true,
+		TurnStatusCompleted:    true,
+		TurnStatusFailed:       true,
+		TurnStatusCanceled:     true,
+	},
+	TurnStatusContextBuild: {
+		TurnStatusRunning:   true,
+		TurnStatusCancelReq: true,
+		TurnStatusCompleted: true,
+		TurnStatusFailed:    true,
+		TurnStatusCanceled:  true,
+	},
+	TurnStatusRunning: {
+		TurnStatusSynthesizing: true,
+		TurnStatusCancelReq:    true,
+		TurnStatusCompleted:    true,
+		TurnStatusFailed:       true,
+		TurnStatusCanceled:     true,
+	},
+	TurnStatusSynthesizing: {
+		TurnStatusCancelReq: true,
+		TurnStatusCompleted: true,
+		TurnStatusFailed:    true,
+		TurnStatusCanceled:  true,
+	},
+	TurnStatusCancelReq: {
+		TurnStatusCompleted: true,
+		TurnStatusFailed:    true,
+		TurnStatusCanceled:  true,
+	},
+}
+
 func (s Service) EnsureSessionThread(ctx context.Context, reviewSessionID string) (ThreadView, error) {
 	if s.Database == nil || s.Queries == nil {
 		return ThreadView{}, ErrServiceNotConfigured
@@ -233,6 +279,14 @@ func (s Service) LoadThread(ctx context.Context, threadID string) (ThreadView, e
 }
 
 func (s Service) Ask(ctx context.Context, params AskParams) (AskResult, error) {
+	result, err := s.CreateTurn(ctx, params)
+	if err != nil {
+		return AskResult{}, err
+	}
+	return s.runTurn(ctx, result.Turn.ID, params)
+}
+
+func (s Service) CreateTurn(ctx context.Context, params AskParams) (AskResult, error) {
 	view, err := s.EnsureSessionThread(ctx, params.ReviewSessionID)
 	if err != nil {
 		return AskResult{}, err
@@ -263,7 +317,50 @@ func (s Service) Ask(ctx context.Context, params AskParams) (AskResult, error) {
 	if err != nil {
 		return AskResult{}, err
 	}
-	turn, err = s.updateTurn(ctx, turn, TurnStatusRunning, "", "")
+	messages, err := s.listMessages(ctx, view.Thread.ID)
+	if err != nil {
+		return AskResult{}, err
+	}
+	audience := normalizeAudience(params.Audience)
+	s.emit(ctx, view.Session.ID, "ChatTurnCreated", map[string]any{
+		"thread_id":       view.Thread.ID,
+		"chat_turn_id":    turn.ID,
+		"user_message_id": userMessage.ID,
+		"audience":        audience,
+		"mode":            turn.Mode,
+	})
+	return AskResult{Thread: view.Thread, Messages: messages, Turn: turn}, nil
+}
+
+func (s Service) RunTurn(ctx context.Context, turnID string, params AskParams) {
+	if _, err := s.runTurn(ctx, turnID, params); err != nil {
+		log.Printf("chat turn %s failed: %v", turnID, err)
+	}
+}
+
+func (s Service) runTurn(ctx context.Context, turnID string, params AskParams) (AskResult, error) {
+	turn, err := s.turnByID(ctx, strings.TrimSpace(turnID))
+	if err != nil {
+		return AskResult{}, err
+	}
+	thread, err := s.threadByID(ctx, turn.ThreadID)
+	if err != nil {
+		return AskResult{}, err
+	}
+	session, err := s.session(ctx, thread.ReviewSessionID)
+	if err != nil {
+		return AskResult{}, err
+	}
+	userMessage, err := s.messageByID(ctx, turn.UserMessageID)
+	if err != nil {
+		return AskResult{}, err
+	}
+	params = paramsForTurn(params, turn, userMessage)
+	body := strings.TrimSpace(userMessage.Body)
+	if body == "" {
+		return AskResult{}, fmt.Errorf("%w: user message is empty", ErrInvalidMessage)
+	}
+	turn, err = s.updateTurn(ctx, turn, TurnStatusRouting, "", "")
 	if err != nil {
 		return AskResult{}, err
 	}
@@ -272,26 +369,28 @@ func (s Service) Ask(ctx context.Context, params AskParams) (AskResult, error) {
 	audience := normalizeAudience(params.Audience)
 	switch audience {
 	case AudienceSelected:
-		agentRunID, runErr := s.answerWithAgent(ctx, view.Session, view.Thread, userMessage, params, body)
+		turn, _ = s.updateTurn(ctx, turn, TurnStatusContextBuild, "", "")
+		agentRunID, runErr := s.answerWithAgent(ctx, session, thread, userMessage, params, body)
 		if agentRunID != "" {
 			agentRuns = append(agentRuns, agentRunID)
 			_ = s.linkTurnAgentRun(ctx, turn.ID, agentRunID, "chat")
 		}
 		if runErr != nil {
 			turn, _ = s.updateTurn(ctx, turn, TurnStatusFailed, "agent_run_failed", runErr.Error())
-			messages, _ := s.listMessages(ctx, view.Thread.ID)
-			s.emit(ctx, view.Session.ID, "ChatTurnFailed", map[string]any{
-				"thread_id":    view.Thread.ID,
+			messages, _ := s.listMessages(ctx, thread.ID)
+			s.emit(ctx, session.ID, "ChatTurnFailed", map[string]any{
+				"thread_id":    thread.ID,
 				"chat_turn_id": turn.ID,
 				"audience":     audience,
 				"error":        runErr.Error(),
 			})
-			return AskResult{Thread: view.Thread, Messages: messages, Turn: turn, AgentRunIDs: agentRuns}, nil
+			return AskResult{Thread: thread, Messages: messages, Turn: turn, AgentRunIDs: agentRuns}, nil
 		}
 	case AudienceOrchestrator:
 		if responderID := strings.TrimSpace(params.ResponderAgentConfigID); responderID != "" {
 			if config, err := s.agentConfig(ctx, responderID); err == nil {
-				synthesisRunID, synthesisErr := s.answerWithSynthesisAgentConfig(ctx, view.Session, view.Thread, userMessage, config, params, body, nil, nil)
+				turn, _ = s.updateTurn(ctx, turn, TurnStatusSynthesizing, "", "")
+				synthesisRunID, synthesisErr := s.answerWithSynthesisAgentConfig(ctx, session, thread, userMessage, config, params, body, nil, nil)
 				if synthesisRunID != "" {
 					agentRuns = append(agentRuns, synthesisRunID)
 					_ = s.linkTurnAgentRun(ctx, turn.ID, synthesisRunID, "chat")
@@ -299,12 +398,12 @@ func (s Service) Ask(ctx context.Context, params AskParams) (AskResult, error) {
 				if synthesisErr == nil {
 					break
 				}
-				findings, _ := s.Queries.ListFindingsBySession(ctx, view.Session.ID)
+				findings, _ := s.Queries.ListFindingsBySession(ctx, session.ID)
 				if _, err := s.appendMessage(ctx, appendMessageParams{
-					ThreadID:          view.Thread.ID,
+					ThreadID:          thread.ID,
 					AuthorType:        AuthorOrchestrator,
 					AuthorDisplayName: "Orchestrator",
-					Body:              orchestratorSynthesisMessage(view.Session, findings, nil, nil, body),
+					Body:              orchestratorSynthesisMessage(session, findings, nil, nil, body),
 					Status:            MessageStatusCompleted,
 					MetadataJSON:      agentSynthesisMetadata(agentRuns, nil),
 				}); err != nil {
@@ -314,29 +413,32 @@ func (s Service) Ask(ctx context.Context, params AskParams) (AskResult, error) {
 				break
 			}
 		}
-		if _, err := s.appendLocalAnswer(ctx, view.Session, view.Thread, body); err != nil {
+		turn, _ = s.updateTurn(ctx, turn, TurnStatusRunning, "", "")
+		if _, err := s.appendLocalAnswer(ctx, session, thread, body); err != nil {
 			turn, _ = s.updateTurn(ctx, turn, TurnStatusFailed, "local_answer_failed", err.Error())
 			return AskResult{}, err
 		}
 	case AudienceAllAgents:
-		ids, runErr := s.answerWithAllAgents(ctx, view.Session, view.Thread, userMessage, params, body)
+		turn, _ = s.updateTurn(ctx, turn, TurnStatusContextBuild, "", "")
+		ids, runErr := s.answerWithAllAgents(ctx, session, thread, userMessage, params, body)
 		agentRuns = append(agentRuns, ids...)
 		for _, id := range ids {
 			_ = s.linkTurnAgentRun(ctx, turn.ID, id, "chat")
 		}
 		if runErr != nil {
 			turn, _ = s.updateTurn(ctx, turn, TurnStatusFailed, "agent_run_failed", runErr.Error())
-			messages, _ := s.listMessages(ctx, view.Thread.ID)
-			s.emit(ctx, view.Session.ID, "ChatTurnFailed", map[string]any{
-				"thread_id":    view.Thread.ID,
+			messages, _ := s.listMessages(ctx, thread.ID)
+			s.emit(ctx, session.ID, "ChatTurnFailed", map[string]any{
+				"thread_id":    thread.ID,
 				"chat_turn_id": turn.ID,
 				"audience":     audience,
 				"error":        runErr.Error(),
 			})
-			return AskResult{Thread: view.Thread, Messages: messages, Turn: turn, AgentRunIDs: agentRuns}, nil
+			return AskResult{Thread: thread, Messages: messages, Turn: turn, AgentRunIDs: agentRuns}, nil
 		}
 	default:
-		if _, err := s.appendLocalAnswer(ctx, view.Session, view.Thread, body); err != nil {
+		turn, _ = s.updateTurn(ctx, turn, TurnStatusRunning, "", "")
+		if _, err := s.appendLocalAnswer(ctx, session, thread, body); err != nil {
 			turn, _ = s.updateTurn(ctx, turn, TurnStatusFailed, "local_answer_failed", err.Error())
 			return AskResult{}, err
 		}
@@ -346,17 +448,33 @@ func (s Service) Ask(ctx context.Context, params AskParams) (AskResult, error) {
 	if err != nil {
 		return AskResult{}, err
 	}
-	messages, err := s.listMessages(ctx, view.Thread.ID)
+	messages, err := s.listMessages(ctx, thread.ID)
 	if err != nil {
 		return AskResult{}, err
 	}
-	s.emit(ctx, view.Session.ID, "ChatTurnCompleted", map[string]any{
-		"thread_id":     view.Thread.ID,
+	s.emit(ctx, session.ID, "ChatTurnCompleted", map[string]any{
+		"thread_id":     thread.ID,
 		"chat_turn_id":  turn.ID,
 		"message_count": len(messages),
 		"audience":      audience,
 	})
-	return AskResult{Thread: view.Thread, Messages: messages, Turn: turn, AgentRunIDs: agentRuns}, nil
+	return AskResult{Thread: thread, Messages: messages, Turn: turn, AgentRunIDs: agentRuns}, nil
+}
+
+func paramsForTurn(params AskParams, turn Turn, userMessage Message) AskParams {
+	params.Mode = turn.Mode
+	params.Audience = turn.Audience
+	params.ResponderAgentConfigID = turn.ResponderAgentConfigID
+	if len(strings.TrimSpace(string(params.ContextRefs))) == 0 {
+		params.ContextRefs = normalizedJSON(userMessage.Metadata, "[]")
+	}
+	if !params.IncludeEvidence {
+		params.IncludeEvidence = true
+	}
+	if !params.IncludeRecentMessages {
+		params.IncludeRecentMessages = true
+	}
+	return params
 }
 
 func (s Service) seedInitialMessages(ctx context.Context, session dbgen.ReviewSession, thread Thread) error {
@@ -991,13 +1109,20 @@ INSERT INTO chat_turns (
 }
 
 func (s Service) updateTurn(ctx context.Context, turn Turn, status string, code string, message string) (Turn, error) {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		return Turn{}, fmt.Errorf("%w: turn status is required", ErrInvalidTurn)
+	}
+	if !validTurnTransition(turn.Status, status) {
+		return Turn{}, fmt.Errorf("%w: cannot transition chat turn from %s to %s", ErrInvalidTurn, turn.Status, status)
+	}
 	now := s.now().Format(time.RFC3339Nano)
 	startedAt := nullableString(turn.StartedAt)
 	completedAt := nullableString(turn.CompletedAt)
-	if turn.StartedAt == "" && (status == TurnStatusRunning || status == TurnStatusCompleted || status == TurnStatusFailed) {
+	if turn.StartedAt == "" && turnStatusStarted(status) {
 		startedAt = nullableString(now)
 	}
-	if status == TurnStatusCompleted || status == TurnStatusFailed {
+	if turnStatusTerminal(status) {
 		completedAt = nullableString(now)
 	}
 	_, err := s.Database.ExecContext(ctx, `
@@ -1016,6 +1141,34 @@ WHERE id = ?`,
 		return Turn{}, fmt.Errorf("update chat turn: %w", err)
 	}
 	return s.turnByID(ctx, turn.ID)
+}
+
+func validTurnTransition(from string, to string) bool {
+	from = strings.TrimSpace(from)
+	to = strings.TrimSpace(to)
+	if from == "" || to == "" {
+		return false
+	}
+	if from == to {
+		return true
+	}
+	if turnStatusTerminal(from) {
+		return false
+	}
+	return allowedTurnTransitions[from][to]
+}
+
+func turnStatusStarted(status string) bool {
+	return strings.TrimSpace(status) != TurnStatusCreated
+}
+
+func turnStatusTerminal(status string) bool {
+	switch strings.TrimSpace(status) {
+	case TurnStatusCompleted, TurnStatusFailed, TurnStatusCanceled:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s Service) upsertThread(ctx context.Context, session dbgen.ReviewSession, now string) (Thread, error) {

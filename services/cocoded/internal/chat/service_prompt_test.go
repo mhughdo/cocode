@@ -127,6 +127,31 @@ func TestPromptVisibleChatMessagesDropsSystemAndTransientFailures(t *testing.T) 
 	}
 }
 
+func TestChatTurnStateMachine(t *testing.T) {
+	tests := []struct {
+		name string
+		from string
+		to   string
+		want bool
+	}{
+		{name: "created starts routing", from: TurnStatusCreated, to: TurnStatusRouting, want: true},
+		{name: "routing builds context", from: TurnStatusRouting, to: TurnStatusContextBuild, want: true},
+		{name: "context can complete", from: TurnStatusContextBuild, to: TurnStatusCompleted, want: true},
+		{name: "running can synthesize", from: TurnStatusRunning, to: TurnStatusSynthesizing, want: true},
+		{name: "cancel request can cancel", from: TurnStatusCancelReq, to: TurnStatusCanceled, want: true},
+		{name: "completed is terminal", from: TurnStatusCompleted, to: TurnStatusRunning, want: false},
+		{name: "created cannot complete directly", from: TurnStatusCreated, to: TurnStatusCompleted, want: false},
+		{name: "unknown status is invalid", from: "unknown", to: TurnStatusRunning, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := validTurnTransition(tt.from, tt.to); got != tt.want {
+				t.Fatalf("validTurnTransition(%q, %q) = %v, want %v", tt.from, tt.to, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLocalAnswerExplainsMatchingFinding(t *testing.T) {
 	session := dbgen.ReviewSession{
 		ID:     "review_session_1",

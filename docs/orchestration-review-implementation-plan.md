@@ -45,6 +45,7 @@ Update rules:
 | 2026-06-10 | Documented local-first orchestration contracts for CI/adapters. | `BASE-03` | Documentation review | CI and GitHub automation are defined as triggers/reporting adapters over the same local review session, finding, evidence, chat, decision, and publish draft contracts. |
 | 2026-06-10 | Added cross-session dismissal memory, transport partial-failure coverage, timeout-output preservation, and real draft comment generation. | `VERIFY-07`, `VERIFY-08`, `VERIFY-09`, `VERIFY-10` | `go test ./internal/orchestrator -run 'TestWorkflowCarriesDismissedFindingFingerprintAcrossSessions|TestWorkflowContinuesWhenOneAgentTransportOpenFails|TestWorkflowKeepsParseableTimedOutAgentOutput|TestDraftFindingCommentsCreatesMissingDrafts|TestWorkflowAgentTimeoutKeepsOtherFindings|TestWorkflowContinuesWhenOneAgentFails'` | Repository-scoped prior dismissals now carry forward by fingerprint; transport-open failures preserve successful agents; parseable timed-out output can produce candidates with provenance; `draft_comments` fills missing finding draft comments deterministically. |
 | 2026-06-10 | Centralized untrusted-context prompt guidance across review, curator, verifier, chat, and follow-up prompts. | `PROMPT-07` | `go test ./internal/reviewprompt ./internal/chat ./internal/followup`; `go test ./internal/orchestrator -run 'TestWorkflowUsesSelectedOrchestratorForDedupeCuration|TestVerifyFindingsRunsVerifierCLIWithFindingContext|TestWorkflowRunsFakeAgentEndToEnd'` | Prompt builders now consume one shared instruction; the embedded reviewer prompt uses a placeholder expanded by the renderer, and prompt tests assert the exact shared wording. |
+| 2026-06-10 | Split centralized chat turn creation from execution and enforced turn transitions. | `CHAT-02`, `CHAT-16` | `go test ./internal/chat`; `go test ./internal/httpapi -run 'TestReviewSessionChatThreadEndpointSeedsAndAnswers|TestReviewSessionChatThreadEndpointUsesOrchestratorResponder'` | Chat POST now returns `202 Accepted` with a created turn while execution runs from persisted state in the background; allowed turn transitions are tested. |
 
 ## Assumptions And Boundaries
 
@@ -200,7 +201,7 @@ This phase implements the architecture already sketched in `docs/centralized-cha
 
 | ID | Status | Task | Acceptance Criteria | Verification | Likely Files |
 | --- | --- | --- | --- | --- | --- |
-| CHAT-02 | todo | Convert chat ask endpoint to async turn creation. | POST returns `202` with turn ID; work proceeds through persisted turn states. | HTTP API tests for turn lifecycle. | `services/cocoded/internal/httpapi/chat.go`, `services/cocoded/internal/chat/service.go` |
+| CHAT-02 | done | Convert chat ask endpoint to async turn creation. | POST returns `202` with turn ID; work proceeds through persisted turn states. | `go test ./internal/chat`; `go test ./internal/httpapi -run 'TestReviewSessionChatThreadEndpointSeedsAndAnswers|TestReviewSessionChatThreadEndpointUsesOrchestratorResponder'` from `services/cocoded`. | `services/cocoded/internal/httpapi/chat.go`, `services/cocoded/internal/chat/service.go` |
 | CHAT-03 | todo | Add cancel endpoint and real cancellation handling. | Stop button marks turn `cancel_requested`/`canceled` and cancels active work where supported. | Backend cancellation test plus desktop manual stop. | `services/cocoded/internal/httpapi/chat.go`, `services/cocoded/internal/chat/service.go` |
 | CHAT-04 | todo | Build one shared context bundle per chat turn. | Multi-agent chat fan-out reuses one bundle instead of rebuilding/persisting per agent. | Chat service test asserts one bundle per turn. | `services/cocoded/internal/chat/service.go`, `services/cocoded/internal/contextbundle` |
 | CHAT-05 | todo | Parallelize all-agent fan-out. | Asking all reviewers runs independent agent calls concurrently with bounded concurrency. | Timing/behavior test with fake adapters. | `services/cocoded/internal/chat/service.go` |
@@ -214,7 +215,7 @@ This phase implements the architecture already sketched in `docs/centralized-cha
 | CHAT-13 | todo | Make thread read APIs side-effect-free and efficient. | Loading a thread does not perform server-side read-modify-write cleanup or N+1 sync work. | HTTP API test plus query-count style unit/fake test where practical. | `services/cocoded/internal/chat/service.go`, `services/cocoded/internal/httpapi/chat.go` |
 | CHAT-14 | todo | Replace client-faked SSE previews with persisted message deltas. | UI renders streamed content from persisted/delta events and does not depend on truncated preview reconstruction. | SSE/chat e2e with long answer over preview-size threshold. | `services/cocoded/internal/httpapi`, `services/cocoded/internal/chat`, `apps/desktop/src/renderer/src` |
 | CHAT-15 | todo | Reconcile abandoned running turns on startup/load. | Client aborts or app restarts do not leave `chat_turns` permanently stuck in `running`. | Startup/reconcile service test. | `services/cocoded/internal/chat`, `services/cocoded/internal/app` |
-| CHAT-16 | todo | Define chat turn state machine. | Allowed transitions for `created`, `routing`, `context_building`, `running`, `synthesizing`, `completed`, `failed`, `cancel_requested`, and `canceled` are enforced. | State transition tests. | `services/cocoded/internal/chat`, `services/cocoded/internal/db/sql/schema.sql` |
+| CHAT-16 | done | Define chat turn state machine. | Allowed transitions for `created`, `routing`, `context_building`, `running`, `synthesizing`, `completed`, `failed`, `cancel_requested`, and `canceled` are enforced. | `go test ./internal/chat` from `services/cocoded`. | `services/cocoded/internal/chat`, `services/cocoded/internal/db/sql/schema.sql` |
 
 Checkpoint after Phase 4:
 
@@ -343,12 +344,12 @@ End-to-end manual checks:
 | Parsed output from timed-out runs is discarded. | `VERIFY-09` | done | Parseable timed-out output can create candidates with timeout provenance. |
 | Verifier disagreement is last-writer-wins. | `VERIFY-06` | done | Conflicting verifier outputs now emit explicit disagreement evidence and reconcile conservatively. |
 | `draft_comments` is checkpointed no-op. | `VERIFY-10` | done | The phase now fills missing finding draft comments and emits preparation events. |
-| Chat POST is synchronous/blocking. | `CHAT-02` | todo | Changes API contract to async turn creation. |
+| Chat POST is synchronous/blocking. | `CHAT-02` | done | POST now creates a turn, returns `202`, and runs the turn from persisted state in the background. |
 | Chat has no real cancel. | `CHAT-03` | todo | Stop button maps to persisted cancel state. |
 | Chat rebuilds context per agent. | `CHAT-04`, `CHAT-06` | todo | One shared bundle plus cache key. |
 | Chat fan-out is serial. | `CHAT-05` | todo | Bounded parallel execution. |
 | Chat sends very large prompt/context every turn. | `CHAT-06`, `CHAT-07`, `ADAPT-04` | todo | Cache, summarize, and route to compact finding context when enough. |
-| Chat turn states exist but are underused. | `CHAT-02`, `CHAT-16` | todo | Makes the persisted state machine real. |
+| Chat turn states exist but are underused. | `CHAT-02`, `CHAT-16` | done | Turn creation/execution now uses and validates the persisted state machine. |
 | `chat_message_context_refs` exists but is unused. | `CHAT-12` | todo | Uses structured refs for finding/evidence/file context. |
 | Chat answer survives only via client-side preview reconstruction. | `CHAT-01`, `CHAT-14` | todo | Persist full answer and stream durable deltas. |
 | Renderer refetches full thread too often. | `CHAT-08`, `CHAT-09` | todo | SSE deltas and UI debounce. |

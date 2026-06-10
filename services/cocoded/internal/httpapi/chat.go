@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 
@@ -50,12 +51,13 @@ func createReviewSessionChatTurnHandler(services routerServices) gin.HandlerFunc
 		if service == nil {
 			service = &chat.Service{Database: services.database, Queries: services.queries}
 		}
-		result, err := service.Ask(c.Request.Context(), request)
+		result, err := service.CreateTurn(c.Request.Context(), request)
 		if err != nil {
 			respondError(c, chatError(err))
 			return
 		}
-		respondOK(c, result)
+		go service.RunTurn(context.Background(), result.Turn.ID, request)
+		respondAccepted(c, result)
 	}
 }
 

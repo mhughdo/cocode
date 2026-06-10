@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hughdo/cocode/services/cocoded/internal/agentrun"
 	"github.com/hughdo/cocode/services/cocoded/internal/agents"
 	"github.com/hughdo/cocode/services/cocoded/internal/artifact"
 	"github.com/hughdo/cocode/services/cocoded/internal/contextbundle"
@@ -715,6 +716,127 @@ func TestBuildOrReuseChatContextUsesPersistedBundle(t *testing.T) {
 	rendered := contextbundle.RenderBundle(result.Bundle)
 	if !strings.Contains(rendered, "cached file content") {
 		t.Fatalf("cached bundle was not hydrated with item content:\n%s", rendered)
+	}
+}
+
+func TestValidateAgentConfigAllowsSessionCapableProtocolAdapters(t *testing.T) {
+	protocolConfig := dbgen.AgentConfig{
+		ID:               "agent_config_protocol",
+		AdapterKind:      string(agents.AdapterJSONRPCStdio),
+		CapabilitiesJson: `{"supports_json":true,"supports_streaming":true,"supports_sessions":true,"can_read":true,"can_write":false,"output_modes":["json"]}`,
+	}
+	if err := validateAgentConfig(protocolConfig); err != nil {
+		t.Fatalf("validateAgentConfig(protocol) error = %v", err)
+	}
+
+	withoutSessions := protocolConfig
+	withoutSessions.CapabilitiesJson = `{"supports_json":true,"supports_streaming":true,"supports_sessions":false,"can_read":true,"can_write":false,"output_modes":["json"]}`
+	if err := validateAgentConfig(withoutSessions); err == nil || !strings.Contains(err.Error(), "unsupported for centralized chat") {
+		t.Fatalf("validateAgentConfig(without sessions) error = %v, want unsupported", err)
+	}
+
+	localVerifier := protocolConfig
+	localVerifier.AdapterKind = string(agents.AdapterLocalVerifier)
+	localVerifier.CapabilitiesJson = `{"supports_json":true,"can_read":true,"can_write":false,"output_modes":["json"]}`
+	if err := validateAgentConfig(localVerifier); err == nil || !strings.Contains(err.Error(), "unsupported for centralized chat") {
+		t.Fatalf("validateAgentConfig(local verifier) error = %v, want unsupported", err)
+	}
+}
+
+func TestChatExternalSessionRoutingUsesLatestReusableRun(t *testing.T) {
+	ctx := context.Background()
+	database, err := cocodedb.Open(ctx, cocodedb.MemoryDatabase)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = database.Close()
+	})
+	if err := cocodedb.Apply(ctx, database, cocodedb.Migrations); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	queries := dbgen.New(database)
+	createChatSessionFixture(t, queries, "review_session_external_session")
+	now := "2026-05-03T00:00:00Z"
+	if _, err := queries.CreateAgentConfig(ctx, dbgen.CreateAgentConfigParams{
+		ID:               "agent_config_protocol",
+		Name:             "Codex App Server",
+		Role:             "reviewer",
+		AdapterKind:      string(agents.AdapterJSONRPCStdio),
+		Command:          sql.NullString{String: "codex", Valid: true},
+		ArgsJson:         "[]",
+		CwdMode:          "repo_root",
+		EnvAllowlistJson: "[]",
+		OutputMode:       "json",
+		CapabilitiesJson: `{"supports_json":true,"supports_streaming":true,"supports_sessions":true,"can_read":true,"can_write":false,"output_modes":["json"]}`,
+		SettingsJson:     "{}",
+		Enabled:          1,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}); err != nil {
+		t.Fatalf("CreateAgentConfig() error = %v", err)
+	}
+	for _, run := range []struct {
+		id      string
+		started string
+		thread  string
+	}{
+		{id: "agent_run_old", started: "2026-05-03T00:00:01Z", thread: "thread_old"},
+		{id: "agent_run_new", started: "2026-05-03T00:00:02Z", thread: "thread_new"},
+	} {
+		metadata, err := json.Marshal(map[string]any{
+			agents.ExternalSessionMetadataKey: map[string]any{
+				"adapter_id": "agent_config_protocol",
+				"protocol":   "codex_app_server",
+				"thread_id":  run.thread,
+				"source":     "thread/start",
+			},
+		})
+		if err != nil {
+			t.Fatalf("Marshal(metadata) error = %v", err)
+		}
+		if _, err := queries.CreateAgentRun(ctx, dbgen.CreateAgentRunParams{
+			ID:              run.id,
+			ReviewSessionID: "review_session_external_session",
+			AgentConfigID:   "agent_config_protocol",
+			Status:          agentrun.RunStatusSucceeded,
+			Role:            "reviewer",
+			StartedAt:       sql.NullString{String: run.started, Valid: true},
+			CompletedAt:     sql.NullString{String: run.started, Valid: true},
+			MetadataJson:    string(metadata),
+		}); err != nil {
+			t.Fatalf("CreateAgentRun(%s) error = %v", run.id, err)
+		}
+	}
+
+	service := Service{
+		Database: database,
+		Queries:  queries,
+		Now: func() time.Time {
+			return time.Date(2026, 5, 3, 0, 0, 3, 0, time.UTC)
+		},
+	}
+	metadata := map[string]any{}
+	service.addReusableExternalSession(ctx, "review_session_external_session", "agent_config_protocol", agents.AgentCapabilities{
+		SupportsSessions: true,
+	}, chatFollowupStrategy{Mode: "resume_session", AllowSessionReuse: true}, metadata)
+	session, ok := agents.ExtractExternalSessionMetadata("agent_config_protocol", metadata)
+	if !ok || session.ThreadID != "thread_new" || session.Source != "agent_run:agent_run_new" {
+		t.Fatalf("external session = %+v, ok = %v, metadata = %+v", session, ok, metadata)
+	}
+
+	compact := classifyChatFollowup(AskParams{
+		ContextRefs: json.RawMessage(`[{"ref_type":"finding","ref_id":"finding_1"}]`),
+	}, "Explain this finding")
+	if compact.AllowSessionReuse || compact.Mode != "fresh_compact_finding" {
+		t.Fatalf("compact strategy = %+v, want no session reuse", compact)
+	}
+	metadata = map[string]any{}
+	service.addReusableExternalSession(ctx, "review_session_external_session", "agent_config_protocol", agents.AgentCapabilities{
+		SupportsSessions: true,
+	}, compact, metadata)
+	if _, ok := metadata[agents.ExternalSessionMetadataKey]; ok {
+		t.Fatalf("compact explain turn should not attach external session: %+v", metadata)
 	}
 }
 

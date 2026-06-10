@@ -1159,6 +1159,16 @@ func (s Service) answerWithSynthesisAgentConfig(ctx context.Context, session dbg
 	if err != nil {
 		return "", err
 	}
+	strategy := classifyChatFollowup(params, question)
+	taskMetadata := map[string]any{
+		"thread_id":              thread.ID,
+		"user_message_id":        userMessage.ID,
+		"context_bundle_id":      built.Bundle.ID,
+		"reviewer_count":         len(answers),
+		"failure_count":          len(failures),
+		"chat_followup_strategy": strategy.Mode,
+	}
+	s.addReusableExternalSession(ctx, session.ID, config.ID, capabilities, strategy, taskMetadata)
 	task := agents.AgentTask{
 		ID:               s.newID("agent_task_"),
 		RunID:            s.newID("agent_run_"),
@@ -1171,13 +1181,7 @@ func (s Service) answerWithSynthesisAgentConfig(ctx context.Context, session dbg
 		RepositoryRoot:   repository.LocalPath,
 		WorkspaceRoot:    workspace.RootPath,
 		Limits:           limits,
-		Metadata: map[string]any{
-			"thread_id":         thread.ID,
-			"user_message_id":   userMessage.ID,
-			"context_bundle_id": built.Bundle.ID,
-			"reviewer_count":    len(answers),
-			"failure_count":     len(failures),
-		},
+		Metadata:         taskMetadata,
 	}
 	streamingMessage, err := s.appendStreamingRunMessage(ctx, thread, config, AuthorOrchestrator, "Orchestrator", built.Bundle.ID, "agent_synthesis")
 	if err != nil {
@@ -1194,11 +1198,12 @@ func (s Service) answerWithSynthesisAgentConfig(ctx context.Context, session dbg
 			ReviewTimeoutSeconds: maxInt64(0, session.RuntimeLimitSeconds),
 		},
 		Metadata: map[string]any{
-			"phase":             "chat_synthesis",
-			"thread_id":         thread.ID,
-			"user_message_id":   userMessage.ID,
-			"context_bundle_id": built.Bundle.ID,
-			"output_mode":       config.OutputMode,
+			"phase":                  "chat_synthesis",
+			"thread_id":              thread.ID,
+			"user_message_id":        userMessage.ID,
+			"context_bundle_id":      built.Bundle.ID,
+			"output_mode":            config.OutputMode,
+			"chat_followup_strategy": strategy.Mode,
 		},
 		EventSink: s.agentRunEventSinkForMessage(session.ID, streamingMessage.ID),
 	})
@@ -1276,6 +1281,14 @@ func (s Service) answerWithAgentConfigWithBundle(ctx context.Context, session db
 	if err != nil {
 		return "", err
 	}
+	strategy := classifyChatFollowup(params, question)
+	taskMetadata := map[string]any{
+		"thread_id":              thread.ID,
+		"user_message_id":        userMessage.ID,
+		"context_bundle_id":      built.Bundle.ID,
+		"chat_followup_strategy": strategy.Mode,
+	}
+	s.addReusableExternalSession(ctx, session.ID, config.ID, capabilities, strategy, taskMetadata)
 	task := agents.AgentTask{
 		ID:               s.newID("agent_task_"),
 		RunID:            s.newID("agent_run_"),
@@ -1288,11 +1301,7 @@ func (s Service) answerWithAgentConfigWithBundle(ctx context.Context, session db
 		RepositoryRoot:   repository.LocalPath,
 		WorkspaceRoot:    workspace.RootPath,
 		Limits:           limits,
-		Metadata: map[string]any{
-			"thread_id":         thread.ID,
-			"user_message_id":   userMessage.ID,
-			"context_bundle_id": built.Bundle.ID,
-		},
+		Metadata:         taskMetadata,
 	}
 	streamingMessage, err := s.appendStreamingRunMessage(ctx, thread, config, AuthorAgent, config.Name, built.Bundle.ID, "agent")
 	if err != nil {
@@ -1309,11 +1318,12 @@ func (s Service) answerWithAgentConfigWithBundle(ctx context.Context, session db
 			ReviewTimeoutSeconds: maxInt64(0, session.RuntimeLimitSeconds),
 		},
 		Metadata: map[string]any{
-			"phase":             "chat_turn",
-			"thread_id":         thread.ID,
-			"user_message_id":   userMessage.ID,
-			"context_bundle_id": built.Bundle.ID,
-			"output_mode":       config.OutputMode,
+			"phase":                  "chat_turn",
+			"thread_id":              thread.ID,
+			"user_message_id":        userMessage.ID,
+			"context_bundle_id":      built.Bundle.ID,
+			"output_mode":            config.OutputMode,
+			"chat_followup_strategy": strategy.Mode,
 		},
 		EventSink: s.agentRunEventSinkForMessage(session.ID, streamingMessage.ID),
 	})
@@ -3462,13 +3472,109 @@ func validateAgentConfig(config dbgen.AgentConfig) error {
 	if err != nil {
 		return err
 	}
+	kind := agents.AdapterKind(config.AdapterKind)
 	if err := agents.ValidateReviewModePermissions(agents.ConnectionConfig{Kind: agents.AdapterKind(config.AdapterKind)}, capabilities); err != nil {
 		return fmt.Errorf("%w: agent config %s cannot be used for review mode: %v", ErrInvalidAgentConfig, config.ID, err)
 	}
-	if agents.AdapterKind(config.AdapterKind) != agents.AdapterCLINonInteractive {
+	if !centralizedChatAdapterSupported(kind, capabilities) {
 		return fmt.Errorf("%w: adapter %q is unsupported for centralized chat", ErrInvalidAgentConfig, config.AdapterKind)
 	}
 	return nil
+}
+
+func centralizedChatAdapterSupported(kind agents.AdapterKind, capabilities agents.AgentCapabilities) bool {
+	switch kind {
+	case agents.AdapterCLINonInteractive:
+		return true
+	case agents.AdapterJSONRPCStdio, agents.AdapterACPStdio:
+		return capabilities.SupportsSessions && capabilities.SupportsStreaming && capabilities.CanRead
+	default:
+		return false
+	}
+}
+
+type chatFollowupStrategy struct {
+	Mode              string
+	AllowSessionReuse bool
+}
+
+func classifyChatFollowup(params AskParams, question string) chatFollowupStrategy {
+	if hasFindingContextRef(params.ContextRefs) && looksLikeExplainOnlyQuestion(question) {
+		return chatFollowupStrategy{
+			Mode:              "fresh_compact_finding",
+			AllowSessionReuse: false,
+		}
+	}
+	return chatFollowupStrategy{
+		Mode:              "resume_session",
+		AllowSessionReuse: true,
+	}
+}
+
+func hasFindingContextRef(raw json.RawMessage) bool {
+	for _, ref := range parseContextRefs(raw) {
+		if ref.RefType == "finding" {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeExplainOnlyQuestion(question string) bool {
+	lower := strings.ToLower(strings.TrimSpace(question))
+	if lower == "" {
+		return false
+	}
+	for _, investigative := range []string{"verify", "check", "inspect", "investigate", "search", "find ", "run ", "test ", "reproduce", "confirm", "look up"} {
+		if strings.Contains(lower, investigative) {
+			return false
+		}
+	}
+	for _, explanatory := range []string{"explain", "summarize", "summary", "what does", "what is", "why", "walk me through", "tell me about"} {
+		if strings.HasPrefix(lower, explanatory) || strings.Contains(lower, " "+explanatory+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+func (s Service) addReusableExternalSession(ctx context.Context, reviewSessionID string, agentConfigID string, capabilities agents.AgentCapabilities, strategy chatFollowupStrategy, metadata map[string]any) {
+	if metadata == nil || !strategy.AllowSessionReuse || !capabilities.SupportsSessions {
+		return
+	}
+	session, ok := s.latestReusableExternalSession(ctx, reviewSessionID, agentConfigID)
+	if !ok {
+		return
+	}
+	metadata[agents.ExternalSessionMetadataKey] = agents.ExternalSessionMetadataMap(session)
+	metadata["external_session_source"] = session.Source
+}
+
+func (s Service) latestReusableExternalSession(ctx context.Context, reviewSessionID string, agentConfigID string) (agents.ExternalSessionMetadata, bool) {
+	if s.Queries == nil {
+		return agents.ExternalSessionMetadata{}, false
+	}
+	runs, err := s.Queries.ListAgentRunsBySession(ctx, reviewSessionID)
+	if err != nil {
+		return agents.ExternalSessionMetadata{}, false
+	}
+	for index := len(runs) - 1; index >= 0; index-- {
+		run := runs[index]
+		if run.AgentConfigID != agentConfigID || run.Status != agentrun.RunStatusSucceeded {
+			continue
+		}
+		metadata := map[string]any{}
+		if err := json.Unmarshal([]byte(run.MetadataJson), &metadata); err != nil {
+			continue
+		}
+		session, ok := agents.ExtractExternalSessionMetadata(agentConfigID, metadata)
+		if !ok || !session.ReusableAt(s.now()) {
+			continue
+		}
+		session.Source = "agent_run:" + run.ID
+		return session, true
+	}
+	return agents.ExternalSessionMetadata{}, false
 }
 
 func agentCapabilities(config dbgen.AgentConfig) (agents.AgentCapabilities, error) {

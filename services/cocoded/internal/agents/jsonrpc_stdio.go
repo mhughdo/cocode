@@ -473,27 +473,43 @@ func (c *JSONRPCStdioConnection) runCodexAppServerTask(ctx context.Context, task
 	}
 	_ = c.notify("initialized", nil)
 
-	threadParams := map[string]any{
-		"cwd":                    firstNonEmptyString(task.RepositoryRoot, c.config.WorkingDirectory),
-		"approvalPolicy":         "never",
-		"sandbox":                "read-only",
-		"serviceName":            "cocode",
-		"developerInstructions":  "You are running as a read-only code review agent inside cocode. Do not modify files; return findings in the requested output contract.",
-		"ephemeral":              true,
-		"experimentalRawEvents":  false,
-		"persistExtendedHistory": false,
+	threadID := ""
+	threadSource := "thread/start"
+	if session, ok := reusableTaskExternalSession(c.config, task, "codex_app_server"); ok && session.ThreadID != "" {
+		threadSource = "thread/resume"
+		resumeParams := map[string]any{"threadId": session.ThreadID}
+		if cwd := firstNonEmptyString(task.RepositoryRoot, c.config.WorkingDirectory); cwd != "" {
+			resumeParams["cwd"] = cwd
+		}
+		threadResult, err := c.request(ctx, "thread/resume", resumeParams)
+		if err != nil {
+			events <- failedProtocolEvent(task.RunID, "codex_thread_resume_failed", err)
+			return
+		}
+		threadID = firstNonEmptyString(rawStringAt(threadResult, "thread", "id"), rawStringAt(threadResult, "threadId"), session.ThreadID)
+	} else {
+		threadParams := map[string]any{
+			"cwd":                    firstNonEmptyString(task.RepositoryRoot, c.config.WorkingDirectory),
+			"approvalPolicy":         "never",
+			"sandbox":                "read-only",
+			"serviceName":            "cocode",
+			"developerInstructions":  "You are running as a read-only code review agent inside cocode. Do not modify files; return findings in the requested output contract.",
+			"ephemeral":              true,
+			"experimentalRawEvents":  false,
+			"persistExtendedHistory": false,
+		}
+		if model := metadataString(c.config.Metadata, "model_label"); model != "" {
+			threadParams["model"] = model
+		}
+		threadResult, err := c.request(ctx, "thread/start", threadParams)
+		if err != nil {
+			events <- failedProtocolEvent(task.RunID, "codex_thread_start_failed", err)
+			return
+		}
+		threadID = rawStringAt(threadResult, "thread", "id")
 	}
-	if model := metadataString(c.config.Metadata, "model_label"); model != "" {
-		threadParams["model"] = model
-	}
-	threadResult, err := c.request(ctx, "thread/start", threadParams)
-	if err != nil {
-		events <- failedProtocolEvent(task.RunID, "codex_thread_start_failed", err)
-		return
-	}
-	threadID := rawStringAt(threadResult, "thread", "id")
 	if threadID == "" {
-		events <- failedProtocolEvent(task.RunID, "codex_thread_start_invalid", errors.New("thread/start response did not include thread.id"))
+		events <- failedProtocolEvent(task.RunID, "codex_thread_start_invalid", errors.New(threadSource+" response did not include thread.id"))
 		return
 	}
 
@@ -506,10 +522,11 @@ func (c *JSONRPCStdioConnection) runCodexAppServerTask(ctx context.Context, task
 			AdapterID: configAdapterID(c.config, task),
 			Protocol:  "codex_app_server",
 			ThreadID:  threadID,
-			Source:    "thread/start",
+			Source:    threadSource,
 		}, map[string]any{
-			"protocol":  "codex_app_server",
-			"thread_id": threadID,
+			"protocol":       "codex_app_server",
+			"thread_id":      threadID,
+			"session_source": threadSource,
 		}),
 	}
 
@@ -586,17 +603,31 @@ func (c *JSONRPCStdioConnection) runACPTask(ctx context.Context, task AgentTask,
 		return
 	}
 
-	sessionResult, err := c.request(ctx, "session/new", map[string]any{
-		"cwd":        firstNonEmptyString(task.RepositoryRoot, c.config.WorkingDirectory),
-		"mcpServers": []any{},
-	})
-	if err != nil {
-		events <- failedProtocolEvent(task.RunID, "acp_session_new_failed", err)
-		return
+	sessionID := ""
+	sessionSource := "session/new"
+	if session, ok := reusableTaskExternalSession(c.config, task, "acp"); ok && session.SessionID != "" {
+		sessionSource = "session/load"
+		sessionResult, err := c.request(ctx, "session/load", map[string]any{
+			"sessionId": session.SessionID,
+		})
+		if err != nil {
+			events <- failedProtocolEvent(task.RunID, "acp_session_load_failed", err)
+			return
+		}
+		sessionID = firstNonEmptyString(rawStringAt(sessionResult, "sessionId"), session.SessionID)
+	} else {
+		sessionResult, err := c.request(ctx, "session/new", map[string]any{
+			"cwd":        firstNonEmptyString(task.RepositoryRoot, c.config.WorkingDirectory),
+			"mcpServers": []any{},
+		})
+		if err != nil {
+			events <- failedProtocolEvent(task.RunID, "acp_session_new_failed", err)
+			return
+		}
+		sessionID = rawStringAt(sessionResult, "sessionId")
 	}
-	sessionID := rawStringAt(sessionResult, "sessionId")
 	if sessionID == "" {
-		events <- failedProtocolEvent(task.RunID, "acp_session_new_invalid", errors.New("session/new response did not include sessionId"))
+		events <- failedProtocolEvent(task.RunID, "acp_session_new_invalid", errors.New(sessionSource+" response did not include sessionId"))
 		return
 	}
 
@@ -609,10 +640,11 @@ func (c *JSONRPCStdioConnection) runACPTask(ctx context.Context, task AgentTask,
 			AdapterID: configAdapterID(c.config, task),
 			Protocol:  "acp",
 			SessionID: sessionID,
-			Source:    "session/new",
+			Source:    sessionSource,
 		}, map[string]any{
 			"protocol":       "acp",
 			"acp_session_id": sessionID,
+			"session_source": sessionSource,
 		}),
 	}
 
@@ -830,6 +862,17 @@ func readJSONRPCFrame(reader *bufio.Reader, maxBytes int64) ([]byte, error) {
 		}
 		return frame, err
 	}
+}
+
+func reusableTaskExternalSession(config ConnectionConfig, task AgentTask, protocol string) (ExternalSessionMetadata, bool) {
+	session, ok := ExtractExternalSessionMetadata(configAdapterID(config, task), task.Metadata)
+	if !ok || !session.ReusableAt(time.Now().UTC()) {
+		return ExternalSessionMetadata{}, false
+	}
+	if protocol != "" && session.Protocol != "" && session.Protocol != protocol {
+		return ExternalSessionMetadata{}, false
+	}
+	return session, true
 }
 
 func failedProtocolEvent(runID string, code string, err error) AgentEvent {

@@ -36,6 +36,7 @@ const (
 
 	MessageStatusCompleted = "completed"
 	MessageStatusFailed    = "failed"
+	MessageStatusStreaming = "streaming"
 
 	TurnStatusCreated      = "created"
 	TurnStatusRouting      = "routing"
@@ -172,6 +173,15 @@ type appendMessageParams struct {
 	Status            string
 	MetadataJSON      json.RawMessage
 	ContextRefs       []ContextRef
+}
+
+type updateMessageParams struct {
+	AgentRunID      string
+	ContextBundleID string
+	ArtifactID      string
+	Body            string
+	Status          string
+	MetadataJSON    json.RawMessage
 }
 
 type runtimeSettings struct {
@@ -1169,6 +1179,10 @@ func (s Service) answerWithSynthesisAgentConfig(ctx context.Context, session dbg
 			"failure_count":     len(failures),
 		},
 	}
+	streamingMessage, err := s.appendStreamingRunMessage(ctx, thread, config, AuthorOrchestrator, "Orchestrator", built.Bundle.ID, "agent_synthesis")
+	if err != nil {
+		return "", err
+	}
 	result, err := s.AgentManager.Execute(ctx, agentrun.RunParams{
 		WorkspaceID:  workspace.ID,
 		Config:       connection,
@@ -1186,32 +1200,28 @@ func (s Service) answerWithSynthesisAgentConfig(ctx context.Context, session dbg
 			"context_bundle_id": built.Bundle.ID,
 			"output_mode":       config.OutputMode,
 		},
-		EventSink: s.agentRunEventSink(session.ID),
+		EventSink: s.agentRunEventSinkForMessage(session.ID, streamingMessage.ID),
 	})
 	if err != nil {
-		s.appendAgentFailure(ctx, thread, config, result.Run, built.Bundle.ID, err)
-		return result.Run.ID, err
+		s.updateAgentFailureMessage(ctx, streamingMessage.ID, config, result.Run, built.Bundle.ID, err)
+		return fallbackRunID(result.Run, task.RunID), err
 	}
 	if result.Run.Status != agentrun.RunStatusSucceeded {
 		runErr := fmt.Errorf("agent run %s finished with status %s", result.Run.ID, result.Run.Status)
-		s.appendAgentFailure(ctx, thread, config, result.Run, built.Bundle.ID, runErr)
-		return result.Run.ID, runErr
+		s.updateAgentFailureMessage(ctx, streamingMessage.ID, config, result.Run, built.Bundle.ID, runErr)
+		return fallbackRunID(result.Run, task.RunID), runErr
 	}
 	answer := s.answerFromRun(ctx, result.Run)
 	if strings.TrimSpace(answer.Content) == "" {
 		answer.Content = orchestratorSynthesisMessage(session, promptContext.Findings, answers, failures, question)
 	}
-	_, err = s.appendMessage(ctx, appendMessageParams{
-		ThreadID:          thread.ID,
-		AuthorType:        AuthorOrchestrator,
-		AuthorDisplayName: "Orchestrator",
-		AgentConfigID:     config.ID,
-		AgentRunID:        result.Run.ID,
-		ContextBundleID:   built.Bundle.ID,
-		ArtifactID:        nullableStringValue(result.Run.StdoutArtifactID),
-		Body:              answer.Content,
-		Status:            MessageStatusCompleted,
-		MetadataJSON:      agentSynthesisRunMetadata(answer, answers, failures),
+	_, err = s.updateMessage(ctx, streamingMessage.ID, updateMessageParams{
+		AgentRunID:      result.Run.ID,
+		ContextBundleID: built.Bundle.ID,
+		ArtifactID:      nullableStringValue(result.Run.StdoutArtifactID),
+		Body:            answer.Content,
+		Status:          MessageStatusCompleted,
+		MetadataJSON:    agentSynthesisRunMetadata(answer, answers, failures),
 	})
 	return result.Run.ID, err
 }
@@ -1284,6 +1294,10 @@ func (s Service) answerWithAgentConfigWithBundle(ctx context.Context, session db
 			"context_bundle_id": built.Bundle.ID,
 		},
 	}
+	streamingMessage, err := s.appendStreamingRunMessage(ctx, thread, config, AuthorAgent, config.Name, built.Bundle.ID, "agent")
+	if err != nil {
+		return "", err
+	}
 	result, err := s.AgentManager.Execute(ctx, agentrun.RunParams{
 		WorkspaceID:  workspace.ID,
 		Config:       connection,
@@ -1301,34 +1315,74 @@ func (s Service) answerWithAgentConfigWithBundle(ctx context.Context, session db
 			"context_bundle_id": built.Bundle.ID,
 			"output_mode":       config.OutputMode,
 		},
-		EventSink: s.agentRunEventSink(session.ID),
+		EventSink: s.agentRunEventSinkForMessage(session.ID, streamingMessage.ID),
 	})
 	if err != nil {
-		s.appendAgentFailure(ctx, thread, config, result.Run, built.Bundle.ID, err)
-		return result.Run.ID, err
+		s.updateAgentFailureMessage(ctx, streamingMessage.ID, config, result.Run, built.Bundle.ID, err)
+		return fallbackRunID(result.Run, task.RunID), err
 	}
 	if result.Run.Status != agentrun.RunStatusSucceeded {
 		runErr := fmt.Errorf("agent run %s finished with status %s", result.Run.ID, result.Run.Status)
-		s.appendAgentFailure(ctx, thread, config, result.Run, built.Bundle.ID, runErr)
-		return result.Run.ID, runErr
+		s.updateAgentFailureMessage(ctx, streamingMessage.ID, config, result.Run, built.Bundle.ID, runErr)
+		return fallbackRunID(result.Run, task.RunID), runErr
 	}
 	answer := s.answerFromRun(ctx, result.Run)
 	if strings.TrimSpace(answer.Content) == "" {
 		answer.Content = "The agent completed but did not return text."
 	}
-	_, err = s.appendMessage(ctx, appendMessageParams{
-		ThreadID:          thread.ID,
-		AuthorType:        AuthorAgent,
-		AuthorDisplayName: config.Name,
-		AgentConfigID:     config.ID,
-		AgentRunID:        result.Run.ID,
-		ContextBundleID:   built.Bundle.ID,
-		ArtifactID:        nullableStringValue(result.Run.StdoutArtifactID),
-		Body:              answer.Content,
-		Status:            MessageStatusCompleted,
-		MetadataJSON:      agentAnswerMetadata(answer),
+	_, err = s.updateMessage(ctx, streamingMessage.ID, updateMessageParams{
+		AgentRunID:      result.Run.ID,
+		ContextBundleID: built.Bundle.ID,
+		ArtifactID:      nullableStringValue(result.Run.StdoutArtifactID),
+		Body:            answer.Content,
+		Status:          MessageStatusCompleted,
+		MetadataJSON:    agentAnswerMetadata(answer),
 	})
 	return result.Run.ID, err
+}
+
+func (s Service) appendStreamingRunMessage(ctx context.Context, thread Thread, config dbgen.AgentConfig, authorType string, displayName string, contextBundleID string, answerSource string) (Message, error) {
+	displayName = fallbackLabel(displayName, config.Name)
+	if displayName == "" {
+		displayName = defaultDisplayName(authorType)
+	}
+	metadata := map[string]any{
+		"answer_source": answerSource,
+		"streaming":     true,
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		encoded = []byte(`{"streaming":true}`)
+	}
+	return s.appendMessage(ctx, appendMessageParams{
+		ThreadID:          thread.ID,
+		AuthorType:        authorType,
+		AuthorDisplayName: displayName,
+		AgentConfigID:     config.ID,
+		ContextBundleID:   contextBundleID,
+		Body:              fmt.Sprintf("%s is streaming output back to cocode.", displayName),
+		Status:            MessageStatusStreaming,
+		MetadataJSON:      encoded,
+	})
+}
+
+func (s Service) updateAgentFailureMessage(ctx context.Context, messageID string, config dbgen.AgentConfig, run dbgen.AgentRun, contextBundleID string, err error) {
+	body, artifactID := s.agentFailureMessage(ctx, run, config, err)
+	_, _ = s.updateMessage(ctx, messageID, updateMessageParams{
+		AgentRunID:      fallbackRunID(run, ""),
+		ContextBundleID: contextBundleID,
+		ArtifactID:      artifactID,
+		Body:            body,
+		Status:          MessageStatusFailed,
+		MetadataJSON:    json.RawMessage(`{"answer_source":"agent","failed":true}`),
+	})
+}
+
+func fallbackRunID(run dbgen.AgentRun, fallback string) string {
+	if strings.TrimSpace(run.ID) != "" {
+		return strings.TrimSpace(run.ID)
+	}
+	return strings.TrimSpace(fallback)
 }
 
 func (s Service) appendAgentFailure(ctx context.Context, thread Thread, config dbgen.AgentConfig, run dbgen.AgentRun, contextBundleID string, err error) {
@@ -1408,12 +1462,96 @@ INSERT INTO chat_messages (
 	if err != nil {
 		return Message{}, err
 	}
-	s.emit(ctx, "", "ChatMessageCreated", map[string]any{
-		"thread_id":  threadID,
-		"message_id": message.ID,
-		"author":     message.AuthorType,
-	})
+	s.emitChatMessageEvent(ctx, "ChatMessageCreated", message)
 	return message, nil
+}
+
+func (s Service) updateMessage(ctx context.Context, id string, params updateMessageParams) (Message, error) {
+	if s.Database == nil {
+		return Message{}, ErrServiceNotConfigured
+	}
+	current, err := s.messageByID(ctx, strings.TrimSpace(id))
+	if err != nil {
+		return Message{}, err
+	}
+	body := strings.TrimSpace(params.Body)
+	if body == "" {
+		body = current.Body
+	}
+	status := strings.TrimSpace(params.Status)
+	if status == "" {
+		status = current.Status
+	}
+	metadata := current.Metadata
+	if len(strings.TrimSpace(string(params.MetadataJSON))) > 0 {
+		metadata = normalizedJSON(params.MetadataJSON, "{}")
+	}
+	agentRunID := current.AgentRunID
+	if strings.TrimSpace(params.AgentRunID) != "" {
+		agentRunID = strings.TrimSpace(params.AgentRunID)
+	}
+	contextBundleID := current.ContextBundleID
+	if strings.TrimSpace(params.ContextBundleID) != "" {
+		contextBundleID = strings.TrimSpace(params.ContextBundleID)
+	}
+	artifactID := current.ArtifactID
+	if strings.TrimSpace(params.ArtifactID) != "" {
+		artifactID = strings.TrimSpace(params.ArtifactID)
+	}
+	now := s.now().Format(time.RFC3339Nano)
+	if _, err := s.Database.ExecContext(ctx, `
+UPDATE chat_messages
+SET agent_run_id = ?, context_bundle_id = ?, artifact_id = ?,
+  body = ?, status = ?, metadata_json = ?, updated_at = ?
+WHERE id = ?`,
+		nullableString(agentRunID),
+		nullableString(contextBundleID),
+		nullableString(artifactID),
+		body,
+		status,
+		string(metadata),
+		now,
+		current.ID,
+	); err != nil {
+		return Message{}, fmt.Errorf("update chat message: %w", err)
+	}
+	message, err := s.messageByID(ctx, current.ID)
+	if err != nil {
+		return Message{}, err
+	}
+	s.emitChatMessageEvent(ctx, "ChatMessageUpdated", message)
+	return message, nil
+}
+
+func (s Service) emitChatMessageEvent(ctx context.Context, eventType string, message Message) {
+	thread, err := s.threadByID(ctx, message.ThreadID)
+	if err != nil {
+		return
+	}
+	s.emit(ctx, thread.ReviewSessionID, eventType, map[string]any{
+		"thread_id":  message.ThreadID,
+		"message_id": message.ID,
+		"message":    chatMessageEventPayload(message),
+	})
+}
+
+func chatMessageEventPayload(message Message) map[string]any {
+	return map[string]any{
+		"id":                  message.ID,
+		"thread_id":           message.ThreadID,
+		"parent_message_id":   message.ParentMessageID,
+		"author_type":         message.AuthorType,
+		"author_display_name": message.AuthorDisplayName,
+		"agent_config_id":     message.AgentConfigID,
+		"agent_run_id":        message.AgentRunID,
+		"context_bundle_id":   message.ContextBundleID,
+		"artifact_id":         message.ArtifactID,
+		"body":                message.Body,
+		"status":              message.Status,
+		"metadata":            normalizedJSON(message.Metadata, "{}"),
+		"created_at":          message.CreatedAt,
+		"updated_at":          message.UpdatedAt,
+	}
 }
 
 func (s Service) appendMessageContextRefs(ctx context.Context, messageID string, refs []ContextRef) error {
@@ -1543,7 +1681,24 @@ WHERE id = ?`,
 	if err != nil {
 		return Turn{}, fmt.Errorf("update chat turn: %w", err)
 	}
-	return s.turnByID(ctx, turn.ID)
+	updated, err := s.turnByID(ctx, turn.ID)
+	if err != nil {
+		return Turn{}, err
+	}
+	if thread, err := s.threadByID(ctx, updated.ThreadID); err == nil {
+		s.emit(ctx, thread.ReviewSessionID, "ChatTurnStatusChanged", map[string]any{
+			"thread_id":       updated.ThreadID,
+			"chat_turn_id":    updated.ID,
+			"user_message_id": updated.UserMessageID,
+			"previous_status": turn.Status,
+			"status":          updated.Status,
+			"error_code":      updated.ErrorCode,
+			"error_message":   updated.ErrorMessage,
+			"started_at":      updated.StartedAt,
+			"completed_at":    updated.CompletedAt,
+		})
+	}
+	return updated, nil
 }
 
 func validTurnTransition(from string, to string) bool {
@@ -2633,17 +2788,21 @@ func (s Service) emit(ctx context.Context, reviewSessionID string, eventType str
 }
 
 func (s Service) agentRunEventSink(reviewSessionID string) func(context.Context, agents.AgentEvent) {
+	return s.agentRunEventSinkForMessage(reviewSessionID, "")
+}
+
+func (s Service) agentRunEventSinkForMessage(reviewSessionID string, chatMessageID string) func(context.Context, agents.AgentEvent) {
 	if s.Events == nil || strings.TrimSpace(reviewSessionID) == "" {
 		return nil
 	}
 	return func(ctx context.Context, event agents.AgentEvent) {
-		if err := s.appendAgentRunEvent(ctx, reviewSessionID, event); err != nil {
+		if err := s.appendAgentRunEvent(ctx, reviewSessionID, chatMessageID, event); err != nil {
 			log.Printf("chat: append agent run event failed review_session_id=%s agent_run_id=%s event=%s: %v", reviewSessionID, event.RunID, event.Type, err)
 		}
 	}
 }
 
-func (s Service) appendAgentRunEvent(ctx context.Context, reviewSessionID string, event agents.AgentEvent) error {
+func (s Service) appendAgentRunEvent(ctx context.Context, reviewSessionID string, chatMessageID string, event agents.AgentEvent) error {
 	if s.Events == nil {
 		return nil
 	}
@@ -2674,6 +2833,16 @@ func (s Service) appendAgentRunEvent(ctx context.Context, reviewSessionID string
 	if event.Error != "" {
 		payload["error"] = event.Error
 		level = "error"
+	}
+	if strings.TrimSpace(chatMessageID) != "" && event.Type == agents.EventOutput && event.Text != "" {
+		s.emit(ctx, reviewSessionID, "ChatMessageDelta", map[string]any{
+			"message_id":   strings.TrimSpace(chatMessageID),
+			"agent_run_id": event.RunID,
+			"stream":       event.Stream,
+			"text_delta":   event.Text,
+			"text_bytes":   len(event.Text),
+			"truncated":    event.Truncated,
+		})
 	}
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {

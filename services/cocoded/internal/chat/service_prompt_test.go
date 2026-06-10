@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hughdo/cocode/services/cocoded/internal/agents"
 	"github.com/hughdo/cocode/services/cocoded/internal/artifact"
 	"github.com/hughdo/cocode/services/cocoded/internal/contextbundle"
 	cocodedb "github.com/hughdo/cocode/services/cocoded/internal/db"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
+	"github.com/hughdo/cocode/services/cocoded/internal/eventlog"
 	"github.com/hughdo/cocode/services/cocoded/internal/reviewprompt"
 )
 
@@ -324,6 +326,134 @@ func TestReconcileInterruptedTurnsMarksNonTerminalTurns(t *testing.T) {
 	}
 	if reconciledSecond.Status != TurnStatusCanceled {
 		t.Fatalf("second turn status = %s, want canceled", reconciledSecond.Status)
+	}
+}
+
+func TestChatMessageAndTurnEventsCarryDurablePayloads(t *testing.T) {
+	ctx := context.Background()
+	database, err := cocodedb.Open(ctx, cocodedb.MemoryDatabase)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = database.Close()
+	})
+	if err := cocodedb.Apply(ctx, database, cocodedb.Migrations); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	queries := dbgen.New(database)
+	createChatSessionFixture(t, queries, "review_session_events")
+	recorder := &recordingEventLog{}
+	service := Service{Database: database, Queries: queries, Events: recorder}
+	view, err := service.EnsureSessionThread(ctx, "review_session_events")
+	if err != nil {
+		t.Fatalf("EnsureSessionThread() error = %v", err)
+	}
+	message, err := service.appendMessage(ctx, appendMessageParams{
+		ThreadID:          view.Thread.ID,
+		AuthorType:        AuthorAgent,
+		AuthorDisplayName: "Codex CLI",
+		Body:              "streaming answer",
+		Status:            MessageStatusStreaming,
+		MetadataJSON:      []byte(`{"answer_source":"agent"}`),
+	})
+	if err != nil {
+		t.Fatalf("appendMessage() error = %v", err)
+	}
+	updated, err := service.updateMessage(ctx, message.ID, updateMessageParams{
+		Body:         "final answer",
+		Status:       MessageStatusCompleted,
+		MetadataJSON: []byte(`{"answer_source":"agent","done":true}`),
+	})
+	if err != nil {
+		t.Fatalf("updateMessage() error = %v", err)
+	}
+	created, err := service.CreateTurn(ctx, AskParams{
+		ReviewSessionID: "review_session_events",
+		Body:            "question",
+		Audience:        AudienceOrchestrator,
+	})
+	if err != nil {
+		t.Fatalf("CreateTurn() error = %v", err)
+	}
+	if _, err := service.updateTurn(ctx, created.Turn, TurnStatusRouting, "", ""); err != nil {
+		t.Fatalf("updateTurn() error = %v", err)
+	}
+
+	createdEvent := recorder.lastMessageEvent("ChatMessageCreated", message.ID)
+	if createdEvent.Type == "" {
+		t.Fatalf("missing ChatMessageCreated event: %+v", recorder.events)
+	}
+	createdPayload := decodeEventPayload(t, createdEvent.PayloadJson)
+	if createdPayload["message_id"] != message.ID {
+		t.Fatalf("created payload message_id = %v, want %s", createdPayload["message_id"], message.ID)
+	}
+	messagePayload, ok := createdPayload["message"].(map[string]any)
+	if !ok {
+		t.Fatalf("created payload missing message object: %+v", createdPayload)
+	}
+	if messagePayload["status"] != MessageStatusStreaming || messagePayload["body"] != "streaming answer" {
+		t.Fatalf("created message payload = %+v", messagePayload)
+	}
+	updatedEvent := recorder.lastMessageEvent("ChatMessageUpdated", message.ID)
+	if updatedEvent.Type == "" {
+		t.Fatalf("missing ChatMessageUpdated event: %+v", recorder.events)
+	}
+	updatedPayload := decodeEventPayload(t, updatedEvent.PayloadJson)
+	updatedMessage := updatedPayload["message"].(map[string]any)
+	if updatedMessage["status"] != MessageStatusCompleted || updatedMessage["body"] != updated.Body {
+		t.Fatalf("updated message payload = %+v", updatedMessage)
+	}
+	turnEvent := recorder.lastEventOfType("ChatTurnStatusChanged")
+	if turnEvent.Type == "" {
+		t.Fatalf("missing ChatTurnStatusChanged event: %+v", recorder.events)
+	}
+	turnPayload := decodeEventPayload(t, turnEvent.PayloadJson)
+	if turnPayload["chat_turn_id"] != created.Turn.ID || turnPayload["status"] != TurnStatusRouting {
+		t.Fatalf("turn payload = %+v", turnPayload)
+	}
+}
+
+func TestChatAgentRunEventSinkEmitsFullMessageDelta(t *testing.T) {
+	ctx := context.Background()
+	recorder := &recordingEventLog{}
+	service := Service{
+		Events: recorder,
+		NewID: func(prefix string) string {
+			return prefix + "1"
+		},
+		Now: func() time.Time {
+			return time.Date(2026, 5, 3, 0, 0, 0, 0, time.UTC)
+		},
+	}
+	longDelta := strings.Repeat("full-delta-", 2048)
+	err := service.appendAgentRunEvent(ctx, "review_session_delta", "chat_message_delta", agents.AgentEvent{
+		Type:   agents.EventOutput,
+		RunID:  "agent_run_delta",
+		Stream: "stdout",
+		Text:   longDelta,
+	})
+	if err != nil {
+		t.Fatalf("appendAgentRunEvent() error = %v", err)
+	}
+	deltaEvent := recorder.lastEventOfType("ChatMessageDelta")
+	if deltaEvent.Type == "" {
+		t.Fatalf("missing ChatMessageDelta event: %+v", recorder.events)
+	}
+	payload := decodeEventPayload(t, deltaEvent.PayloadJson)
+	if payload["message_id"] != "chat_message_delta" || payload["agent_run_id"] != "agent_run_delta" {
+		t.Fatalf("delta payload IDs = %+v", payload)
+	}
+	if payload["text_delta"] != longDelta {
+		t.Fatalf("delta payload was truncated: got %d bytes want %d", len(stringValue(payload["text_delta"])), len(longDelta))
+	}
+	outputEvent := recorder.lastEventOfType("AgentRunOutput")
+	if outputEvent.Type == "" {
+		t.Fatalf("missing AgentRunOutput event: %+v", recorder.events)
+	}
+	outputPayload := decodeEventPayload(t, outputEvent.PayloadJson)
+	if len(stringValue(outputPayload["text_preview"])) >= len(longDelta) {
+		t.Fatalf("runtime preview should remain bounded")
 	}
 }
 
@@ -913,6 +1043,61 @@ func TestSessionReviewerAgentConfigsUsesAssignmentRole(t *testing.T) {
 	if len(configs) != 1 || configs[0].ID != "agent_config_orchestrator" {
 		t.Fatalf("sessionReviewerAgentConfigs() = %+v, want assigned reviewer config", configs)
 	}
+}
+
+type recordingEventLog struct {
+	events []dbgen.Event
+}
+
+func (r *recordingEventLog) Append(_ context.Context, params eventlog.AppendParams) (dbgen.Event, error) {
+	event := dbgen.Event{
+		ID:              params.ID,
+		ReviewSessionID: sql.NullString{String: params.ReviewSessionID, Valid: params.ReviewSessionID != ""},
+		AgentRunID:      params.AgentRunID,
+		Type:            params.Type,
+		Level:           params.Level,
+		Sequence:        int64(len(r.events) + 1),
+		PayloadJson:     params.PayloadJSON,
+		ArtifactID:      params.ArtifactID,
+		CreatedAt:       params.CreatedAt,
+	}
+	r.events = append(r.events, event)
+	return event, nil
+}
+
+func (r *recordingEventLog) lastEventOfType(eventType string) dbgen.Event {
+	for index := len(r.events) - 1; index >= 0; index-- {
+		if r.events[index].Type == eventType {
+			return r.events[index]
+		}
+	}
+	return dbgen.Event{}
+}
+
+func (r *recordingEventLog) lastMessageEvent(eventType string, messageID string) dbgen.Event {
+	for index := len(r.events) - 1; index >= 0; index-- {
+		event := r.events[index]
+		if event.Type != eventType {
+			continue
+		}
+		var payload map[string]any
+		if json.Unmarshal([]byte(event.PayloadJson), &payload) != nil {
+			continue
+		}
+		if payload["message_id"] == messageID {
+			return event
+		}
+	}
+	return dbgen.Event{}
+}
+
+func decodeEventPayload(t *testing.T, raw string) map[string]any {
+	t.Helper()
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("decode event payload %q: %v", raw, err)
+	}
+	return payload
 }
 
 func createChatSessionFixture(t *testing.T, queries *dbgen.Queries, sessionID string) {

@@ -149,6 +149,184 @@ func TestPromptVisibleChatMessagesDropsSystemAndTransientFailures(t *testing.T) 
 	}
 }
 
+func TestPromptThreadHistoryCompactsOlderMessages(t *testing.T) {
+	ctx := context.Background()
+	database, err := cocodedb.Open(ctx, cocodedb.MemoryDatabase)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = database.Close()
+	})
+	if err := cocodedb.Apply(ctx, database, cocodedb.Migrations); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	queries := dbgen.New(database)
+	createChatSessionFixture(t, queries, "review_session_compact")
+	service := Service{Database: database, Queries: queries}
+	view, err := service.EnsureSessionThread(ctx, "review_session_compact")
+	if err != nil {
+		t.Fatalf("EnsureSessionThread() error = %v", err)
+	}
+	for index := 0; index < defaultChatRecentLimit+4; index++ {
+		author := AuthorUser
+		name := "You"
+		if index%2 == 1 {
+			author = AuthorAgent
+			name = "Reviewer"
+		}
+		if _, err := service.appendMessage(ctx, appendMessageParams{
+			ThreadID:          view.Thread.ID,
+			AuthorType:        author,
+			AuthorDisplayName: name,
+			Body:              "message body that should be summarized " + string(rune('A'+index)),
+			Status:            MessageStatusCompleted,
+			MetadataJSON:      []byte(`{"answer_source":"test"}`),
+		}); err != nil {
+			t.Fatalf("appendMessage(%d) error = %v", index, err)
+		}
+	}
+
+	history, err := service.promptThreadHistory(ctx, view.Thread.ID, defaultChatRecentLimit)
+	if err != nil {
+		t.Fatalf("promptThreadHistory() error = %v", err)
+	}
+	if len(history.Recent) != defaultChatRecentLimit {
+		t.Fatalf("recent len = %d, want %d", len(history.Recent), defaultChatRecentLimit)
+	}
+	for _, want := range []string{"Compacted", "Participants:", "Earlier turns"} {
+		if !strings.Contains(history.Summary, want) {
+			t.Fatalf("summary missing %q:\n%s", want, history.Summary)
+		}
+	}
+	prompt := chatPrompt(
+		dbgen.ReviewSession{ID: "review_session_compact", Title: "Review"},
+		view.Thread,
+		Message{ID: "message_current"},
+		dbgen.AgentConfig{Name: "Codex CLI"},
+		chatPromptContext{
+			ThreadSummary:         history.Summary,
+			RecentMessages:        history.Recent,
+			IncludeRecentMessages: true,
+		},
+		"what happened?",
+	)
+	if !strings.Contains(prompt, "# Earlier centralized chat summary") {
+		t.Fatalf("prompt missing compact summary section:\n%s", prompt)
+	}
+}
+
+func TestLoadThreadDoesNotSyncReviewProgress(t *testing.T) {
+	ctx := context.Background()
+	database, err := cocodedb.Open(ctx, cocodedb.MemoryDatabase)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = database.Close()
+	})
+	if err := cocodedb.Apply(ctx, database, cocodedb.Migrations); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	queries := dbgen.New(database)
+	createChatSessionFixture(t, queries, "review_session_readonly")
+	service := Service{Database: database, Queries: queries}
+	view, err := service.EnsureSessionThread(ctx, "review_session_readonly")
+	if err != nil {
+		t.Fatalf("EnsureSessionThread() error = %v", err)
+	}
+	initialCount := len(view.Messages)
+	if _, err := queries.CreateEvent(ctx, dbgen.CreateEventParams{
+		ID:              "event_readonly_queued",
+		ReviewSessionID: nullableString("review_session_readonly"),
+		Type:            "ReviewSessionQueued",
+		Level:           "info",
+		Sequence:        1,
+		PayloadJson:     `{"status":"queued"}`,
+		CreatedAt:       "2026-05-03T00:08:00Z",
+	}); err != nil {
+		t.Fatalf("CreateEvent() error = %v", err)
+	}
+
+	loaded, err := service.LoadThread(ctx, view.Thread.ID)
+	if err != nil {
+		t.Fatalf("LoadThread() error = %v", err)
+	}
+	if len(loaded.Messages) != initialCount {
+		t.Fatalf("LoadThread changed message count: got %d want %d", len(loaded.Messages), initialCount)
+	}
+	for _, message := range loaded.Messages {
+		if strings.Contains(message.Body, "Review queued") {
+			t.Fatalf("LoadThread synced progress unexpectedly: %+v", loaded.Messages)
+		}
+	}
+	ensured, err := service.EnsureSessionThread(ctx, "review_session_readonly")
+	if err != nil {
+		t.Fatalf("EnsureSessionThread(reload) error = %v", err)
+	}
+	if len(ensured.Messages) <= initialCount {
+		t.Fatalf("EnsureSessionThread should sync progress after event: before=%d after=%d", initialCount, len(ensured.Messages))
+	}
+}
+
+func TestReconcileInterruptedTurnsMarksNonTerminalTurns(t *testing.T) {
+	ctx := context.Background()
+	database, err := cocodedb.Open(ctx, cocodedb.MemoryDatabase)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = database.Close()
+	})
+	if err := cocodedb.Apply(ctx, database, cocodedb.Migrations); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	queries := dbgen.New(database)
+	createChatSessionFixture(t, queries, "review_session_reconcile")
+	service := Service{Database: database, Queries: queries}
+	first, err := service.CreateTurn(ctx, AskParams{
+		ReviewSessionID: "review_session_reconcile",
+		Body:            "This worker never started.",
+		Audience:        AudienceOrchestrator,
+	})
+	if err != nil {
+		t.Fatalf("CreateTurn(first) error = %v", err)
+	}
+	second, err := service.CreateTurn(ctx, AskParams{
+		ReviewSessionID: "review_session_reconcile",
+		Body:            "Please cancel this.",
+		Audience:        AudienceOrchestrator,
+	})
+	if err != nil {
+		t.Fatalf("CreateTurn(second) error = %v", err)
+	}
+	if _, err := service.CancelTurn(ctx, second.Turn.ID); err != nil {
+		t.Fatalf("CancelTurn() error = %v", err)
+	}
+
+	count, err := service.ReconcileInterruptedTurns(ctx)
+	if err != nil {
+		t.Fatalf("ReconcileInterruptedTurns() error = %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("reconciled count = %d, want 2", count)
+	}
+	reconciledFirst, err := service.turnByID(ctx, first.Turn.ID)
+	if err != nil {
+		t.Fatalf("turnByID(first) error = %v", err)
+	}
+	if reconciledFirst.Status != TurnStatusFailed || reconciledFirst.ErrorCode != "interrupted" {
+		t.Fatalf("first turn = %+v", reconciledFirst)
+	}
+	reconciledSecond, err := service.turnByID(ctx, second.Turn.ID)
+	if err != nil {
+		t.Fatalf("turnByID(second) error = %v", err)
+	}
+	if reconciledSecond.Status != TurnStatusCanceled {
+		t.Fatalf("second turn status = %s, want canceled", reconciledSecond.Status)
+	}
+}
+
 func TestChatTurnStateMachine(t *testing.T) {
 	tests := []struct {
 		name string

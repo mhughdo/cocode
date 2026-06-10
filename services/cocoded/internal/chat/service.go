@@ -53,6 +53,10 @@ const (
 
 	defaultThreadTitleBytes = 96
 	defaultChatFanoutLimit  = 4
+	defaultChatRecentLimit  = 12
+	defaultSynthesisLimit   = 16
+	threadSummaryEntryLimit = 24
+	threadSummaryBytes      = 8 * 1024
 )
 
 var (
@@ -182,6 +186,7 @@ type runtimeSettings struct {
 type chatPromptContext struct {
 	Bundle                contextbundle.Bundle
 	Findings              []dbgen.Finding
+	ThreadSummary         string
 	RecentMessages        []Message
 	ContextRefs           json.RawMessage
 	IncludeEvidence       bool
@@ -282,14 +287,66 @@ func (s Service) LoadThread(ctx context.Context, threadID string) (ThreadView, e
 	if err != nil {
 		return ThreadView{}, err
 	}
-	if err := s.syncReviewProgressMessages(ctx, session, thread); err != nil {
-		return ThreadView{}, err
-	}
 	messages, err := s.listMessages(ctx, thread.ID)
 	if err != nil {
 		return ThreadView{}, err
 	}
 	return ThreadView{Session: session, Thread: thread, Messages: messages}, nil
+}
+
+func (s Service) ReconcileInterruptedTurns(ctx context.Context) (int, error) {
+	if s.Database == nil || s.Queries == nil {
+		return 0, ErrServiceNotConfigured
+	}
+	rows, err := s.Database.QueryContext(ctx, `
+SELECT id, thread_id, user_message_id, mode, audience, responder_agent_config_id,
+  status, error_code, error_message, started_at, completed_at, created_at, updated_at
+FROM chat_turns
+WHERE status IN ('created','routing','context_building','running','synthesizing','cancel_requested')
+ORDER BY created_at ASC, rowid ASC`)
+	if err != nil {
+		return 0, fmt.Errorf("list interrupted chat turns: %w", err)
+	}
+	defer rows.Close()
+	turns := []Turn{}
+	for rows.Next() {
+		turn, err := scanTurn(rows)
+		if err != nil {
+			return 0, err
+		}
+		turns = append(turns, turn)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate interrupted chat turns: %w", err)
+	}
+	reconciled := 0
+	for _, turn := range turns {
+		if turnStatusTerminal(turn.Status) {
+			continue
+		}
+		nextStatus := TurnStatusFailed
+		code := "interrupted"
+		message := "The chat turn was interrupted before cocode could finish it."
+		if turn.Status == TurnStatusCancelReq {
+			nextStatus = TurnStatusCanceled
+			code = ""
+			message = ""
+		}
+		updated, err := s.updateTurn(ctx, turn, nextStatus, code, message)
+		if err != nil {
+			return reconciled, err
+		}
+		if thread, err := s.threadByID(ctx, updated.ThreadID); err == nil {
+			s.emit(ctx, thread.ReviewSessionID, "ChatTurnReconciled", map[string]any{
+				"thread_id":       updated.ThreadID,
+				"chat_turn_id":    updated.ID,
+				"previous_status": turn.Status,
+				"status":          updated.Status,
+			})
+		}
+		reconciled++
+	}
+	return reconciled, nil
 }
 
 func (s Service) Ask(ctx context.Context, params AskParams) (AskResult, error) {
@@ -657,7 +714,7 @@ func (s Service) syncReviewProgressMessages(ctx context.Context, session dbgen.R
 	if err != nil {
 		return fmt.Errorf("list review events for chat: %w", err)
 	}
-	appendProgress := func(event dbgen.Event, progress progressMessage) error {
+	appendProgress := func(event dbgen.Event, progress progressMessage) (Message, error) {
 		metadata, err := json.Marshal(map[string]any{
 			"answer_source":             "review_progress",
 			"progress_event_created_at": event.CreatedAt,
@@ -666,20 +723,21 @@ func (s Service) syncReviewProgressMessages(ctx context.Context, session dbgen.R
 			"progress_event_type":       event.Type,
 		})
 		if err != nil {
-			return fmt.Errorf("encode progress metadata: %w", err)
+			return Message{}, fmt.Errorf("encode progress metadata: %w", err)
 		}
-		if _, err := s.appendMessage(ctx, appendMessageParams{
+		message, err := s.appendMessage(ctx, appendMessageParams{
 			ThreadID:          thread.ID,
 			AuthorType:        progress.authorType,
 			AuthorDisplayName: progress.displayName,
 			Body:              progress.body,
 			Status:            progress.status,
 			MetadataJSON:      metadata,
-		}); err != nil {
-			return err
+		})
+		if err != nil {
+			return Message{}, err
 		}
 		seenEvents[event.ID] = true
-		return nil
+		return message, nil
 	}
 	terminalEvents := make([]dbgen.Event, 0, 1)
 	terminalProgress := map[string]progressMessage{}
@@ -696,7 +754,7 @@ func (s Service) syncReviewProgressMessages(ctx context.Context, session dbgen.R
 			terminalProgress[event.ID] = progress
 			continue
 		}
-		if err := appendProgress(event, progress); err != nil {
+		if _, err := appendProgress(event, progress); err != nil {
 			return err
 		}
 	}
@@ -760,6 +818,7 @@ func (s Service) syncReviewProgressMessages(ctx context.Context, session dbgen.R
 		seenRuns[run.ID] = true
 	}
 
+	terminalMessageIDs := make([]string, 0, len(lastTerminalProgressMessages)+len(terminalEvents))
 	if !hasFindingsDigest {
 		findings, err := s.Queries.ListFindingsBySession(ctx, session.ID)
 		if err != nil {
@@ -775,21 +834,18 @@ func (s Service) syncReviewProgressMessages(ctx context.Context, session dbgen.R
 			if err != nil {
 				return fmt.Errorf("encode findings digest metadata: %w", err)
 			}
-			digestMessage, err := s.appendMessage(ctx, appendMessageParams{
+			if _, err := s.appendMessage(ctx, appendMessageParams{
 				ThreadID:          thread.ID,
 				AuthorType:        AuthorCocode,
 				AuthorDisplayName: "cocode",
 				Body:              findingsDigestMessage(findings),
 				Status:            MessageStatusCompleted,
 				MetadataJSON:      metadata,
-			})
-			if err != nil {
+			}); err != nil {
 				return err
 			}
 			for _, messageID := range lastTerminalProgressMessages {
-				if err := s.moveMessageAfter(ctx, messageID, digestMessage.CreatedAt); err != nil {
-					return err
-				}
+				terminalMessageIDs = append(terminalMessageIDs, messageID)
 			}
 		}
 	}
@@ -797,9 +853,14 @@ func (s Service) syncReviewProgressMessages(ctx context.Context, session dbgen.R
 		if seenEvents[event.ID] {
 			continue
 		}
-		if err := appendProgress(event, terminalProgress[event.ID]); err != nil {
+		message, err := appendProgress(event, terminalProgress[event.ID])
+		if err != nil {
 			return err
 		}
+		terminalMessageIDs = append(terminalMessageIDs, message.ID)
+	}
+	if err := s.moveMessagesToThreadEnd(ctx, thread.ID, terminalMessageIDs); err != nil {
+		return err
 	}
 	return nil
 }
@@ -1077,7 +1138,9 @@ func (s Service) answerWithSynthesisAgentConfig(ctx context.Context, session dbg
 	}
 	promptContext.Findings, _ = s.Queries.ListFindingsBySession(ctx, session.ID)
 	promptContext.Findings = userVisibleChatFindings(promptContext.Findings)
-	promptContext.RecentMessages, _ = s.recentThreadMessages(ctx, thread.ID, 16)
+	history, _ := s.promptThreadHistory(ctx, thread.ID, defaultSynthesisLimit)
+	promptContext.ThreadSummary = history.Summary
+	promptContext.RecentMessages = history.Recent
 	connection, limits, err := connectionConfig(config, repository, workspace)
 	if err != nil {
 		return "", err
@@ -1191,7 +1254,9 @@ func (s Service) answerWithAgentConfigWithBundle(ctx context.Context, session db
 	promptContext.Findings, _ = s.Queries.ListFindingsBySession(ctx, session.ID)
 	promptContext.Findings = userVisibleChatFindings(promptContext.Findings)
 	if params.IncludeRecentMessages {
-		promptContext.RecentMessages, _ = s.recentThreadMessages(ctx, thread.ID, 12)
+		history, _ := s.promptThreadHistory(ctx, thread.ID, defaultChatRecentLimit)
+		promptContext.ThreadSummary = history.Summary
+		promptContext.RecentMessages = history.Recent
 	}
 	connection, limits, err := connectionConfig(config, repository, workspace)
 	if err != nil {
@@ -1572,12 +1637,30 @@ ORDER BY created_at ASC, rowid ASC`, threadID)
 	return messages, nil
 }
 
-func (s Service) recentThreadMessages(ctx context.Context, threadID string, limit int) ([]Message, error) {
+type promptThreadHistory struct {
+	Summary string
+	Recent  []Message
+}
+
+func (s Service) promptThreadHistory(ctx context.Context, threadID string, limit int) (promptThreadHistory, error) {
 	messages, err := s.listMessages(ctx, threadID)
 	if err != nil {
-		return nil, err
+		return promptThreadHistory{}, err
 	}
-	return promptVisibleChatMessages(messages, limit), nil
+	visible := promptVisibleChatMessages(messages, 0)
+	if limit <= 0 || len(visible) <= limit {
+		return promptThreadHistory{Recent: visible}, nil
+	}
+	cutoff := len(visible) - limit
+	return promptThreadHistory{
+		Summary: renderThreadSummary(visible[:cutoff]),
+		Recent:  visible[cutoff:],
+	}, nil
+}
+
+func (s Service) recentThreadMessages(ctx context.Context, threadID string, limit int) ([]Message, error) {
+	history, err := s.promptThreadHistory(ctx, threadID, limit)
+	return history.Recent, err
 }
 
 func promptVisibleChatMessages(messages []Message, limit int) []Message {
@@ -1674,6 +1757,33 @@ UPDATE chat_messages
 SET created_at = ?, updated_at = ?
 WHERE id = ?`, timestamp, timestamp, id); err != nil {
 		return fmt.Errorf("move chat message: %w", err)
+	}
+	return nil
+}
+
+func (s Service) moveMessagesToThreadEnd(ctx context.Context, threadID string, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	messages, err := s.listMessages(ctx, threadID)
+	if err != nil {
+		return err
+	}
+	if len(messages) == 0 {
+		return nil
+	}
+	after := messages[len(messages)-1].CreatedAt
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if err := s.moveMessageAfter(ctx, id, after); err != nil {
+			return err
+		}
+		if moved, err := s.messageByID(ctx, id); err == nil {
+			after = moved.CreatedAt
+		}
 	}
 	return nil
 }
@@ -2871,6 +2981,11 @@ func chatPrompt(session dbgen.ReviewSession, thread Thread, userMessage Message,
 	} else {
 		builder.WriteString("# Current findings\n\nNo normalized findings have been stored yet. If the user asks for findings, explain that no findings are currently available and use the review context bundle to answer what can be inferred.\n\n")
 	}
+	if promptContext.IncludeRecentMessages && strings.TrimSpace(promptContext.ThreadSummary) != "" {
+		builder.WriteString("# Earlier centralized chat summary\n\n")
+		builder.WriteString(promptContext.ThreadSummary)
+		builder.WriteString("\n\n")
+	}
 	if promptContext.IncludeRecentMessages && len(promptContext.RecentMessages) > 0 {
 		builder.WriteString("# Recent centralized chat\n\n")
 		builder.WriteString(renderChatMessages(promptContext.RecentMessages))
@@ -2944,6 +3059,73 @@ func renderChatMessages(messages []Message) string {
 		return "No prior chat messages are available."
 	}
 	return strings.Join(lines, "\n")
+}
+
+func renderThreadSummary(messages []Message) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	countByAuthor := map[string]int{}
+	for _, message := range messages {
+		author := strings.TrimSpace(message.AuthorType)
+		if author == "" {
+			author = "unknown"
+		}
+		countByAuthor[author]++
+	}
+	authors := sortedStringIntMapKeys(countByAuthor)
+	var builder strings.Builder
+	builder.WriteString(fmt.Sprintf("Compacted %d earlier prompt-visible message%s.", len(messages), plural(len(messages))))
+	if len(authors) > 0 {
+		builder.WriteString(" Participants: ")
+		parts := make([]string, 0, len(authors))
+		for _, author := range authors {
+			parts = append(parts, fmt.Sprintf("%s=%d", author, countByAuthor[author]))
+		}
+		builder.WriteString(strings.Join(parts, ", "))
+		builder.WriteString(".")
+	}
+	builder.WriteString("\n\nEarlier turns, oldest to newest, truncated:\n")
+	start := len(messages) - threadSummaryEntryLimit
+	if start < 0 {
+		start = 0
+	}
+	if omitted := start; omitted > 0 {
+		builder.WriteString(fmt.Sprintf("- ... %d older message%s omitted from this compact prompt summary.\n", omitted, plural(omitted)))
+	}
+	for _, message := range messages[start:] {
+		body := strings.TrimSpace(message.Body)
+		if body == "" {
+			continue
+		}
+		label := strings.TrimSpace(message.AuthorDisplayName)
+		if label == "" {
+			label = defaultDisplayName(message.AuthorType)
+		}
+		builder.WriteString("- ")
+		builder.WriteString(label)
+		builder.WriteString(" (")
+		builder.WriteString(message.AuthorType)
+		builder.WriteString("): ")
+		builder.WriteString(singleLinePromptText(body, 360))
+		builder.WriteByte('\n')
+	}
+	return truncatePromptText(builder.String(), threadSummaryBytes)
+}
+
+func singleLinePromptText(value string, limit int) string {
+	value = strings.TrimSpace(strings.ReplaceAll(value, "\r\n", "\n"))
+	value = strings.Join(strings.Fields(value), " ")
+	return truncatePromptText(value, limit)
+}
+
+func sortedStringIntMapKeys(values map[string]int) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func renderContextRefs(raw json.RawMessage) string {
@@ -3234,9 +3416,9 @@ func nullableStringValue(value sql.NullString) string {
 func timestampAfter(value string) string {
 	parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(value))
 	if err != nil {
-		return time.Now().UTC().Format(time.RFC3339Nano)
+		return time.Now().Format(time.RFC3339Nano)
 	}
-	return parsed.Add(time.Nanosecond).UTC().Format(time.RFC3339Nano)
+	return parsed.Add(time.Nanosecond).Format(time.RFC3339Nano)
 }
 
 func agentRunModelLabels(run dbgen.AgentRun) (string, string) {

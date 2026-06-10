@@ -164,6 +164,9 @@ func (r Runner) Execute(ctx context.Context, params RunParams) (RunResult, error
 
 	isolation, err := r.prepareFilesystemIsolation(ctx, params, config, task)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			err = fmt.Errorf("%w during filesystem isolation: %v", ctxErr, err)
+		}
 		return r.finishWithError(persistCtx, result, run, startedAt, "filesystem_isolation_error", err, params.EventSink)
 	}
 	if isolation.cleanupRun {

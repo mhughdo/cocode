@@ -1877,6 +1877,7 @@ func TestStartReviewSessionEndpointRunsWorkflow(t *testing.T) {
 		t.Fatalf("mkdir src: %v", err)
 	}
 	writeHTTPAPIDefaultRepo(t, repoPath)
+	initHTTPAPIGitRepoWithCommit(t, repoPath)
 	createHTTPAPISnapshotAt(t, queries, repoPath)
 	fakeAgent := fakeJSONAgentPath(t)
 	createHTTPAPIAgentConfigWithCommand(t, queries, "agent_config_fake", "primary_reviewer", 1, fakeAgent, agents.OutputJSON, `{"prompt_delivery":"stdin","timeout_seconds":30}`)
@@ -3604,6 +3605,7 @@ func TestReviewSessionEventsEndpointStreamsLiveWorkflowEvents(t *testing.T) {
 		t.Fatalf("mkdir src: %v", err)
 	}
 	writeHTTPAPIDefaultRepo(t, repoPath)
+	initHTTPAPIGitRepoWithCommit(t, repoPath)
 	createHTTPAPISnapshotAt(t, queries, repoPath)
 	createHTTPAPIAgentConfigWithCommand(t, queries, "agent_config_fake", "primary_reviewer", 1, fakeJSONAgentPath(t), agents.OutputJSON, `{"prompt_delivery":"stdin","timeout_seconds":30}`)
 	session := createHTTPAPIReviewSessionRow(t, queries, "review_session_sse", []string{"agent_config_fake"})
@@ -3710,6 +3712,7 @@ func TestCancelReviewSessionEndpointStopsRunningWorkflow(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repoPath, "src", "new.go"), []byte("package src\n\nfunc RequireAdmin() bool { return true }\n"), 0o644); err != nil {
 		t.Fatalf("write repo file: %v", err)
 	}
+	initHTTPAPIGitRepoWithCommit(t, repoPath)
 	createHTTPAPISnapshotAt(t, queries, repoPath)
 	createHTTPAPIAgentConfigWithCommand(t, queries, "agent_config_slow", "primary_reviewer", 1, writeSlowHTTPAPIAgent(t), agents.OutputJSON, `{"prompt_delivery":"stdin","timeout_seconds":30}`)
 	session := createHTTPAPIReviewSessionRow(t, queries, "review_session_cancel", []string{"agent_config_slow"})
@@ -3765,6 +3768,7 @@ func TestCancelAgentRunEndpointStopsOneRunningAgent(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repoPath, "src", "new.go"), []byte("package src\n\nfunc RequireAdmin() bool { return true }\n"), 0o644); err != nil {
 		t.Fatalf("write repo file: %v", err)
 	}
+	initHTTPAPIGitRepoWithCommit(t, repoPath)
 	createHTTPAPISnapshotAt(t, queries, repoPath)
 	createHTTPAPIAgentConfigWithCommand(t, queries, "agent_config_slow_a", "primary_reviewer", 1, writeSlowHTTPAPIAgent(t), agents.OutputJSON, `{"prompt_delivery":"stdin","timeout_seconds":30}`)
 	createHTTPAPIAgentConfigWithCommand(t, queries, "agent_config_slow_b", "secondary_reviewer", 1, writeSlowHTTPAPIAgent(t), agents.OutputJSON, `{"prompt_delivery":"stdin","timeout_seconds":30}`)
@@ -3846,6 +3850,7 @@ func TestPauseResumeReviewSessionEndpoint(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repoPath, "src", "new.go"), []byte("package src\n\nfunc RequireAdmin() bool { return true }\n"), 0o644); err != nil {
 		t.Fatalf("write repo file: %v", err)
 	}
+	initHTTPAPIGitRepoWithCommit(t, repoPath)
 	createHTTPAPISnapshotAt(t, queries, repoPath)
 	createHTTPAPIAgentConfigWithCommand(t, queries, "agent_config_pause", "primary_reviewer", 1, writeSleepHTTPAPIAgent(t, "1"), agents.OutputJSON, `{"prompt_delivery":"stdin","timeout_seconds":30}`)
 	session := createHTTPAPIReviewSessionRow(t, queries, "review_session_pause", []string{"agent_config_pause"})

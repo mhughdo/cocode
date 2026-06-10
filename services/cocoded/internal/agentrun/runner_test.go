@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hughdo/cocode/services/cocoded/internal/agents"
+	"github.com/hughdo/cocode/services/cocoded/internal/gitrepo"
 )
 
 func TestRunnerPersistsSuccessfulCommandRun(t *testing.T) {
@@ -520,6 +521,59 @@ printf 'agent mutation\n' > agent-created.txt
 	}
 	if _, err := os.Stat(isolatedRoot); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("isolated root stat error = %v, want cleaned up", err)
+	}
+}
+
+func TestRunnerMarksFilesystemIsolationCancellationAsCanceled(t *testing.T) {
+	t.Parallel()
+
+	repoPath := t.TempDir()
+	env := setupOutputRecorder(t)
+	task := runnerTask(env, "agent_run_isolation_canceled")
+	task.RepositoryRoot = repoPath
+	task.WorkspaceRoot = repoPath
+	config := runnerConfig("fake-agent")
+	config.WorkingDirectory = repoPath
+
+	gitPath := writeFakeAgent(t, "#!/bin/sh\n/bin/sleep 2\n")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	driver := &scriptedDriver{
+		events: []agents.AgentEvent{{
+			Type:     agents.EventCompleted,
+			RunID:    task.RunID,
+			ExitCode: intPtr(0),
+		}},
+	}
+	runner := runnerWithClock(env)
+	runner.Driver = driver
+	runner.GitRunner = gitrepo.Runner{
+		GitPath: gitPath,
+		Timeout: 2 * time.Second,
+	}
+
+	result, err := runner.Execute(ctx, RunParams{
+		WorkspaceID:  env.WorkspaceID,
+		Config:       config,
+		Capabilities: agents.AgentCapabilities{CanRead: true},
+		Permissions:  agents.ReviewModePermissionPolicy(),
+		Task:         task,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if driver.opened {
+		t.Fatal("driver opened despite canceled filesystem isolation")
+	}
+	if result.Run.Status != RunStatusCanceled ||
+		result.Run.ErrorCode.String != "canceled" ||
+		!strings.Contains(result.Run.ErrorMessage.String, "filesystem isolation") {
+		t.Fatalf("run = %+v", result.Run)
 	}
 }
 

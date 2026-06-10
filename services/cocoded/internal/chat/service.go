@@ -10,6 +10,7 @@ import (
 	"log"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -50,6 +51,7 @@ const (
 	AudienceSelected     = "selected_agent"
 
 	defaultThreadTitleBytes = 96
+	defaultChatFanoutLimit  = 4
 )
 
 var (
@@ -452,7 +454,7 @@ func (s Service) runTurn(ctx context.Context, turnID string, params AskParams) (
 				if s.turnCancelRequested(ctx, turn.ID) {
 					return s.cancelTurnResult(ctx, session, thread, turn, audience, agentRuns)
 				}
-				synthesisRunID, synthesisErr := s.answerWithSynthesisAgentConfig(ctx, session, thread, userMessage, config, params, body, nil, nil)
+				synthesisRunID, synthesisErr := s.answerWithSynthesisAgentConfig(ctx, session, thread, userMessage, config, params, body, nil, nil, nil)
 				if synthesisRunID != "" {
 					agentRuns = append(agentRuns, synthesisRunID)
 					_ = s.linkTurnAgentRun(ctx, turn.ID, synthesisRunID, "chat")
@@ -810,15 +812,43 @@ func (s Service) answerWithAllAgents(ctx context.Context, session dbgen.ReviewSe
 		_, err := s.appendLocalAnswer(ctx, session, thread, question)
 		return nil, err
 	}
+	sharedContext, err := s.buildSharedChatContext(ctx, session, configs)
+	if err != nil {
+		return nil, err
+	}
 	runIDs := make([]string, 0, len(configs))
 	failures := []string{}
-	for _, config := range configs {
-		runID, err := s.answerWithAgentConfig(ctx, session, thread, userMessage, config, params, question)
-		if runID != "" {
-			runIDs = append(runIDs, runID)
+	type agentResult struct {
+		runID string
+		err   error
+	}
+	results := make([]agentResult, len(configs))
+	limit := minPositive(defaultChatFanoutLimit, len(configs))
+	sem := make(chan struct{}, limit)
+	var wg sync.WaitGroup
+	for index, config := range configs {
+		index, config := index, config
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				results[index].err = ctx.Err()
+				return
+			}
+			runID, err := s.answerWithAgentConfigWithBundle(ctx, session, thread, userMessage, config, params, question, &sharedContext)
+			results[index] = agentResult{runID: runID, err: err}
+		}()
+	}
+	wg.Wait()
+	for index, result := range results {
+		if result.runID != "" {
+			runIDs = append(runIDs, result.runID)
 		}
-		if err != nil {
-			failures = append(failures, fmt.Sprintf("%s: %v", config.Name, err))
+		if result.err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", configs[index].Name, result.err))
 		}
 	}
 	answers, _ := s.agentMessagesForRuns(ctx, thread.ID, runIDs)
@@ -826,7 +856,7 @@ func (s Service) answerWithAllAgents(ctx context.Context, session dbgen.ReviewSe
 	if responderID := strings.TrimSpace(params.ResponderAgentConfigID); responderID != "" {
 		config, err := s.agentConfig(ctx, responderID)
 		if err == nil {
-			synthesisRunID, synthesisErr := s.answerWithSynthesisAgentConfig(ctx, session, thread, userMessage, config, params, question, answers, failures)
+			synthesisRunID, synthesisErr := s.answerWithSynthesisAgentConfig(ctx, session, thread, userMessage, config, params, question, answers, failures, &sharedContext)
 			if synthesisRunID != "" {
 				runIDs = append(runIDs, synthesisRunID)
 			}
@@ -850,6 +880,39 @@ func (s Service) answerWithAllAgents(ctx context.Context, session dbgen.ReviewSe
 	return runIDs, nil
 }
 
+func (s Service) buildSharedChatContext(ctx context.Context, session dbgen.ReviewSession, configs []dbgen.AgentConfig) (contextbundle.BuildReviewContextResult, error) {
+	if s.ContextBuilder == nil {
+		return contextbundle.BuildReviewContextResult{}, ErrServiceNotConfigured
+	}
+	return s.ContextBuilder.BuildReviewContext(ctx, contextbundle.BuildReviewContextParams{
+		ReviewSessionID: session.ID,
+		AgentConfigID:   sharedContextRecipientAgentConfigID(configs),
+		PolicyOverride:  json.RawMessage(session.ContextPolicyJson),
+		Persist:         true,
+	})
+}
+
+func sharedContextRecipientAgentConfigID(configs []dbgen.AgentConfig) string {
+	fallback := ""
+	for _, config := range configs {
+		if fallback == "" {
+			fallback = strings.TrimSpace(config.ID)
+		}
+		capabilities, err := agentCapabilities(config)
+		if err != nil {
+			continue
+		}
+		visibility := agents.VisibilityForConfig(agents.ConnectionConfig{
+			AdapterID: config.ID,
+			Kind:      agents.AdapterKind(config.AdapterKind),
+		}, capabilities)
+		if visibility.IsExternal() {
+			return strings.TrimSpace(config.ID)
+		}
+	}
+	return fallback
+}
+
 func (s Service) answerWithAgent(ctx context.Context, session dbgen.ReviewSession, thread Thread, userMessage Message, params AskParams, question string) (string, error) {
 	configID := strings.TrimSpace(params.ResponderAgentConfigID)
 	if configID == "" {
@@ -862,7 +925,7 @@ func (s Service) answerWithAgent(ctx context.Context, session dbgen.ReviewSessio
 	return s.answerWithAgentConfig(ctx, session, thread, userMessage, config, params, question)
 }
 
-func (s Service) answerWithSynthesisAgentConfig(ctx context.Context, session dbgen.ReviewSession, thread Thread, userMessage Message, config dbgen.AgentConfig, params AskParams, question string, answers []Message, failures []string) (string, error) {
+func (s Service) answerWithSynthesisAgentConfig(ctx context.Context, session dbgen.ReviewSession, thread Thread, userMessage Message, config dbgen.AgentConfig, params AskParams, question string, answers []Message, failures []string, sharedContext *contextbundle.BuildReviewContextResult) (string, error) {
 	if s.ContextBuilder == nil || s.AgentManager == nil || s.Artifacts == nil {
 		return "", ErrServiceNotConfigured
 	}
@@ -877,14 +940,20 @@ func (s Service) answerWithSynthesisAgentConfig(ctx context.Context, session dbg
 	if err != nil {
 		return "", fmt.Errorf("read workspace: %w", err)
 	}
-	built, err := s.ContextBuilder.BuildReviewContext(ctx, contextbundle.BuildReviewContextParams{
-		ReviewSessionID: session.ID,
-		AgentConfigID:   config.ID,
-		PolicyOverride:  json.RawMessage(session.ContextPolicyJson),
-		Persist:         true,
-	})
-	if err != nil {
-		return "", fmt.Errorf("build synthesis context: %w", err)
+	built := contextbundle.BuildReviewContextResult{}
+	if sharedContext != nil {
+		built = *sharedContext
+	} else {
+		var err error
+		built, err = s.ContextBuilder.BuildReviewContext(ctx, contextbundle.BuildReviewContextParams{
+			ReviewSessionID: session.ID,
+			AgentConfigID:   config.ID,
+			PolicyOverride:  json.RawMessage(session.ContextPolicyJson),
+			Persist:         true,
+		})
+		if err != nil {
+			return "", fmt.Errorf("build synthesis context: %w", err)
+		}
 	}
 	promptContext := chatPromptContext{
 		Bundle:                built.Bundle,
@@ -971,6 +1040,10 @@ func (s Service) answerWithSynthesisAgentConfig(ctx context.Context, session dbg
 }
 
 func (s Service) answerWithAgentConfig(ctx context.Context, session dbgen.ReviewSession, thread Thread, userMessage Message, config dbgen.AgentConfig, params AskParams, question string) (string, error) {
+	return s.answerWithAgentConfigWithBundle(ctx, session, thread, userMessage, config, params, question, nil)
+}
+
+func (s Service) answerWithAgentConfigWithBundle(ctx context.Context, session dbgen.ReviewSession, thread Thread, userMessage Message, config dbgen.AgentConfig, params AskParams, question string, sharedContext *contextbundle.BuildReviewContextResult) (string, error) {
 	if s.ContextBuilder == nil || s.AgentManager == nil || s.Artifacts == nil {
 		return "", ErrServiceNotConfigured
 	}
@@ -985,14 +1058,20 @@ func (s Service) answerWithAgentConfig(ctx context.Context, session dbgen.Review
 	if err != nil {
 		return "", fmt.Errorf("read workspace: %w", err)
 	}
-	built, err := s.ContextBuilder.BuildReviewContext(ctx, contextbundle.BuildReviewContextParams{
-		ReviewSessionID: session.ID,
-		AgentConfigID:   config.ID,
-		PolicyOverride:  json.RawMessage(session.ContextPolicyJson),
-		Persist:         true,
-	})
-	if err != nil {
-		return "", fmt.Errorf("build chat context: %w", err)
+	built := contextbundle.BuildReviewContextResult{}
+	if sharedContext != nil {
+		built = *sharedContext
+	} else {
+		var err error
+		built, err = s.ContextBuilder.BuildReviewContext(ctx, contextbundle.BuildReviewContextParams{
+			ReviewSessionID: session.ID,
+			AgentConfigID:   config.ID,
+			PolicyOverride:  json.RawMessage(session.ContextPolicyJson),
+			Persist:         true,
+		})
+		if err != nil {
+			return "", fmt.Errorf("build chat context: %w", err)
+		}
 	}
 	promptContext := chatPromptContext{
 		Bundle:                built.Bundle,
@@ -2118,6 +2197,19 @@ func sortedMapKeys(values map[string]bool) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func minPositive(left int, right int) int {
+	switch {
+	case left <= 0:
+		return right
+	case right <= 0:
+		return left
+	case left < right:
+		return left
+	default:
+		return right
+	}
 }
 
 func orchestratorPhaseStartMessage(phase string) (string, bool) {

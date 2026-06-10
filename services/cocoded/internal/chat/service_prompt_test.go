@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hughdo/cocode/services/cocoded/internal/agents"
 	cocodedb "github.com/hughdo/cocode/services/cocoded/internal/db"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
 	"github.com/hughdo/cocode/services/cocoded/internal/reviewprompt"
@@ -192,6 +193,27 @@ func TestCancelTurnMarksRequestAndRunExitsCanceled(t *testing.T) {
 	}
 	if len(completed.Messages) != len(created.Messages) {
 		t.Fatalf("runTurn appended messages after cancellation: before=%d after=%d", len(created.Messages), len(completed.Messages))
+	}
+}
+
+func TestSharedContextRecipientPrefersExternalVisibility(t *testing.T) {
+	configs := []dbgen.AgentConfig{
+		{
+			ID:               "agent_config_local",
+			AdapterKind:      string(agents.AdapterLocalVerifier),
+			CapabilitiesJson: `{"metadata":{"egress":"local"}}`,
+		},
+		{
+			ID:               "agent_config_external",
+			AdapterKind:      string(agents.AdapterCLINonInteractive),
+			CapabilitiesJson: `{"metadata":{"egress":"external"}}`,
+		},
+	}
+	if got := sharedContextRecipientAgentConfigID(configs); got != "agent_config_external" {
+		t.Fatalf("sharedContextRecipientAgentConfigID() = %q, want external config", got)
+	}
+	if got := sharedContextRecipientAgentConfigID(configs[:1]); got != "agent_config_local" {
+		t.Fatalf("sharedContextRecipientAgentConfigID(local) = %q, want local config", got)
 	}
 }
 

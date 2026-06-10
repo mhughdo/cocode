@@ -141,6 +141,25 @@ func TestValidateDedupeResultAcceptsCompletePartition(t *testing.T) {
 	}
 }
 
+func TestConsensusConfidenceCombinesDistinctAgentSignals(t *testing.T) {
+	t.Parallel()
+
+	first := candidate("c1", "security", "high", 0.7, "Settings mutation lacks admin guard", "src/new.go", 20, 22, "changed_file_1", "fp_same")
+	first.AgentRunID = "agent_run_a"
+	second := candidate("c2", "security", "high", 0.8, "Settings mutation lacks admin guard", "src/new.go", 20, 22, "changed_file_1", "fp_same")
+	second.AgentRunID = "agent_run_b"
+	duplicateSameAgent := candidate("c3", "security", "high", 0.2, "Settings mutation lacks admin guard", "src/new.go", 20, 22, "changed_file_1", "fp_same")
+	duplicateSameAgent.AgentRunID = "agent_run_b"
+
+	confidence, sources := ConsensusConfidence(Cluster{Candidates: []dbgen.FindingCandidate{first, second, duplicateSameAgent}})
+	if sources != 2 {
+		t.Fatalf("sources = %d, want 2", sources)
+	}
+	if confidence < 0.939 || confidence > 0.941 {
+		t.Fatalf("confidence = %.6f, want about 0.94", confidence)
+	}
+}
+
 func candidate(id string, category string, severity string, confidence float64, claim string, path string, start int64, end int64, changedFileID string, fingerprint string) dbgen.FindingCandidate {
 	return dbgen.FindingCandidate{
 		ID:               id,

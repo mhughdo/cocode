@@ -521,6 +521,11 @@ func (s *Service) applyVerifierAgentOutput(ctx context.Context, finding dbgen.Fi
 	if trimmed := strings.TrimSpace(output.EvidenceSummary); trimmed != "" {
 		applied.evidenceSummary = truncateString(trimmed, defaultVerifierTextSummaryBytes)
 	}
+	existingStatus := finding.VerificationStatus
+	hadVerifierEvidence, err := s.findingHasVerifierAgentEvidence(ctx, finding.ID)
+	if err != nil {
+		return verifierApplyResult{}, err
+	}
 	verifiedCounterEvidence := 0
 	for index, item := range output.Evidence {
 		if index >= defaultVerifierEvidenceItemLimit {
@@ -551,7 +556,7 @@ func (s *Service) applyVerifierAgentOutput(ctx context.Context, finding dbgen.Fi
 			StartLine:    nullablePositiveInt64(item.StartLine),
 			EndLine:      nullablePositiveInt64(normalizeEndLine(item.StartLine, item.EndLine)),
 			Confidence:   clampVerifierConfidence(item.Confidence),
-			MetadataJson: verifierEvidenceMetadata(config, result.Run, item.Metadata),
+			MetadataJson: verifierEvidenceMetadata(config, result.Run, output.Status, existingStatus, item.Metadata, false),
 			CreatedAt:    s.now().Format(time.RFC3339Nano),
 		}); err != nil {
 			return applied, fmt.Errorf("create verifier evidence item: %w", err)
@@ -565,7 +570,21 @@ func (s *Service) applyVerifierAgentOutput(ctx context.Context, finding dbgen.Fi
 		if output.Status == evidence.StatusLikelyFalsePositive && verifiedCounterEvidence == 0 && !verifierTextAffirmsContradiction(output.CounterEvidenceSummary) {
 			output.Status = evidence.StatusNeedsHuman
 		}
-		applied.status = output.Status
+		applied.status = reconcileVerifierStatus(existingStatus, output.Status, verifiedCounterEvidence)
+	}
+	if output.Status != "" && hadVerifierEvidence && statusFamiliesDiffer(existingStatus, output.Status) {
+		if _, err := s.Queries.CreateEvidenceItem(ctx, dbgen.CreateEvidenceItemParams{
+			ID:           s.newID("evidence_item_"),
+			FindingID:    finding.ID,
+			Kind:         evidence.KindAgent,
+			Title:        "Verifier disagreement",
+			Summary:      truncateString(fmt.Sprintf("Verifier reported %s while the current finding status was %s. Preserve both viewpoints when reviewing this finding.", output.Status, existingStatus), defaultVerifierTextSummaryBytes),
+			Confidence:   0.5,
+			MetadataJson: verifierEvidenceMetadata(config, result.Run, output.Status, existingStatus, nil, true),
+			CreatedAt:    s.now().Format(time.RFC3339Nano),
+		}); err != nil {
+			return applied, fmt.Errorf("create verifier disagreement evidence item: %w", err)
+		}
 	}
 	hasCuratedEvidence, err := s.findingHasOrchestratorCuratedEvidence(ctx, finding.ID)
 	if err != nil {
@@ -591,6 +610,19 @@ func (s *Service) applyVerifierAgentOutput(ctx context.Context, finding dbgen.Fi
 		applied.counterEvidenceSummary = nullableSQLStringValue(updated.CounterEvidenceSummary)
 	}
 	return applied, nil
+}
+
+func (s *Service) findingHasVerifierAgentEvidence(ctx context.Context, findingID string) (bool, error) {
+	items, err := s.Queries.ListEvidenceItemsByFinding(ctx, findingID)
+	if err != nil {
+		return false, fmt.Errorf("list evidence items for verifier disagreement check: %w", err)
+	}
+	for _, item := range items {
+		if isVerifierAgentEvidence(item.MetadataJson) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *Service) findingHasOrchestratorCuratedEvidence(ctx context.Context, findingID string) (bool, error) {
@@ -628,6 +660,14 @@ func mergeVerifierCuratedCounterSummary(existing string, next string, directCoun
 		return existing
 	}
 	return next
+}
+
+func isVerifierAgentEvidence(raw string) bool {
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(raw), &metadata); err != nil {
+		return false
+	}
+	return metadata["producer"] == "verifier_agent"
 }
 
 func isOrchestratorCuratorEvidence(raw string) bool {
@@ -833,12 +873,15 @@ func verifierCounterEvidenceSummary(summary string, verifiedCounterEvidence int)
 	return truncateString("Verifier reported related checks, but no cited evidence directly refuted the finding. Treat those checks as verification leads rather than counter-evidence.", defaultVerifierTextSummaryBytes)
 }
 
-func verifierEvidenceMetadata(config dbgen.AgentConfig, run dbgen.AgentRun, raw json.RawMessage) string {
+func verifierEvidenceMetadata(config dbgen.AgentConfig, run dbgen.AgentRun, reportedStatus string, existingStatus string, raw json.RawMessage, disagreement bool) string {
 	metadata := map[string]any{
-		"producer":        "verifier_agent",
-		"source":          "cli_verifier",
-		"agent_config_id": config.ID,
-		"agent_run_id":    run.ID,
+		"producer":            "verifier_agent",
+		"source":              "cli_verifier",
+		"agent_config_id":     config.ID,
+		"agent_run_id":        run.ID,
+		"verification_status": strings.TrimSpace(reportedStatus),
+		"existing_status":     strings.TrimSpace(existingStatus),
+		"status_disagreement": disagreement,
 	}
 	if len(raw) > 0 && json.Valid(raw) {
 		var decoded any
@@ -851,6 +894,56 @@ func verifierEvidenceMetadata(config dbgen.AgentConfig, run dbgen.AgentRun, raw 
 		return `{"producer":"verifier_agent","source":"cli_verifier"}`
 	}
 	return string(encoded)
+}
+
+func reconcileVerifierStatus(existing string, next string, directCounterEvidence int) string {
+	existing = normalizeVerifierStatus(existing)
+	next = normalizeVerifierStatus(next)
+	if next == "" {
+		return existing
+	}
+	if existing == "" || existing == evidence.StatusUnverified {
+		return next
+	}
+	if existing == next {
+		return next
+	}
+	if directCounterEvidence > 0 && next == evidence.StatusLikelyFalsePositive {
+		return next
+	}
+	if statusFamiliesDiffer(existing, next) {
+		if existing == evidence.StatusVerified && next == evidence.StatusLocallySupported {
+			return existing
+		}
+		if existing == evidence.StatusLocallySupported && next == evidence.StatusVerified {
+			return next
+		}
+		if existing == evidence.StatusLikelyFalsePositive && next == evidence.StatusNotActionable {
+			return existing
+		}
+		if existing == evidence.StatusNotActionable && next == evidence.StatusLikelyFalsePositive {
+			return next
+		}
+		return evidence.StatusPlausible
+	}
+	return next
+}
+
+func statusFamiliesDiffer(existing string, next string) bool {
+	return verifierStatusFamily(existing) != verifierStatusFamily(next)
+}
+
+func verifierStatusFamily(status string) string {
+	switch normalizeVerifierStatus(status) {
+	case evidence.StatusVerified, evidence.StatusLocallySupported:
+		return "supportive"
+	case evidence.StatusPlausible, evidence.StatusNeedsHuman, evidence.StatusUnverified:
+		return "uncertain"
+	case evidence.StatusLikelyFalsePositive, evidence.StatusNotActionable:
+		return "negative"
+	default:
+		return "unknown"
+	}
 }
 
 func normalizeEndLine(startLine int64, endLine int64) int64 {

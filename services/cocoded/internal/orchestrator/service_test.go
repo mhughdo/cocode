@@ -1103,6 +1103,37 @@ func TestWorkflowDowngradesCuratedVerifiedWhenPrimaryLocationIsInvalid(t *testin
 	}
 }
 
+func TestWorkflowBoostsConfidenceFromDistinctAgentConsensus(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	session := createWorkflowSession(t, env, "review_session_consensus_confidence", StatusDraft)
+	createWorkflowCandidate(t, env, session.ID, "candidate_consensus_a", "Settings mutation lacks admin guard", "security", "high", 0.7, "src/new.go", 3, 3, "fp_consensus")
+	createWorkflowCandidate(t, env, session.ID, "candidate_consensus_b", "Settings mutation lacks admin guard", "security", "high", 0.8, "src/new.go", 3, 3, "fp_consensus")
+
+	if err := env.Service.deduplicateFindings(context.Background(), session); err != nil {
+		t.Fatalf("deduplicateFindings() error = %v", err)
+	}
+	findings, err := env.Queries.ListFindingsBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListFindingsBySession() error = %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings = %+v", findings)
+	}
+	if findings[0].Confidence < 0.939 || findings[0].Confidence > 0.941 || findings[0].MergedFromCount != 2 {
+		t.Fatalf("finding = %+v", findings[0])
+	}
+	events, err := env.Events.ListByReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListByReviewSession() error = %v", err)
+	}
+	merged := eventPayloadByType(t, events, "FindingMerged")
+	if merged["consensus_source_agents"] != float64(2) {
+		t.Fatalf("merged event = %+v", merged)
+	}
+}
+
 func TestParseFindingCuratorOutputReadsWrappedTextJSON(t *testing.T) {
 	t.Parallel()
 
@@ -1823,6 +1854,82 @@ func TestVerifyFindingsPreservesCuratedEvidenceStory(t *testing.T) {
 	}
 }
 
+func TestVerifyFindingsPreservesVerifierDisagreementEvidence(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	createVerifierCLIConfig(t, env, "agent_config_verifier_first")
+	createVerifierCLIConfig(t, env, "agent_config_verifier_second")
+	env.Driver.stdoutByConfig = map[string]string{
+		"agent_config_verifier_first": `{
+			"verification_status": "plausible",
+			"evidence_summary": "First verifier found related checks but still had uncertainty.",
+			"counter_evidence_summary": "No direct contradiction was found.",
+			"evidence": [
+				{
+					"kind": "search",
+					"title": "Related check",
+					"summary": "The scoped context includes a nearby helper that needs comparison.",
+					"path": "src/new.go",
+					"start_line": 3,
+					"end_line": 3,
+					"confidence": 0.72
+				}
+			]
+		}`,
+		"agent_config_verifier_second": `{
+			"verification_status": "verified",
+			"evidence_summary": "Second verifier is confident the change is verified.",
+			"counter_evidence_summary": "No direct contradiction was verified.",
+			"evidence": [
+				{
+					"kind": "supporting",
+					"title": "Strong support",
+					"summary": "The changed code path directly supports the claim.",
+					"path": "src/new.go",
+					"start_line": 3,
+					"end_line": 3,
+					"confidence": 0.88
+				}
+			]
+		}`,
+	}
+	session := createWorkflowSession(t, env, "review_session_verifier_disagreement", StatusDraft)
+	finding := createWorkflowFinding(t, env, session.ID, "finding_verifier_disagreement")
+	repository, err := env.Queries.GetRepository(context.Background(), session.RepositoryID)
+	if err != nil {
+		t.Fatalf("GetRepository() error = %v", err)
+	}
+
+	if err := env.Service.verifyFindings(context.Background(), session, repository); err != nil {
+		t.Fatalf("verifyFindings() error = %v", err)
+	}
+
+	updated, err := env.Queries.GetFinding(context.Background(), finding.ID)
+	if err != nil {
+		t.Fatalf("GetFinding() error = %v", err)
+	}
+	if updated.VerificationStatus != evidence.StatusPlausible {
+		t.Fatalf("updated finding = %+v", updated)
+	}
+	items, err := env.Queries.ListEvidenceItemsByFinding(context.Background(), finding.ID)
+	if err != nil {
+		t.Fatalf("ListEvidenceItemsByFinding() error = %v", err)
+	}
+	disagreementItems := 0
+	for _, item := range items {
+		if strings.Contains(item.MetadataJson, `"status_disagreement":true`) {
+			disagreementItems++
+			if item.Kind != evidence.KindAgent || !strings.Contains(item.Title, "Verifier disagreement") {
+				t.Fatalf("disagreement item = %+v", item)
+			}
+		}
+	}
+	if disagreementItems != 1 {
+		t.Fatalf("items = %+v", items)
+	}
+}
+
 func TestVerifierCounterEvidenceKindRequiresDirectContradiction(t *testing.T) {
 	t.Parallel()
 
@@ -2527,6 +2634,7 @@ type workflowDriver struct {
 	prompts        []string
 	delay          time.Duration
 	stdout         string
+	stdoutByConfig map[string]string
 	current        int
 	max            int
 	failConfigs    map[string]bool
@@ -2581,7 +2689,7 @@ func (c workflowConnection) SendTask(_ context.Context, task agents.AgentTask) (
 	exitCode := 0
 	events := make(chan agents.AgentEvent, 3)
 	events <- agents.AgentEvent{Type: agents.EventStarted, RunID: task.RunID, Message: "fake agent started"}
-	events <- agents.AgentEvent{Type: agents.EventOutput, RunID: task.RunID, Stream: "stdout", Text: c.driver.stdoutText()}
+	events <- agents.AgentEvent{Type: agents.EventOutput, RunID: task.RunID, Stream: "stdout", Text: c.driver.stdoutText(task.AgentConfigID)}
 	events <- agents.AgentEvent{Type: agents.EventCompleted, RunID: task.RunID, ExitCode: &exitCode, Message: "fake agent completed"}
 	close(events)
 	return events, nil
@@ -2634,9 +2742,14 @@ func (d *workflowDriver) shouldTimeout(agentConfigID string) bool {
 	return d.timeoutConfigs[agentConfigID]
 }
 
-func (d *workflowDriver) stdoutText() string {
+func (d *workflowDriver) stdoutText(agentConfigID string) string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.stdoutByConfig != nil {
+		if stdout := strings.TrimSpace(d.stdoutByConfig[agentConfigID]); stdout != "" {
+			return stdout
+		}
+	}
 	if d.stdout != "" {
 		return d.stdout
 	}

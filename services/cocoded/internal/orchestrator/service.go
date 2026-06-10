@@ -1430,6 +1430,7 @@ func (s *Service) deduplicateFindings(ctx context.Context, session dbgen.ReviewS
 		category := representative.Category
 		severity := representative.Severity
 		confidence := representative.Confidence
+		consensusConfidence, consensusSourceAgents := findingengine.ConsensusConfidence(cluster)
 		verificationStatus := evidence.StatusUnverified
 		primaryPath := representative.PrimaryPath
 		primaryStartLine := representative.PrimaryStartLine
@@ -1481,6 +1482,9 @@ func (s *Service) deduplicateFindings(ctx context.Context, session dbgen.ReviewS
 			if strings.TrimSpace(curated.DraftComment) != "" {
 				draftComment = nullableString(curated.DraftComment)
 			}
+		}
+		if consensusConfidence > confidence {
+			confidence = consensusConfidence
 		}
 		primaryStartLine, primaryEndLine = refinePrimaryLocationFromCode(
 			repository.LocalPath,
@@ -1584,6 +1588,8 @@ func (s *Service) deduplicateFindings(ctx context.Context, session dbgen.ReviewS
 				"curator_agent_run_id":      curation.AgentRunID,
 				"curated_evidence_items":    curatedEvidenceItems,
 				"curator_requested_status":  curatorRequestedStatus,
+				"consensus_confidence":      consensusConfidence,
+				"consensus_source_agents":   consensusSourceAgents,
 				"primary_anchor_source":     anchorSource,
 				"primary_anchor_valid":      anchorValidation.Valid,
 				"primary_anchor_reason":     anchorValidation.Reason,

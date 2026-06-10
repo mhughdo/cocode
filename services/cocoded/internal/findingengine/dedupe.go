@@ -131,6 +131,38 @@ func Representative(cluster Cluster) dbgen.FindingCandidate {
 	return cluster.Candidates[0]
 }
 
+func ConsensusConfidence(cluster Cluster) (float64, int) {
+	if len(cluster.Candidates) == 0 {
+		return 0, 0
+	}
+	bestBySource := map[string]float64{}
+	for _, candidate := range cluster.Candidates {
+		source := strings.TrimSpace(candidate.AgentRunID)
+		if source == "" {
+			source = candidate.ID
+		}
+		confidence := candidate.Confidence
+		if confidence < 0 {
+			confidence = 0
+		}
+		if confidence > 1 {
+			confidence = 1
+		}
+		if confidence > bestBySource[source] {
+			bestBySource[source] = confidence
+		}
+	}
+	productMiss := 1.0
+	for _, confidence := range bestBySource {
+		productMiss *= 1 - confidence
+	}
+	combined := 1 - productMiss
+	if combined > 0.99 {
+		combined = 0.99
+	}
+	return combined, len(bestBySource)
+}
+
 func EvidenceSummary(candidate dbgen.FindingCandidate) sql.NullString {
 	var evidence []agentoutput.CandidateEvidence
 	if err := json.Unmarshal([]byte(candidate.EvidenceJson), &evidence); err != nil || len(evidence) == 0 {

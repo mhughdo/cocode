@@ -213,6 +213,14 @@ func testAgentConfigHandler(queries *dbgen.Queries) gin.HandlerFunc {
 				Env:            env,
 			}, settings)
 		}
+		health.Metadata["adapter_kind"] = string(kind)
+		health.Metadata["command_backed"] = commandBackedAdapter(kind)
+		health.Metadata["readiness"] = healthReadinessLabel(row.Enabled != 0, commandBackedAdapter(kind), health.Status)
+		if kind == agents.AdapterJSONRPCStdio || kind == agents.AdapterACPStdio {
+			health.Metadata["supports_sessions"] = capabilities.SupportsSessions
+			health.Metadata["supports_streaming"] = capabilities.SupportsStreaming
+			health.Metadata["can_read"] = capabilities.CanRead
+		}
 
 		respondOK(c, AgentConfigHealthResponse{
 			AgentConfigID: row.ID,
@@ -485,6 +493,23 @@ func commandBackedAdapter(kind agents.AdapterKind) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func healthReadinessLabel(enabled bool, commandBacked bool, status agents.HealthStatus) string {
+	if !enabled {
+		return "disabled"
+	}
+	if !commandBacked {
+		return "unsupported"
+	}
+	switch status {
+	case agents.HealthAvailable:
+		return "ready"
+	case agents.HealthDegraded:
+		return "degraded"
+	default:
+		return "unhealthy"
 	}
 }
 

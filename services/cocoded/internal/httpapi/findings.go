@@ -766,6 +766,26 @@ func normalizeDecision(request UpdateFindingDecisionRequest) (string, *apperror.
 		return "dismissed", nil
 	case "defer", "deferred":
 		return "deferred", nil
+	case "suppress", "suppressed":
+		if strings.TrimSpace(request.Reason) == "" {
+			return "", apperror.InvalidRequest("reason is required when suppressing a finding")
+		}
+		return "suppressed", nil
+	case "not_actionable", "not-actionable", "not actionable":
+		if strings.TrimSpace(request.Reason) == "" {
+			return "", apperror.InvalidRequest("reason is required when marking a finding not actionable")
+		}
+		return "not_actionable", nil
+	case "duplicate":
+		if strings.TrimSpace(request.Reason) == "" {
+			return "", apperror.InvalidRequest("reason is required when marking a finding duplicate")
+		}
+		return "duplicate", nil
+	case "stale":
+		if strings.TrimSpace(request.Reason) == "" {
+			return "", apperror.InvalidRequest("reason is required when marking a finding stale")
+		}
+		return "stale", nil
 	case "copied":
 		return "copied", nil
 	case "publish", "published":
@@ -810,11 +830,16 @@ func findingResponseWithSources(row dbgen.Finding, sources []FindingSourceAgentR
 }
 
 func findingTrustState(row dbgen.Finding, publishBlockers []string) string {
-	if row.DecisionStatus == "accepted" {
+	switch row.DecisionStatus {
+	case "accepted":
 		if len(publishBlockers) == 0 {
 			return "publishable"
 		}
 		return "human_accepted"
+	case "published":
+		return "published"
+	case "dismissed", "suppressed", "not_actionable", "duplicate", "stale":
+		return "human_" + row.DecisionStatus
 	}
 	switch row.VerificationStatus {
 	case evidencepkg.StatusVerified:
@@ -832,8 +857,8 @@ func findingTrustState(row dbgen.Finding, publishBlockers []string) string {
 
 func findingPublishBlockers(row dbgen.Finding) []string {
 	blockers := []string{}
-	if row.DecisionStatus != "accepted" {
-		blockers = append(blockers, "finding must be accepted by a human")
+	if !findingHasHumanApproval(row.DecisionStatus) {
+		blockers = append(blockers, "finding must be accepted or published by a human")
 	}
 	if !findingHasAnchor(row) {
 		blockers = append(blockers, "finding needs an exact changed-line anchor")
@@ -856,6 +881,15 @@ func findingPublishBlockers(row dbgen.Finding) []string {
 		blockers = append(blockers, "finding must survive verifier review")
 	}
 	return blockers
+}
+
+func findingHasHumanApproval(decisionStatus string) bool {
+	switch decisionStatus {
+	case "accepted", "published":
+		return true
+	default:
+		return false
+	}
 }
 
 func findingHasAnchor(row dbgen.Finding) bool {

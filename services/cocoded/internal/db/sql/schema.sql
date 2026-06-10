@@ -324,7 +324,7 @@ CREATE TABLE human_decisions (
   id TEXT PRIMARY KEY,
   finding_id TEXT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
   review_session_id TEXT NOT NULL REFERENCES review_sessions(id) ON DELETE CASCADE,
-  decision TEXT NOT NULL CHECK(decision IN ('accepted','dismissed','deferred','copied','published','edited')),
+  decision TEXT NOT NULL CHECK(decision IN ('accepted','dismissed','deferred','copied','published','edited','suppressed','not_actionable','duplicate','stale')),
   reason TEXT,
   metadata_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL

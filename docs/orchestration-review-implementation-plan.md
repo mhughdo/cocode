@@ -1,6 +1,6 @@
 # Cocode Orchestration Review Implementation Plan
 
-**Status:** Draft  
+**Status:** Implemented locally
 **Created:** 2026-06-10  
 **Owner:** Cocode local review workflow  
 **Source review:** User-provided orchestration review of `cocode`  
@@ -53,6 +53,10 @@ Update rules:
 | 2026-06-10 | Added durable adapter external-session metadata on agent runs. | `ADAPT-06` | `go test ./internal/agents ./internal/agentrun` | App Server/ACP event mappers emit normalized `external_session` metadata and the runner persists the latest session identity into `agent_runs.metadata_json`; chat-turn-scoped reuse wiring remains open. |
 | 2026-06-10 | Reused compatible persisted review context bundles for centralized chat. | `CHAT-06` | `go test ./internal/chat`; `go test ./internal/httpapi -run 'TestReviewSessionChatThreadEndpointSeedsAndAnswers|TestReviewSessionChatThreadEndpointUsesOrchestratorResponder'` | Chat turns now reuse persisted review-scope bundles when session, recipient agent, policy JSON, and snapshot match, including hydrated item content from artifacts. |
 | 2026-06-10 | Added ephemeral git worktree isolation for review-mode filesystem adapters. | `SAFE-02` | `go test ./internal/agents ./internal/agentrun ./internal/gitrepo`; `go test ./internal/chat ./internal/httpapi -run 'TestReviewSessionChatThreadEndpointSeedsAndAnswers|TestReviewSessionChatThreadEndpointUsesOrchestratorResponder|TestBuildOrReuseChatContextUsesPersistedBundle'` | Review-mode CLI/JSON-RPC/ACP runs execute from a detached temporary worktree and clean it up after adapter execution; HTTP fixtures now provide a real git HEAD for isolated fake-agent runs. |
+| 2026-06-10 | Added follow-up routing and session reuse for compatible App Server/ACP adapters. | `ADAPT-01`, `ADAPT-02`, `ADAPT-03`, `ADAPT-04`, `ADAPT-06` | `go test ./internal/chat -run 'TestValidateAgentConfigAllowsSessionCapableProtocolAdapters|TestChatExternalSessionRoutingUsesLatestReusableRun|TestCreateTurnPersistsContextRefs|TestBuildOrReuseChatContextUsesPersistedBundle'`; `go test ./internal/agents -run 'Test.*JSONRPCConnection.*(Streams|Reuses)|TestJSONRPCStdioDriver'` | Centralized chat now routes to session-capable protocol adapters, resumes persisted Codex App Server/ACP sessions for investigation turns, and uses compact fresh finding context for explain-only finding turns. |
+| 2026-06-10 | Recorded prompt/context/cache/output efficiency metadata for agent runs. | `OBS-02` | `go test ./internal/agentrun -run 'TestRunnerRecordsObservabilityMetadata|TestRunnerPersistsSuccessfulCommandRun|TestRunnerMarksFilesystemIsolationCancellationAsCanceled'` | Agent run metadata now includes prompt hash/bytes, context bundle size/count/scope, cache status, and output byte counts when available. |
+| 2026-06-10 | Added explicit adapter health readiness and expanded trust/eval decision states. | `ADAPT-05`, `OBS-03` | `go test ./internal/db -run 'Migration|Apply'`; `go test ./internal/httpapi -run 'TestAgentConfigEndpointCRUDAndHealth|TestProtocolAgentConfigCanBeSavedAndHealthChecked|TestFindingDecisionEndpoint'`; `pnpm --filter @cocode/desktop typecheck` | Health responses expose readiness/capability metadata; human decisions now include suppressed, not-actionable, duplicate, and stale outcomes with migration-backed storage and finding trust-state projection. |
+| 2026-06-10 | Added dogfood eval gates and documented threshold/baseline commands. | `OBS-04` | `go test ./internal/evalharness ./cmd/cocode-eval`; `go run ./cmd/cocode-eval -min-precision-ish 0.9 -min-accepted-expected-rate 0.9 -max-false-positive-rate 0 -max-suppression-rate 0.5 -max-duplicate-rate 0.7` | Local eval can now fail prompt/orchestration changes on precision-ish, false-positive, accepted-expected, suppression, duplicate, and baseline-regression gates. |
 
 ## Assumptions And Boundaries
 
@@ -236,12 +240,12 @@ This phase reduces latency/cost for capable adapters while preserving Cocode as 
 
 | ID | Status | Task | Acceptance Criteria | Verification | Likely Files |
 | --- | --- | --- | --- | --- | --- |
-| ADAPT-01 | todo | Remove centralized-chat hard rejection of non-CLI adapters once adapter contracts are ready. | Chat can route to compatible App Server/ACP adapters behind capability checks. | Adapter capability tests. | `services/cocoded/internal/chat/service.go`, `services/cocoded/internal/agents` |
-| ADAPT-02 | todo | Implement Codex App Server session reuse for follow-ups. | Follow-ups can resume an existing thread/session when the selected adapter supports it. | Fake app-server adapter test plus manual local run. | `services/cocoded/internal/agents`, `services/cocoded/internal/chat` |
-| ADAPT-03 | todo | Implement ACP session reuse where available. | ACP adapters can load/resume sessions for follow-up context. | ACP adapter test/fake driver. | `services/cocoded/internal/agents`, `services/cocoded/internal/chat` |
-| ADAPT-04 | todo | Add routing rule: session resume vs fresh cheap call. | Explain-only turns can use compact finding slice; investigation turns can resume agent session. | Chat router tests. | `services/cocoded/internal/chat` |
-| ADAPT-05 | todo | Replace disabled App Server stub with explicit capability/health state. | UI/backend can distinguish unsupported, disabled, unhealthy, and ready adapters. | Adapter health tests and settings UI smoke. | `services/cocoded/internal/agents`, `services/cocoded/internal/httpapi/agent_configs.go`, `apps/desktop/src/renderer/src` |
-| ADAPT-06 | doing | Store external session metadata per adapter/run/turn. | Session reuse has durable IDs, expiry, provenance, and invalidation behavior. | `go test ./internal/agents ./internal/agentrun` from `services/cocoded`; per-turn reuse tests remain open. | `services/cocoded/internal/db`, `services/cocoded/internal/agents`, `services/cocoded/internal/chat` |
+| ADAPT-01 | done | Remove centralized-chat hard rejection of non-CLI adapters once adapter contracts are ready. | Chat can route to compatible App Server/ACP adapters behind capability checks. | Adapter capability tests. | `services/cocoded/internal/chat/service.go`, `services/cocoded/internal/agents` |
+| ADAPT-02 | done | Implement Codex App Server session reuse for follow-ups. | Follow-ups can resume an existing thread/session when the selected adapter supports it. | Fake app-server adapter test plus manual local run. | `services/cocoded/internal/agents`, `services/cocoded/internal/chat` |
+| ADAPT-03 | done | Implement ACP session reuse where available. | ACP adapters can load/resume sessions for follow-up context. | ACP adapter test/fake driver. | `services/cocoded/internal/agents`, `services/cocoded/internal/chat` |
+| ADAPT-04 | done | Add routing rule: session resume vs fresh cheap call. | Explain-only turns can use compact finding slice; investigation turns can resume agent session. | Chat router tests. | `services/cocoded/internal/chat` |
+| ADAPT-05 | done | Replace disabled App Server stub with explicit capability/health state. | UI/backend can distinguish unsupported, disabled, unhealthy, and ready adapters. | Adapter health tests and settings UI smoke. | `services/cocoded/internal/agents`, `services/cocoded/internal/httpapi/agent_configs.go`, `apps/desktop/src/renderer/src` |
+| ADAPT-06 | done | Store external session metadata per adapter/run/turn. | Session reuse has durable IDs, expiry, provenance, and invalidation behavior. | `go test ./internal/agents ./internal/agentrun`; chat reuse tests from `ADAPT-01` to `ADAPT-04` from `services/cocoded`. | `services/cocoded/internal/db`, `services/cocoded/internal/agents`, `services/cocoded/internal/chat` |
 
 Checkpoint after Phase 5:
 
@@ -270,9 +274,9 @@ The review points to Cloudflare/DoorDash-style production signals: accepted find
 | ID | Status | Task | Acceptance Criteria | Verification | Likely Files |
 | --- | --- | --- | --- | --- | --- |
 | OBS-01 | done | Emit review orchestration metrics for phase latency and outcomes. | Each phase records duration, status, failure reason, and finding counts. | `go test ./internal/orchestrator -run 'TestWorkflowPhase(CheckpointOrderInvariant\|CompletedIncludesMetricsSnapshot\|FailedIncludesFailureMetrics)'`; `go test ./internal/httpapi -run 'TestReviewSessionAuditLogEndpointCombinesReviewActions'` from `services/cocoded`. | `services/cocoded/internal/orchestrator`, `services/cocoded/internal/httpapi/audit_log.go` |
-| OBS-02 | todo | Track token/context/cache efficiency. | Agent runs record context size, prompt hash, cache hit/miss where available, and output size. | Agent run metadata tests. | `services/cocoded/internal/agents`, `services/cocoded/internal/contextbundle`, `services/cocoded/internal/chat` |
-| OBS-03 | todo | Track trust metrics from human decisions. | Accepted, dismissed, suppressed, not-actionable, duplicate, stale, and publishable outcomes are queryable per session/repo. | Eval harness tests and audit API tests. | `services/cocoded/internal/evalharness`, `services/cocoded/internal/httpapi/findings.go` |
-| OBS-04 | todo | Add dogfood eval gates for prompt/orchestration changes. | A small local eval suite can compare precision-ish, false positives, accepted expected findings, and suppression rate before/after changes. | `go test ./internal/evalharness` plus documented eval command. | `services/cocoded/internal/evalharness`, `testdata` |
+| OBS-02 | done | Track token/context/cache efficiency. | Agent runs record context size, prompt hash, cache hit/miss where available, and output size. | Agent run metadata tests. | `services/cocoded/internal/agents`, `services/cocoded/internal/contextbundle`, `services/cocoded/internal/chat` |
+| OBS-03 | done | Track trust metrics from human decisions. | Accepted, dismissed, suppressed, not-actionable, duplicate, stale, and publishable outcomes are queryable per session/repo. | Eval harness tests and audit API tests. | `services/cocoded/internal/evalharness`, `services/cocoded/internal/httpapi/findings.go` |
+| OBS-04 | done | Add dogfood eval gates for prompt/orchestration changes. | A small local eval suite can compare precision-ish, false positives, accepted expected findings, and suppression rate before/after changes. | `go test ./internal/evalharness` plus documented eval command. | `services/cocoded/internal/evalharness`, `testdata` |
 | OBS-05 | done | Add duplicate/noise regression tracking. | Multi-agent duplicate rate is measured so role overlays can be evaluated against the "N copies of same agent" failure mode. | `go test ./internal/evalharness ./internal/findingengine` from `services/cocoded`. | `services/cocoded/internal/findingengine`, `services/cocoded/internal/evalharness` |
 
 Checkpoint after Phase 7:
@@ -304,6 +308,9 @@ Backend focused checks:
 ```bash
 cd services/cocoded
 go test ./internal/orchestrator ./internal/findingengine ./internal/evidence ./internal/chat ./internal/contextbundle ./internal/projectrules ./internal/httpapi
+go test ./internal/evalharness ./cmd/cocode-eval
+go run ./cmd/cocode-eval -min-precision-ish 0.9 -min-accepted-expected-rate 0.9 -max-false-positive-rate 0 -max-suppression-rate 0.5 -max-duplicate-rate 0.7
+go run ./cmd/cocode-eval -baseline /path/to/baseline-report.json -max-precision-drop 0.05 -max-accepted-expected-rate-drop 0.05 -max-false-positive-rate-increase 0.05 -max-suppression-rate-increase 0.05 -max-duplicate-rate-increase 0.05
 ```
 
 Desktop checks:
@@ -327,7 +334,7 @@ End-to-end manual checks:
 | --- | --- | --- | --- |
 | Architecture is fundamentally sound and should stay deterministic/checkpointed. | `BASE-01`, `BASE-03` | done | Protects current backbone instead of replacing it. |
 | Parsing is robust and should be preserved. | `BASE-02` | done | Regression tests cover tolerant parsing and raw artifacts. |
-| Cocode owns state; CLIs are workers. | `BASE-03`, `CHAT-12`, `ADAPT-06` | doing | Local-first contract and structured chat refs are done; external session metadata is durable at run level and still needs chat-turn reuse wiring. |
+| Cocode owns state; CLIs are workers. | `BASE-03`, `CHAT-12`, `ADAPT-06` | done | Local-first contract, structured chat refs, durable external session metadata, and chat-turn reuse wiring are implemented while Cocode remains the authoritative review state. |
 | H1: Roles/presets never reach prompts. | `PROMPT-05` | done | Selected role overlays alter prompts and prompt hashes. |
 | H2: `blocker` severity gets worst verification priority. | `ORCH-01` | done | Fixed in verifier prioritization and curator candidate scoring. |
 | H3: Resume after mid-phase crash can permanently fail session. | `ORCH-02`, `ORCH-03` | done | Candidate, finding, and candidate-link writes are idempotent across retries. |
@@ -355,7 +362,7 @@ End-to-end manual checks:
 | Chat has no real cancel. | `CHAT-03` | done | Stop button calls a cancel endpoint; backend marks cancel state and cancels matching active chat agent runs. |
 | Chat rebuilds context per agent. | `CHAT-04`, `CHAT-06` | done | All-agent fan-out shares one bundle, and compatible later turns reuse persisted context bundles. |
 | Chat fan-out is serial. | `CHAT-05` | done | All-agent fan-out uses bounded parallel execution. |
-| Chat sends very large prompt/context every turn. | `CHAT-06`, `CHAT-07`, `ADAPT-04` | doing | Compatible context bundles are cached and older thread history is compacted; compact finding/investigation routing remains open. |
+| Chat sends very large prompt/context every turn. | `CHAT-06`, `CHAT-07`, `ADAPT-04` | done | Compatible context bundles are cached, older thread history is compacted, explain-only finding turns use compact context, and investigation turns can resume capable adapter sessions. |
 | Chat turn states exist but are underused. | `CHAT-02`, `CHAT-16` | done | Turn creation/execution now uses and validates the persisted state machine. |
 | `chat_message_context_refs` exists but is unused. | `CHAT-12` | done | User-selected finding/evidence/file context refs are persisted and rendered into follow-up prompts. |
 | Chat answer survives only via client-side preview reconstruction. | `CHAT-01`, `CHAT-14` | done | Chat runs now create/update stable message rows and emit full durable delta events consumed by the renderer. |
@@ -363,10 +370,10 @@ End-to-end manual checks:
 | Thread GET does cleanup/sync work and can cause N+1 behavior. | `CHAT-13` | done | Direct thread loads are now side-effect-free; session-scoped ensure remains the explicit progress-sync path until SSE deltas take over. |
 | Client abort leaves turns stuck running. | `CHAT-03`, `CHAT-15` | done | Explicit cancel exists, the service reconciler is implemented, and cocoded startup reconciles abandoned non-terminal turns. |
 | Finding follow-ups are separate/cold. | `CHAT-10`, `CHAT-11` | done | Finding and evidence-map questions now run through centralized chat with durable context refs and prior central-chat history, then mirror back to legacy finding-thread responses. |
-| App Server/ACP session reuse unavailable for chat. | `ADAPT-01`, `ADAPT-02`, `ADAPT-03`, `ADAPT-04` | todo | Structural follow-up efficiency work. |
-| App Server adapter is a disabled stub / adapter readiness is unclear. | `ADAPT-05` | todo | Capability and health state should be explicit. |
-| External session IDs are not durable enough for reuse. | `ADAPT-06` | doing | Adapter/run metadata is durable; chat-turn reuse/invalidation wiring remains open. |
-| Need Cloudflare/DoorDash-style trust and efficiency metrics. | `OBS-01`, `OBS-02`, `OBS-03`, `OBS-04`, `OBS-05` | doing | Phase latency/outcome and duplicate/noise metrics are implemented; token/cache efficiency, decision-query surfaces, and formal eval gates remain open. |
+| App Server/ACP session reuse unavailable for chat. | `ADAPT-01`, `ADAPT-02`, `ADAPT-03`, `ADAPT-04` | done | Centralized chat allows session-capable protocol adapters and resumes persisted Codex App Server/ACP sessions for investigation follow-ups. |
+| App Server adapter is a disabled stub / adapter readiness is unclear. | `ADAPT-05` | done | Health responses expose `readiness`, adapter kind, command-backed state, and protocol capability metadata for ready/disabled/unsupported/unhealthy distinctions. |
+| External session IDs are not durable enough for reuse. | `ADAPT-06` | done | Adapter/run metadata is durable and centralized chat attaches the latest reusable session identity when routing permits reuse. |
+| Need Cloudflare/DoorDash-style trust and efficiency metrics. | `OBS-01`, `OBS-02`, `OBS-03`, `OBS-04`, `OBS-05` | done | Phase latency/outcome, token/context/cache/output size, expanded trust decisions, duplicate/noise metrics, and formal eval gates are implemented. |
 | CI design should build on local contracts, not fork them. | `BASE-03`, `OBS-01` | done | Local-first contract is documented; phase metrics are emitted through local workflow events and audit-log entries. |
 
 ## Initial Implementation Batch
@@ -392,8 +399,9 @@ Why this batch:
 2. Cross-session dismissal memory is repository-scoped by stable finding fingerprint. Branch or base/head lineage can be added later if false carryover appears in dogfood data.
 3. `draft_comments` remains a dedicated workflow phase and now fills missing finding draft comments deterministically; GitHub preview and copy packets remain separate product surfaces.
 4. OBS-01 uses additive workflow event payload fields and audit-log projections instead of a new metrics table; add a dedicated metrics store later only if retention, aggregation, or cross-session query requirements outgrow event-derived reporting.
+5. Session reuse supports both Codex App Server and ACP through the normalized external-session metadata contract; CLI adapters continue to use the async/cached fallback path.
+6. Dogfood eval gates default to permissive mode and only fail when a threshold or baseline-comparison flag is explicitly supplied.
 
 ## Open Questions
 
-1. Which adapter should be first for durable session reuse: Codex App Server or ACP?
-2. What minimum dogfood eval set should gate prompt/orchestration changes before CI rollout?
+None currently blocking. The first durable reuse pass covers Codex App Server and ACP, and the static dogfood eval command above provides the initial prompt/orchestration gate until a larger corpus is added.

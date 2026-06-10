@@ -683,8 +683,20 @@ export function removeReviewRuleState(
 }
 
 function formatHealthMetadata(metadata: Record<string, unknown>) {
-  return ["version", "resolved_path", "path", "error"]
+  return [
+    "readiness",
+    "adapter_kind",
+    "command_backed",
+    "supports_sessions",
+    "supports_streaming",
+    "can_read",
+    "version",
+    "resolved_path",
+    "path",
+    "error",
+  ]
     .map((key) => [key, metadata[key]] as const)
-    .filter(([, value]) => typeof value === "string" && value.trim())
-    .map(([key, value]) => [key, value as string] as const);
+    .filter(([, value]) => value !== undefined && value !== null)
+    .map(([key, value]) => [key, String(value)] as const)
+    .filter(([, value]) => value.trim());
 }

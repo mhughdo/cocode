@@ -161,18 +161,61 @@ func TestSummarizeReviewOutcomesReportsSuppressionAndPublishableRates(t *testing
 		{FindingID: "dismissed", Decision: reviewDecisionDismissed},
 		{FindingID: "suppressed", Decision: reviewDecisionSuppressed},
 		{FindingID: "not-actionable", Decision: reviewDecisionNotActionable},
+		{FindingID: "duplicate", Decision: reviewDecisionDuplicate},
+		{FindingID: "stale", Decision: reviewDecisionStale},
 	}, reviewOutcomeSourceExplicit)
 
-	if metrics.ReviewedFindings != 4 ||
+	if metrics.ReviewedFindings != 6 ||
 		metrics.AcceptedFindings != 1 ||
 		metrics.DismissedFindings != 1 ||
 		metrics.PublishableFindings != 1 ||
 		metrics.SuppressedFindings != 1 ||
 		metrics.NotActionableFindings != 1 ||
-		metrics.AcceptedFindingRate != 0.25 ||
-		metrics.SuppressionRate != 0.5 ||
+		metrics.DuplicateDecisionFindings != 1 ||
+		metrics.StaleFindings != 1 ||
+		metrics.AcceptedFindingRate != 1.0/6.0 ||
+		metrics.SuppressionRate != 4.0/6.0 ||
 		metrics.OutcomeSource != reviewOutcomeSourceExplicit {
 		t.Fatalf("metrics = %+v", metrics)
+	}
+}
+
+func TestEvaluateGatesReportsThresholdAndBaselineRegressions(t *testing.T) {
+	t.Parallel()
+
+	minPrecision := 0.9
+	maxFalsePositive := 0.2
+	minAcceptedExpected := 0.7
+	maxSuppression := 0.3
+	maxDuplicate := 0.2
+	maxPrecisionDrop := 0.05
+	maxAcceptedDrop := 0.05
+	maxFPIncrease := 0.05
+	maxSuppressionIncrease := 0.05
+	maxDuplicateIncrease := 0.05
+
+	result := EvaluateGates(Metrics{
+		PrecisionIsh:         0.84,
+		FalsePositiveRate:    0.28,
+		AcceptedExpectedRate: 0.60,
+		SuppressionRate:      0.40,
+		DuplicateRate:        0.30,
+	}, GateThresholds{
+		MinPrecisionIsh:              &minPrecision,
+		MaxFalsePositiveRate:         &maxFalsePositive,
+		MinAcceptedExpectedRate:      &minAcceptedExpected,
+		MaxSuppressionRate:           &maxSuppression,
+		MaxDuplicateRate:             &maxDuplicate,
+		Baseline:                     &Metrics{PrecisionIsh: 0.90, FalsePositiveRate: 0.20, AcceptedExpectedRate: 0.70, SuppressionRate: 0.30, DuplicateRate: 0.20},
+		MaxPrecisionDrop:             &maxPrecisionDrop,
+		MaxAcceptedExpectedRateDrop:  &maxAcceptedDrop,
+		MaxFalsePositiveRateIncrease: &maxFPIncrease,
+		MaxSuppressionRateIncrease:   &maxSuppressionIncrease,
+		MaxDuplicateRateIncrease:     &maxDuplicateIncrease,
+	})
+
+	if result.Passed || len(result.Failures) < 5 {
+		t.Fatalf("result = %+v", result)
 	}
 }
 

@@ -48,30 +48,32 @@ type Report struct {
 }
 
 type Metrics struct {
-	RepoCount             int      `json:"repo_count"`
-	ExpectedFindings      int      `json:"expected_findings"`
-	ActualFindings        int      `json:"actual_findings"`
-	DuplicateClusters     int      `json:"duplicate_clusters"`
-	DuplicateFindings     int      `json:"duplicate_findings"`
-	DuplicateRate         float64  `json:"duplicate_rate"`
-	AcceptedExpected      int      `json:"accepted_expected"`
-	MissingExpected       int      `json:"missing_expected"`
-	FalsePositives        int      `json:"false_positives"`
-	PrecisionIsh          float64  `json:"precision_ish"`
-	AcceptedExpectedRate  float64  `json:"accepted_expected_rate"`
-	ReviewedFindings      int      `json:"reviewed_findings"`
-	AcceptedFindings      int      `json:"accepted_findings"`
-	DismissedFindings     int      `json:"dismissed_findings"`
-	PublishableFindings   int      `json:"publishable_findings"`
-	SuppressedFindings    int      `json:"suppressed_findings"`
-	NotActionableFindings int      `json:"not_actionable_findings"`
-	AcceptedFindingRate   float64  `json:"accepted_finding_rate"`
-	FalsePositiveRate     float64  `json:"false_positive_rate"`
-	SuppressionRate       float64  `json:"suppression_rate"`
-	ReviewOutcomeSource   string   `json:"review_outcome_source"`
-	DurationMs            int64    `json:"duration_ms"`
-	CostUSD               *float64 `json:"cost_usd"`
-	CostSource            string   `json:"cost_source"`
+	RepoCount                 int      `json:"repo_count"`
+	ExpectedFindings          int      `json:"expected_findings"`
+	ActualFindings            int      `json:"actual_findings"`
+	DuplicateClusters         int      `json:"duplicate_clusters"`
+	DuplicateFindings         int      `json:"duplicate_findings"`
+	DuplicateRate             float64  `json:"duplicate_rate"`
+	AcceptedExpected          int      `json:"accepted_expected"`
+	MissingExpected           int      `json:"missing_expected"`
+	FalsePositives            int      `json:"false_positives"`
+	PrecisionIsh              float64  `json:"precision_ish"`
+	AcceptedExpectedRate      float64  `json:"accepted_expected_rate"`
+	ReviewedFindings          int      `json:"reviewed_findings"`
+	AcceptedFindings          int      `json:"accepted_findings"`
+	DismissedFindings         int      `json:"dismissed_findings"`
+	PublishableFindings       int      `json:"publishable_findings"`
+	SuppressedFindings        int      `json:"suppressed_findings"`
+	NotActionableFindings     int      `json:"not_actionable_findings"`
+	DuplicateDecisionFindings int      `json:"duplicate_decision_findings"`
+	StaleFindings             int      `json:"stale_findings"`
+	AcceptedFindingRate       float64  `json:"accepted_finding_rate"`
+	FalsePositiveRate         float64  `json:"false_positive_rate"`
+	SuppressionRate           float64  `json:"suppression_rate"`
+	ReviewOutcomeSource       string   `json:"review_outcome_source"`
+	DurationMs                int64    `json:"duration_ms"`
+	CostUSD                   *float64 `json:"cost_usd"`
+	CostSource                string   `json:"cost_source"`
 }
 
 type RepoReport struct {
@@ -117,15 +119,36 @@ type ReviewOutcome struct {
 }
 
 type ReviewMetrics struct {
-	ReviewedFindings      int     `json:"reviewed_findings"`
-	AcceptedFindings      int     `json:"accepted_findings"`
-	DismissedFindings     int     `json:"dismissed_findings"`
-	PublishableFindings   int     `json:"publishable_findings"`
-	SuppressedFindings    int     `json:"suppressed_findings"`
-	NotActionableFindings int     `json:"not_actionable_findings"`
-	AcceptedFindingRate   float64 `json:"accepted_finding_rate"`
-	SuppressionRate       float64 `json:"suppression_rate"`
-	OutcomeSource         string  `json:"outcome_source"`
+	ReviewedFindings          int     `json:"reviewed_findings"`
+	AcceptedFindings          int     `json:"accepted_findings"`
+	DismissedFindings         int     `json:"dismissed_findings"`
+	PublishableFindings       int     `json:"publishable_findings"`
+	SuppressedFindings        int     `json:"suppressed_findings"`
+	NotActionableFindings     int     `json:"not_actionable_findings"`
+	DuplicateDecisionFindings int     `json:"duplicate_decision_findings"`
+	StaleFindings             int     `json:"stale_findings"`
+	AcceptedFindingRate       float64 `json:"accepted_finding_rate"`
+	SuppressionRate           float64 `json:"suppression_rate"`
+	OutcomeSource             string  `json:"outcome_source"`
+}
+
+type GateThresholds struct {
+	MinPrecisionIsh              *float64
+	MaxFalsePositiveRate         *float64
+	MinAcceptedExpectedRate      *float64
+	MaxSuppressionRate           *float64
+	MaxDuplicateRate             *float64
+	Baseline                     *Metrics
+	MaxPrecisionDrop             *float64
+	MaxAcceptedExpectedRateDrop  *float64
+	MaxFalsePositiveRateIncrease *float64
+	MaxSuppressionRateIncrease   *float64
+	MaxDuplicateRateIncrease     *float64
+}
+
+type GateResult struct {
+	Passed   bool     `json:"passed"`
+	Failures []string `json:"failures,omitempty"`
 }
 
 type FileCheckResult struct {
@@ -148,6 +171,8 @@ const (
 	reviewDecisionDismissed     = "dismissed"
 	reviewDecisionSuppressed    = "suppressed"
 	reviewDecisionNotActionable = "not_actionable"
+	reviewDecisionDuplicate     = "duplicate"
+	reviewDecisionStale         = "stale"
 
 	reviewOutcomeSourceDerived  = "derived_from_detector_matches"
 	reviewOutcomeSourceExplicit = "explicit_review_outcomes"
@@ -617,6 +642,10 @@ func summarizeReviewOutcomes(outcomes []ReviewOutcome, source string) ReviewMetr
 			metrics.SuppressedFindings++
 		case reviewDecisionNotActionable:
 			metrics.NotActionableFindings++
+		case reviewDecisionDuplicate:
+			metrics.DuplicateDecisionFindings++
+		case reviewDecisionStale:
+			metrics.StaleFindings++
 		}
 		if outcome.Publishable {
 			metrics.PublishableFindings++
@@ -624,11 +653,69 @@ func summarizeReviewOutcomes(outcomes []ReviewOutcome, source string) ReviewMetr
 	}
 	if metrics.ReviewedFindings > 0 {
 		metrics.AcceptedFindingRate = float64(metrics.AcceptedFindings) / float64(metrics.ReviewedFindings)
-		metrics.SuppressionRate = float64(metrics.SuppressedFindings+metrics.NotActionableFindings) / float64(metrics.ReviewedFindings)
+		metrics.SuppressionRate = float64(metrics.SuppressedFindings+metrics.NotActionableFindings+metrics.DuplicateDecisionFindings+metrics.StaleFindings) / float64(metrics.ReviewedFindings)
 	} else {
 		metrics.AcceptedFindingRate = 1
 	}
 	return metrics
+}
+
+func EvaluateGates(current Metrics, thresholds GateThresholds) GateResult {
+	failures := []string{}
+	addFailure := func(format string, args ...any) {
+		failures = append(failures, fmt.Sprintf(format, args...))
+	}
+	if thresholds.MinPrecisionIsh != nil && *thresholds.MinPrecisionIsh >= 0 && current.PrecisionIsh < *thresholds.MinPrecisionIsh {
+		addFailure("precision-ish %.3f below minimum %.3f", current.PrecisionIsh, *thresholds.MinPrecisionIsh)
+	}
+	if thresholds.MaxFalsePositiveRate != nil && *thresholds.MaxFalsePositiveRate >= 0 && current.FalsePositiveRate > *thresholds.MaxFalsePositiveRate {
+		addFailure("false-positive rate %.3f above maximum %.3f", current.FalsePositiveRate, *thresholds.MaxFalsePositiveRate)
+	}
+	if thresholds.MinAcceptedExpectedRate != nil && *thresholds.MinAcceptedExpectedRate >= 0 && current.AcceptedExpectedRate < *thresholds.MinAcceptedExpectedRate {
+		addFailure("accepted-expected rate %.3f below minimum %.3f", current.AcceptedExpectedRate, *thresholds.MinAcceptedExpectedRate)
+	}
+	if thresholds.MaxSuppressionRate != nil && *thresholds.MaxSuppressionRate >= 0 && current.SuppressionRate > *thresholds.MaxSuppressionRate {
+		addFailure("suppression rate %.3f above maximum %.3f", current.SuppressionRate, *thresholds.MaxSuppressionRate)
+	}
+	if thresholds.MaxDuplicateRate != nil && *thresholds.MaxDuplicateRate >= 0 && current.DuplicateRate > *thresholds.MaxDuplicateRate {
+		addFailure("duplicate rate %.3f above maximum %.3f", current.DuplicateRate, *thresholds.MaxDuplicateRate)
+	}
+	if thresholds.Baseline != nil {
+		if thresholds.MaxPrecisionDrop != nil && *thresholds.MaxPrecisionDrop >= 0 {
+			drop := thresholds.Baseline.PrecisionIsh - current.PrecisionIsh
+			if drop > *thresholds.MaxPrecisionDrop {
+				addFailure("precision-ish dropped by %.3f from baseline %.3f to %.3f", drop, thresholds.Baseline.PrecisionIsh, current.PrecisionIsh)
+			}
+		}
+		if thresholds.MaxAcceptedExpectedRateDrop != nil && *thresholds.MaxAcceptedExpectedRateDrop >= 0 {
+			drop := thresholds.Baseline.AcceptedExpectedRate - current.AcceptedExpectedRate
+			if drop > *thresholds.MaxAcceptedExpectedRateDrop {
+				addFailure("accepted-expected rate dropped by %.3f from baseline %.3f to %.3f", drop, thresholds.Baseline.AcceptedExpectedRate, current.AcceptedExpectedRate)
+			}
+		}
+		if thresholds.MaxFalsePositiveRateIncrease != nil && *thresholds.MaxFalsePositiveRateIncrease >= 0 {
+			increase := current.FalsePositiveRate - thresholds.Baseline.FalsePositiveRate
+			if increase > *thresholds.MaxFalsePositiveRateIncrease {
+				addFailure("false-positive rate increased by %.3f from baseline %.3f to %.3f", increase, thresholds.Baseline.FalsePositiveRate, current.FalsePositiveRate)
+			}
+		}
+		if thresholds.MaxSuppressionRateIncrease != nil && *thresholds.MaxSuppressionRateIncrease >= 0 {
+			increase := current.SuppressionRate - thresholds.Baseline.SuppressionRate
+			if increase > *thresholds.MaxSuppressionRateIncrease {
+				addFailure("suppression rate increased by %.3f from baseline %.3f to %.3f", increase, thresholds.Baseline.SuppressionRate, current.SuppressionRate)
+			}
+		}
+		if thresholds.MaxDuplicateRateIncrease != nil && *thresholds.MaxDuplicateRateIncrease >= 0 {
+			increase := current.DuplicateRate - thresholds.Baseline.DuplicateRate
+			if increase > *thresholds.MaxDuplicateRateIncrease {
+				addFailure("duplicate rate increased by %.3f from baseline %.3f to %.3f", increase, thresholds.Baseline.DuplicateRate, current.DuplicateRate)
+			}
+		}
+	}
+	return GateResult{
+		Passed:   len(failures) == 0,
+		Failures: failures,
+	}
 }
 
 func sortReviewOutcomes(outcomes []ReviewOutcome) {
@@ -642,7 +729,7 @@ func sortReviewOutcomes(outcomes []ReviewOutcome) {
 
 func reviewDecisionKnown(decision string) bool {
 	switch decision {
-	case reviewDecisionAccepted, reviewDecisionDismissed, reviewDecisionSuppressed, reviewDecisionNotActionable:
+	case reviewDecisionAccepted, reviewDecisionDismissed, reviewDecisionSuppressed, reviewDecisionNotActionable, reviewDecisionDuplicate, reviewDecisionStale:
 		return true
 	default:
 		return false

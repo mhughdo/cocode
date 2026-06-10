@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -2589,6 +2590,7 @@ func setupWorkflowEnv(t *testing.T) workflowEnv {
 	if err := os.WriteFile(filepath.Join(repoPath, "src", "new.go"), []byte("package src\n\nfunc RequireAdmin() bool { return true }\n"), 0o644); err != nil {
 		t.Fatalf("write repo file: %v", err)
 	}
+	initWorkflowGitRepo(t, repoPath)
 	createWorkflowBaseRows(t, queries, repoPath)
 	artifactStore, err := artifact.New(filepath.Join(t.TempDir(), "artifacts"), queries)
 	if err != nil {
@@ -2641,6 +2643,35 @@ func writeWorkflowRepoFile(t *testing.T, repoPath string, relativePath string, c
 	}
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
 		t.Fatalf("write %s: %v", relativePath, err)
+	}
+	commitWorkflowGitRepo(t, repoPath, "update "+filepath.Base(relativePath))
+}
+
+func initWorkflowGitRepo(t *testing.T, repoPath string) {
+	t.Helper()
+
+	runWorkflowGit(t, repoPath, "init", "-q")
+	runWorkflowGit(t, repoPath, "config", "user.email", "cocode@example.local")
+	runWorkflowGit(t, repoPath, "config", "user.name", "Cocode Test")
+	runWorkflowGit(t, repoPath, "config", "commit.gpgsign", "false")
+	commitWorkflowGitRepo(t, repoPath, "initial fixture")
+}
+
+func commitWorkflowGitRepo(t *testing.T, repoPath string, message string) {
+	t.Helper()
+
+	runWorkflowGit(t, repoPath, "add", ".")
+	runWorkflowGit(t, repoPath, "commit", "--allow-empty", "-q", "-m", message)
+}
+
+func runWorkflowGit(t *testing.T, repoPath string, args ...string) {
+	t.Helper()
+
+	command := exec.Command("git", args...)
+	command.Dir = repoPath
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(output))
 	}
 }
 

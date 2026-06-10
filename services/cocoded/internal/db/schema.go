@@ -55,6 +55,12 @@ var Migrations = []Migration{
 		SQL:            findingCandidateRunFingerprintUniqueSQL,
 		RequiredTables: []string{"finding_candidates"},
 	},
+	{
+		Version:        11,
+		Name:           "expanded_human_decision_states",
+		SQL:            expandedHumanDecisionStatesSQL,
+		RequiredTables: []string{"human_decisions"},
+	},
 }
 
 const schemaV1SQL = `
@@ -385,7 +391,7 @@ CREATE TABLE human_decisions (
   id TEXT PRIMARY KEY,
   finding_id TEXT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
   review_session_id TEXT NOT NULL REFERENCES review_sessions(id) ON DELETE CASCADE,
-  decision TEXT NOT NULL CHECK(decision IN ('accepted','dismissed','deferred','copied','published','edited')),
+  decision TEXT NOT NULL CHECK(decision IN ('accepted','dismissed','deferred','copied','published','edited','suppressed','not_actionable','duplicate','stale')),
   reason TEXT,
   metadata_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL
@@ -674,6 +680,43 @@ WHERE fingerprint IS NOT NULL
 CREATE UNIQUE INDEX IF NOT EXISTS idx_candidates_run_fingerprint_unique
   ON finding_candidates(agent_run_id, fingerprint)
   WHERE fingerprint IS NOT NULL AND fingerprint <> '';
+`
+
+const expandedHumanDecisionStatesSQL = `
+PRAGMA defer_foreign_keys = ON;
+
+CREATE TABLE human_decisions_new (
+  id TEXT PRIMARY KEY,
+  finding_id TEXT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+  review_session_id TEXT NOT NULL REFERENCES review_sessions(id) ON DELETE CASCADE,
+  decision TEXT NOT NULL CHECK(decision IN ('accepted','dismissed','deferred','copied','published','edited','suppressed','not_actionable','duplicate','stale')),
+  reason TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+
+INSERT INTO human_decisions_new (
+  id,
+  finding_id,
+  review_session_id,
+  decision,
+  reason,
+  metadata_json,
+  created_at
+)
+SELECT
+  id,
+  finding_id,
+  review_session_id,
+  decision,
+  reason,
+  metadata_json,
+  created_at
+FROM human_decisions;
+
+DROP TABLE human_decisions;
+ALTER TABLE human_decisions_new RENAME TO human_decisions;
+CREATE INDEX IF NOT EXISTS idx_decisions_finding ON human_decisions(finding_id, created_at DESC);
 `
 
 const evidenceMapRouteNodesSQL = `

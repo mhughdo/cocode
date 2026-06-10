@@ -38,9 +38,18 @@ func TestOutputRecorderSavesCommandOutputsAndLinksRun(t *testing.T) {
 	}
 	if result.Run.StdoutArtifactID.String != result.Stdout.ID ||
 		result.Run.StderrArtifactID.String != result.Stderr.ID ||
-		result.Run.Status != "running" ||
-		result.Run.MetadataJson != `{"phase":"executing"}` {
+		result.Run.Status != "running" {
 		t.Fatalf("updated run = %+v", result.Run)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(result.Run.MetadataJson), &metadata); err != nil {
+		t.Fatalf("decode run metadata: %v", err)
+	}
+	if metadata["phase"] != "executing" ||
+		metadata["stdout_bytes"] != float64(13) ||
+		metadata["stderr_bytes"] != float64(12) ||
+		metadata["output_bytes"] != float64(25) {
+		t.Fatalf("run metadata = %+v", metadata)
 	}
 
 	stdoutContent, stdoutArtifact, err := env.Artifacts.Read(context.Background(), result.Stdout.ID)

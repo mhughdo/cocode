@@ -247,6 +247,8 @@ exit 0
 	if health.AgentConfigID != created.ID ||
 		health.Status != agents.HealthAvailable ||
 		health.Metadata["version"] != "fake-agent 1.0.0" ||
+		health.Metadata["readiness"] != "ready" ||
+		health.Metadata["command_backed"] != true ||
 		!health.Capabilities.SupportsOutputMode(agents.OutputJSON) {
 		t.Fatalf("health = %+v", health)
 	}
@@ -293,7 +295,8 @@ exit 0
 		t.Fatalf("disabled health status = %d, body = %s", disabledHealthResponse.Code, disabledHealthResponse.Body.String())
 	}
 	disabledHealth := decodeAgentConfigHealthResponse(t, disabledHealthResponse.Body.Bytes())
-	if disabledHealth.Status != agents.HealthDegraded {
+	if disabledHealth.Status != agents.HealthDegraded ||
+		disabledHealth.Metadata["readiness"] != "disabled" {
 		t.Fatalf("disabled health = %+v", disabledHealth)
 	}
 
@@ -597,7 +600,9 @@ exit 2
 	}
 	health := decodeAgentConfigHealthResponse(t, healthResponse.Body.Bytes())
 	if health.Status != agents.HealthAvailable ||
-		health.Metadata["version"] != "codex app-server ok" {
+		health.Metadata["version"] != "codex app-server ok" ||
+		health.Metadata["readiness"] != "ready" ||
+		health.Metadata["supports_sessions"] != true {
 		t.Fatalf("health = %+v", health)
 	}
 }
@@ -2928,6 +2933,37 @@ func TestFindingDecisionEndpointRequiresDismissalReason(t *testing.T) {
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("dismiss status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestFindingDecisionEndpointAcceptsTrustDecisionStates(t *testing.T) {
+	router, queries := testRouterWithQueries(t)
+	createHTTPAPIFindingFixture(t, queries)
+
+	for _, decision := range []string{"suppressed", "not-actionable", "duplicate", "stale"} {
+		request := newAuthenticatedJSONRequest(t, http.MethodPatch, "/api/findings/finding_budget/decision", map[string]any{
+			"decision": decision,
+			"reason":   "dogfood trust outcome",
+		})
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, body = %s", decision, response.Code, response.Body.String())
+		}
+	}
+
+	detailRequest := httptest.NewRequest(http.MethodGet, "/api/findings/finding_budget", nil)
+	detailRequest.Header.Set("X-Cocode-Token", "test-token")
+	detailResponse := httptest.NewRecorder()
+	router.ServeHTTP(detailResponse, detailRequest)
+	if detailResponse.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, body = %s", detailResponse.Code, detailResponse.Body.String())
+	}
+	detail := decodeFindingDetailResponse(t, detailResponse.Body.Bytes())
+	if detail.Finding.DecisionStatus != "stale" ||
+		detail.Finding.TrustState != "human_stale" ||
+		len(detail.Decisions) != 4 {
+		t.Fatalf("detail = %+v", detail)
 	}
 }
 

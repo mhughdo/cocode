@@ -12,6 +12,7 @@ import (
 	"github.com/hughdo/cocode/services/cocoded/internal/agentoutput"
 	"github.com/hughdo/cocode/services/cocoded/internal/agentrun"
 	"github.com/hughdo/cocode/services/cocoded/internal/agents"
+	"github.com/hughdo/cocode/services/cocoded/internal/chat"
 	"github.com/hughdo/cocode/services/cocoded/internal/contextbundle"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
 	"github.com/hughdo/cocode/services/cocoded/internal/eventlog"
@@ -39,6 +40,7 @@ type AskQuestionResult struct {
 	AssistantMessage dbgen.FindingThreadMessage
 	AgentRun         dbgen.AgentRun
 	ContextBundle    contextbundle.Bundle
+	ChatTurnID       string
 }
 
 type runtimeSettings struct {
@@ -96,10 +98,217 @@ func (s Service) AskQuestion(ctx context.Context, params AskQuestionParams) (Ask
 		return AskQuestionResult{}, err
 	}
 
+	if s.CentralChat != nil {
+		return s.answerWithCentralChat(ctx, view, userMessage, config, question, scope, userRefs)
+	}
+
 	if agents.AdapterKind(config.AdapterKind) == agents.AdapterLocalVerifier {
 		return s.answerWithLocalVerifier(ctx, view, userMessage, config)
 	}
 	return s.answerWithCLI(ctx, view, userMessage, config, question, params.ContextPolicy, scope)
+}
+
+func (s Service) answerWithCentralChat(ctx context.Context, view ThreadView, userMessage dbgen.FindingThreadMessage, config dbgen.AgentConfig, question string, scope contextbundle.Scope, refs json.RawMessage) (AskQuestionResult, error) {
+	if agents.AdapterKind(config.AdapterKind) == agents.AdapterLocalVerifier {
+		return s.answerWithLocalVerifier(ctx, view, userMessage, config)
+	}
+
+	ask := chat.AskParams{
+		ReviewSessionID:       view.Finding.ReviewSessionID,
+		Body:                  centralFollowupQuestion(view.Finding, question, scope),
+		Audience:              chat.AudienceOrchestrator,
+		ContextRefs:           centralFollowupContextRefs(view.Finding, scope, refs),
+		IncludeEvidence:       true,
+		IncludeRecentMessages: true,
+	}
+	ask.Audience = chat.AudienceSelected
+	ask.ResponderAgentConfigID = config.ID
+	result, err := s.CentralChat.Ask(ctx, ask)
+	if err != nil {
+		return AskQuestionResult{}, err
+	}
+	assistant, ok := centralAssistantMessageForTurn(result.Messages, result.Turn.UserMessageID)
+	if !ok {
+		return AskQuestionResult{}, fmt.Errorf("%w: centralized chat produced no answer", ErrAgentRunFailed)
+	}
+	evidenceRefs := centralMessageEvidenceRefs(assistant.Metadata)
+	if len(strings.TrimSpace(string(evidenceRefs))) == 0 {
+		evidenceRefs = refs
+	}
+	assistantMessage, err := s.AppendMessage(ctx, AppendMessageParams{
+		ThreadID:         view.Thread.ID,
+		Role:             MessageRoleAssistant,
+		AgentConfigID:    assistant.AgentConfigID,
+		Content:          assistant.Body,
+		EvidenceRefsJSON: evidenceRefs,
+		ArtifactID:       assistant.ArtifactID,
+	})
+	if err != nil {
+		return AskQuestionResult{}, err
+	}
+	reloaded, err := s.LoadThread(ctx, view.Thread.ID)
+	if err != nil {
+		return AskQuestionResult{}, err
+	}
+	return AskQuestionResult{
+		View:             reloaded,
+		UserMessage:      userMessage,
+		AssistantMessage: assistantMessage,
+		AgentRun:         centralAgentRun(ctx, s.Queries, result.AgentRunIDs),
+		ContextBundle:    centralContextBundle(ctx, s.Queries, assistant.ContextBundleID),
+		ChatTurnID:       result.Turn.ID,
+	}, nil
+}
+
+func centralFollowupQuestion(finding dbgen.Finding, question string, scope contextbundle.Scope) string {
+	var builder strings.Builder
+	if scope == contextbundle.ScopeEvidenceMap {
+		builder.WriteString("Answer this evidence-map follow-up for the selected finding.\n\n")
+	} else {
+		builder.WriteString("Answer this finding follow-up for the selected finding.\n\n")
+	}
+	builder.WriteString("Finding: ")
+	builder.WriteString(strings.TrimSpace(finding.CanonicalClaim))
+	if location := centralFindingLocation(finding); location != "" {
+		builder.WriteString("\nLocation: ")
+		builder.WriteString(location)
+	}
+	builder.WriteString("\n\nQuestion:\n")
+	builder.WriteString(strings.TrimSpace(question))
+	return builder.String()
+}
+
+func centralFollowupContextRefs(finding dbgen.Finding, scope contextbundle.Scope, refs json.RawMessage) json.RawMessage {
+	items := []map[string]any{{
+		"ref_type": "finding",
+		"ref_id":   finding.ID,
+		"label":    fallbackFollowupLabel(finding.CanonicalClaim, "Selected finding"),
+	}}
+	if path := strings.TrimSpace(nullableSQLStringValue(finding.PrimaryPath)); path != "" {
+		items = append(items, map[string]any{
+			"ref_type": "file",
+			"ref_id":   path,
+			"label":    centralFindingLocation(finding),
+		})
+	}
+	if scope == contextbundle.ScopeEvidenceMap {
+		items = append(items, map[string]any{
+			"ref_type": "evidence_map",
+			"ref_id":   finding.ID,
+			"label":    "Selected evidence map",
+			"metadata": map[string]any{
+				"graph_refs": json.RawMessage(normalizeRawJSON(refs, "[]")),
+			},
+		})
+	}
+	encoded, err := json.Marshal(items)
+	if err != nil {
+		return json.RawMessage("[]")
+	}
+	return encoded
+}
+
+func centralAssistantMessageForTurn(messages []chat.Message, userMessageID string) (chat.Message, bool) {
+	afterUser := false
+	var candidate chat.Message
+	for _, message := range messages {
+		if message.ID == userMessageID {
+			afterUser = true
+			continue
+		}
+		if !afterUser || message.AuthorType == chat.AuthorUser || message.AuthorType == chat.AuthorSystem {
+			continue
+		}
+		if strings.TrimSpace(message.Body) == "" {
+			continue
+		}
+		candidate = message
+	}
+	return candidate, strings.TrimSpace(candidate.ID) != ""
+}
+
+func centralMessageEvidenceRefs(metadata json.RawMessage) json.RawMessage {
+	var values map[string]json.RawMessage
+	if err := json.Unmarshal(metadata, &values); err != nil {
+		return json.RawMessage("[]")
+	}
+	raw, ok := values["evidence_refs"]
+	if !ok {
+		return json.RawMessage("[]")
+	}
+	refs, err := normalizeEvidenceRefs(raw)
+	if err != nil {
+		return json.RawMessage("[]")
+	}
+	return refs
+}
+
+func centralAgentRun(ctx context.Context, queries *dbgen.Queries, ids []string) dbgen.AgentRun {
+	if queries == nil {
+		return dbgen.AgentRun{}
+	}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		run, err := queries.GetAgentRun(ctx, id)
+		if err == nil {
+			return run
+		}
+	}
+	return dbgen.AgentRun{}
+}
+
+func centralContextBundle(ctx context.Context, queries *dbgen.Queries, id string) contextbundle.Bundle {
+	if queries == nil || strings.TrimSpace(id) == "" {
+		return contextbundle.Bundle{}
+	}
+	row, err := queries.GetContextBundle(ctx, strings.TrimSpace(id))
+	if err != nil {
+		return contextbundle.Bundle{}
+	}
+	return contextbundle.Bundle{
+		ID:              row.ID,
+		ReviewSessionID: row.ReviewSessionID,
+		AgentConfigID:   nullableSQLStringValue(row.AgentConfigID),
+		Scope:           contextbundle.Scope(row.Scope),
+		TokenEstimate:   row.TokenEstimate,
+		ItemCount:       row.ItemCount,
+		ArtifactID:      nullableSQLStringValue(row.ArtifactID),
+		Policy:          json.RawMessage(row.PolicyJson),
+		CreatedAt:       row.CreatedAt,
+	}
+}
+
+func centralFindingLocation(finding dbgen.Finding) string {
+	path := strings.TrimSpace(nullableSQLStringValue(finding.PrimaryPath))
+	if path == "" {
+		return ""
+	}
+	if finding.PrimaryStartLine.Valid {
+		if finding.PrimaryEndLine.Valid && finding.PrimaryEndLine.Int64 > finding.PrimaryStartLine.Int64 {
+			return fmt.Sprintf("%s:%d-%d", path, finding.PrimaryStartLine.Int64, finding.PrimaryEndLine.Int64)
+		}
+		return fmt.Sprintf("%s:%d", path, finding.PrimaryStartLine.Int64)
+	}
+	return path
+}
+
+func fallbackFollowupLabel(value string, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func normalizeRawJSON(raw json.RawMessage, fallback string) string {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || !json.Valid([]byte(trimmed)) {
+		return fallback
+	}
+	return trimmed
 }
 
 func (s Service) answerWithCLI(ctx context.Context, view ThreadView, userMessage dbgen.FindingThreadMessage, config dbgen.AgentConfig, question string, policy json.RawMessage, scope contextbundle.Scope) (AskQuestionResult, error) {

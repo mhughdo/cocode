@@ -14,6 +14,7 @@ import (
 
 	"github.com/hughdo/cocode/services/cocoded/internal/agentrun"
 	"github.com/hughdo/cocode/services/cocoded/internal/artifact"
+	"github.com/hughdo/cocode/services/cocoded/internal/chat"
 	"github.com/hughdo/cocode/services/cocoded/internal/contextbundle"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
 	"github.com/hughdo/cocode/services/cocoded/internal/eventlog"
@@ -45,6 +46,7 @@ type Service struct {
 	ContextBuilder *contextbundle.Service
 	Artifacts      *artifact.Store
 	AgentManager   *agentrun.Manager
+	CentralChat    *chat.Service
 	Events         EventLog
 	Now            func() time.Time
 	NewID          func(prefix string) string

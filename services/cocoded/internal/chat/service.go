@@ -2172,6 +2172,9 @@ func (s Service) answerFromRun(ctx context.Context, run dbgen.AgentRun) agentout
 
 func agentAnswerMetadata(answer agentoutput.Answer) json.RawMessage {
 	metadata := map[string]any{"answer_source": "agent"}
+	if refs := normalizedAgentAnswerRefs(answer.EvidenceRefs); len(refs) > 0 {
+		metadata["evidence_refs"] = refs
+	}
 	if reasoning := strings.TrimSpace(answer.ReasoningSummary); reasoning != "" {
 		metadata["reasoning_summary"] = truncateEventPreview(reasoning)
 		metadata["reasoning_disclaimer"] = "Provider-returned reasoning or thinking summary, not private hidden chain-of-thought."
@@ -2210,6 +2213,9 @@ func agentSynthesisRunMetadata(answer agentoutput.Answer, answers []Message, fai
 	if len(failures) > 0 {
 		metadata["failures"] = failures
 	}
+	if refs := normalizedAgentAnswerRefs(answer.EvidenceRefs); len(refs) > 0 {
+		metadata["evidence_refs"] = refs
+	}
 	if reasoning := strings.TrimSpace(answer.ReasoningSummary); reasoning != "" {
 		metadata["reasoning_summary"] = truncateEventPreview(reasoning)
 		metadata["reasoning_disclaimer"] = "Provider-returned reasoning or thinking summary, not private hidden chain-of-thought."
@@ -2219,6 +2225,18 @@ func agentSynthesisRunMetadata(answer agentoutput.Answer, answers []Message, fai
 		return json.RawMessage(`{"answer_source":"agent_synthesis"}`)
 	}
 	return encoded
+}
+
+func normalizedAgentAnswerRefs(raw json.RawMessage) []any {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "[]" || !json.Valid([]byte(trimmed)) {
+		return nil
+	}
+	var refs []any
+	if err := json.Unmarshal([]byte(trimmed), &refs); err != nil || len(refs) == 0 {
+		return nil
+	}
+	return refs
 }
 
 func messageIDs(messages []Message) []string {

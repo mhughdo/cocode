@@ -2519,6 +2519,7 @@ printf '{"answer":"The scoped evidence still supports the auth finding.","eviden
 		!strings.Contains(answer.AssistantMessage.Content, "supports the auth finding") ||
 		string(answer.AssistantMessage.EvidenceRefs) == "[]" ||
 		answer.AssistantMessage.ArtifactID == "" ||
+		answer.ChatTurnID == "" ||
 		answer.AgentRunID == "" ||
 		answer.ContextBundleID == "" {
 		t.Fatalf("answer = %+v", answer)
@@ -2530,7 +2531,7 @@ printf '{"answer":"The scoped evidence still supports the auth finding.","eviden
 	foundRun := false
 	for _, run := range runs {
 		if run.ID == answer.AgentRunID &&
-			run.Role == "follow_up" &&
+			run.Role == "chat" &&
 			run.Status == "succeeded" &&
 			run.ContextBundleID.Valid &&
 			run.StdoutArtifactID.Valid {
@@ -2540,6 +2541,26 @@ printf '{"answer":"The scoped evidence still supports the auth finding.","eviden
 	}
 	if !foundRun {
 		t.Fatalf("agent runs = %+v, want follow-up run %s", runs, answer.AgentRunID)
+	}
+	chatRequest := httptest.NewRequest(http.MethodGet, "/api/review-sessions/review_session_findings/chat-thread", nil)
+	chatRequest.Header.Set("X-Cocode-Token", "test-token")
+	chatResponse := httptest.NewRecorder()
+	router.ServeHTTP(chatResponse, chatRequest)
+	if chatResponse.Code != http.StatusOK {
+		t.Fatalf("chat thread status = %d, body = %s", chatResponse.Code, chatResponse.Body.String())
+	}
+	chatThread := decodeChatThreadViewResponse(t, chatResponse.Body.Bytes())
+	foundCentralQuestion := false
+	for _, message := range chatThread.Messages {
+		if message.AuthorType == "user" &&
+			strings.Contains(message.Body, "Can you re-check the guard evidence?") &&
+			strings.Contains(string(message.Metadata), "finding_auth") {
+			foundCentralQuestion = true
+			break
+		}
+	}
+	if !foundCentralQuestion {
+		t.Fatalf("central chat thread does not contain finding-scoped question: %+v", chatThread.Messages)
 	}
 
 	reloadRequest := httptest.NewRequest(http.MethodGet, "/api/findings/finding_auth/thread", nil)
@@ -2603,6 +2624,7 @@ printf '{"answer":"The graph path still shows the missing guard edge.","evidence
 		!strings.Contains(string(answer.UserMessage.EvidenceRefs), graph.Nodes[0].ID) ||
 		answer.AssistantMessage.AgentConfigID != "agent_config_graph_verifier" ||
 		!strings.Contains(answer.AssistantMessage.Content, "missing guard edge") ||
+		answer.ChatTurnID == "" ||
 		answer.AgentRunID == "" ||
 		answer.ContextBundleID == "" {
 		t.Fatalf("answer = %+v", answer)
@@ -2611,7 +2633,7 @@ printf '{"answer":"The graph path still shows the missing guard edge.","evidence
 	if err != nil {
 		t.Fatalf("GetContextBundle() error = %v", err)
 	}
-	if bundle.Scope != string(contextbundle.ScopeEvidenceMap) {
+	if bundle.Scope != string(contextbundle.ScopeReview) {
 		t.Fatalf("bundle scope = %q", bundle.Scope)
 	}
 	runs, err := queries.ListAgentRunsBySession(context.Background(), "review_session_findings")
@@ -2620,13 +2642,35 @@ printf '{"answer":"The graph path still shows the missing guard edge.","evidence
 	}
 	foundRun := false
 	for _, run := range runs {
-		if run.ID == answer.AgentRunID && run.Role == "verifier" && run.ContextBundleID.Valid && run.ContextBundleID.String == answer.ContextBundleID {
+		if run.ID == answer.AgentRunID && run.Role == "chat" && run.ContextBundleID.Valid && run.ContextBundleID.String == answer.ContextBundleID {
 			foundRun = true
 			break
 		}
 	}
 	if !foundRun {
 		t.Fatalf("agent runs = %+v, want verifier run %s", runs, answer.AgentRunID)
+	}
+	chatRequest := httptest.NewRequest(http.MethodGet, "/api/review-sessions/review_session_findings/chat-thread", nil)
+	chatRequest.Header.Set("X-Cocode-Token", "test-token")
+	chatResponse := httptest.NewRecorder()
+	router.ServeHTTP(chatResponse, chatRequest)
+	if chatResponse.Code != http.StatusOK {
+		t.Fatalf("chat thread status = %d, body = %s", chatResponse.Code, chatResponse.Body.String())
+	}
+	chatThread := decodeChatThreadViewResponse(t, chatResponse.Body.Bytes())
+	foundEvidenceMapRef := false
+	for _, message := range chatThread.Messages {
+		metadata := string(message.Metadata)
+		if message.AuthorType == "user" &&
+			strings.Contains(message.Body, "Does this graph path prove the missing guard?") &&
+			strings.Contains(metadata, "evidence_map") &&
+			strings.Contains(metadata, graph.Nodes[0].ID) {
+			foundEvidenceMapRef = true
+			break
+		}
+	}
+	if !foundEvidenceMapRef {
+		t.Fatalf("central chat thread does not contain evidence-map refs: %+v", chatThread.Messages)
 	}
 }
 
@@ -4678,8 +4722,10 @@ type chatTurnEnvelopeTestResponse struct {
 }
 
 type chatMessageTestResponse struct {
-	AuthorType string `json:"author_type"`
-	Body       string `json:"body"`
+	ID         string          `json:"id"`
+	AuthorType string          `json:"author_type"`
+	Body       string          `json:"body"`
+	Metadata   json.RawMessage `json:"metadata"`
 }
 
 func decodeChatThreadViewResponse(t *testing.T, content []byte) chatThreadViewTestResponse {

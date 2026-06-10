@@ -840,6 +840,7 @@ export interface AskFindingQuestionResponse {
   assistant_message: FindingThreadMessage;
   agent_run_id?: string;
   context_bundle_id?: string;
+  chat_turn_id?: string;
 }
 
 export interface FindingQuickActionRequest {

@@ -57,6 +57,7 @@ type AskFindingQuestionResponse struct {
 	AssistantMessage FindingThreadMessageResponse `json:"assistant_message"`
 	AgentRunID       string                       `json:"agent_run_id,omitempty"`
 	ContextBundleID  string                       `json:"context_bundle_id,omitempty"`
+	ChatTurnID       string                       `json:"chat_turn_id,omitempty"`
 }
 
 type FindingQuickActionResponse struct {
@@ -166,6 +167,7 @@ func askFindingQuestionHandler(services routerServices) gin.HandlerFunc {
 			AssistantMessage: assistantMessage,
 			AgentRunID:       result.AgentRun.ID,
 			ContextBundleID:  result.ContextBundle.ID,
+			ChatTurnID:       result.ChatTurnID,
 		})
 	}
 }
@@ -214,6 +216,7 @@ func askEvidenceMapQuestionHandler(services routerServices) gin.HandlerFunc {
 			AssistantMessage: assistantMessage,
 			AgentRunID:       result.AgentRun.ID,
 			ContextBundleID:  result.ContextBundle.ID,
+			ChatTurnID:       result.ChatTurnID,
 		})
 	}
 }

@@ -240,6 +240,19 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 	}
 	gitRepositories, gitRepositoriesErr := gitrepo.New(database)
 	githubAuth, githubAuthErr := githubauth.New(database, githubauth.HTTPTokenValidator{BaseURL: config.GitHubAPIBaseURL})
+	chatService := &chat.Service{
+		Database:       database,
+		Queries:        queries,
+		ContextBuilder: contextBuilder,
+		Artifacts:      artifactStore,
+		AgentManager:   agentManager,
+		Events:         bus,
+	}
+	if reconciled, err := chatService.ReconcileInterruptedTurns(context.Background()); err != nil {
+		logger.Error("chat turn reconciliation failed", "error", err)
+	} else if reconciled > 0 {
+		logger.Warn("chat turn reconciliation completed", "interrupted_turns", reconciled)
+	}
 	services := routerServices{
 		database:          database,
 		queries:           queries,
@@ -259,16 +272,10 @@ func NewRouter(config app.Config, logger *slog.Logger, database *sql.DB) http.Ha
 			ContextBuilder: contextBuilder,
 			Artifacts:      artifactStore,
 			AgentManager:   agentManager,
+			CentralChat:    chatService,
 			Events:         bus,
 		},
-		chat: &chat.Service{
-			Database:       database,
-			Queries:        queries,
-			ContextBuilder: contextBuilder,
-			Artifacts:      artifactStore,
-			AgentManager:   agentManager,
-			Events:         bus,
-		},
+		chat:               chatService,
 		reviewWorkflow:     reviewWorkflow,
 		reviewWorkflowErr:  workflowErr,
 		eventBus:           bus,

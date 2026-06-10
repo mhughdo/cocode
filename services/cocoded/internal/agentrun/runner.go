@@ -3,6 +3,7 @@ package agentrun
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -107,7 +108,9 @@ func (r Runner) Execute(ctx context.Context, params RunParams) (RunResult, error
 	}
 	permissions := params.Permissions.Evaluate(agents.RequiredPermissionsForRun(config, params.Capabilities))
 	visibility := agents.VisibilityForConfig(config, params.Capabilities)
-	metadataJSON, err := runMetadataJSON(mergeRunMetadata(params.Metadata, map[string]any{
+	persistCtx := context.WithoutCancel(ctx)
+	observabilityMetadata := runObservabilityMetadata(persistCtx, task, params.Metadata, r.Queries)
+	metadataJSON, err := runMetadataJSON(mergeRunMetadata(mergeRunMetadata(params.Metadata, observabilityMetadata), map[string]any{
 		"timeout_policy":    timeoutMetadata,
 		"permission_policy": permissions.Metadata(),
 		"agent_visibility":  visibility.Metadata(),
@@ -116,7 +119,6 @@ func (r Runner) Execute(ctx context.Context, params RunParams) (RunResult, error
 		return RunResult{}, err
 	}
 
-	persistCtx := context.WithoutCancel(ctx)
 	run, err := r.Queries.CreateAgentRun(persistCtx, dbgen.CreateAgentRunParams{
 		ID:              task.RunID,
 		ReviewSessionID: task.ReviewSessionID,
@@ -416,6 +418,28 @@ func runMetadataJSON(metadata map[string]any, task agents.AgentTask) (string, er
 		return "", fmt.Errorf("encode agent run metadata: %w", err)
 	}
 	return string(data), nil
+}
+
+func runObservabilityMetadata(ctx context.Context, task agents.AgentTask, metadata map[string]any, queries *dbgen.Queries) map[string]any {
+	result := map[string]any{}
+	if prompt := strings.TrimSpace(task.Prompt); prompt != "" {
+		sum := sha256.Sum256([]byte(prompt))
+		result["prompt_hash"] = hex.EncodeToString(sum[:])
+		result["prompt_bytes"] = len(prompt)
+	}
+	if queries != nil && strings.TrimSpace(task.ContextBundleID) != "" {
+		if bundle, err := queries.GetContextBundle(ctx, task.ContextBundleID); err == nil {
+			result["context_bundle_token_estimate"] = bundle.TokenEstimate
+			result["context_bundle_item_count"] = bundle.ItemCount
+			if scope := strings.TrimSpace(bundle.Scope); scope != "" {
+				result["context_bundle_scope"] = scope
+			}
+		}
+	}
+	if cacheStatus, ok := metadata["context_cache_status"].(string); ok && strings.TrimSpace(cacheStatus) != "" {
+		result["context_cache_status"] = cacheStatus
+	}
+	return result
 }
 
 func permissionDeniedError(result agents.PermissionResult) error {

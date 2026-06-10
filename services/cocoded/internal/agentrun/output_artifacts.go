@@ -95,6 +95,7 @@ func (r OutputRecorder) SaveRawOutputs(ctx context.Context, params OutputArtifac
 	if result.Stdout.ID == "" && result.Stderr.ID == "" {
 		return result, nil
 	}
+	run.MetadataJson = outputRunMetadataJSON(run.MetadataJson, captures)
 
 	updated, err := r.Queries.UpdateAgentRunStatus(ctx, dbgen.UpdateAgentRunStatusParams{
 		ID:                     run.ID,
@@ -115,6 +116,31 @@ func (r OutputRecorder) SaveRawOutputs(ctx context.Context, params OutputArtifac
 	}
 	result.Run = updated
 	return result, nil
+}
+
+func outputRunMetadataJSON(raw string, captures map[string]*streamCapture) string {
+	metadata := map[string]any{}
+	if strings.TrimSpace(raw) != "" {
+		_ = json.Unmarshal([]byte(raw), &metadata)
+	}
+	var outputBytes int64
+	for stream, capture := range captures {
+		if capture == nil {
+			continue
+		}
+		keyPrefix := stream + "_"
+		metadata[keyPrefix+"bytes"] = int64(capture.Content.Len())
+		metadata[keyPrefix+"truncated"] = capture.Truncated
+		outputBytes += int64(capture.Content.Len())
+	}
+	if outputBytes > 0 {
+		metadata["output_bytes"] = outputBytes
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		return raw
+	}
+	return string(encoded)
 }
 
 func (r OutputRecorder) saveStream(ctx context.Context, params OutputArtifactParams, capture streamCapture) (dbgen.Artifact, error) {

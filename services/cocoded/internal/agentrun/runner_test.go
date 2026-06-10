@@ -2,6 +2,7 @@ package agentrun
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hughdo/cocode/services/cocoded/internal/agents"
+	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
 	"github.com/hughdo/cocode/services/cocoded/internal/gitrepo"
 )
 
@@ -64,6 +66,54 @@ func TestRunnerPersistsSuccessfulCommandRun(t *testing.T) {
 		"phase":           "review",
 		"task_id":         task.ID,
 	})
+}
+
+func TestRunnerRecordsObservabilityMetadata(t *testing.T) {
+	t.Parallel()
+
+	env := setupOutputRecorder(t)
+	task := runnerTask(env, "agent_run_observability")
+	task.ContextBundleID = "bundle_observability"
+	command := writeFakeAgent(t, "#!/bin/sh\nprintf 'review ok\\n'\nprintf 'note\\n' >&2\n")
+	if _, err := env.Queries.CreateContextBundle(context.Background(), dbgen.CreateContextBundleParams{
+		ID:              task.ContextBundleID,
+		ReviewSessionID: task.ReviewSessionID,
+		AgentConfigID:   sql.NullString{String: task.AgentConfigID, Valid: true},
+		Scope:           "review",
+		TokenEstimate:   77,
+		ItemCount:       4,
+		PolicyJson:      "{}",
+		CreatedAt:       "2026-05-03T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("CreateContextBundle() error = %v", err)
+	}
+
+	result, err := runnerWithClock(env).Execute(context.Background(), RunParams{
+		WorkspaceID: env.WorkspaceID,
+		Config:      runnerConfig(command),
+		Task:        task,
+		Metadata: map[string]any{
+			"context_cache_status": "miss",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(result.Run.MetadataJson), &metadata); err != nil {
+		t.Fatalf("Unmarshal(metadata) error = %v", err)
+	}
+	if metadata["prompt_hash"] == "" ||
+		metadata["prompt_bytes"] == nil ||
+		metadata["context_bundle_token_estimate"] != float64(77) ||
+		metadata["context_bundle_item_count"] != float64(4) ||
+		metadata["context_bundle_scope"] != "review" ||
+		metadata["context_cache_status"] != "miss" ||
+		metadata["output_bytes"] == nil ||
+		metadata["stdout_bytes"] == nil ||
+		metadata["stderr_bytes"] == nil {
+		t.Fatalf("observability metadata = %+v", metadata)
+	}
 }
 
 func TestRunnerStreamsCommandEventsBeforeRunCompletes(t *testing.T) {

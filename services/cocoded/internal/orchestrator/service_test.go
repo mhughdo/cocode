@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -914,6 +915,24 @@ func TestWorkflowUsesSelectedOrchestratorForDedupeCuration(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateReviewSessionAgent(orchestrator) error = %v", err)
 	}
+	writeWorkflowRepoFile(t, env.RepoPath, "internal/app/aggregatedposition/fetcher/kyberdata/kem_rewards.go", workflowLines(240, map[int]string{
+		203: "func pickTokenPrice(prices []*float64) float64 {",
+		207: "if prices[0] != nil && *prices[0] > 0 {",
+		208: "return (float64(*prices[0]) + float64(*prices[1])) / 2",
+		218: "for rewardAddress, amount := range rewards {",
+		234: "}",
+	}))
+	if _, err := env.Queries.CreateChangedFile(context.Background(), dbgen.CreateChangedFileParams{
+		ID:             "changed_kem_rewards",
+		SnapshotID:     session.SnapshotID,
+		Path:           "internal/app/aggregatedposition/fetcher/kyberdata/kem_rewards.go",
+		Status:         "modified",
+		Additions:      28,
+		LineRangesJson: `[[203,234]]`,
+		CreatedAt:      "2026-05-03T00:03:30Z",
+	}); err != nil {
+		t.Fatalf("CreateChangedFile(kem rewards) error = %v", err)
+	}
 	createWorkflowCandidate(t, env, session.ID, "candidate_nil_a", "pickTokenPrice dereferences prices[1] without a nil check, causing a runtime panic", "correctness", "high", 0.85, "internal/app/aggregatedposition/fetcher/kyberdata/kem_rewards.go", 207, 208, "fp_nil_a")
 	createWorkflowCandidate(t, env, session.ID, "candidate_nil_b", "Missing nil check for prices[1] in pickTokenPrice can panic when the second price is absent", "correctness", "high", 0.82, "internal/app/aggregatedposition/fetcher/kyberdata/kem_rewards.go", 203, 208, "fp_nil_b")
 	createWorkflowCandidate(t, env, session.ID, "candidate_order", "Reward amounts are returned in nondeterministic map iteration order", "correctness", "medium", 0.77, "internal/app/aggregatedposition/fetcher/kyberdata/kem_rewards.go", 218, 234, "fp_order")
@@ -1014,6 +1033,73 @@ func TestWorkflowUsesSelectedOrchestratorForDedupeCuration(t *testing.T) {
 	refined := eventPayloadByType(t, events, "FindingDedupeRefined")
 	if refined["refiner"] != "orchestrator" || refined["curated_findings"].(float64) != 2 {
 		t.Fatalf("refined event = %+v", refined)
+	}
+}
+
+func TestWorkflowDowngradesCuratedVerifiedWhenPrimaryLocationIsInvalid(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	createOrchestratorCLIConfig(t, env, "agent_config_dedupe_invalid_curator")
+	session := createWorkflowSession(t, env, "review_session_curated_invalid_anchor", StatusDraft)
+	if _, err := env.Queries.CreateReviewSessionAgent(context.Background(), dbgen.CreateReviewSessionAgentParams{
+		ID:                   "review_session_agent_invalid_curator",
+		ReviewSessionID:      session.ID,
+		AgentConfigID:        "agent_config_dedupe_invalid_curator",
+		Role:                 "orchestrator",
+		RunOrder:             0,
+		Enabled:              1,
+		SettingsOverrideJson: "{}",
+	}); err != nil {
+		t.Fatalf("CreateReviewSessionAgent(orchestrator) error = %v", err)
+	}
+	createWorkflowCandidate(t, env, session.ID, "candidate_anchor", "src/new.go changed line 3 should be reviewed", "correctness", "high", 0.86, "src/new.go", 3, 3, "fp_anchor")
+	env.Driver.stdout = `{
+		"clusters": [
+			{
+				"candidate_ids": ["candidate_anchor"],
+				"canonical_claim": "Curator points at a stale line for the same issue",
+				"category": "correctness",
+				"severity": "high",
+				"confidence": 0.9,
+				"verification_status": "verified",
+				"primary_location": {"path":"src/new.go","start_line":99,"end_line":99,"side":"RIGHT"},
+				"evidence_summary": "The curator should not be able to verify an out-of-range line.",
+				"counter_evidence_summary": "No direct contradiction was verified.",
+				"supporting_evidence": [
+					{"title":"Stale line","summary":"This evidence points outside the file and should not gate verification.","path":"src/new.go","start_line":99,"end_line":99,"confidence":0.9}
+				],
+				"dedupe_reason": "Single candidate with invalid curation anchor."
+			}
+		]
+	}`
+
+	if err := env.Service.deduplicateFindings(context.Background(), session); err != nil {
+		t.Fatalf("deduplicateFindings() error = %v", err)
+	}
+	findings, err := env.Queries.ListFindingsBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListFindingsBySession() error = %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings = %+v", findings)
+	}
+	finding := findings[0]
+	if finding.VerificationStatus != evidence.StatusLocallySupported ||
+		nullableTestValue(finding.PrimaryPath) != "src/new.go" ||
+		!finding.PrimaryStartLine.Valid ||
+		finding.PrimaryStartLine.Int64 != 3 {
+		t.Fatalf("finding = %+v", finding)
+	}
+	events, err := env.Events.ListByReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListByReviewSession() error = %v", err)
+	}
+	merged := eventPayloadByType(t, events, "FindingMerged")
+	if merged["curated_primary_rejected"] != true ||
+		merged["curated_status_downgraded"] != true ||
+		merged["primary_anchor_source"] != "representative_fallback" {
+		t.Fatalf("merged event = %+v", merged)
 	}
 }
 
@@ -2090,6 +2176,31 @@ func setupWorkflowEnv(t *testing.T) workflowEnv {
 		Service:   service,
 		RepoPath:  repoPath,
 	}
+}
+
+func writeWorkflowRepoFile(t *testing.T, repoPath string, relativePath string, contents string) {
+	t.Helper()
+
+	path := filepath.Join(repoPath, filepath.FromSlash(relativePath))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write %s: %v", relativePath, err)
+	}
+}
+
+func workflowLines(count int, overrides map[int]string) string {
+	lines := make([]string, count)
+	for i := range lines {
+		lineNo := i + 1
+		if value, ok := overrides[lineNo]; ok {
+			lines[i] = value
+			continue
+		}
+		lines[i] = fmt.Sprintf("// line %d", lineNo)
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
 
 func waitForWorkflowSessionStatus(t *testing.T, queries *dbgen.Queries, id string, status string) dbgen.ReviewSession {

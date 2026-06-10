@@ -86,8 +86,23 @@ type findingEvidenceResult struct {
 	missing                int
 }
 
+type ChangedCodeAnchorValidation struct {
+	Valid       bool
+	Reason      string
+	Summary     string
+	Path        string
+	StartLine   int64
+	EndLine     int64
+	WindowStart int64
+	WindowEnd   int64
+	Snippet     string
+	Truncated   bool
+	ChangedFile dbgen.ChangedFile
+}
+
 type changedFileIndex struct {
 	byPath map[string]dbgen.ChangedFile
+	files  []dbgen.ChangedFile
 }
 
 type ruleProfile struct {
@@ -210,37 +225,38 @@ func (s *Service) attachPrimaryLocationEvidence(ctx context.Context, repoRoot st
 	if finding.PrimaryEndLine.Valid && finding.PrimaryEndLine.Int64 >= startLine {
 		endLine = finding.PrimaryEndLine.Int64
 	}
-	snippet, windowStart, windowEnd, truncated, err := readSnippet(repoRoot, changedFile.Path, startLine, endLine, s.contextLines(), s.maxSnippetBytes())
-	if err != nil {
-		item, createErr := s.createMissingPrimaryEvidence(ctx, finding.ID, changedFile.Path, "read_failed", "Primary changed code could not be read: "+err.Error())
-		if createErr != nil {
-			return findingEvidenceResult{}, createErr
+	validation := ValidateChangedCodeAnchor(repoRoot, index.files, finding.PrimaryPath.String, startLine, endLine, s.contextLines(), s.maxSnippetBytes())
+	if !validation.Valid {
+		path := validation.Path
+		if path == "" {
+			path = changedFile.Path
 		}
-		return findingEvidenceResult{created: 1, missing: 1, evidenceSummary: item.Summary}, nil
+		item, err := s.createMissingPrimaryEvidence(ctx, finding.ID, path, validation.Reason, validation.Summary)
+		return findingEvidenceResult{created: 1, missing: 1, evidenceSummary: item.Summary}, err
 	}
-	title := fmt.Sprintf("Changed code at %s:%d", changedFile.Path, startLine)
-	if endLine != startLine {
-		title = fmt.Sprintf("Changed code at %s:%d-%d", changedFile.Path, startLine, endLine)
+	title := fmt.Sprintf("Changed code at %s:%d", validation.Path, validation.StartLine)
+	if validation.EndLine != validation.StartLine {
+		title = fmt.Sprintf("Changed code at %s:%d-%d", validation.Path, validation.StartLine, validation.EndLine)
 	}
-	summary := primaryEvidenceSummary(finding, changedFile.Path, startLine, endLine, snippet, truncated)
+	summary := primaryEvidenceSummary(finding, validation.Path, validation.StartLine, validation.EndLine, validation.Snippet, validation.Truncated)
 	item, err := s.createEvidenceItem(ctx, finding.ID, Item{
 		Kind:       KindSupporting,
 		Title:      title,
 		Summary:    summary,
-		Path:       changedFile.Path,
-		StartLine:  startLine,
-		EndLine:    endLine,
+		Path:       validation.Path,
+		StartLine:  validation.StartLine,
+		EndLine:    validation.EndLine,
 		Confidence: clampConfidence(finding.Confidence),
 		Metadata: mustMetadata(map[string]any{
 			"producer":        "local_verifier",
 			"source":          "primary_location",
-			"changed_file_id": changedFile.ID,
+			"changed_file_id": validation.ChangedFile.ID,
 			"line_window": map[string]any{
-				"start_line": windowStart,
-				"end_line":   windowEnd,
+				"start_line": validation.WindowStart,
+				"end_line":   validation.WindowEnd,
 			},
-			"code_snippet": snippet,
-			"truncated":    truncated,
+			"code_snippet": validation.Snippet,
+			"truncated":    validation.Truncated,
 		}),
 	})
 	if err != nil {
@@ -266,10 +282,18 @@ func firstChangedLineRange(raw string) (int64, int64, bool) {
 func (s *Service) createMissingPrimaryEvidence(ctx context.Context, findingID string, path string, reason string, summary string) (dbgen.EvidenceItem, error) {
 	title := "Primary changed code unavailable"
 	switch reason {
+	case "invalid_path":
+		title = "Location path is unsafe"
 	case "missing_line":
 		title = "Changed file needs a line anchor"
 	case "not_changed_file":
 		title = "Location is outside the reviewed diff"
+	case "line_not_changed":
+		title = "Location line is outside changed hunks"
+	case "line_ranges_missing":
+		title = "Changed file has no line ranges"
+	case "line_out_of_range":
+		title = "Location line is outside the source file"
 	case "unreadable_changed_file":
 		title = "Changed file cannot be previewed"
 	case "read_failed":
@@ -552,6 +576,12 @@ func mergeCuratedVerificationStatus(existing string, next string, directCounterE
 	if directCounterEvidence > 0 && next == StatusLikelyFalsePositive {
 		return next
 	}
+	if next == StatusNeedsHuman || next == StatusNotActionable {
+		return next
+	}
+	if existing == StatusVerified && next != StatusLocallySupported && next != StatusVerified {
+		return next
+	}
 	return existing
 }
 
@@ -709,12 +739,163 @@ func ReadSourceFile(repoRoot string, relativePath string, maxBytes int64) (strin
 	return builder.String(), line, truncated, nil
 }
 
+func ValidateChangedCodeAnchor(repoRoot string, files []dbgen.ChangedFile, relativePath string, startLine int64, endLine int64, contextLines int, maxBytes int64) ChangedCodeAnchorValidation {
+	cleanPath, ok := normalizeAnchorPath(relativePath)
+	if !ok || cleanPath == "." {
+		return invalidChangedCodeAnchor("invalid_path", relativePath, startLine, endLine, "The primary location path is not a safe repository-relative file path.")
+	}
+	if startLine <= 0 {
+		return invalidChangedCodeAnchor("missing_line", cleanPath, startLine, endLine, "The finding has a file path but no primary line number.")
+	}
+	if endLine < startLine {
+		endLine = startLine
+	}
+	changedFile, ok := changedFileForAnchor(files, cleanPath)
+	if !ok {
+		return invalidChangedCodeAnchor("not_changed_file", cleanPath, startLine, endLine, "The primary location does not map to this review snapshot's changed files.")
+	}
+	if changedFile.IsBinary != 0 || changedFile.IsExcluded != 0 {
+		return invalidChangedCodeAnchor("unreadable_changed_file", changedFile.Path, startLine, endLine, "The primary changed file is binary or excluded from review context.")
+	}
+	if !changedLineRangesHaveEntries(changedFile.LineRangesJson) {
+		return invalidChangedCodeAnchor("line_ranges_missing", changedFile.Path, startLine, endLine, "The changed file has no line ranges, so the cited location cannot be anchored to reviewed code.")
+	}
+	if !ChangedLineRangesIntersect(changedFile.LineRangesJson, startLine, endLine) {
+		return invalidChangedCodeAnchor("line_not_changed", changedFile.Path, startLine, endLine, "The primary location is in a changed file but does not intersect this review snapshot's changed hunks.")
+	}
+	lineCount, err := sourceLineCountAtLeast(repoRoot, changedFile.Path, endLine)
+	if err != nil {
+		return invalidChangedCodeAnchor("read_failed", changedFile.Path, startLine, endLine, "Primary changed code could not be read: "+err.Error())
+	}
+	if lineCount < endLine {
+		return invalidChangedCodeAnchor("line_out_of_range", changedFile.Path, startLine, endLine, fmt.Sprintf("The primary location points to line %d, but %s currently has only %d line(s).", endLine, changedFile.Path, lineCount))
+	}
+	snippet, windowStart, windowEnd, truncated, err := readSnippet(repoRoot, changedFile.Path, startLine, endLine, contextLines, maxBytes)
+	if err != nil {
+		return invalidChangedCodeAnchor("read_failed", changedFile.Path, startLine, endLine, "Primary changed code could not be read: "+err.Error())
+	}
+	return ChangedCodeAnchorValidation{
+		Valid:       true,
+		Path:        changedFile.Path,
+		StartLine:   startLine,
+		EndLine:     endLine,
+		WindowStart: windowStart,
+		WindowEnd:   windowEnd,
+		Snippet:     snippet,
+		Truncated:   truncated,
+		ChangedFile: changedFile,
+	}
+}
+
+func ChangedLineRangesIntersect(raw string, startLine int64, endLine int64) bool {
+	if startLine <= 0 {
+		return false
+	}
+	if endLine < startLine {
+		endLine = startLine
+	}
+	for _, item := range changedLineRanges(raw) {
+		if item[0] <= endLine && startLine <= item[1] {
+			return true
+		}
+	}
+	return false
+}
+
 func newChangedFileIndex(files []dbgen.ChangedFile) changedFileIndex {
-	index := changedFileIndex{byPath: map[string]dbgen.ChangedFile{}}
+	index := changedFileIndex{byPath: map[string]dbgen.ChangedFile{}, files: files}
 	for _, file := range files {
 		index.byPath[cleanPathKey(file.Path)] = file
 	}
 	return index
+}
+
+func invalidChangedCodeAnchor(reason string, path string, startLine int64, endLine int64, summary string) ChangedCodeAnchorValidation {
+	if endLine < startLine {
+		endLine = startLine
+	}
+	return ChangedCodeAnchorValidation{
+		Reason:    reason,
+		Summary:   summary,
+		Path:      strings.TrimSpace(filepath.ToSlash(path)),
+		StartLine: startLine,
+		EndLine:   endLine,
+	}
+}
+
+func normalizeAnchorPath(path string) (string, bool) {
+	clean, ok := cleanRelativePath(path)
+	if !ok || clean == "." {
+		return clean, ok
+	}
+	if strings.HasPrefix(clean, "a/") || strings.HasPrefix(clean, "b/") {
+		stripped := strings.TrimPrefix(strings.TrimPrefix(clean, "a/"), "b/")
+		if stripped != "" && stripped != "." {
+			return stripped, true
+		}
+	}
+	return clean, true
+}
+
+func changedFileForAnchor(files []dbgen.ChangedFile, cleanPath string) (dbgen.ChangedFile, bool) {
+	for _, file := range files {
+		candidate, ok := normalizeAnchorPath(file.Path)
+		if ok && candidate == cleanPath {
+			return file, true
+		}
+	}
+	return dbgen.ChangedFile{}, false
+}
+
+func changedLineRangesHaveEntries(raw string) bool {
+	return len(changedLineRanges(raw)) > 0
+}
+
+func changedLineRanges(raw string) [][2]int64 {
+	var ranges [][]int64
+	if err := json.Unmarshal([]byte(raw), &ranges); err != nil {
+		return nil
+	}
+	out := make([][2]int64, 0, len(ranges))
+	for _, item := range ranges {
+		if len(item) != 2 || item[0] < 1 || item[1] < item[0] {
+			continue
+		}
+		out = append(out, [2]int64{item[0], item[1]})
+	}
+	return out
+}
+
+func sourceLineCountAtLeast(repoRoot string, relativePath string, targetLine int64) (int64, error) {
+	path, cleanPath, err := safeRepoFilePath(repoRoot, relativePath)
+	if err != nil {
+		return 0, err
+	}
+	stat, err := os.Stat(path)
+	if err != nil {
+		return 0, fmt.Errorf("inspect %s: %w", cleanPath, err)
+	}
+	if stat.IsDir() {
+		return 0, fmt.Errorf("%s is a directory", cleanPath)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, fmt.Errorf("open %s: %w", cleanPath, err)
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	var line int64
+	for scanner.Scan() {
+		line++
+		if targetLine > 0 && line >= targetLine {
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return line, fmt.Errorf("read %s: %w", cleanPath, err)
+	}
+	return line, nil
 }
 
 func classifyRuleProfile(finding dbgen.Finding) ruleProfile {
@@ -1040,7 +1221,7 @@ func nullablePositiveInt64(value int64) sql.NullInt64 {
 }
 
 func cleanPathKey(path string) string {
-	clean, ok := cleanRelativePath(path)
+	clean, ok := normalizeAnchorPath(path)
 	if !ok {
 		return strings.TrimSpace(filepath.ToSlash(path))
 	}

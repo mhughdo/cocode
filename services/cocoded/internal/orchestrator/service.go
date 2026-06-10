@@ -1413,12 +1413,19 @@ func (s *Service) deduplicateFindings(ctx context.Context, session dbgen.ReviewS
 	if err != nil {
 		return fmt.Errorf("read repository for findings: %w", err)
 	}
+	changedFiles, err := s.Queries.ListChangedFilesBySnapshot(ctx, session.SnapshotID)
+	if err != nil {
+		return fmt.Errorf("read changed files for findings: %w", err)
+	}
 	for _, cluster := range clusters {
 		representative := findingengine.Representative(cluster)
 		if representative.ID == "" || !representative.Fingerprint.Valid {
 			continue
 		}
 		curated, hasCuration := curation.Curated[clusterKey(cluster)]
+		representativePrimaryPath := representative.PrimaryPath
+		representativePrimaryStartLine := representative.PrimaryStartLine
+		representativePrimaryEndLine := representative.PrimaryEndLine
 		canonicalClaim := representative.Claim
 		category := representative.Category
 		severity := representative.Severity
@@ -1431,6 +1438,8 @@ func (s *Service) deduplicateFindings(ctx context.Context, session dbgen.ReviewS
 		counterEvidenceSummary := sql.NullString{}
 		suggestedFix := representative.SuggestedFix
 		draftComment := representative.DraftComment
+		curatedLocationOverride := false
+		curatorRequestedStatus := ""
 		if hasCuration {
 			if strings.TrimSpace(curated.CanonicalClaim) != "" {
 				canonicalClaim = strings.TrimSpace(curated.CanonicalClaim)
@@ -1446,15 +1455,19 @@ func (s *Service) deduplicateFindings(ctx context.Context, session dbgen.ReviewS
 			}
 			if strings.TrimSpace(curated.VerificationStatus) != "" {
 				verificationStatus = curated.VerificationStatus
+				curatorRequestedStatus = curated.VerificationStatus
 			}
 			if strings.TrimSpace(curated.PrimaryPath) != "" {
 				primaryPath = nullableString(curated.PrimaryPath)
+				curatedLocationOverride = true
 			}
 			if curated.PrimaryStartLine > 0 {
 				primaryStartLine = nullablePositiveInt64(curated.PrimaryStartLine)
+				curatedLocationOverride = true
 			}
 			if curated.PrimaryEndLine > 0 {
 				primaryEndLine = nullablePositiveInt64(curated.PrimaryEndLine)
+				curatedLocationOverride = true
 			}
 			if strings.TrimSpace(curated.EvidenceSummary) != "" {
 				evidenceSummary = nullableString(curated.EvidenceSummary)
@@ -1478,6 +1491,41 @@ func (s *Service) deduplicateFindings(ctx context.Context, session dbgen.ReviewS
 			evidenceSummary,
 			suggestedFix,
 		)
+		anchorValidation := validatePrimaryChangedCodeAnchor(repository.LocalPath, changedFiles, primaryPath, primaryStartLine, primaryEndLine)
+		anchorSource := "representative"
+		curatedPrimaryRejected := false
+		curatedStatusDowngraded := false
+		if hasCuration {
+			anchorSource = "curator"
+		}
+		if hasCuration && curatedLocationOverride && !anchorValidation.Valid {
+			curatedPrimaryRejected = true
+			fallbackStartLine, fallbackEndLine := refinePrimaryLocationFromCode(
+				repository.LocalPath,
+				representativePrimaryPath,
+				representativePrimaryStartLine,
+				representativePrimaryEndLine,
+				representative.Claim,
+				findingengine.EvidenceSummary(representative),
+				representative.SuggestedFix,
+			)
+			fallbackValidation := validatePrimaryChangedCodeAnchor(repository.LocalPath, changedFiles, representativePrimaryPath, fallbackStartLine, fallbackEndLine)
+			if fallbackValidation.Valid {
+				primaryPath = representativePrimaryPath
+				primaryStartLine = fallbackStartLine
+				primaryEndLine = fallbackEndLine
+				anchorValidation = fallbackValidation
+				anchorSource = "representative_fallback"
+			}
+		}
+		if verificationStatus == evidence.StatusVerified && !anchorValidation.Valid {
+			verificationStatus = evidence.StatusNeedsHuman
+			curatedStatusDowngraded = true
+		}
+		if verificationStatus == evidence.StatusVerified && curatedPrimaryRejected && anchorValidation.Valid {
+			verificationStatus = evidence.StatusLocallySupported
+			curatedStatusDowngraded = true
+		}
 		now := s.now().Format(time.RFC3339Nano)
 		finding, err := s.Queries.CreateFinding(ctx, dbgen.CreateFindingParams{
 			ID:                     s.newID("finding_"),
@@ -1524,17 +1572,24 @@ func (s *Service) deduplicateFindings(ctx context.Context, session dbgen.ReviewS
 			ReviewSessionID: session.ID,
 			Type:            "FindingMerged",
 			Payload: map[string]any{
-				"phase":                   PhaseDeduplicate,
-				"finding_id":              finding.ID,
-				"fingerprint":             finding.Fingerprint,
-				"candidate_count":         len(cluster.Candidates),
-				"canonical_claim":         finding.CanonicalClaim,
-				"merged_from_count":       finding.MergedFromCount,
-				"curated":                 hasCuration,
-				"curation_refiner":        curation.Refiner,
-				"curator_agent_config_id": curation.AgentConfigID,
-				"curator_agent_run_id":    curation.AgentRunID,
-				"curated_evidence_items":  curatedEvidenceItems,
+				"phase":                     PhaseDeduplicate,
+				"finding_id":                finding.ID,
+				"fingerprint":               finding.Fingerprint,
+				"candidate_count":           len(cluster.Candidates),
+				"canonical_claim":           finding.CanonicalClaim,
+				"merged_from_count":         finding.MergedFromCount,
+				"curated":                   hasCuration,
+				"curation_refiner":          curation.Refiner,
+				"curator_agent_config_id":   curation.AgentConfigID,
+				"curator_agent_run_id":      curation.AgentRunID,
+				"curated_evidence_items":    curatedEvidenceItems,
+				"curator_requested_status":  curatorRequestedStatus,
+				"primary_anchor_source":     anchorSource,
+				"primary_anchor_valid":      anchorValidation.Valid,
+				"primary_anchor_reason":     anchorValidation.Reason,
+				"curated_location_override": curatedLocationOverride,
+				"curated_primary_rejected":  curatedPrimaryRejected,
+				"curated_status_downgraded": curatedStatusDowngraded,
 			},
 		}); err != nil {
 			return err
@@ -2797,6 +2852,28 @@ func nullableValue(value sql.NullString) string {
 		return ""
 	}
 	return value.String
+}
+
+func nullableInt64Value(value sql.NullInt64) int64 {
+	if !value.Valid {
+		return 0
+	}
+	return value.Int64
+}
+
+func validatePrimaryChangedCodeAnchor(repoRoot string, changedFiles []dbgen.ChangedFile, path sql.NullString, startLine sql.NullInt64, endLine sql.NullInt64) evidence.ChangedCodeAnchorValidation {
+	if !path.Valid || strings.TrimSpace(path.String) == "" {
+		return evidence.ChangedCodeAnchorValidation{
+			Reason:  "missing_location",
+			Summary: "The primary location is missing, so the finding cannot be deterministically anchored to changed code.",
+		}
+	}
+	start := nullableInt64Value(startLine)
+	end := nullableInt64Value(endLine)
+	if end < start {
+		end = start
+	}
+	return evidence.ValidateChangedCodeAnchor(repoRoot, changedFiles, path.String, start, end, 2, 16*1024)
 }
 
 func refinePrimaryLocationFromCode(repoRoot string, path sql.NullString, startLine sql.NullInt64, endLine sql.NullInt64, textParts ...any) (sql.NullInt64, sql.NullInt64) {

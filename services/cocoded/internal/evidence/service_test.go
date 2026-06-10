@@ -328,6 +328,130 @@ func TestReadSnippetClampsStaleLinePastEOF(t *testing.T) {
 	}
 }
 
+func TestValidateChangedCodeAnchorAcceptsDiffPrefixedPath(t *testing.T) {
+	t.Parallel()
+
+	env := setupEvidenceEnv(t)
+	validation := ValidateChangedCodeAnchor(env.Repository.LocalPath, []dbgen.ChangedFile{{
+		ID:             "changed_handler",
+		Path:           "src/handler.go",
+		LineRangesJson: `[[4,4]]`,
+	}}, "b/src/handler.go", 4, 4, 1, 4096)
+	if !validation.Valid {
+		t.Fatalf("validation = %+v", validation)
+	}
+	if validation.Path != "src/handler.go" || validation.StartLine != 4 || validation.EndLine != 4 ||
+		!strings.Contains(validation.Snippet, "RequireAdmin") {
+		t.Fatalf("validation = %+v", validation)
+	}
+}
+
+func TestVerifySessionAcceptsDiffPrefixedPrimaryPath(t *testing.T) {
+	t.Parallel()
+
+	env := setupEvidenceEnv(t)
+	createEvidenceFinding(t, env.Queries, dbgen.CreateFindingParams{
+		ID:                 "finding_diff_prefixed",
+		ReviewSessionID:    "session_1",
+		CanonicalClaim:     "Settings mutation lacks admin guard",
+		Category:           "security",
+		Severity:           "high",
+		Confidence:         0.92,
+		VerificationStatus: StatusUnverified,
+		DecisionStatus:     "undecided",
+		PrimaryPath:        nullableTestString("b/src/handler.go"),
+		PrimaryStartLine:   nullableTestInt64(4),
+		PrimaryEndLine:     nullableTestInt64(4),
+		Fingerprint:        "fp_diff_prefixed",
+		MergedFromCount:    1,
+		FirstSeenAt:        "2026-05-03T00:04:00Z",
+		UpdatedAt:          "2026-05-03T00:04:00Z",
+	})
+
+	summary, err := env.Service.VerifySession(context.Background(), env.Session, env.Repository)
+	if err != nil {
+		t.Fatalf("VerifySession() error = %v", err)
+	}
+	if summary.SupportingEvidence != 1 || summary.ByVerificationStatus[StatusLocallySupported] != 1 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	items, err := env.Queries.ListEvidenceItemsByFinding(context.Background(), "finding_diff_prefixed")
+	if err != nil {
+		t.Fatalf("ListEvidenceItemsByFinding() error = %v", err)
+	}
+	item := evidenceItemByKind(t, items, KindSupporting)
+	if nullableTestValue(item.Path) != "src/handler.go" {
+		t.Fatalf("supporting evidence = %+v", item)
+	}
+}
+
+func TestValidateChangedCodeAnchorRejectsLinesOutsideChangedHunks(t *testing.T) {
+	t.Parallel()
+
+	env := setupEvidenceEnv(t)
+	validation := ValidateChangedCodeAnchor(env.Repository.LocalPath, []dbgen.ChangedFile{{
+		ID:             "changed_handler",
+		Path:           "src/handler.go",
+		LineRangesJson: `[[4,4]]`,
+	}}, "src/handler.go", 3, 3, 1, 4096)
+	if validation.Valid || validation.Reason != "line_not_changed" {
+		t.Fatalf("validation = %+v", validation)
+	}
+}
+
+func TestValidateChangedCodeAnchorRejectsPastEOFWithoutClamping(t *testing.T) {
+	t.Parallel()
+
+	env := setupEvidenceEnv(t)
+	validation := ValidateChangedCodeAnchor(env.Repository.LocalPath, []dbgen.ChangedFile{{
+		ID:             "changed_handler",
+		Path:           "src/handler.go",
+		LineRangesJson: `[[99,99]]`,
+	}}, "src/handler.go", 99, 99, 1, 4096)
+	if validation.Valid || validation.Reason != "line_out_of_range" {
+		t.Fatalf("validation = %+v", validation)
+	}
+}
+
+func TestVerifySessionRejectsPrimaryLineOutsideChangedRange(t *testing.T) {
+	t.Parallel()
+
+	env := setupEvidenceEnv(t)
+	createEvidenceFinding(t, env.Queries, dbgen.CreateFindingParams{
+		ID:                 "finding_outside_hunk",
+		ReviewSessionID:    "session_1",
+		CanonicalClaim:     "Handler changed file has a missing admin guard",
+		Category:           "security",
+		Severity:           "high",
+		Confidence:         0.84,
+		VerificationStatus: StatusUnverified,
+		DecisionStatus:     "undecided",
+		PrimaryPath:        nullableTestString("src/handler.go"),
+		PrimaryStartLine:   nullableTestInt64(3),
+		PrimaryEndLine:     nullableTestInt64(3),
+		Fingerprint:        "fp_outside_hunk",
+		MergedFromCount:    1,
+		FirstSeenAt:        "2026-05-03T00:04:00Z",
+		UpdatedAt:          "2026-05-03T00:04:00Z",
+	})
+
+	summary, err := env.Service.VerifySession(context.Background(), env.Session, env.Repository)
+	if err != nil {
+		t.Fatalf("VerifySession() error = %v", err)
+	}
+	if summary.SupportingEvidence != 0 || summary.MissingEvidence != 1 || summary.ByVerificationStatus[StatusNeedsHuman] != 1 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	items, err := env.Queries.ListEvidenceItemsByFinding(context.Background(), "finding_outside_hunk")
+	if err != nil {
+		t.Fatalf("ListEvidenceItemsByFinding() error = %v", err)
+	}
+	item := evidenceItemByKind(t, items, KindMissing)
+	if !strings.Contains(item.MetadataJson, "line_not_changed") {
+		t.Fatalf("missing evidence = %+v", item)
+	}
+}
+
 func TestPrimaryEvidenceSummarySkipsBareBraceLine(t *testing.T) {
 	t.Parallel()
 

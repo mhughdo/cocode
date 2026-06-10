@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -895,15 +896,119 @@ func (s Service) answerWithAllAgents(ctx context.Context, session dbgen.ReviewSe
 }
 
 func (s Service) buildSharedChatContext(ctx context.Context, session dbgen.ReviewSession, configs []dbgen.AgentConfig) (contextbundle.BuildReviewContextResult, error) {
+	return s.buildOrReuseChatContext(ctx, session, sharedContextRecipientAgentConfigID(configs))
+}
+
+func (s Service) buildOrReuseChatContext(ctx context.Context, session dbgen.ReviewSession, agentConfigID string) (contextbundle.BuildReviewContextResult, error) {
+	if cached, ok := s.reusableChatContextBundle(ctx, session, agentConfigID); ok {
+		return cached, nil
+	}
 	if s.ContextBuilder == nil {
 		return contextbundle.BuildReviewContextResult{}, ErrServiceNotConfigured
 	}
 	return s.ContextBuilder.BuildReviewContext(ctx, contextbundle.BuildReviewContextParams{
 		ReviewSessionID: session.ID,
-		AgentConfigID:   sharedContextRecipientAgentConfigID(configs),
+		AgentConfigID:   strings.TrimSpace(agentConfigID),
 		PolicyOverride:  json.RawMessage(session.ContextPolicyJson),
 		Persist:         true,
 	})
+}
+
+func (s Service) reusableChatContextBundle(ctx context.Context, session dbgen.ReviewSession, agentConfigID string) (contextbundle.BuildReviewContextResult, bool) {
+	if s.Queries == nil || s.Artifacts == nil {
+		return contextbundle.BuildReviewContextResult{}, false
+	}
+	resolvedPolicy, policyJSON, err := resolvedChatContextPolicy(session)
+	if err != nil {
+		return contextbundle.BuildReviewContextResult{}, false
+	}
+	rows, err := s.Queries.ListContextBundlesBySession(ctx, session.ID)
+	if err != nil {
+		return contextbundle.BuildReviewContextResult{}, false
+	}
+	agentConfigID = strings.TrimSpace(agentConfigID)
+	for _, row := range rows {
+		if row.Scope != string(contextbundle.ScopeReview) ||
+			nullableStringValue(row.AgentConfigID) != agentConfigID ||
+			compactJSON(json.RawMessage(row.PolicyJson)) != policyJSON {
+			continue
+		}
+		itemRows, err := s.Queries.ListContextItemsByBundle(ctx, row.ID)
+		if err != nil {
+			continue
+		}
+		bundle, err := contextbundle.BundleFromRows(row, itemRows)
+		if err != nil || contextBundleSnapshotID(bundle) != session.SnapshotID {
+			continue
+		}
+		bundle = s.hydrateContextBundle(ctx, bundle)
+		result := contextbundle.BuildReviewContextResult{
+			Bundle:         bundle,
+			Persisted:      true,
+			ResolvedPolicy: resolvedPolicy,
+		}
+		if bundle.ArtifactID != "" {
+			if artifactRow, err := s.Queries.GetArtifact(ctx, bundle.ArtifactID); err == nil {
+				result.Artifact = artifactRow
+			}
+		}
+		return result, true
+	}
+	return contextbundle.BuildReviewContextResult{}, false
+}
+
+func resolvedChatContextPolicy(session dbgen.ReviewSession) (contextbundle.ReviewContextPolicy, string, error) {
+	policy, err := contextbundle.DecodeReviewContextPolicy(json.RawMessage(session.ContextPolicyJson))
+	if err != nil {
+		return contextbundle.ReviewContextPolicy{}, "", err
+	}
+	policy, err = contextbundle.ApplyReviewContextPolicy(policy, json.RawMessage(session.ContextPolicyJson))
+	if err != nil {
+		return contextbundle.ReviewContextPolicy{}, "", err
+	}
+	return policy, compactJSON(policy.JSON()), nil
+}
+
+func (s Service) hydrateContextBundle(ctx context.Context, bundle contextbundle.Bundle) contextbundle.Bundle {
+	if s.Artifacts == nil {
+		return bundle
+	}
+	for index := range bundle.Items {
+		artifactID := strings.TrimSpace(bundle.Items[index].ContentArtifactID)
+		if artifactID == "" {
+			continue
+		}
+		content, _, err := s.Artifacts.Read(ctx, artifactID)
+		if err == nil {
+			bundle.Items[index].Content = string(content)
+		}
+	}
+	return contextbundle.ApplyBundleTokenEstimates(bundle)
+}
+
+func contextBundleSnapshotID(bundle contextbundle.Bundle) string {
+	for _, item := range bundle.Items {
+		if item.Kind != contextbundle.ItemPromptMaterial {
+			continue
+		}
+		var metadata map[string]any
+		if err := json.Unmarshal(item.Metadata, &metadata); err == nil {
+			return stringValue(metadata["snapshot_id"])
+		}
+	}
+	return ""
+}
+
+func compactJSON(raw json.RawMessage) string {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return "{}"
+	}
+	var buffer bytes.Buffer
+	if err := json.Compact(&buffer, []byte(trimmed)); err != nil {
+		return trimmed
+	}
+	return buffer.String()
 }
 
 func sharedContextRecipientAgentConfigID(configs []dbgen.AgentConfig) string {
@@ -959,12 +1064,7 @@ func (s Service) answerWithSynthesisAgentConfig(ctx context.Context, session dbg
 		built = *sharedContext
 	} else {
 		var err error
-		built, err = s.ContextBuilder.BuildReviewContext(ctx, contextbundle.BuildReviewContextParams{
-			ReviewSessionID: session.ID,
-			AgentConfigID:   config.ID,
-			PolicyOverride:  json.RawMessage(session.ContextPolicyJson),
-			Persist:         true,
-		})
+		built, err = s.buildOrReuseChatContext(ctx, session, config.ID)
 		if err != nil {
 			return "", fmt.Errorf("build synthesis context: %w", err)
 		}
@@ -1077,12 +1177,7 @@ func (s Service) answerWithAgentConfigWithBundle(ctx context.Context, session db
 		built = *sharedContext
 	} else {
 		var err error
-		built, err = s.ContextBuilder.BuildReviewContext(ctx, contextbundle.BuildReviewContextParams{
-			ReviewSessionID: session.ID,
-			AgentConfigID:   config.ID,
-			PolicyOverride:  json.RawMessage(session.ContextPolicyJson),
-			Persist:         true,
-		})
+		built, err = s.buildOrReuseChatContext(ctx, session, config.ID)
 		if err != nil {
 			return "", fmt.Errorf("build chat context: %w", err)
 		}

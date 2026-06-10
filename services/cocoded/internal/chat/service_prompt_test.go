@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/hughdo/cocode/services/cocoded/internal/agents"
+	"github.com/hughdo/cocode/services/cocoded/internal/artifact"
+	"github.com/hughdo/cocode/services/cocoded/internal/contextbundle"
 	cocodedb "github.com/hughdo/cocode/services/cocoded/internal/db"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
 	"github.com/hughdo/cocode/services/cocoded/internal/reviewprompt"
@@ -285,6 +287,126 @@ func TestSharedContextRecipientPrefersExternalVisibility(t *testing.T) {
 	}
 	if got := sharedContextRecipientAgentConfigID(configs[:1]); got != "agent_config_local" {
 		t.Fatalf("sharedContextRecipientAgentConfigID(local) = %q, want local config", got)
+	}
+}
+
+func TestBuildOrReuseChatContextUsesPersistedBundle(t *testing.T) {
+	ctx := context.Background()
+	database, err := cocodedb.Open(ctx, cocodedb.MemoryDatabase)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = database.Close()
+	})
+	if err := cocodedb.Apply(ctx, database, cocodedb.Migrations); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	queries := dbgen.New(database)
+	createChatSessionFixture(t, queries, "review_session_cache")
+	session, err := queries.GetReviewSession(ctx, "review_session_cache")
+	if err != nil {
+		t.Fatalf("GetReviewSession() error = %v", err)
+	}
+	if _, err := queries.CreateAgentConfig(ctx, dbgen.CreateAgentConfigParams{
+		ID:               "agent_config_cache",
+		Name:             "Cache Agent",
+		Role:             "reviewer",
+		AdapterKind:      string(agents.AdapterCLINonInteractive),
+		Command:          sql.NullString{String: "codex", Valid: true},
+		ArgsJson:         "[]",
+		CwdMode:          "repo_root",
+		EnvAllowlistJson: "[]",
+		OutputMode:       "json",
+		CapabilitiesJson: `{"supports_json":true,"can_read":true,"output_modes":["json"],"metadata":{"egress":"external"}}`,
+		SettingsJson:     "{}",
+		Enabled:          1,
+		CreatedAt:        "2026-05-03T00:00:00Z",
+		UpdatedAt:        "2026-05-03T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("CreateAgentConfig() error = %v", err)
+	}
+	store, err := artifact.New(t.TempDir(), queries)
+	if err != nil {
+		t.Fatalf("artifact.New() error = %v", err)
+	}
+	itemArtifact, err := store.Save(ctx, artifact.SaveParams{
+		ID:              "artifact_cached_item",
+		WorkspaceID:     session.WorkspaceID,
+		ReviewSessionID: sql.NullString{String: session.ID, Valid: true},
+		Kind:            "context_item",
+		RelativePath:    "context/cache-item.txt",
+		ContentType:     "text/plain",
+		MetadataJSON:    "{}",
+		CreatedAt:       "2026-05-03T00:00:00Z",
+	}, []byte("cached file content"))
+	if err != nil {
+		t.Fatalf("Save(item) error = %v", err)
+	}
+	bundleArtifact, err := store.Save(ctx, artifact.SaveParams{
+		ID:              "artifact_cached_bundle",
+		WorkspaceID:     session.WorkspaceID,
+		ReviewSessionID: sql.NullString{String: session.ID, Valid: true},
+		Kind:            "context_bundle",
+		RelativePath:    "context/cache-bundle.md",
+		ContentType:     "text/markdown",
+		MetadataJSON:    "{}",
+		CreatedAt:       "2026-05-03T00:00:00Z",
+	}, []byte("# cached bundle"))
+	if err != nil {
+		t.Fatalf("Save(bundle) error = %v", err)
+	}
+	_, policyJSON, err := resolvedChatContextPolicy(session)
+	if err != nil {
+		t.Fatalf("resolvedChatContextPolicy() error = %v", err)
+	}
+	if _, err := queries.CreateContextBundle(ctx, dbgen.CreateContextBundleParams{
+		ID:              "bundle_cached_review",
+		ReviewSessionID: session.ID,
+		AgentConfigID:   sql.NullString{String: "agent_config_cache", Valid: true},
+		Scope:           string(contextbundle.ScopeReview),
+		TokenEstimate:   12,
+		ItemCount:       2,
+		ArtifactID:      sql.NullString{String: bundleArtifact.ID, Valid: true},
+		PolicyJson:      policyJSON,
+		CreatedAt:       "2026-05-03T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("CreateContextBundle() error = %v", err)
+	}
+	if _, err := queries.CreateContextItem(ctx, dbgen.CreateContextItemParams{
+		ID:              "context_item_prompt",
+		ContextBundleID: "bundle_cached_review",
+		Kind:            string(contextbundle.ItemPromptMaterial),
+		Title:           sql.NullString{String: "Prompt material", Valid: true},
+		TokenEstimate:   2,
+		MetadataJson:    `{"snapshot_id":"snapshot_review_session_cache"}`,
+	}); err != nil {
+		t.Fatalf("CreateContextItem(prompt) error = %v", err)
+	}
+	if _, err := queries.CreateContextItem(ctx, dbgen.CreateContextItemParams{
+		ID:                "context_item_file",
+		ContextBundleID:   "bundle_cached_review",
+		Kind:              string(contextbundle.ItemFullFile),
+		Path:              sql.NullString{String: "app/main.go", Valid: true},
+		Title:             sql.NullString{String: "Full file", Valid: true},
+		ContentArtifactID: sql.NullString{String: itemArtifact.ID, Valid: true},
+		TokenEstimate:     10,
+		MetadataJson:      `{}`,
+	}); err != nil {
+		t.Fatalf("CreateContextItem(file) error = %v", err)
+	}
+
+	service := Service{Database: database, Queries: queries, Artifacts: store}
+	result, err := service.buildOrReuseChatContext(ctx, session, "agent_config_cache")
+	if err != nil {
+		t.Fatalf("buildOrReuseChatContext() error = %v", err)
+	}
+	if result.Bundle.ID != "bundle_cached_review" {
+		t.Fatalf("bundle ID = %q, want cached bundle", result.Bundle.ID)
+	}
+	rendered := contextbundle.RenderBundle(result.Bundle)
+	if !strings.Contains(rendered, "cached file content") {
+		t.Fatalf("cached bundle was not hydrated with item content:\n%s", rendered)
 	}
 }
 

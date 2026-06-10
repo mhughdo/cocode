@@ -158,6 +158,67 @@ func TestWorkflowPhaseCheckpointOrderInvariant(t *testing.T) {
 	}
 }
 
+func TestWorkflowPhaseCompletedIncludesMetricsSnapshot(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	env.Driver.stdout = `{"summary":"ok","findings":[{"claim":"Settings mutation lacks admin guard","category":"security","severity":"high","confidence":0.9,"locations":[{"path":"src/new.go","start_line":3,"end_line":3,"side":"RIGHT"}],"evidence":[{"title":"missing guard","summary":"settings mutation accepts a member without admin authorization"}]}]}`
+	session := createWorkflowSession(t, env, "review_session_phase_metrics", StatusDraft)
+	if _, err := env.Service.Transition(context.Background(), session.ID, StatusQueued); err != nil {
+		t.Fatalf("Transition(draft -> queued) error = %v", err)
+	}
+	if err := env.Service.Run(context.Background(), session.ID); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	events, err := env.Events.ListByReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListByReviewSession() error = %v", err)
+	}
+	payload := eventPayloadByTypeAndPhase(t, events, "WorkflowPhaseCompleted", PhaseDeduplicate)
+	if payload["status"] != "completed" || payload["duration_ms"] == nil {
+		t.Fatalf("phase metrics payload = %+v", payload)
+	}
+	counts, ok := payload["finding_counts"].(map[string]any)
+	if !ok {
+		t.Fatalf("finding_counts = %#v", payload["finding_counts"])
+	}
+	if counts["candidates"] != float64(1) || counts["findings"] != float64(1) {
+		t.Fatalf("finding_counts = %+v", counts)
+	}
+}
+
+func TestWorkflowPhaseFailedIncludesFailureMetrics(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	session := createWorkflowSession(t, env, "review_session_phase_failure_metrics", StatusRunning)
+	createWorkflowCandidate(t, env, session.ID, "candidate_phase_failure", "Settings mutation lacks admin guard", "security", "high", 0.9, "src/new.go", 3, 3, "fp_phase_failure")
+
+	err := env.Service.withPhase(context.Background(), session.ID, PhaseDeduplicate, func() error {
+		return errors.New("forced phase failure")
+	})
+	if err == nil || !strings.Contains(err.Error(), "forced phase failure") {
+		t.Fatalf("withPhase() error = %v, want forced failure", err)
+	}
+
+	events, listErr := env.Events.ListByReviewSession(context.Background(), session.ID)
+	if listErr != nil {
+		t.Fatalf("ListByReviewSession() error = %v", listErr)
+	}
+	payload := eventPayloadByTypeAndPhase(t, events, "WorkflowPhaseFailed", PhaseDeduplicate)
+	if payload["status"] != "failed" ||
+		payload["failure_reason"] != "forced phase failure" ||
+		payload["error"] != "forced phase failure" ||
+		payload["duration_ms"] == nil {
+		t.Fatalf("failed phase payload = %+v", payload)
+	}
+	counts, ok := payload["finding_counts"].(map[string]any)
+	if !ok || counts["candidates"] != float64(1) {
+		t.Fatalf("failure finding_counts = %#v", payload["finding_counts"])
+	}
+}
+
 func TestPrioritizedVerifierFindingsRanksBlockerBeforeHigh(t *testing.T) {
 	t.Parallel()
 
@@ -2894,6 +2955,25 @@ func eventPayloadByType(t *testing.T, events []dbgen.Event, typ string) map[stri
 		return payload
 	}
 	t.Fatalf("events missing %s; got %+v", typ, events)
+	return nil
+}
+
+func eventPayloadByTypeAndPhase(t *testing.T, events []dbgen.Event, typ string, phase string) map[string]any {
+	t.Helper()
+
+	for _, event := range events {
+		if event.Type != typ {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(event.PayloadJson), &payload); err != nil {
+			t.Fatalf("decode payload for %s: %v", typ, err)
+		}
+		if payload["phase"] == phase {
+			return payload
+		}
+	}
+	t.Fatalf("events missing %s for phase %s; got %+v", typ, phase, events)
 	return nil
 }
 

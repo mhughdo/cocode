@@ -111,6 +111,48 @@ func TestRunReportsExplicitReviewOutcomesSeparateFromDetectorMatches(t *testing.
 	}
 }
 
+func TestRunReportsDuplicateNoiseMetrics(t *testing.T) {
+	t.Parallel()
+
+	report, err := Run(context.Background(), Options{
+		ReposRoot: repoRoot(t),
+		Specs: []RepoSpec{{
+			Name:      "go-api-auth-bug",
+			Detectors: []string{detectorDuplicateNoiseControl},
+			ExpectedFindings: []ExpectedFinding{{
+				ID:   "auth-admin-guard",
+				Path: "apps/api/src/routes/repositories.ts",
+				MatchTerms: []string{
+					"workspace member",
+					"admin guard",
+					"repository settings",
+				},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if report.Metrics.ActualFindings != 3 ||
+		report.Metrics.DuplicateClusters != 1 ||
+		report.Metrics.DuplicateFindings != 2 ||
+		report.Metrics.FalsePositives != 2 ||
+		report.Metrics.PrecisionIsh < 0.333 ||
+		report.Metrics.PrecisionIsh > 0.334 ||
+		report.Metrics.DuplicateRate < 0.666 ||
+		report.Metrics.DuplicateRate > 0.667 {
+		t.Fatalf("metrics = %+v", report.Metrics)
+	}
+	auth := repoReport(t, report, "go-api-auth-bug")
+	if auth.DuplicateMetrics.ClusterCount != 1 ||
+		auth.DuplicateMetrics.DuplicateFindings != 2 ||
+		auth.DuplicateMetrics.DuplicateRate < 0.666 ||
+		auth.DuplicateMetrics.DuplicateRate > 0.667 {
+		t.Fatalf("duplicate metrics = %+v", auth.DuplicateMetrics)
+	}
+}
+
 func TestSummarizeReviewOutcomesReportsSuppressionAndPublishableRates(t *testing.T) {
 	t.Parallel()
 

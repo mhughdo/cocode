@@ -18,22 +18,33 @@ type AuditLogResponse struct {
 }
 
 type AuditLogEntryResponse struct {
-	ID                  string          `json:"id"`
-	Kind                string          `json:"kind"`
-	Title               string          `json:"title"`
-	ReviewSessionID     string          `json:"review_session_id"`
-	Level               string          `json:"level,omitempty"`
-	Status              string          `json:"status,omitempty"`
-	Sequence            int64           `json:"sequence,omitempty"`
-	FindingID           string          `json:"finding_id,omitempty"`
-	AgentRunID          string          `json:"agent_run_id,omitempty"`
-	ArtifactID          string          `json:"artifact_id,omitempty"`
-	CopyPacketID        string          `json:"copy_packet_id,omitempty"`
-	PublishDraftID      string          `json:"publish_draft_id,omitempty"`
-	GitHubPublicationID string          `json:"github_publication_id,omitempty"`
-	ReviewEvent         string          `json:"review_event,omitempty"`
-	CreatedAt           string          `json:"created_at"`
-	Metadata            json.RawMessage `json:"metadata"`
+	ID                  string                      `json:"id"`
+	Kind                string                      `json:"kind"`
+	Title               string                      `json:"title"`
+	ReviewSessionID     string                      `json:"review_session_id"`
+	Level               string                      `json:"level,omitempty"`
+	Status              string                      `json:"status,omitempty"`
+	DurationMs          int64                       `json:"duration_ms,omitempty"`
+	FailureReason       string                      `json:"failure_reason,omitempty"`
+	FindingCounts       *AuditFindingCountsResponse `json:"finding_counts,omitempty"`
+	Sequence            int64                       `json:"sequence,omitempty"`
+	FindingID           string                      `json:"finding_id,omitempty"`
+	AgentRunID          string                      `json:"agent_run_id,omitempty"`
+	ArtifactID          string                      `json:"artifact_id,omitempty"`
+	CopyPacketID        string                      `json:"copy_packet_id,omitempty"`
+	PublishDraftID      string                      `json:"publish_draft_id,omitempty"`
+	GitHubPublicationID string                      `json:"github_publication_id,omitempty"`
+	ReviewEvent         string                      `json:"review_event,omitempty"`
+	CreatedAt           string                      `json:"created_at"`
+	Metadata            json.RawMessage             `json:"metadata"`
+}
+
+type AuditFindingCountsResponse struct {
+	Candidates           int            `json:"candidates"`
+	Findings             int            `json:"findings"`
+	BySeverity           map[string]int `json:"by_severity,omitempty"`
+	ByVerificationStatus map[string]int `json:"by_verification_status,omitempty"`
+	ByDecisionStatus     map[string]int `json:"by_decision_status,omitempty"`
 }
 
 func reviewSessionAuditLogHandler(services routerServices) gin.HandlerFunc {
@@ -63,12 +74,17 @@ func buildAuditLogResponse(ctx context.Context, queries *dbgen.Queries, sessionI
 	}
 	for _, event := range events {
 		payload := auditJSON(event.PayloadJson)
+		status, durationMs, failureReason, findingCounts := auditEventMetrics(payload)
 		entries = append(entries, AuditLogEntryResponse{
 			ID:              event.ID,
 			Kind:            "event",
 			Title:           event.Type,
 			ReviewSessionID: sessionID,
 			Level:           event.Level,
+			Status:          status,
+			DurationMs:      durationMs,
+			FailureReason:   failureReason,
+			FindingCounts:   findingCounts,
 			Sequence:        event.Sequence,
 			AgentRunID:      nullableEventResponseString(event.AgentRunID),
 			ArtifactID:      nullableEventResponseString(event.ArtifactID),
@@ -201,6 +217,19 @@ func auditJSON(value string) json.RawMessage {
 		return json.RawMessage(`{}`)
 	}
 	return json.RawMessage(value)
+}
+
+func auditEventMetrics(payload json.RawMessage) (string, int64, string, *AuditFindingCountsResponse) {
+	var decoded struct {
+		Status        string                      `json:"status"`
+		DurationMs    int64                       `json:"duration_ms"`
+		FailureReason string                      `json:"failure_reason"`
+		FindingCounts *AuditFindingCountsResponse `json:"finding_counts"`
+	}
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		return "", 0, "", nil
+	}
+	return decoded.Status, decoded.DurationMs, decoded.FailureReason, decoded.FindingCounts
 }
 
 func auditObject(value map[string]any) json.RawMessage {

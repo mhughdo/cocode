@@ -3399,10 +3399,10 @@ func TestReviewSessionAuditLogEndpointCombinesReviewActions(t *testing.T) {
 		ID:              "event_audit_1",
 		ReviewSessionID: nullableString("review_session_findings"),
 		AgentRunID:      nullableString("agent_run_findings"),
-		Type:            "FindingMerged",
+		Type:            "WorkflowPhaseCompleted",
 		Level:           "info",
 		Sequence:        1,
-		PayloadJson:     `{"finding_id":"finding_auth"}`,
+		PayloadJson:     `{"phase":"deduplicate_findings","status":"completed","duration_ms":42,"finding_counts":{"candidates":2,"findings":1,"by_severity":{"high":1},"by_verification_status":{"verified":1},"by_decision_status":{"accepted":1}}}`,
 		CreatedAt:       "2026-05-03T00:16:00Z",
 	}); err != nil {
 		t.Fatalf("CreateEvent() error = %v", err)
@@ -3467,6 +3467,14 @@ func TestReviewSessionAuditLogEndpointCombinesReviewActions(t *testing.T) {
 		if _, ok := kinds[kind]; !ok {
 			t.Fatalf("audit entries missing %s: %+v", kind, audit.Entries)
 		}
+	}
+	if kinds["event"].Status != "completed" ||
+		kinds["event"].DurationMs != 42 ||
+		kinds["event"].FindingCounts == nil ||
+		kinds["event"].FindingCounts.Candidates != 2 ||
+		kinds["event"].FindingCounts.Findings != 1 ||
+		kinds["event"].FindingCounts.ByDecisionStatus["accepted"] != 1 {
+		t.Fatalf("event metrics = %+v", kinds["event"])
 	}
 	var publishMetadata map[string]any
 	if err := json.Unmarshal(kinds["publish_draft"].Metadata, &publishMetadata); err != nil {

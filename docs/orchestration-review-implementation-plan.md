@@ -48,6 +48,9 @@ Update rules:
 | 2026-06-10 | Split centralized chat turn creation from execution and enforced turn transitions. | `CHAT-02`, `CHAT-16` | `go test ./internal/chat`; `go test ./internal/httpapi -run 'TestReviewSessionChatThreadEndpointSeedsAndAnswers|TestReviewSessionChatThreadEndpointUsesOrchestratorResponder'` | Chat POST now returns `202 Accepted` with a created turn while execution runs from persisted state in the background; allowed turn transitions are tested. |
 | 2026-06-10 | Added centralized chat turn cancellation endpoint and Stop-button wiring. | `CHAT-03` | `go test ./internal/chat ./internal/httpapi -run 'TestCancelTurnMarksRequestAndRunExitsCanceled|TestReviewSessionChatThreadEndpointSeedsAndAnswers|TestReviewSessionChatThreadEndpointUsesOrchestratorResponder'`; `pnpm --filter @cocode/desktop typecheck` | Stop now marks turns `cancel_requested`, cancels matching active chat runs when possible, finalizes canceled turns in the worker, and keeps the composer in Stop mode after async turn creation. |
 | 2026-06-10 | Shared centralized chat context across all-agent fan-out and ran reviewers concurrently. | `CHAT-04`, `CHAT-05` | `go test ./internal/chat`; `go test ./internal/httpapi -run 'TestReviewSessionChatThreadEndpointSeedsAndAnswers|TestReviewSessionChatThreadEndpointUsesOrchestratorResponder'` | All-agent chat now builds one safe context bundle, prefers an external-visibility recipient when needed, and executes reviewer fan-out with bounded parallelism before synthesis. |
+| 2026-06-10 | Added bounded orchestration observability and duplicate/noise eval metrics. | `OBS-01`, `OBS-05` | `go test ./internal/orchestrator -run 'TestWorkflowPhase(CheckpointOrderInvariant\|CompletedIncludesMetricsSnapshot\|FailedIncludesFailureMetrics)'`; `go test ./internal/httpapi -run 'TestReviewSessionAuditLogEndpointCombinesReviewActions'`; `go test ./internal/evalharness ./internal/findingengine` | Phase events now expose status, duration, failure reason, and finding-count snapshots; audit-log entries lift those fields; eval reports include duplicate cluster/count/rate metrics with a duplicate fixture. |
+| 2026-06-10 | Persisted structured centralized-chat context references. | `CHAT-12` | `go test ./internal/chat`; `go test ./internal/httpapi -run 'TestReviewSessionChatThreadEndpointSeedsAndAnswers|TestReviewSessionChatThreadEndpointUsesOrchestratorResponder'` | User-selected finding/evidence/file refs now write to `chat_message_context_refs` and render as concise structured prompt context instead of raw ad hoc JSON only. |
+| 2026-06-10 | Added durable adapter external-session metadata on agent runs. | `ADAPT-06` | `go test ./internal/agents ./internal/agentrun` | App Server/ACP event mappers emit normalized `external_session` metadata and the runner persists the latest session identity into `agent_runs.metadata_json`; chat-turn-scoped reuse wiring remains open. |
 
 ## Assumptions And Boundaries
 
@@ -213,7 +216,7 @@ This phase implements the architecture already sketched in `docs/centralized-cha
 | CHAT-09 | todo | Debounce or remove full-thread refresh loops. | Chat UI no longer does high-frequency full refetches during streaming. | Playwright trace or e2e assertion. | `apps/desktop/src/renderer/src` |
 | CHAT-10 | todo | Unify finding follow-ups into centralized chat. | Finding-scoped questions are normal central chat turns with finding/evidence context refs and prior history. | Follow-up e2e from finding detail and chat tab. | `services/cocoded/internal/followup`, `services/cocoded/internal/chat`, `apps/desktop/src/renderer/src` |
 | CHAT-11 | todo | Include prior messages in finding-scoped context. | Follow-up answers are not cold-started unless explicitly requested. | Follow-up service test with prior turn dependency. | `services/cocoded/internal/followup/question.go`, `services/cocoded/internal/chat` |
-| CHAT-12 | todo | Use `chat_message_context_refs` for review/finding/evidence/file context. | Context refs are persisted and used to build follow-up prompts instead of ad hoc prompt text only. | DB/API tests for message context refs. | `services/cocoded/internal/chat`, `services/cocoded/internal/db/sql/schema.sql` |
+| CHAT-12 | done | Use `chat_message_context_refs` for review/finding/evidence/file context. | Context refs are persisted and used to build follow-up prompts instead of ad hoc prompt text only. | `go test ./internal/chat`; `go test ./internal/httpapi -run 'TestReviewSessionChatThreadEndpointSeedsAndAnswers|TestReviewSessionChatThreadEndpointUsesOrchestratorResponder'` from `services/cocoded`. | `services/cocoded/internal/chat`, `services/cocoded/internal/db/sql/schema.sql` |
 | CHAT-13 | todo | Make thread read APIs side-effect-free and efficient. | Loading a thread does not perform server-side read-modify-write cleanup or N+1 sync work. | HTTP API test plus query-count style unit/fake test where practical. | `services/cocoded/internal/chat/service.go`, `services/cocoded/internal/httpapi/chat.go` |
 | CHAT-14 | todo | Replace client-faked SSE previews with persisted message deltas. | UI renders streamed content from persisted/delta events and does not depend on truncated preview reconstruction. | SSE/chat e2e with long answer over preview-size threshold. | `services/cocoded/internal/httpapi`, `services/cocoded/internal/chat`, `apps/desktop/src/renderer/src` |
 | CHAT-15 | todo | Reconcile abandoned running turns on startup/load. | Client aborts or app restarts do not leave `chat_turns` permanently stuck in `running`. | Startup/reconcile service test. | `services/cocoded/internal/chat`, `services/cocoded/internal/app` |
@@ -236,7 +239,7 @@ This phase reduces latency/cost for capable adapters while preserving Cocode as 
 | ADAPT-03 | todo | Implement ACP session reuse where available. | ACP adapters can load/resume sessions for follow-up context. | ACP adapter test/fake driver. | `services/cocoded/internal/agents`, `services/cocoded/internal/chat` |
 | ADAPT-04 | todo | Add routing rule: session resume vs fresh cheap call. | Explain-only turns can use compact finding slice; investigation turns can resume agent session. | Chat router tests. | `services/cocoded/internal/chat` |
 | ADAPT-05 | todo | Replace disabled App Server stub with explicit capability/health state. | UI/backend can distinguish unsupported, disabled, unhealthy, and ready adapters. | Adapter health tests and settings UI smoke. | `services/cocoded/internal/agents`, `services/cocoded/internal/httpapi/agent_configs.go`, `apps/desktop/src/renderer/src` |
-| ADAPT-06 | todo | Store external session metadata per adapter/run/turn. | Session reuse has durable IDs, expiry, provenance, and invalidation behavior. | DB and adapter session tests. | `services/cocoded/internal/db`, `services/cocoded/internal/agents`, `services/cocoded/internal/chat` |
+| ADAPT-06 | doing | Store external session metadata per adapter/run/turn. | Session reuse has durable IDs, expiry, provenance, and invalidation behavior. | `go test ./internal/agents ./internal/agentrun` from `services/cocoded`; per-turn reuse tests remain open. | `services/cocoded/internal/db`, `services/cocoded/internal/agents`, `services/cocoded/internal/chat` |
 
 Checkpoint after Phase 5:
 
@@ -264,11 +267,11 @@ The review points to Cloudflare/DoorDash-style production signals: accepted find
 
 | ID | Status | Task | Acceptance Criteria | Verification | Likely Files |
 | --- | --- | --- | --- | --- | --- |
-| OBS-01 | todo | Emit review orchestration metrics for phase latency and outcomes. | Each phase records duration, status, failure reason, and finding counts. | Metrics unit tests or structured event assertions. | `services/cocoded/internal/orchestrator`, `services/cocoded/internal/httpapi/audit_log.go` |
+| OBS-01 | done | Emit review orchestration metrics for phase latency and outcomes. | Each phase records duration, status, failure reason, and finding counts. | `go test ./internal/orchestrator -run 'TestWorkflowPhase(CheckpointOrderInvariant\|CompletedIncludesMetricsSnapshot\|FailedIncludesFailureMetrics)'`; `go test ./internal/httpapi -run 'TestReviewSessionAuditLogEndpointCombinesReviewActions'` from `services/cocoded`. | `services/cocoded/internal/orchestrator`, `services/cocoded/internal/httpapi/audit_log.go` |
 | OBS-02 | todo | Track token/context/cache efficiency. | Agent runs record context size, prompt hash, cache hit/miss where available, and output size. | Agent run metadata tests. | `services/cocoded/internal/agents`, `services/cocoded/internal/contextbundle`, `services/cocoded/internal/chat` |
 | OBS-03 | todo | Track trust metrics from human decisions. | Accepted, dismissed, suppressed, not-actionable, duplicate, stale, and publishable outcomes are queryable per session/repo. | Eval harness tests and audit API tests. | `services/cocoded/internal/evalharness`, `services/cocoded/internal/httpapi/findings.go` |
 | OBS-04 | todo | Add dogfood eval gates for prompt/orchestration changes. | A small local eval suite can compare precision-ish, false positives, accepted expected findings, and suppression rate before/after changes. | `go test ./internal/evalharness` plus documented eval command. | `services/cocoded/internal/evalharness`, `testdata` |
-| OBS-05 | todo | Add duplicate/noise regression tracking. | Multi-agent duplicate rate is measured so role overlays can be evaluated against the "N copies of same agent" failure mode. | Eval fixture with duplicate candidate clusters. | `services/cocoded/internal/findingengine`, `services/cocoded/internal/evalharness` |
+| OBS-05 | done | Add duplicate/noise regression tracking. | Multi-agent duplicate rate is measured so role overlays can be evaluated against the "N copies of same agent" failure mode. | `go test ./internal/evalharness ./internal/findingengine` from `services/cocoded`. | `services/cocoded/internal/findingengine`, `services/cocoded/internal/evalharness` |
 
 Checkpoint after Phase 7:
 
@@ -352,7 +355,7 @@ End-to-end manual checks:
 | Chat fan-out is serial. | `CHAT-05` | done | All-agent fan-out uses bounded parallel execution. |
 | Chat sends very large prompt/context every turn. | `CHAT-06`, `CHAT-07`, `ADAPT-04` | todo | Cache, summarize, and route to compact finding context when enough. |
 | Chat turn states exist but are underused. | `CHAT-02`, `CHAT-16` | done | Turn creation/execution now uses and validates the persisted state machine. |
-| `chat_message_context_refs` exists but is unused. | `CHAT-12` | todo | Uses structured refs for finding/evidence/file context. |
+| `chat_message_context_refs` exists but is unused. | `CHAT-12` | done | User-selected finding/evidence/file context refs are persisted and rendered into follow-up prompts. |
 | Chat answer survives only via client-side preview reconstruction. | `CHAT-01`, `CHAT-14` | todo | Persist full answer and stream durable deltas. |
 | Renderer refetches full thread too often. | `CHAT-08`, `CHAT-09` | todo | SSE deltas and UI debounce. |
 | Thread GET does cleanup/sync work and can cause N+1 behavior. | `CHAT-13` | todo | Makes reads cheap and side-effect-free. |
@@ -360,9 +363,9 @@ End-to-end manual checks:
 | Finding follow-ups are separate/cold. | `CHAT-10`, `CHAT-11` | todo | Unified central thread with history/context refs. |
 | App Server/ACP session reuse unavailable for chat. | `ADAPT-01`, `ADAPT-02`, `ADAPT-03`, `ADAPT-04` | todo | Structural follow-up efficiency work. |
 | App Server adapter is a disabled stub / adapter readiness is unclear. | `ADAPT-05` | todo | Capability and health state should be explicit. |
-| External session IDs are not durable enough for reuse. | `ADAPT-06` | todo | Adds durable metadata and invalidation rules. |
-| Need Cloudflare/DoorDash-style trust and efficiency metrics. | `OBS-01`, `OBS-02`, `OBS-03`, `OBS-04`, `OBS-05` | todo | Tracks quality, latency, token/cache, and duplicate/noise outcomes. |
-| CI design should build on local contracts, not fork them. | `BASE-03`, `OBS-01` | doing | Local-first contract is documented; phase metrics remain open. |
+| External session IDs are not durable enough for reuse. | `ADAPT-06` | doing | Adapter/run metadata is durable; chat-turn reuse/invalidation wiring remains open. |
+| Need Cloudflare/DoorDash-style trust and efficiency metrics. | `OBS-01`, `OBS-02`, `OBS-03`, `OBS-04`, `OBS-05` | doing | Phase latency/outcome and duplicate/noise metrics are implemented; token/cache efficiency, decision-query surfaces, and formal eval gates remain open. |
+| CI design should build on local contracts, not fork them. | `BASE-03`, `OBS-01` | done | Local-first contract is documented; phase metrics are emitted through local workflow events and audit-log entries. |
 
 ## Initial Implementation Batch
 
@@ -386,6 +389,7 @@ Why this batch:
 1. Prompt contract checks currently live in Go tests against the embedded prompt source and parser schemas; add package-level prompt tests only if non-Go prompt tooling becomes authoritative.
 2. Cross-session dismissal memory is repository-scoped by stable finding fingerprint. Branch or base/head lineage can be added later if false carryover appears in dogfood data.
 3. `draft_comments` remains a dedicated workflow phase and now fills missing finding draft comments deterministically; GitHub preview and copy packets remain separate product surfaces.
+4. OBS-01 uses additive workflow event payload fields and audit-log projections instead of a new metrics table; add a dedicated metrics store later only if retention, aggregation, or cross-session query requirements outgrow event-derived reporting.
 
 ## Open Questions
 

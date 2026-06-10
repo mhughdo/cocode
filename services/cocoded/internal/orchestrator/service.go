@@ -2391,30 +2391,84 @@ func (s *Service) persistRenderedPrompt(ctx context.Context, item runContext, ru
 }
 
 func (s *Service) withPhase(ctx context.Context, reviewSessionID string, phase string, run func() error) error {
+	started := s.now()
 	if err := s.appendEvent(ctx, appendEventParams{
 		ReviewSessionID: reviewSessionID,
 		Type:            "WorkflowPhaseStarted",
-		Payload:         map[string]any{"phase": phase},
+		Payload: map[string]any{
+			"phase":  phase,
+			"status": "running",
+		},
 	}); err != nil {
 		return err
 	}
 	if err := run(); err != nil {
+		payload, metricsErr := s.phaseMetricsPayload(context.WithoutCancel(ctx), reviewSessionID, phase, "failed", started)
+		if metricsErr != nil {
+			payload = map[string]any{
+				"phase": phase,
+			}
+		}
+		payload["failure_reason"] = err.Error()
+		payload["error"] = err.Error()
 		_ = s.appendEvent(context.WithoutCancel(ctx), appendEventParams{
 			ReviewSessionID: reviewSessionID,
 			Type:            "WorkflowPhaseFailed",
 			Level:           "error",
-			Payload: map[string]any{
-				"phase": phase,
-				"error": err.Error(),
-			},
+			Payload:         payload,
 		})
+		return err
+	}
+	payload, err := s.phaseMetricsPayload(ctx, reviewSessionID, phase, "completed", started)
+	if err != nil {
 		return err
 	}
 	return s.appendEvent(ctx, appendEventParams{
 		ReviewSessionID: reviewSessionID,
 		Type:            "WorkflowPhaseCompleted",
-		Payload:         map[string]any{"phase": phase},
+		Payload:         payload,
 	})
+}
+
+func (s *Service) phaseMetricsPayload(ctx context.Context, reviewSessionID string, phase string, status string, started time.Time) (map[string]any, error) {
+	counts, err := s.phaseFindingCounts(ctx, reviewSessionID)
+	if err != nil {
+		return nil, err
+	}
+	durationMs := s.now().Sub(started).Milliseconds()
+	if durationMs < 0 {
+		durationMs = 0
+	}
+	return map[string]any{
+		"phase":          phase,
+		"status":         status,
+		"duration_ms":    durationMs,
+		"finding_counts": counts,
+	}, nil
+}
+
+func (s *Service) phaseFindingCounts(ctx context.Context, reviewSessionID string) (FindingCounts, error) {
+	candidates, err := s.Queries.ListFindingCandidatesBySession(ctx, reviewSessionID)
+	if err != nil {
+		return FindingCounts{}, fmt.Errorf("list finding candidates for phase metrics: %w", err)
+	}
+	findings, err := s.Queries.ListFindingsBySession(ctx, reviewSessionID)
+	if err != nil {
+		return FindingCounts{}, fmt.Errorf("list findings for phase metrics: %w", err)
+	}
+	counts := FindingCounts{
+		Candidates:           len(candidates),
+		Findings:             len(findings),
+		BySeverity:           map[string]int{},
+		ByVerificationStatus: map[string]int{},
+		ByDecisionStatus:     map[string]int{},
+	}
+	for _, finding := range findings {
+		counts.BySeverity[finding.Severity]++
+		counts.ByVerificationStatus[finding.VerificationStatus]++
+		counts.ByDecisionStatus[finding.DecisionStatus]++
+	}
+	return counts, nil
 }
 
 func (s *Service) enabledSessionAgents(ctx context.Context, reviewSessionID string) ([]dbgen.ReviewSessionAgent, error) {

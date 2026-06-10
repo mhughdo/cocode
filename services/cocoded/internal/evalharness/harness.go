@@ -51,6 +51,9 @@ type Metrics struct {
 	RepoCount             int      `json:"repo_count"`
 	ExpectedFindings      int      `json:"expected_findings"`
 	ActualFindings        int      `json:"actual_findings"`
+	DuplicateClusters     int      `json:"duplicate_clusters"`
+	DuplicateFindings     int      `json:"duplicate_findings"`
+	DuplicateRate         float64  `json:"duplicate_rate"`
 	AcceptedExpected      int      `json:"accepted_expected"`
 	MissingExpected       int      `json:"missing_expected"`
 	FalsePositives        int      `json:"false_positives"`
@@ -79,6 +82,7 @@ type RepoReport struct {
 	AcceptedExpectedIDs []string          `json:"accepted_expected_ids"`
 	MissingExpectedIDs  []string          `json:"missing_expected_ids"`
 	FalsePositiveIDs    []string          `json:"false_positive_ids"`
+	DuplicateMetrics    DuplicateMetrics  `json:"duplicate_metrics"`
 	ReviewOutcomes      []ReviewOutcome   `json:"review_outcomes,omitempty"`
 	ReviewMetrics       ReviewMetrics     `json:"review_metrics"`
 	FileExpectations    []FileExpectation `json:"file_expectations,omitempty"`
@@ -88,13 +92,21 @@ type RepoReport struct {
 }
 
 type Finding struct {
-	ID         string   `json:"id"`
-	Claim      string   `json:"claim"`
-	Category   string   `json:"category"`
-	Severity   string   `json:"severity"`
-	Path       string   `json:"path"`
-	StartLine  int      `json:"start_line,omitempty"`
-	MatchTerms []string `json:"match_terms"`
+	ID           string   `json:"id"`
+	Claim        string   `json:"claim"`
+	Category     string   `json:"category"`
+	Severity     string   `json:"severity"`
+	Path         string   `json:"path"`
+	StartLine    int      `json:"start_line,omitempty"`
+	MatchTerms   []string `json:"match_terms"`
+	DuplicateKey string   `json:"duplicate_key,omitempty"`
+	SourceAgent  string   `json:"source_agent,omitempty"`
+}
+
+type DuplicateMetrics struct {
+	ClusterCount      int     `json:"cluster_count"`
+	DuplicateFindings int     `json:"duplicate_findings"`
+	DuplicateRate     float64 `json:"duplicate_rate"`
 }
 
 type ReviewOutcome struct {
@@ -130,6 +142,7 @@ const (
 	detectorAuthAdminGuard        = "auth_admin_guard"
 	detectorWebhookSignature      = "webhook_signature_validation"
 	detectorGeneratedNoiseControl = "generated_noise_control"
+	detectorDuplicateNoiseControl = "duplicate_noise_control"
 
 	reviewDecisionAccepted      = "accepted"
 	reviewDecisionDismissed     = "dismissed"
@@ -264,6 +277,7 @@ func runRepo(ctx context.Context, reposRoot string, spec RepoSpec, nowFunc func(
 		return RepoReport{}, err
 	}
 	acceptedExpected, missingExpected, falsePositiveIDs := matchExpected(spec.ExpectedFindings, actual)
+	duplicateMetrics := summarizeDuplicateFindings(actual)
 	reviewOutcomes, reviewMetrics, err := evaluateReviewOutcomes(spec.ReviewOutcomes, actual, acceptedExpected, falsePositiveIDs)
 	if err != nil {
 		return RepoReport{}, fmt.Errorf("review outcomes for golden repo %s: %w", name, err)
@@ -276,6 +290,7 @@ func runRepo(ctx context.Context, reposRoot string, spec RepoSpec, nowFunc func(
 		AcceptedExpectedIDs: acceptedExpected,
 		MissingExpectedIDs:  missingExpected,
 		FalsePositiveIDs:    falsePositiveIDs,
+		DuplicateMetrics:    duplicateMetrics,
 		ReviewOutcomes:      reviewOutcomes,
 		ReviewMetrics:       reviewMetrics,
 		FileExpectations:    append([]FileExpectation(nil), spec.FileExpectations...),
@@ -311,6 +326,8 @@ func runDetectors(ctx context.Context, repoPath string, detectors []string) ([]F
 			}
 		case detectorGeneratedNoiseControl:
 			diagnostics = append(diagnostics, "generated-file repo uses file expectations only")
+		case detectorDuplicateNoiseControl:
+			findings = append(findings, duplicateNoiseFindings()...)
 		default:
 			return nil, nil, fmt.Errorf("unknown eval detector %q", detector)
 		}
@@ -322,6 +339,44 @@ func runDetectors(ctx context.Context, repoPath string, detectors []string) ([]F
 		return findings[i].Path < findings[j].Path
 	})
 	return findings, diagnostics, nil
+}
+
+func duplicateNoiseFindings() []Finding {
+	return []Finding{
+		{
+			ID:           "auth-admin-guard-agent-a",
+			Claim:        "Repository settings update route allows workspace members without the admin guard.",
+			Category:     "security",
+			Severity:     "high",
+			Path:         "apps/api/src/routes/repositories.ts",
+			StartLine:    12,
+			MatchTerms:   []string{"workspace member", "admin guard", "repository settings"},
+			DuplicateKey: "auth-admin-guard",
+			SourceAgent:  "security-reviewer",
+		},
+		{
+			ID:           "auth-admin-guard-agent-b",
+			Claim:        "Repository settings updates can be performed by workspace members because the route omits the admin guard.",
+			Category:     "security",
+			Severity:     "high",
+			Path:         "apps/api/src/routes/repositories.ts",
+			StartLine:    12,
+			MatchTerms:   []string{"workspace member", "admin guard", "repository settings"},
+			DuplicateKey: "auth-admin-guard",
+			SourceAgent:  "general-reviewer",
+		},
+		{
+			ID:           "auth-admin-guard-agent-c",
+			Claim:        "Workspace member access reaches repository settings updates without an admin authorization check.",
+			Category:     "security",
+			Severity:     "medium",
+			Path:         "apps/api/src/routes/repositories.ts",
+			StartLine:    12,
+			MatchTerms:   []string{"workspace member", "admin guard", "repository settings"},
+			DuplicateKey: "auth-admin-guard",
+			SourceAgent:  "architecture-reviewer",
+		},
+	}
 }
 
 func detectAuthAdminGuard(repoPath string) (Finding, bool, error) {
@@ -511,6 +566,42 @@ func deriveReviewOutcomes(acceptedExpectedIDs []string, falsePositiveIDs []strin
 	return outcomes
 }
 
+func summarizeDuplicateFindings(findings []Finding) DuplicateMetrics {
+	if len(findings) == 0 {
+		return DuplicateMetrics{}
+	}
+	clusters := map[string]int{}
+	for _, finding := range findings {
+		key := strings.TrimSpace(finding.DuplicateKey)
+		if key == "" {
+			key = inferredDuplicateKey(finding)
+		}
+		clusters[key]++
+	}
+	metrics := DuplicateMetrics{}
+	for _, size := range clusters {
+		if size <= 1 {
+			continue
+		}
+		metrics.ClusterCount++
+		metrics.DuplicateFindings += size - 1
+	}
+	metrics.DuplicateRate = float64(metrics.DuplicateFindings) / float64(len(findings))
+	return metrics
+}
+
+func inferredDuplicateKey(finding Finding) string {
+	claim := strings.ToLower(finding.Claim)
+	claim = strings.Join(strings.FieldsFunc(claim, func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
+	}), " ")
+	return strings.Join([]string{
+		strings.ToLower(strings.TrimSpace(finding.Path)),
+		strings.ToLower(strings.TrimSpace(finding.Category)),
+		claim,
+	}, "|")
+}
+
 func summarizeReviewOutcomes(outcomes []ReviewOutcome, source string) ReviewMetrics {
 	metrics := ReviewMetrics{
 		ReviewedFindings: len(outcomes),
@@ -585,6 +676,8 @@ func summarize(reports []RepoReport, duration time.Duration) Metrics {
 	for _, report := range reports {
 		metrics.ExpectedFindings += len(report.ExpectedFindings)
 		metrics.ActualFindings += len(report.ActualFindings)
+		metrics.DuplicateClusters += report.DuplicateMetrics.ClusterCount
+		metrics.DuplicateFindings += report.DuplicateMetrics.DuplicateFindings
 		metrics.AcceptedExpected += len(report.AcceptedExpectedIDs)
 		metrics.MissingExpected += len(report.MissingExpectedIDs)
 		metrics.FalsePositives += len(report.FalsePositiveIDs)
@@ -603,6 +696,7 @@ func summarize(reports []RepoReport, duration time.Duration) Metrics {
 	}
 	if metrics.ActualFindings > 0 {
 		metrics.PrecisionIsh = float64(metrics.AcceptedExpected) / float64(metrics.ActualFindings)
+		metrics.DuplicateRate = float64(metrics.DuplicateFindings) / float64(metrics.ActualFindings)
 	} else if metrics.ExpectedFindings == 0 {
 		metrics.PrecisionIsh = 1
 	}

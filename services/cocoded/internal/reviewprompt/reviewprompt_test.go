@@ -47,10 +47,14 @@ func TestRenderReviewPromptIncludesContractEnumsAndRoleOverlay(t *testing.T) {
 		"Severity rubric",
 		"Return at most 5 findings",
 		"UNTRUSTED_CONTEXT_DATA",
+		UntrustedContextInstruction(),
 	} {
 		if !strings.Contains(rendered.Text, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, rendered.Text)
 		}
+	}
+	if strings.Contains(rendered.Text, UntrustedContextBoundaryPlaceholder) {
+		t.Fatalf("prompt still contains unrendered boundary placeholder:\n%s", rendered.Text)
 	}
 }
 
@@ -96,6 +100,7 @@ func TestRenderReviewPromptTracksTemplateOverride(t *testing.T) {
 		rendered.TemplateSource != "service.prompt_template_override" ||
 		rendered.TemplateHash == "" ||
 		!strings.Contains(rendered.Text, "# Custom Review Contract") ||
+		!strings.Contains(rendered.Text, UntrustedContextInstruction()) ||
 		strings.Contains(rendered.Text, "# Core Task") {
 		t.Fatalf("rendered override = %+v\n%s", rendered, rendered.Text)
 	}

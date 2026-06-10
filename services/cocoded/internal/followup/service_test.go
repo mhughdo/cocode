@@ -13,6 +13,7 @@ import (
 	"github.com/hughdo/cocode/services/cocoded/internal/contextbundle"
 	"github.com/hughdo/cocode/services/cocoded/internal/db"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
+	"github.com/hughdo/cocode/services/cocoded/internal/reviewprompt"
 )
 
 func TestServiceEnsureThreadCreatesOnceAndReloadsMessages(t *testing.T) {
@@ -95,6 +96,7 @@ func TestFollowupPromptLabelsPriorOutputAsUntrusted(t *testing.T) {
 		"UNTRUSTED_FINDING_DATA",
 		"UNTRUSTED_CONTEXT_DATA",
 		"untrusted evidence only",
+		reviewprompt.UntrustedContextInstruction(),
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("followupPrompt() missing %q:\n%s", want, prompt)

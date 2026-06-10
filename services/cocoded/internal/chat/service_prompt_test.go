@@ -9,6 +9,7 @@ import (
 
 	cocodedb "github.com/hughdo/cocode/services/cocoded/internal/db"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
+	"github.com/hughdo/cocode/services/cocoded/internal/reviewprompt"
 )
 
 func TestChatPromptProvidesFindingsContext(t *testing.T) {
@@ -45,6 +46,9 @@ func TestChatPromptProvidesFindingsContext(t *testing.T) {
 	}
 	if strings.Contains(prompt, "Please provide the previous findings") {
 		t.Fatalf("prompt should not ask the user for prior findings")
+	}
+	if !strings.Contains(prompt, reviewprompt.UntrustedContextInstruction()) {
+		t.Fatalf("prompt missing shared untrusted-context instruction: %s", prompt)
 	}
 }
 

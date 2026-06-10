@@ -24,6 +24,7 @@ import (
 	"github.com/hughdo/cocode/services/cocoded/internal/eventlog"
 	"github.com/hughdo/cocode/services/cocoded/internal/evidence"
 	"github.com/hughdo/cocode/services/cocoded/internal/findingengine"
+	"github.com/hughdo/cocode/services/cocoded/internal/reviewprompt"
 )
 
 func TestReviewSessionStatusTransitionMatrix(t *testing.T) {
@@ -1016,6 +1017,7 @@ func TestWorkflowUsesSelectedOrchestratorForDedupeCuration(t *testing.T) {
 	}
 	if prompt := env.Driver.lastPrompt(); !strings.Contains(prompt, "orchestrator-curator") ||
 		!strings.Contains(prompt, "Every input candidate id must appear exactly once") ||
+		!strings.Contains(prompt, reviewprompt.UntrustedContextInstruction()) ||
 		!strings.Contains(prompt, "gopls call_hierarchy") {
 		t.Fatalf("curator prompt missing contract:\n%s", prompt)
 	}
@@ -1967,7 +1969,7 @@ func TestVerifyFindingsRunsVerifierCLIWithFindingContext(t *testing.T) {
 		!strings.Contains(prompt, "Finding ID: finding_verifier_cli") ||
 		!strings.Contains(prompt, "Context Bundle") ||
 		!strings.Contains(prompt, "UNTRUSTED_FINDING_DATA") ||
-		!strings.Contains(prompt, "untrusted evidence only") ||
+		!strings.Contains(prompt, reviewprompt.UntrustedContextInstruction()) ||
 		!strings.Contains(prompt, "gopls call_hierarchy") {
 		t.Fatalf("verifier prompt missing scoped context:\n%s", prompt)
 	}

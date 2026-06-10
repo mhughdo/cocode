@@ -452,6 +452,125 @@ func TestVerifySessionRejectsPrimaryLineOutsideChangedRange(t *testing.T) {
 	}
 }
 
+func TestVerifySessionRejectsStaleQuotedCodeObservation(t *testing.T) {
+	t.Parallel()
+
+	env := setupEvidenceEnv(t)
+	createEvidenceFinding(t, env.Queries, dbgen.CreateFindingParams{
+		ID:                 "finding_stale_quote",
+		ReviewSessionID:    "session_1",
+		CanonicalClaim:     "Settings mutation lacks admin guard",
+		Category:           "security",
+		Severity:           "high",
+		Confidence:         0.86,
+		VerificationStatus: StatusUnverified,
+		DecisionStatus:     "undecided",
+		PrimaryPath:        nullableTestString("src/handler.go"),
+		PrimaryStartLine:   nullableTestInt64(4),
+		PrimaryEndLine:     nullableTestInt64(4),
+		EvidenceSummary:    nullableTestString("Observed code: `MissingGuard()`"),
+		Fingerprint:        "fp_stale_quote",
+		MergedFromCount:    1,
+		FirstSeenAt:        "2026-05-03T00:04:00Z",
+		UpdatedAt:          "2026-05-03T00:04:00Z",
+	})
+
+	summary, err := env.Service.VerifySession(context.Background(), env.Session, env.Repository)
+	if err != nil {
+		t.Fatalf("VerifySession() error = %v", err)
+	}
+	if summary.SupportingEvidence != 0 || summary.MissingEvidence != 1 || summary.ByVerificationStatus[StatusNeedsHuman] != 1 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	items, err := env.Queries.ListEvidenceItemsByFinding(context.Background(), "finding_stale_quote")
+	if err != nil {
+		t.Fatalf("ListEvidenceItemsByFinding() error = %v", err)
+	}
+	item := evidenceItemByKind(t, items, KindMissing)
+	if !strings.Contains(item.MetadataJson, "quoted_code_mismatch") {
+		t.Fatalf("missing evidence = %+v", item)
+	}
+}
+
+func TestVerifySessionRecordsMatchedQuotedCodeObservation(t *testing.T) {
+	t.Parallel()
+
+	env := setupEvidenceEnv(t)
+	createEvidenceFinding(t, env.Queries, dbgen.CreateFindingParams{
+		ID:                 "finding_matched_quote",
+		ReviewSessionID:    "session_1",
+		CanonicalClaim:     "Settings mutation calls `RequireAdmin()` before writing",
+		Category:           "security",
+		Severity:           "medium",
+		Confidence:         0.74,
+		VerificationStatus: StatusUnverified,
+		DecisionStatus:     "undecided",
+		PrimaryPath:        nullableTestString("src/handler.go"),
+		PrimaryStartLine:   nullableTestInt64(4),
+		PrimaryEndLine:     nullableTestInt64(4),
+		Fingerprint:        "fp_matched_quote",
+		MergedFromCount:    1,
+		FirstSeenAt:        "2026-05-03T00:04:00Z",
+		UpdatedAt:          "2026-05-03T00:04:00Z",
+	})
+
+	summary, err := env.Service.VerifySession(context.Background(), env.Session, env.Repository)
+	if err != nil {
+		t.Fatalf("VerifySession() error = %v", err)
+	}
+	if summary.SupportingEvidence != 1 || summary.ByVerificationStatus[StatusLocallySupported] != 1 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	items, err := env.Queries.ListEvidenceItemsByFinding(context.Background(), "finding_matched_quote")
+	if err != nil {
+		t.Fatalf("ListEvidenceItemsByFinding() error = %v", err)
+	}
+	item := evidenceItemByKind(t, items, KindSupporting)
+	if !strings.Contains(item.MetadataJson, `"matched_code_quote":"RequireAdmin()"`) {
+		t.Fatalf("supporting evidence = %+v", item)
+	}
+}
+
+func TestVerifySessionCanReachDeterministicCounterEvidence(t *testing.T) {
+	t.Parallel()
+
+	env := setupEvidenceEnv(t)
+	createEvidenceFinding(t, env.Queries, dbgen.CreateFindingParams{
+		ID:                 "finding_counter_only",
+		ReviewSessionID:    "session_1",
+		CanonicalClaim:     "Webhook handler accepts payload without signature verification",
+		Category:           "security",
+		Severity:           "high",
+		Confidence:         0.62,
+		VerificationStatus: StatusUnverified,
+		DecisionStatus:     "undecided",
+		Fingerprint:        "fp_counter_only",
+		MergedFromCount:    1,
+		FirstSeenAt:        "2026-05-03T00:04:00Z",
+		UpdatedAt:          "2026-05-03T00:04:00Z",
+	})
+	env.Searcher.matches = map[string][]SearchMatch{
+		"webhook": {
+			{Path: "src/webhook_middleware.go", Line: 12, Text: "if !VerifySignature(signature, payload) { return err }"},
+		},
+	}
+
+	summary, err := env.Service.VerifySession(context.Background(), env.Session, env.Repository)
+	if err != nil {
+		t.Fatalf("VerifySession() error = %v", err)
+	}
+	if summary.CounterEvidence != 1 || summary.ByVerificationStatus[StatusLikelyFalsePositive] != 1 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	items, err := env.Queries.ListEvidenceItemsByFinding(context.Background(), "finding_counter_only")
+	if err != nil {
+		t.Fatalf("ListEvidenceItemsByFinding() error = %v", err)
+	}
+	if countEvidenceKind(items, KindCounter) != 1 || countEvidenceKind(items, KindMissing) != 1 {
+		t.Fatalf("items = %+v", items)
+	}
+}
+
 func TestPrimaryEvidenceSummarySkipsBareBraceLine(t *testing.T) {
 	t.Parallel()
 

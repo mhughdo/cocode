@@ -421,23 +421,44 @@ func (s *Service) createCuratedEvidenceItems(ctx context.Context, finding dbgen.
 			startLine = refinedStart
 			endLine = refinedEnd
 		}
+		codeQuotes := evidence.ExtractMatchableCodeQuotes(title, summary)
+		codeQuoteStatus := "not_checked"
+		matchedCodeQuote := ""
+		if path != "" && startLine > 0 && len(codeQuotes) > 0 {
+			codeQuoteStatus = "read_failed"
+			if snippet, _, _, _, err := evidence.ReadSnippet(repoRoot, path, startLine, endLine, 2, 4096); err == nil {
+				if match, ok := evidence.FindMatchingCodeQuote(snippet, codeQuotes); ok {
+					codeQuoteStatus = "matched"
+					matchedCodeQuote = match
+				} else {
+					codeQuoteStatus = "mismatched"
+				}
+			}
+		}
+		needsReview := boolPointerValue(item.NeedsReview)
+		if codeQuoteStatus == "mismatched" || codeQuoteStatus == "read_failed" {
+			needsReview = true
+		}
 		metadata := map[string]any{
-			"producer":          "orchestrator_curator",
-			"agent_config_id":   curation.CuratorAgentConfigID,
-			"agent_run_id":      curation.CuratorAgentRunID,
-			"parsed_artifact":   curation.CuratorParsedArtifactID,
-			"candidate_ids":     curation.CandidateIDs,
-			"dedupe_reason":     curation.DedupeReason,
-			"relationship":      strings.TrimSpace(item.Relationship),
-			"role":              strings.TrimSpace(item.Role),
-			"source":            strings.TrimSpace(item.Source),
-			"refutes_claim":     boolPointerValue(item.RefutesClaim),
-			"supports_claim":    boolPointerValue(item.SupportsClaim),
-			"needs_review":      boolPointerValue(item.NeedsReview),
-			"curation_phase":    PhaseDeduplicate,
-			"source_trust":      "orchestrator_curated_untrusted_evidence",
-			"human_review":      true,
-			"evidence_position": index,
+			"producer":           "orchestrator_curator",
+			"agent_config_id":    curation.CuratorAgentConfigID,
+			"agent_run_id":       curation.CuratorAgentRunID,
+			"parsed_artifact":    curation.CuratorParsedArtifactID,
+			"candidate_ids":      curation.CandidateIDs,
+			"dedupe_reason":      curation.DedupeReason,
+			"relationship":       strings.TrimSpace(item.Relationship),
+			"role":               strings.TrimSpace(item.Role),
+			"source":             strings.TrimSpace(item.Source),
+			"refutes_claim":      boolPointerValue(item.RefutesClaim),
+			"supports_claim":     boolPointerValue(item.SupportsClaim),
+			"needs_review":       needsReview,
+			"curation_phase":     PhaseDeduplicate,
+			"source_trust":       "orchestrator_curated_untrusted_evidence",
+			"human_review":       true,
+			"evidence_position":  index,
+			"code_quotes":        codeQuotes,
+			"code_quote_status":  codeQuoteStatus,
+			"matched_code_quote": matchedCodeQuote,
 		}
 		if _, err := s.Queries.CreateEvidenceItem(ctx, dbgen.CreateEvidenceItemParams{
 			ID:           s.newID("evidence_item_"),

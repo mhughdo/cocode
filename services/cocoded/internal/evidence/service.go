@@ -234,6 +234,22 @@ func (s *Service) attachPrimaryLocationEvidence(ctx context.Context, repoRoot st
 		item, err := s.createMissingPrimaryEvidence(ctx, finding.ID, path, validation.Reason, validation.Summary)
 		return findingEvidenceResult{created: 1, missing: 1, evidenceSummary: item.Summary}, err
 	}
+	codeQuotes := findingCodeQuoteExpectations(finding)
+	matchedCodeQuote := ""
+	if len(codeQuotes) > 0 {
+		var ok bool
+		matchedCodeQuote, ok = FindMatchingCodeQuote(validation.Snippet, codeQuotes)
+		if !ok {
+			item, err := s.createMissingPrimaryEvidence(
+				ctx,
+				finding.ID,
+				validation.Path,
+				"quoted_code_mismatch",
+				fmt.Sprintf("The primary location intersects changed code, but none of the finding's quoted code observations match the current source window at %s:%d-%d.", validation.Path, validation.StartLine, validation.EndLine),
+			)
+			return findingEvidenceResult{created: 1, missing: 1, evidenceSummary: item.Summary}, err
+		}
+	}
 	title := fmt.Sprintf("Changed code at %s:%d", validation.Path, validation.StartLine)
 	if validation.EndLine != validation.StartLine {
 		title = fmt.Sprintf("Changed code at %s:%d-%d", validation.Path, validation.StartLine, validation.EndLine)
@@ -255,8 +271,10 @@ func (s *Service) attachPrimaryLocationEvidence(ctx context.Context, repoRoot st
 				"start_line": validation.WindowStart,
 				"end_line":   validation.WindowEnd,
 			},
-			"code_snippet": validation.Snippet,
-			"truncated":    validation.Truncated,
+			"code_snippet":       validation.Snippet,
+			"truncated":          validation.Truncated,
+			"code_quotes":        codeQuotes,
+			"matched_code_quote": matchedCodeQuote,
 		}),
 	})
 	if err != nil {
@@ -294,6 +312,8 @@ func (s *Service) createMissingPrimaryEvidence(ctx context.Context, findingID st
 		title = "Changed file has no line ranges"
 	case "line_out_of_range":
 		title = "Location line is outside the source file"
+	case "quoted_code_mismatch":
+		title = "Quoted code does not match source"
 	case "unreadable_changed_file":
 		title = "Changed file cannot be previewed"
 	case "read_failed":
@@ -341,7 +361,7 @@ func (s *Service) attachCounterEvidence(ctx context.Context, repoRoot string, fi
 				continue
 			}
 			seen[key] = struct{}{}
-			kind := relatedEvidenceKind(match)
+			kind := relatedEvidenceKind(match, finding, profile)
 			title := relatedEvidenceTitle(kind, match)
 			summary := relatedEvidenceSummary(kind, profile, term, match)
 			codeSnippet := fmt.Sprintf("%d: %s", match.Line, strings.TrimSpace(match.Text))
@@ -478,9 +498,12 @@ func sentenceTrim(value string) string {
 	return value
 }
 
-func relatedEvidenceKind(match SearchMatch) string {
+func relatedEvidenceKind(match SearchMatch, finding dbgen.Finding, profile ruleProfile) string {
 	if isLikelyTestPath(match.Path) {
 		return KindTest
+	}
+	if isDirectCounterEvidence(match, finding, profile) {
+		return KindCounter
 	}
 	return KindSearch
 }
@@ -501,7 +524,206 @@ func relatedEvidenceSummary(kind string, profile ruleProfile, term string, match
 	if kind == KindTest {
 		return fmt.Sprintf("Related test search found %q at %s. Use this to check whether tests cover the claim or encode the same behavior. Matched line: `%s`.", term, location, trimmed)
 	}
+	if kind == KindCounter {
+		return fmt.Sprintf("Direct %s counter-evidence matched %q at %s. This appears to contradict the claim and should be compared against the changed code before dismissal. Matched line: `%s`.", profile.DisplayName, term, location, trimmed)
+	}
 	return fmt.Sprintf("Related %s context matched %q at %s. This is a verification lead, not verified counter-evidence; compare it with the changed code before using it to dismiss the finding. Matched line: `%s`.", profile.DisplayName, term, location, trimmed)
+}
+
+func isDirectCounterEvidence(match SearchMatch, finding dbgen.Finding, profile ruleProfile) bool {
+	text := strings.ToLower(match.Text)
+	path := strings.ToLower(filepath.ToSlash(match.Path))
+	if isDocumentationPath(path) || isProjectMetadataPath(path) {
+		return false
+	}
+	if !matchRelatesToFinding(match, finding) && !matchesRuleProfile(text, path, profile) {
+		return false
+	}
+	switch profile.ID {
+	case "nil_safety":
+		return nilSafetyCounterEvidence(text, finding)
+	case "auth_guard":
+		return !looksLikeDeclaration(text) && containsAny(text, "requireadmin", "require_admin", "authorize", "permission", "middleware", "role check", "admin required")
+	case "webhook_validation":
+		return !looksLikeDeclaration(text) && containsAny(text, "verifysignature", "verify_signature", "constructevent", "signature", "hmac", "validate signature")
+	case "idempotency":
+		return containsAny(text, "idempotency", "unique", "on conflict", "dedupe", "duplicate key", "constraint")
+	default:
+		return false
+	}
+}
+
+func nilSafetyCounterEvidence(text string, finding dbgen.Finding) bool {
+	claim := strings.ToLower(strings.Join([]string{
+		finding.CanonicalClaim,
+		nullableStringValue(finding.EvidenceSummary),
+	}, " "))
+	if !nilSafetyTargetAppearsInText(claim, text) {
+		return false
+	}
+	if containsAny(text, "recover", "panic") {
+		return false
+	}
+	if strings.Contains(claim, "[1]") && containsAny(text, "[1] != nil", "len(") {
+		return true
+	}
+	return containsAny(text, "!= nil", "== nil", "len(", "bounds")
+}
+
+func nilSafetyTargetAppearsInText(claim string, text string) bool {
+	terms := nilSafetyTargetTerms(claim)
+	if len(terms) == 0 {
+		return true
+	}
+	for _, term := range terms {
+		if strings.Contains(text, term) {
+			return true
+		}
+	}
+	return false
+}
+
+func nilSafetyTargetTerms(claim string) []string {
+	stop := map[string]struct{}{
+		"nil": {}, "panic": {}, "pointer": {}, "dereference": {}, "dereferences": {}, "without": {}, "check": {}, "runtime": {}, "causing": {}, "missing": {}, "guard": {},
+	}
+	fields := strings.FieldsFunc(strings.ToLower(claim), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_'
+	})
+	terms := []string{}
+	for _, field := range fields {
+		if len(field) < 4 {
+			continue
+		}
+		if _, ok := stop[field]; ok {
+			continue
+		}
+		addTerm(&terms, field)
+	}
+	return terms
+}
+
+func looksLikeDeclaration(text string) bool {
+	text = strings.TrimSpace(strings.ToLower(text))
+	return strings.HasPrefix(text, "func ") ||
+		strings.HasPrefix(text, "function ") ||
+		strings.HasPrefix(text, "def ") ||
+		strings.HasPrefix(text, "const ") ||
+		strings.HasPrefix(text, "type ")
+}
+
+func findingCodeQuoteExpectations(finding dbgen.Finding) []string {
+	return ExtractMatchableCodeQuotes(
+		finding.CanonicalClaim,
+		nullableStringValue(finding.EvidenceSummary),
+		nullableStringValue(finding.DraftComment),
+	)
+}
+
+func ExtractMatchableCodeQuotes(texts ...string) []string {
+	seen := map[string]struct{}{}
+	quotes := []string{}
+	for _, text := range texts {
+		for _, quote := range extractInlineCodeQuotes(text) {
+			if !matchableCodeQuote(quote) {
+				continue
+			}
+			key := normalizeCodeForMatch(quote)
+			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			quotes = append(quotes, quote)
+		}
+	}
+	return quotes
+}
+
+func FindMatchingCodeQuote(source string, quotes []string) (string, bool) {
+	normalizedSource := normalizeCodeForMatch(source)
+	if normalizedSource == "" {
+		return "", false
+	}
+	for _, quote := range quotes {
+		normalizedQuote := normalizeCodeForMatch(quote)
+		if normalizedQuote == "" {
+			continue
+		}
+		if strings.Contains(normalizedSource, normalizedQuote) {
+			return quote, true
+		}
+	}
+	return "", false
+}
+
+func extractInlineCodeQuotes(text string) []string {
+	quotes := []string{}
+	for {
+		start := strings.Index(text, "`")
+		if start < 0 {
+			return quotes
+		}
+		text = text[start+1:]
+		end := strings.Index(text, "`")
+		if end < 0 {
+			return quotes
+		}
+		quote := strings.TrimSpace(text[:end])
+		if quote != "" {
+			quotes = append(quotes, quote)
+		}
+		text = text[end+1:]
+	}
+}
+
+func matchableCodeQuote(quote string) bool {
+	quote = strings.TrimSpace(quote)
+	if len(quote) < 3 {
+		return false
+	}
+	lower := strings.ToLower(quote)
+	if strings.Contains(quote, "/") && strings.Contains(quote, ".") && !strings.ContainsAny(quote, "[](){}=<>!:+-*%&|") {
+		return false
+	}
+	if strings.HasPrefix(lower, "line ") || strings.HasPrefix(lower, "l") && allDigits(strings.TrimPrefix(lower, "l")) {
+		return false
+	}
+	if strings.ContainsAny(quote, "[](){}=<>!:+-*%&|") {
+		return true
+	}
+	return strings.HasPrefix(lower, "return ") ||
+		strings.HasPrefix(lower, "if ") ||
+		strings.HasPrefix(lower, "for ") ||
+		strings.HasPrefix(lower, "select ") ||
+		strings.HasPrefix(lower, "insert ") ||
+		strings.Contains(lower, " nil") ||
+		strings.Contains(lower, " now()")
+}
+
+func normalizeCodeForMatch(value string) string {
+	var builder strings.Builder
+	for _, char := range strings.ToLower(value) {
+		if unicode.IsSpace(char) {
+			continue
+		}
+		builder.WriteRune(char)
+	}
+	return builder.String()
+}
+
+func allDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) createEvidenceItem(ctx context.Context, findingID string, item Item) (dbgen.EvidenceItem, error) {

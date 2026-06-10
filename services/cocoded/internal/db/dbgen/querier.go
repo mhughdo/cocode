@@ -97,6 +97,7 @@ type Querier interface {
 	ListContextBundlesBySession(ctx context.Context, reviewSessionID string) ([]ContextBundle, error)
 	ListContextItemsByBundle(ctx context.Context, contextBundleID string) ([]ContextItem, error)
 	ListCopyPacketsBySession(ctx context.Context, reviewSessionID string) ([]CopyPacket, error)
+	ListDismissedHumanDecisionsByRepository(ctx context.Context, repositoryID string) ([]ListDismissedHumanDecisionsByRepositoryRow, error)
 	ListEnabledReviewRulesByWorkspace(ctx context.Context, workspaceID string) ([]ReviewRule, error)
 	ListEventsByReviewSession(ctx context.Context, reviewSessionID sql.NullString) ([]Event, error)
 	ListEvidenceEdgesByGraph(ctx context.Context, evidenceGraphID string) ([]EvidenceEdge, error)

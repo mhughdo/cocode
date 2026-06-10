@@ -1134,6 +1134,69 @@ func TestWorkflowBoostsConfidenceFromDistinctAgentConsensus(t *testing.T) {
 	}
 }
 
+func TestWorkflowCarriesDismissedFindingFingerprintAcrossSessions(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	priorSession := createWorkflowSession(t, env, "review_session_previous", StatusCompleted)
+	if _, err := env.Queries.CreateFinding(context.Background(), dbgen.CreateFindingParams{
+		ID:                 "finding_prior_dismissed",
+		ReviewSessionID:    priorSession.ID,
+		CanonicalClaim:     "Settings mutation lacks admin guard",
+		Category:           "security",
+		Severity:           "high",
+		Confidence:         0.91,
+		VerificationStatus: evidence.StatusUnverified,
+		DecisionStatus:     "undecided",
+		PrimaryPath:        nullableTestString("src/new.go"),
+		PrimaryStartLine:   sql.NullInt64{Int64: 3, Valid: true},
+		PrimaryEndLine:     sql.NullInt64{Int64: 3, Valid: true},
+		Fingerprint:        "fp_dismissed_carryover",
+		FirstSeenAt:        "2026-05-03T00:09:00Z",
+		UpdatedAt:          "2026-05-03T00:09:00Z",
+	}); err != nil {
+		t.Fatalf("CreateFinding(prior) error = %v", err)
+	}
+	if _, err := env.Queries.CreateHumanDecision(context.Background(), dbgen.CreateHumanDecisionParams{
+		ID:              "decision_prior_dismissed",
+		FindingID:       "finding_prior_dismissed",
+		ReviewSessionID: priorSession.ID,
+		Decision:        "dismissed",
+		Reason:          nullableTestString("known false positive"),
+		MetadataJson:    `{"source":"test"}`,
+		CreatedAt:       "2026-05-03T00:10:00Z",
+	}); err != nil {
+		t.Fatalf("CreateHumanDecision(prior) error = %v", err)
+	}
+
+	nextSession := createWorkflowSession(t, env, "review_session_next", StatusDraft)
+	createWorkflowCandidate(t, env, nextSession.ID, "candidate_carryover", "Settings mutation lacks admin guard", "security", "high", 0.91, "src/new.go", 3, 3, "fp_dismissed_carryover")
+
+	if err := env.Service.deduplicateFindings(context.Background(), nextSession); err != nil {
+		t.Fatalf("deduplicateFindings() error = %v", err)
+	}
+	findings, err := env.Queries.ListFindingsBySession(context.Background(), nextSession.ID)
+	if err != nil {
+		t.Fatalf("ListFindingsBySession() error = %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings = %+v", findings)
+	}
+	if findings[0].DecisionStatus != "dismissed" {
+		t.Fatalf("finding decision status = %q, want dismissed", findings[0].DecisionStatus)
+	}
+	events, err := env.Events.ListByReviewSession(context.Background(), nextSession.ID)
+	if err != nil {
+		t.Fatalf("ListByReviewSession() error = %v", err)
+	}
+	merged := eventPayloadByType(t, events, "FindingMerged")
+	if merged["prior_decision_carryover"] != true ||
+		merged["prior_decision_status"] != "dismissed" ||
+		merged["prior_decision_review_session_id"] != priorSession.ID {
+		t.Fatalf("merged event = %+v", merged)
+	}
+}
+
 func TestParseFindingCuratorOutputReadsWrappedTextJSON(t *testing.T) {
 	t.Parallel()
 
@@ -1490,6 +1553,76 @@ func TestWorkflowContinuesWhenOneAgentFails(t *testing.T) {
 	assertEventTypes(t, events, []string{"AgentRunFailed", "ReviewSessionPartialFailure", "ReviewSessionCompleted"})
 }
 
+func TestWorkflowContinuesWhenOneAgentTransportOpenFails(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	env.Driver.openErrors = map[string]bool{"agent_config_2": true}
+	if _, err := env.Queries.CreateAgentConfig(context.Background(), dbgen.CreateAgentConfigParams{
+		ID:               "agent_config_2",
+		Name:             "Unavailable Reviewer",
+		Role:             "secondary_reviewer",
+		AdapterKind:      string(agents.AdapterCLINonInteractive),
+		Command:          nullableTestString("fake-agent"),
+		ArgsJson:         "[]",
+		CwdMode:          "repo_root",
+		EnvAllowlistJson: "[]",
+		OutputMode:       string(agents.OutputJSON),
+		CapabilitiesJson: `{"supports_json":true,"can_read":true,"output_modes":["json"]}`,
+		SettingsJson:     `{"prompt_delivery":"stdin","timeout_seconds":30}`,
+		Enabled:          1,
+		CreatedAt:        "2026-05-03T00:04:00Z",
+		UpdatedAt:        "2026-05-03T00:04:00Z",
+	}); err != nil {
+		t.Fatalf("CreateAgentConfig(second) error = %v", err)
+	}
+	session := createWorkflowSession(t, env, "review_session_transport_partial", StatusDraft)
+	if _, err := env.Queries.CreateReviewSessionAgent(context.Background(), dbgen.CreateReviewSessionAgentParams{
+		ID:                   "review_session_agent_transport_2",
+		ReviewSessionID:      session.ID,
+		AgentConfigID:        "agent_config_2",
+		Role:                 "secondary_reviewer",
+		RunOrder:             2,
+		Enabled:              1,
+		SettingsOverrideJson: "{}",
+	}); err != nil {
+		t.Fatalf("CreateReviewSessionAgent(second) error = %v", err)
+	}
+	if _, err := env.Service.Transition(context.Background(), session.ID, StatusQueued); err != nil {
+		t.Fatalf("Transition(draft -> queued) error = %v", err)
+	}
+	if err := env.Service.Run(context.Background(), session.ID); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	updated, err := env.Queries.GetReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("GetReviewSession() error = %v", err)
+	}
+	if updated.Status != StatusCompleted {
+		t.Fatalf("session status = %s, want completed", updated.Status)
+	}
+	runs, err := env.Queries.ListAgentRunsBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListAgentRunsBySession() error = %v", err)
+	}
+	statuses := map[string]dbgen.AgentRun{}
+	for _, run := range runs {
+		statuses[run.Status] = run
+	}
+	failed := statuses[agentrun.RunStatusFailed]
+	if len(runs) != 2 ||
+		statuses[agentrun.RunStatusSucceeded].ID == "" ||
+		failed.ID == "" ||
+		failed.ErrorCode.String != "open_error" {
+		t.Fatalf("agent runs = %+v", runs)
+	}
+	events, err := env.Events.ListByReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListByReviewSession() error = %v", err)
+	}
+	assertEventTypes(t, events, []string{"AgentRunFailed", "ReviewSessionPartialFailure", "ReviewSessionCompleted"})
+}
+
 func TestWorkflowAgentTimeoutKeepsOtherFindings(t *testing.T) {
 	t.Parallel()
 
@@ -1595,6 +1728,157 @@ func TestWorkflowAgentTimeoutKeepsOtherFindings(t *testing.T) {
 	payload := eventPayloadByType(t, events, "ReviewSessionPartialFailure")
 	if payload["failed_agent_runs"] != float64(1) || payload["succeeded_agent_runs"] != float64(1) {
 		t.Fatalf("partial failure payload = %+v", payload)
+	}
+}
+
+func TestWorkflowKeepsParseableTimedOutAgentOutput(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	env.Driver.timeoutConfigs = map[string]bool{"agent_config_2": true}
+	env.Driver.stdout = `{"summary":"empty","findings":[]}`
+	env.Driver.stdoutByConfig = map[string]string{
+		"agent_config_2": `{
+			"summary": "timeout emitted a complete finding before cancellation",
+			"findings": [
+				{
+					"claim": "Timed out reviewer found a reachable settings mutation",
+					"category": "security",
+					"severity": "high",
+					"confidence": 0.89,
+					"locations": [{"path":"src/new.go","start_line":3,"end_line":3,"side":"RIGHT"}],
+					"evidence": [{"title":"handler is reachable","summary":"the timed-out run emitted this complete finding before cancellation"}]
+				}
+			]
+		}`,
+	}
+	if _, err := env.Queries.CreateAgentConfig(context.Background(), dbgen.CreateAgentConfigParams{
+		ID:               "agent_config_2",
+		Name:             "Slow Reviewer",
+		Role:             "secondary_reviewer",
+		AdapterKind:      string(agents.AdapterCLINonInteractive),
+		Command:          nullableTestString("slow-fake-agent"),
+		ArgsJson:         "[]",
+		CwdMode:          "repo_root",
+		EnvAllowlistJson: "[]",
+		OutputMode:       string(agents.OutputJSON),
+		CapabilitiesJson: `{"supports_json":true,"can_read":true,"output_modes":["json"]}`,
+		SettingsJson:     `{"prompt_delivery":"stdin","timeout_seconds":30}`,
+		Enabled:          1,
+		CreatedAt:        "2026-05-03T00:04:00Z",
+		UpdatedAt:        "2026-05-03T00:04:00Z",
+	}); err != nil {
+		t.Fatalf("CreateAgentConfig(slow) error = %v", err)
+	}
+	session := createWorkflowSession(t, env, "review_session_timeout_parseable", StatusDraft)
+	if _, err := env.Queries.CreateReviewSessionAgent(context.Background(), dbgen.CreateReviewSessionAgentParams{
+		ID:                   "review_session_agent_timeout_parseable_2",
+		ReviewSessionID:      session.ID,
+		AgentConfigID:        "agent_config_2",
+		Role:                 "secondary_reviewer",
+		RunOrder:             2,
+		Enabled:              1,
+		SettingsOverrideJson: "{}",
+	}); err != nil {
+		t.Fatalf("CreateReviewSessionAgent(slow) error = %v", err)
+	}
+	if _, err := env.Service.Transition(context.Background(), session.ID, StatusQueued); err != nil {
+		t.Fatalf("Transition(draft -> queued) error = %v", err)
+	}
+	if err := env.Service.Run(context.Background(), session.ID); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	candidates, err := env.Queries.ListFindingCandidatesBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListFindingCandidatesBySession() error = %v", err)
+	}
+	if len(candidates) != 1 || candidates[0].Claim != "Timed out reviewer found a reachable settings mutation" {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+	events, err := env.Events.ListByReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListByReviewSession() error = %v", err)
+	}
+	created := eventPayloadByType(t, events, "FindingCandidateCreated")
+	if created["agent_run_status"] != agentrun.RunStatusTimedOut || created["partial_output"] != true {
+		t.Fatalf("candidate event = %+v", created)
+	}
+}
+
+func TestDraftFindingCommentsCreatesMissingDrafts(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	session := createWorkflowSession(t, env, "review_session_draft_comments", StatusDraft)
+	missingDraft, err := env.Queries.CreateFinding(context.Background(), dbgen.CreateFindingParams{
+		ID:                     "finding_missing_draft",
+		ReviewSessionID:        session.ID,
+		CanonicalClaim:         "Settings mutation lacks admin guard",
+		Category:               "security",
+		Severity:               "high",
+		Confidence:             0.91,
+		VerificationStatus:     evidence.StatusLocallySupported,
+		DecisionStatus:         "undecided",
+		PrimaryPath:            nullableTestString("src/new.go"),
+		PrimaryStartLine:       sql.NullInt64{Int64: 3, Valid: true},
+		PrimaryEndLine:         sql.NullInt64{Int64: 3, Valid: true},
+		EvidenceSummary:        nullableTestString("The changed handler is reachable without an admin check."),
+		CounterEvidenceSummary: nullableTestString("none verified"),
+		SuggestedFix:           nullableTestString("Require admin permissions before mutating settings."),
+		Fingerprint:            "fp_missing_draft",
+		FirstSeenAt:            "2026-05-03T00:09:00Z",
+		UpdatedAt:              "2026-05-03T00:09:00Z",
+	})
+	if err != nil {
+		t.Fatalf("CreateFinding(missing draft) error = %v", err)
+	}
+	preserved, err := env.Queries.CreateFinding(context.Background(), dbgen.CreateFindingParams{
+		ID:                 "finding_preserved_draft",
+		ReviewSessionID:    session.ID,
+		CanonicalClaim:     "Existing draft should remain",
+		Category:           "maintainability",
+		Severity:           "low",
+		Confidence:         0.61,
+		VerificationStatus: evidence.StatusPlausible,
+		DecisionStatus:     "undecided",
+		DraftComment:       nullableTestString("Keep the reviewer-provided draft."),
+		Fingerprint:        "fp_preserved_draft",
+		FirstSeenAt:        "2026-05-03T00:09:00Z",
+		UpdatedAt:          "2026-05-03T00:09:00Z",
+	})
+	if err != nil {
+		t.Fatalf("CreateFinding(preserved draft) error = %v", err)
+	}
+
+	if err := env.Service.draftFindingComments(context.Background(), session); err != nil {
+		t.Fatalf("draftFindingComments() error = %v", err)
+	}
+	updatedMissing, err := env.Queries.GetFinding(context.Background(), missingDraft.ID)
+	if err != nil {
+		t.Fatalf("GetFinding(missing draft) error = %v", err)
+	}
+	if !updatedMissing.DraftComment.Valid ||
+		!strings.Contains(updatedMissing.DraftComment.String, "Settings mutation lacks admin guard") ||
+		!strings.Contains(updatedMissing.DraftComment.String, "Evidence: The changed handler") ||
+		!strings.Contains(updatedMissing.DraftComment.String, "Suggested fix: Require admin") ||
+		strings.Contains(updatedMissing.DraftComment.String, "Counter-evidence") {
+		t.Fatalf("generated draft = %q", updatedMissing.DraftComment.String)
+	}
+	updatedPreserved, err := env.Queries.GetFinding(context.Background(), preserved.ID)
+	if err != nil {
+		t.Fatalf("GetFinding(preserved draft) error = %v", err)
+	}
+	if updatedPreserved.DraftComment.String != "Keep the reviewer-provided draft." {
+		t.Fatalf("preserved draft = %q", updatedPreserved.DraftComment.String)
+	}
+	events, err := env.Events.ListByReviewSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListByReviewSession() error = %v", err)
+	}
+	assertEventTypes(t, events, []string{"FindingDraftCommentCreated", "DraftCommentsPrepared"})
+	payload := eventPayloadByType(t, events, "DraftCommentsPrepared")
+	if payload["created"] != float64(1) || payload["skipped"] != float64(1) {
+		t.Fatalf("draft comments payload = %+v", payload)
 	}
 }
 
@@ -2638,10 +2922,14 @@ type workflowDriver struct {
 	current        int
 	max            int
 	failConfigs    map[string]bool
+	openErrors     map[string]bool
 	timeoutConfigs map[string]bool
 }
 
-func (d *workflowDriver) Open(context.Context, agents.ConnectionConfig) (agents.Connection, error) {
+func (d *workflowDriver) Open(_ context.Context, config agents.ConnectionConfig) (agents.Connection, error) {
+	if d.shouldOpenError(config.AdapterID) {
+		return nil, errors.New("agent open failed")
+	}
 	return workflowConnection{driver: d}, nil
 }
 
@@ -2681,7 +2969,7 @@ func (c workflowConnection) SendTask(_ context.Context, task agents.AgentTask) (
 	if c.driver.shouldTimeout(task.AgentConfigID) {
 		events := make(chan agents.AgentEvent, 3)
 		events <- agents.AgentEvent{Type: agents.EventStarted, RunID: task.RunID, Message: "fake agent started"}
-		events <- agents.AgentEvent{Type: agents.EventOutput, RunID: task.RunID, Stream: "stdout", Text: "partial before timeout\n"}
+		events <- agents.AgentEvent{Type: agents.EventOutput, RunID: task.RunID, Stream: "stdout", Text: c.driver.timeoutStdoutText(task.AgentConfigID)}
 		events <- agents.AgentEvent{Type: agents.EventCanceled, RunID: task.RunID, ErrorCode: "timeout", Error: "agent exceeded timeout"}
 		close(events)
 		return events, nil
@@ -2736,10 +3024,27 @@ func (d *workflowDriver) shouldFail(agentConfigID string) bool {
 	return d.failConfigs[agentConfigID]
 }
 
+func (d *workflowDriver) shouldOpenError(agentConfigID string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.openErrors[agentConfigID]
+}
+
 func (d *workflowDriver) shouldTimeout(agentConfigID string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.timeoutConfigs[agentConfigID]
+}
+
+func (d *workflowDriver) timeoutStdoutText(agentConfigID string) string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.stdoutByConfig != nil {
+		if stdout := strings.TrimSpace(d.stdoutByConfig[agentConfigID]); stdout != "" {
+			return stdout
+		}
+	}
+	return "partial before timeout\n"
 }
 
 func (d *workflowDriver) stdoutText(agentConfigID string) string {

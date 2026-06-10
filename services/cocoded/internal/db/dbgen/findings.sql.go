@@ -419,6 +419,69 @@ func (q *Queries) LinkFindingCandidate(ctx context.Context, arg LinkFindingCandi
 	return err
 }
 
+const listDismissedHumanDecisionsByRepository = `-- name: ListDismissedHumanDecisionsByRepository :many
+SELECT
+  hd.id,
+  hd.finding_id,
+  hd.review_session_id,
+  hd.decision,
+  hd.reason,
+  hd.metadata_json,
+  hd.created_at,
+  f.fingerprint AS finding_fingerprint
+FROM human_decisions hd
+JOIN findings f ON f.id = hd.finding_id
+JOIN review_sessions rs ON rs.id = f.review_session_id
+WHERE rs.repository_id = ?
+  AND hd.decision = 'dismissed'
+  AND f.fingerprint IS NOT NULL
+  AND f.fingerprint <> ''
+ORDER BY hd.created_at DESC, hd.id DESC
+`
+
+type ListDismissedHumanDecisionsByRepositoryRow struct {
+	ID                 string         `json:"id"`
+	FindingID          string         `json:"finding_id"`
+	ReviewSessionID    string         `json:"review_session_id"`
+	Decision           string         `json:"decision"`
+	Reason             sql.NullString `json:"reason"`
+	MetadataJson       string         `json:"metadata_json"`
+	CreatedAt          string         `json:"created_at"`
+	FindingFingerprint string         `json:"finding_fingerprint"`
+}
+
+func (q *Queries) ListDismissedHumanDecisionsByRepository(ctx context.Context, repositoryID string) ([]ListDismissedHumanDecisionsByRepositoryRow, error) {
+	rows, err := q.db.QueryContext(ctx, listDismissedHumanDecisionsByRepository, repositoryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDismissedHumanDecisionsByRepositoryRow{}
+	for rows.Next() {
+		var i ListDismissedHumanDecisionsByRepositoryRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.FindingID,
+			&i.ReviewSessionID,
+			&i.Decision,
+			&i.Reason,
+			&i.MetadataJson,
+			&i.CreatedAt,
+			&i.FindingFingerprint,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listFindingCandidateLinks = `-- name: ListFindingCandidateLinks :many
 SELECT finding_id, finding_candidate_id, relation
 FROM finding_candidate_links

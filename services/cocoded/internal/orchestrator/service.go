@@ -919,6 +919,7 @@ func (s *Service) runWorkflow(ctx context.Context, session dbgen.ReviewSession) 
 
 	failedRuns := 0
 	succeededRuns := 0
+	usableOutputRuns := 0
 	runResults := []agentrun.RunResult{}
 	if phaseCompleted(checkpoint.CompletedPhases, PhaseRunAgents) {
 		runResults, err = s.loadReviewAgentRunResults(ctx, session.ID)
@@ -930,6 +931,9 @@ func (s *Service) runWorkflow(ctx context.Context, session dbgen.ReviewSession) 
 				succeededRuns++
 			} else {
 				failedRuns++
+			}
+			if reviewRunOutputUsable(result.Run) {
+				usableOutputRuns++
 			}
 		}
 	} else if err := s.withPhase(ctx, session.ID, PhaseRunAgents, func() error {
@@ -943,6 +947,9 @@ func (s *Service) runWorkflow(ctx context.Context, session dbgen.ReviewSession) 
 				succeededRuns++
 			} else {
 				failedRuns++
+			}
+			if reviewRunOutputUsable(result.Run) {
+				usableOutputRuns++
 			}
 		}
 		return nil
@@ -971,7 +978,9 @@ func (s *Service) runWorkflow(ctx context.Context, session dbgen.ReviewSession) 
 		}
 	}
 	if succeededRuns == 0 {
-		return fmt.Errorf("all review agent runs failed")
+		if usableOutputRuns == 0 {
+			return fmt.Errorf("all review agent runs failed")
+		}
 	}
 
 	for _, phase := range []string{
@@ -1009,6 +1018,10 @@ func (s *Service) runWorkflow(ctx context.Context, session dbgen.ReviewSession) 
 		case PhaseBuildEvidence:
 			runPhase = func() error {
 				return s.buildEvidenceMaps(ctx, session)
+			}
+		case PhaseDraftComments:
+			runPhase = func() error {
+				return s.draftFindingComments(ctx, session)
 			}
 		}
 		if err := s.withPhase(ctx, session.ID, phase, runPhase); err != nil {
@@ -1287,7 +1300,7 @@ func (s *Service) normalizeAgentOutputs(ctx context.Context, session dbgen.Revie
 	totalDiagnostics := 0
 	for _, result := range results {
 		run := result.Run
-		if run.Status != agentrun.RunStatusSucceeded || !run.ParsedOutputArtifactID.Valid {
+		if !reviewRunOutputUsable(run) {
 			continue
 		}
 		content, _, err := s.Artifacts.Read(ctx, run.ParsedOutputArtifactID.String)
@@ -1310,6 +1323,7 @@ func (s *Service) normalizeAgentOutputs(ctx context.Context, session dbgen.Revie
 				Payload: map[string]any{
 					"phase":            PhaseNormalizeOutputs,
 					"agent_run_id":     run.ID,
+					"agent_run_status": run.Status,
 					"diagnostic_count": len(extracted.Diagnostics),
 					"diagnostics":      extracted.Diagnostics,
 				},
@@ -1336,6 +1350,8 @@ func (s *Service) normalizeAgentOutputs(ctx context.Context, session dbgen.Revie
 					"category":             created.Category,
 					"severity":             created.Severity,
 					"confidence":           created.Confidence,
+					"agent_run_status":     run.Status,
+					"partial_output":       run.Status == agentrun.RunStatusTimedOut,
 					"raw_artifact_id":      nullableValue(created.RawArtifactID),
 					"candidate_trust":      "unverified_agent_claim",
 					"source_trust":         "untrusted_agent_output",
@@ -1358,6 +1374,13 @@ func (s *Service) normalizeAgentOutputs(ctx context.Context, session dbgen.Revie
 			"side_effects_allowed": false,
 		},
 	})
+}
+
+func reviewRunOutputUsable(run dbgen.AgentRun) bool {
+	if !run.ParsedOutputArtifactID.Valid {
+		return false
+	}
+	return run.Status == agentrun.RunStatusSucceeded || run.Status == agentrun.RunStatusTimedOut
 }
 
 func (s *Service) createFindingCandidate(ctx context.Context, session dbgen.ReviewSession, run dbgen.AgentRun, candidate agentoutput.Candidate) (dbgen.FindingCandidate, error) {
@@ -1417,6 +1440,10 @@ func (s *Service) deduplicateFindings(ctx context.Context, session dbgen.ReviewS
 	if err != nil {
 		return fmt.Errorf("read changed files for findings: %w", err)
 	}
+	dismissedMemory, err := s.loadDismissedDecisionMemory(ctx, repository.ID)
+	if err != nil {
+		return fmt.Errorf("load dismissed decision memory: %w", err)
+	}
 	for _, cluster := range clusters {
 		representative := findingengine.Representative(cluster)
 		if representative.ID == "" || !representative.Fingerprint.Valid {
@@ -1441,6 +1468,11 @@ func (s *Service) deduplicateFindings(ctx context.Context, session dbgen.ReviewS
 		draftComment := representative.DraftComment
 		curatedLocationOverride := false
 		curatorRequestedStatus := ""
+		decisionStatus := "undecided"
+		priorDecision, hasPriorDismissal := dismissedMemory[strings.TrimSpace(representative.Fingerprint.String)]
+		if hasPriorDismissal {
+			decisionStatus = "dismissed"
+		}
 		if hasCuration {
 			if strings.TrimSpace(curated.CanonicalClaim) != "" {
 				canonicalClaim = strings.TrimSpace(curated.CanonicalClaim)
@@ -1539,7 +1571,7 @@ func (s *Service) deduplicateFindings(ctx context.Context, session dbgen.ReviewS
 			Severity:               severity,
 			Confidence:             confidence,
 			VerificationStatus:     verificationStatus,
-			DecisionStatus:         "undecided",
+			DecisionStatus:         decisionStatus,
 			PrimaryPath:            primaryPath,
 			PrimaryStartLine:       primaryStartLine,
 			PrimaryEndLine:         primaryEndLine,
@@ -1572,31 +1604,40 @@ func (s *Service) deduplicateFindings(ctx context.Context, session dbgen.ReviewS
 				return err
 			}
 		}
+		payload := map[string]any{
+			"phase":                     PhaseDeduplicate,
+			"finding_id":                finding.ID,
+			"fingerprint":               finding.Fingerprint,
+			"candidate_count":           len(cluster.Candidates),
+			"canonical_claim":           finding.CanonicalClaim,
+			"merged_from_count":         finding.MergedFromCount,
+			"curated":                   hasCuration,
+			"curation_refiner":          curation.Refiner,
+			"curator_agent_config_id":   curation.AgentConfigID,
+			"curator_agent_run_id":      curation.AgentRunID,
+			"curated_evidence_items":    curatedEvidenceItems,
+			"curator_requested_status":  curatorRequestedStatus,
+			"consensus_confidence":      consensusConfidence,
+			"consensus_source_agents":   consensusSourceAgents,
+			"primary_anchor_source":     anchorSource,
+			"primary_anchor_valid":      anchorValidation.Valid,
+			"primary_anchor_reason":     anchorValidation.Reason,
+			"curated_location_override": curatedLocationOverride,
+			"curated_primary_rejected":  curatedPrimaryRejected,
+			"curated_status_downgraded": curatedStatusDowngraded,
+		}
+		if hasPriorDismissal {
+			payload["prior_decision_carryover"] = true
+			payload["prior_decision_id"] = priorDecision.ID
+			payload["prior_decision_review_session_id"] = priorDecision.ReviewSessionID
+			payload["prior_decision_created_at"] = priorDecision.CreatedAt
+			payload["prior_decision_status"] = priorDecision.Decision
+			payload["prior_decision_reason"] = nullableValue(priorDecision.Reason)
+		}
 		if err := s.appendEvent(ctx, appendEventParams{
 			ReviewSessionID: session.ID,
 			Type:            "FindingMerged",
-			Payload: map[string]any{
-				"phase":                     PhaseDeduplicate,
-				"finding_id":                finding.ID,
-				"fingerprint":               finding.Fingerprint,
-				"candidate_count":           len(cluster.Candidates),
-				"canonical_claim":           finding.CanonicalClaim,
-				"merged_from_count":         finding.MergedFromCount,
-				"curated":                   hasCuration,
-				"curation_refiner":          curation.Refiner,
-				"curator_agent_config_id":   curation.AgentConfigID,
-				"curator_agent_run_id":      curation.AgentRunID,
-				"curated_evidence_items":    curatedEvidenceItems,
-				"curator_requested_status":  curatorRequestedStatus,
-				"consensus_confidence":      consensusConfidence,
-				"consensus_source_agents":   consensusSourceAgents,
-				"primary_anchor_source":     anchorSource,
-				"primary_anchor_valid":      anchorValidation.Valid,
-				"primary_anchor_reason":     anchorValidation.Reason,
-				"curated_location_override": curatedLocationOverride,
-				"curated_primary_rejected":  curatedPrimaryRejected,
-				"curated_status_downgraded": curatedStatusDowngraded,
-			},
+			Payload:         payload,
 		}); err != nil {
 			return err
 		}
@@ -1613,6 +1654,25 @@ func (s *Service) deduplicateFindings(ctx context.Context, session dbgen.ReviewS
 			"curator_agent_run_id":    curation.AgentRunID,
 		},
 	})
+}
+
+func (s *Service) loadDismissedDecisionMemory(ctx context.Context, repositoryID string) (map[string]dbgen.ListDismissedHumanDecisionsByRepositoryRow, error) {
+	rows, err := s.Queries.ListDismissedHumanDecisionsByRepository(ctx, repositoryID)
+	if err != nil {
+		return nil, err
+	}
+	memory := make(map[string]dbgen.ListDismissedHumanDecisionsByRepositoryRow, len(rows))
+	for _, row := range rows {
+		fingerprint := strings.TrimSpace(row.FindingFingerprint)
+		if fingerprint == "" {
+			continue
+		}
+		if _, ok := memory[fingerprint]; ok {
+			continue
+		}
+		memory[fingerprint] = row
+	}
+	return memory, nil
 }
 
 func (s *Service) refineDedupeClusters(ctx context.Context, session dbgen.ReviewSession, candidates []dbgen.FindingCandidate, deterministicClusters []findingengine.Cluster) (dedupeCurationResult, error) {
@@ -1774,6 +1834,84 @@ func (s *Service) buildEvidenceMaps(ctx context.Context, session dbgen.ReviewSes
 			"by_status":     summary.ByStatus,
 		},
 	})
+}
+
+func (s *Service) draftFindingComments(ctx context.Context, session dbgen.ReviewSession) error {
+	findings, err := s.Queries.ListFindingsBySession(ctx, session.ID)
+	if err != nil {
+		return fmt.Errorf("list findings for draft comments: %w", err)
+	}
+	created := 0
+	for _, finding := range findings {
+		if strings.TrimSpace(nullableValue(finding.DraftComment)) != "" {
+			continue
+		}
+		comment := buildDraftFindingComment(finding)
+		if strings.TrimSpace(comment) == "" {
+			continue
+		}
+		updated, err := s.Queries.UpdateFindingDraftComment(ctx, dbgen.UpdateFindingDraftCommentParams{
+			ID:           finding.ID,
+			DraftComment: nullableString(comment),
+			UpdatedAt:    s.now().Format(time.RFC3339Nano),
+		})
+		if err != nil {
+			return fmt.Errorf("update draft comment for finding %s: %w", finding.ID, err)
+		}
+		created++
+		if err := s.appendEvent(ctx, appendEventParams{
+			ReviewSessionID: session.ID,
+			Type:            "FindingDraftCommentCreated",
+			Payload: map[string]any{
+				"phase":        PhaseDraftComments,
+				"finding_id":   updated.ID,
+				"fingerprint":  updated.Fingerprint,
+				"comment_size": len(comment),
+			},
+		}); err != nil {
+			return err
+		}
+	}
+	return s.appendEvent(ctx, appendEventParams{
+		ReviewSessionID: session.ID,
+		Type:            "DraftCommentsPrepared",
+		Payload: map[string]any{
+			"phase":         PhaseDraftComments,
+			"finding_count": len(findings),
+			"created":       created,
+			"skipped":       len(findings) - created,
+		},
+	})
+}
+
+func buildDraftFindingComment(finding dbgen.Finding) string {
+	claim := strings.TrimSpace(finding.CanonicalClaim)
+	if claim == "" {
+		claim = "This finding needs review."
+	}
+	parts := []string{claim}
+	if summary := strings.TrimSpace(nullableValue(finding.EvidenceSummary)); summary != "" {
+		parts = append(parts, "Evidence: "+summary)
+	}
+	if counter := strings.TrimSpace(nullableValue(finding.CounterEvidenceSummary)); usefulCounterSummary(counter) {
+		parts = append(parts, "Counter-evidence: "+counter)
+	}
+	if fix := strings.TrimSpace(nullableValue(finding.SuggestedFix)); fix != "" {
+		parts = append(parts, "Suggested fix: "+fix)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func usefulCounterSummary(summary string) bool {
+	if summary == "" {
+		return false
+	}
+	normalized := strings.ToLower(strings.Trim(summary, ". "))
+	switch normalized {
+	case "none", "none verified", "no verified contradiction was found", "no counter evidence found", "no counter-evidence found":
+		return false
+	}
+	return true
 }
 
 func (s *Service) connectionConfig(item runContext) (agents.ConnectionConfig, agents.TaskLimits, error) {

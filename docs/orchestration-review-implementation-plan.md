@@ -42,6 +42,8 @@ Update rules:
 | 2026-06-10 | Added deterministic changed-code anchor validation for local verifier and curator output. | `VERIFY-01`, `VERIFY-02` | `go test ./internal/evidence ./internal/orchestrator` | Curator `verified` status and primary-location overrides are gated by changed-hunk/source-line validation; invalid curator anchors fall back to representative anchors or downgrade with event provenance. |
 | 2026-06-10 | Added quoted-code freshness checks and deterministic counter-evidence classification. | `VERIFY-03`, `VERIFY-04` | `go test ./internal/evidence ./internal/orchestrator` | Local verification now rejects stale quoted code observations, records matched code quotes, and can reach `likely_false_positive` from direct counter-evidence without an LLM verifier. |
 | 2026-06-10 | Added consensus confidence and verifier disagreement preservation. | `VERIFY-05`, `VERIFY-06` | `go test ./internal/evidence ./internal/findingengine ./internal/orchestrator` | Distinct agent runs now boost merged confidence, and conflicting verifier outputs are stored as explicit disagreement evidence instead of being overwritten by the last writer. |
+| 2026-06-10 | Documented local-first orchestration contracts for CI/adapters. | `BASE-03` | Documentation review | CI and GitHub automation are defined as triggers/reporting adapters over the same local review session, finding, evidence, chat, decision, and publish draft contracts. |
+| 2026-06-10 | Added cross-session dismissal memory, transport partial-failure coverage, timeout-output preservation, and real draft comment generation. | `VERIFY-07`, `VERIFY-08`, `VERIFY-09`, `VERIFY-10` | `go test ./internal/orchestrator -run 'TestWorkflowCarriesDismissedFindingFingerprintAcrossSessions|TestWorkflowContinuesWhenOneAgentTransportOpenFails|TestWorkflowKeepsParseableTimedOutAgentOutput|TestDraftFindingCommentsCreatesMissingDrafts|TestWorkflowAgentTimeoutKeepsOtherFindings|TestWorkflowContinuesWhenOneAgentFails'` | Repository-scoped prior dismissals now carry forward by fingerprint; transport-open failures preserve successful agents; parseable timed-out output can produce candidates with provenance; `draft_comments` fills missing finding draft comments deterministically. |
 
 ## Assumptions And Boundaries
 
@@ -94,6 +96,16 @@ The target change is not a new workflow. It is stronger contracts between phases
 - Evidence maps include enough supporting and counter-evidence for a user to confirm the issue quickly.
 - Centralized chat becomes an asynchronous, persistent, cancelable Cocode workflow rather than a blocking per-agent CLI loop.
 
+## Local-First Orchestration Contracts
+
+Local Cocode state remains the product contract:
+
+- `review_sessions`, `findings`, `evidence_items`, `evidence_graphs`, `chat_threads`, `chat_messages`, `human_decisions`, `publish_drafts`, and artifacts are the source of truth.
+- CI and GitHub automation should create, resume, inspect, and report these same records instead of owning a parallel finding or evidence schema.
+- External CLI, App Server, and ACP sessions are worker/session metadata attached to agent runs or chat turns; they are not the authoritative review state.
+- Human decision memory is carried by stable finding fingerprints inside a repository, with event provenance when a prior dismissal affects a later run.
+- Publishing and GitHub comments consume accepted local findings and publish drafts; they do not bypass verification, decision, or evidence-map state.
+
 ## Preserve Existing Strengths
 
 The review called out several parts of the architecture as fundamentally sound. These are constraints, not work items to replace:
@@ -115,7 +127,7 @@ These tasks make sure future refactors preserve the good parts the audit says ar
 | --- | --- | --- | --- | --- | --- |
 | BASE-01 | done | Add workflow invariant tests for the 8-phase checkpoint order. | The expected phase sequence is encoded in tests and fails if phases are reordered or skipped accidentally. | `go test ./internal/orchestrator -run 'TestWorkflowPhaseCheckpointOrderInvariant'` from `services/cocoded`. | `services/cocoded/internal/orchestrator/service.go` |
 | BASE-02 | done | Add parser preservation tests for mixed CLI output. | Structured JSON, JSON embedded in text, and raw malformed output are preserved with artifacts and parse status. | `go test ./internal/agentoutput -run 'TestParsePreservesMixedCLIOutputContracts'`; `go test ./internal/orchestrator -run 'TestWorkflowPersistsStructuredFindingCandidates|TestWorkflowPersistsDelimitedFindingCandidateEvents|TestWorkflowPersistsMalformedOutputAsRawParsedArtifact'` from `services/cocoded`. | `services/cocoded/internal/agentoutput`, `services/cocoded/internal/orchestrator` |
-| BASE-03 | todo | Document local-first orchestration contracts in this plan or an ADR. | Future CI mode is described as a trigger/reporting adapter over local session/finding/evidence contracts. | Documentation review. | `docs/orchestration-review-implementation-plan.md`, optional ADR |
+| BASE-03 | done | Document local-first orchestration contracts in this plan or an ADR. | Future CI mode is described as a trigger/reporting adapter over local session/finding/evidence contracts. | Documentation review. | `docs/orchestration-review-implementation-plan.md`, optional ADR |
 
 ### Phase 1: Correctness And Persistence Quick Wins
 
@@ -170,10 +182,10 @@ This phase makes “verified” mean more than “the file and line exist.”
 | VERIFY-04 | done | Make deterministic counter-evidence classification reachable. | Local verifier can classify concrete contradictions as counter-evidence and mark likely false positives when appropriate. | `go test ./internal/evidence ./internal/orchestrator` from `services/cocoded`. | `services/cocoded/internal/evidence/service.go` |
 | VERIFY-05 | done | Add consensus confidence across distinct source agents. | Merged findings combine confidence from independent agents using a documented formula, not only a tiebreaker. | `go test ./internal/evidence ./internal/findingengine ./internal/orchestrator` from `services/cocoded`. | `services/cocoded/internal/findingengine`, `services/cocoded/internal/orchestrator` |
 | VERIFY-06 | done | Preserve verifier disagreement explicitly. | Conflicting verifier outputs are stored/displayed instead of last-writer-wins. | `go test ./internal/evidence ./internal/findingengine ./internal/orchestrator` from `services/cocoded`. | `services/cocoded/internal/orchestrator/verifier_agent.go`, `services/cocoded/internal/evidence` |
-| VERIFY-07 | todo | Reuse prior dismissals across review sessions. | Stable fingerprints can suppress or downgrade previously dismissed findings in later sessions. | Cross-session decision memory test. | `services/cocoded/internal/db`, `services/cocoded/internal/findingengine`, `services/cocoded/internal/orchestrator` |
-| VERIFY-08 | todo | Handle partial agent failures without failing the whole review phase. | One reviewer transport failure records a warning and preserves successful agents unless policy requires fail-fast. | Orchestrator test with one failing adapter and one successful adapter. | `services/cocoded/internal/orchestrator/service.go` |
-| VERIFY-09 | todo | Preserve parsed output from timed-out runs when safe. | If an agent times out after emitting parseable findings, usable output is retained with timeout provenance. | Adapter/orchestrator timeout fixture. | `services/cocoded/internal/agents`, `services/cocoded/internal/orchestrator` |
-| VERIFY-10 | todo | Decide whether `draft_comments` is real or removed from progress. | Phase either generates meaningful draft artifacts or no longer inflates progress as a no-op. | Workflow progress test. | `services/cocoded/internal/orchestrator/service.go` |
+| VERIFY-07 | done | Reuse prior dismissals across review sessions. | Stable fingerprints can suppress or downgrade previously dismissed findings in later sessions. | `go test ./internal/orchestrator -run 'TestWorkflowCarriesDismissedFindingFingerprintAcrossSessions'` from `services/cocoded`. | `services/cocoded/internal/db`, `services/cocoded/internal/findingengine`, `services/cocoded/internal/orchestrator` |
+| VERIFY-08 | done | Handle partial agent failures without failing the whole review phase. | One reviewer transport failure records a warning and preserves successful agents unless policy requires fail-fast. | `go test ./internal/orchestrator -run 'TestWorkflowContinuesWhenOneAgentTransportOpenFails|TestWorkflowContinuesWhenOneAgentFails'` from `services/cocoded`. | `services/cocoded/internal/orchestrator/service.go` |
+| VERIFY-09 | done | Preserve parsed output from timed-out runs when safe. | If an agent times out after emitting parseable findings, usable output is retained with timeout provenance. | `go test ./internal/orchestrator -run 'TestWorkflowKeepsParseableTimedOutAgentOutput|TestWorkflowAgentTimeoutKeepsOtherFindings'` from `services/cocoded`. | `services/cocoded/internal/agents`, `services/cocoded/internal/orchestrator` |
+| VERIFY-10 | done | Decide whether `draft_comments` is real or removed from progress. | Phase either generates meaningful draft artifacts or no longer inflates progress as a no-op. | `go test ./internal/orchestrator -run 'TestDraftFindingCommentsCreatesMissingDrafts'` from `services/cocoded`. | `services/cocoded/internal/orchestrator/service.go` |
 
 Checkpoint after Phase 3:
 
@@ -304,32 +316,32 @@ End-to-end manual checks:
 
 | Audit Item | Covered By | Status | Notes |
 | --- | --- | --- | --- |
-| Architecture is fundamentally sound and should stay deterministic/checkpointed. | `BASE-01`, `BASE-03` | todo | Protect current backbone instead of replacing it. |
-| Parsing is robust and should be preserved. | `BASE-02` | todo | Adds regression tests around tolerant parsing and raw artifacts. |
-| Cocode owns state; CLIs are workers. | `BASE-03`, `CHAT-12`, `ADAPT-06` | todo | Keeps adapter sessions as metadata, not source of truth. |
-| H1: Roles/presets never reach prompts. | `PROMPT-05` | todo | Depends on single prompt source and role overlay format. |
+| Architecture is fundamentally sound and should stay deterministic/checkpointed. | `BASE-01`, `BASE-03` | done | Protects current backbone instead of replacing it. |
+| Parsing is robust and should be preserved. | `BASE-02` | done | Regression tests cover tolerant parsing and raw artifacts. |
+| Cocode owns state; CLIs are workers. | `BASE-03`, `CHAT-12`, `ADAPT-06` | doing | Local-first contract is documented; structured chat refs and external session metadata remain open. |
+| H1: Roles/presets never reach prompts. | `PROMPT-05` | done | Selected role overlays alter prompts and prompt hashes. |
 | H2: `blocker` severity gets worst verification priority. | `ORCH-01` | done | Fixed in verifier prioritization and curator candidate scoring. |
 | H3: Resume after mid-phase crash can permanently fail session. | `ORCH-02`, `ORCH-03` | done | Candidate, finding, and candidate-link writes are idempotent across retries. |
 | H4: Chat answers are deleted from persistence. | `CHAT-01` | done | `role=chat` agent messages now survive hidden workflow cleanup. |
 | H5: Curator can mint verified status without deterministic backstop. | `VERIFY-01`, `VERIFY-02` | done | Curator primary anchors now pass changed-hunk/source-line validation or downgrade/fallback with provenance. |
-| Missing output enums and examples. | `PROMPT-03` | todo | Includes exact severity/category enum and JSON-only rule. |
-| Missing severity rubric, stop conditions, finding cap. | `PROMPT-04` | todo | Should reduce noisy findings and overclaiming. |
-| Prompt sprawl and drift. | `PROMPT-01`, `PROMPT-02`, `PROMPT-07` | todo | Includes version/hash and artifact traceability. |
-| `PromptTemplate` override not wired/traceable. | `PROMPT-02`, `PROMPT-08` | todo | Validate exact wiring during implementation. |
-| Prompt examples and parser schema can drift. | `PROMPT-09` | todo | Adds schema/prompt consistency tests. |
+| Missing output enums and examples. | `PROMPT-03` | done | Prompt includes exact severity/category enum and JSON-only rule. |
+| Missing severity rubric, stop conditions, finding cap. | `PROMPT-04` | done | Rubric and caps reduce noisy findings and overclaiming. |
+| Prompt sprawl and drift. | `PROMPT-01`, `PROMPT-02`, `PROMPT-07` | doing | Single source, version/hash, and artifacts are done; shared injection-defense text remains open. |
+| `PromptTemplate` override not wired/traceable. | `PROMPT-02`, `PROMPT-08` | done | Override behavior is traced in prompt hash/provenance. |
+| Prompt examples and parser schema can drift. | `PROMPT-09` | done | Schema/prompt consistency tests guard drift. |
 | Chat prompt omits full injection-defense guidance. | `PROMPT-07` | todo | Centralized injection text must cover chat too. |
 | Project rules dropped at default depth. | `CTX-01` | done | Standard reviews include requested rules. |
 | Rule discovery misses common instruction files. | `CTX-02` | done | Adds `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `.cursor/rules`. |
-| Project rules may be noisy if used naively. | `PROMPT-10` | todo | Tells reviewers how to treat project rules as review guidance. |
+| Project rules may be noisy if used naively. | `PROMPT-10` | done | Reviewers are told how to treat project rules as guidance rather than review truth. |
 | Read-only is instruction-only. | `SAFE-01`, `SAFE-02`, `SAFE-03` | doing | `SAFE-01` and `SAFE-03` are complete; disposable worktree isolation remains open as `SAFE-02`. |
 | Verified means file/line exists, not code content match. | `VERIFY-03` | done | Local verifier checks matchable quoted code against the cited source window and flags stale observations. |
 | Deterministic counter-evidence path is unreachable/weak. | `VERIFY-04` | done | Direct counter-evidence heuristics can now produce `likely_false_positive` without an LLM verifier. |
 | No consensus signal across agents. | `VERIFY-05` | done | Distinct-agent confidence is combined using a simple independence-style formula. |
-| Dismissals do not survive re-review. | `VERIFY-07` | todo | Cross-session decision memory by stable fingerprint. |
-| One agent transport error can fail phase. | `VERIFY-08` | todo | Preserve partial success with warnings. |
-| Parsed output from timed-out runs is discarded. | `VERIFY-09` | todo | Retain safe partial parse with provenance. |
+| Dismissals do not survive re-review. | `VERIFY-07` | done | Prior repository-scoped dismissals carry forward by stable fingerprint with event provenance. |
+| One agent transport error can fail phase. | `VERIFY-08` | done | Transport-open failure fixture preserves successful agents and emits partial-failure warning. |
+| Parsed output from timed-out runs is discarded. | `VERIFY-09` | done | Parseable timed-out output can create candidates with timeout provenance. |
 | Verifier disagreement is last-writer-wins. | `VERIFY-06` | done | Conflicting verifier outputs now emit explicit disagreement evidence and reconcile conservatively. |
-| `draft_comments` is checkpointed no-op. | `VERIFY-10` | todo | Either make it meaningful or remove progress inflation. |
+| `draft_comments` is checkpointed no-op. | `VERIFY-10` | done | The phase now fills missing finding draft comments and emits preparation events. |
 | Chat POST is synchronous/blocking. | `CHAT-02` | todo | Changes API contract to async turn creation. |
 | Chat has no real cancel. | `CHAT-03` | todo | Stop button maps to persisted cancel state. |
 | Chat rebuilds context per agent. | `CHAT-04`, `CHAT-06` | todo | One shared bundle plus cache key. |
@@ -346,7 +358,7 @@ End-to-end manual checks:
 | App Server adapter is a disabled stub / adapter readiness is unclear. | `ADAPT-05` | todo | Capability and health state should be explicit. |
 | External session IDs are not durable enough for reuse. | `ADAPT-06` | todo | Adds durable metadata and invalidation rules. |
 | Need Cloudflare/DoorDash-style trust and efficiency metrics. | `OBS-01`, `OBS-02`, `OBS-03`, `OBS-04`, `OBS-05` | todo | Tracks quality, latency, token/cache, and duplicate/noise outcomes. |
-| CI design should build on local contracts, not fork them. | `BASE-03`, `OBS-01` | todo | Keeps `docs/ai-code-review-design.md` aligned with local-first implementation. |
+| CI design should build on local contracts, not fork them. | `BASE-03`, `OBS-01` | doing | Local-first contract is documented; phase metrics remain open. |
 
 ## Initial Implementation Batch
 
@@ -365,8 +377,13 @@ Why this batch:
 - It prepares the workflow for safer resume/retry behavior before async chat and session reuse.
 - It makes prompt-injection safety an enforced runtime property, not just prompt text.
 
+## Decision Notes
+
+1. Prompt contract checks currently live in Go tests against the embedded prompt source and parser schemas; add package-level prompt tests only if non-Go prompt tooling becomes authoritative.
+2. Cross-session dismissal memory is repository-scoped by stable finding fingerprint. Branch or base/head lineage can be added later if false carryover appears in dogfood data.
+3. `draft_comments` remains a dedicated workflow phase and now fills missing finding draft comments deterministically; GitHub preview and copy packets remain separate product surfaces.
+
 ## Open Questions
 
-1. Should prompt snapshots live under `packages/prompts` tests, Go tests, or both?
-2. Should cross-session dismissal memory be global per repository, per branch, or per base/head fingerprint lineage?
-3. Should `draft_comments` remain a dedicated phase if publishing/copy packets are already separate product surfaces?
+1. Which adapter should be first for durable session reuse: Codex App Server or ACP?
+2. What minimum dogfood eval set should gate prompt/orchestration changes before CI rollout?

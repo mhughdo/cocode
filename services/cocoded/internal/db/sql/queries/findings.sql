@@ -234,3 +234,22 @@ SELECT id, finding_id, review_session_id, decision, reason, metadata_json, creat
 FROM human_decisions
 WHERE review_session_id = ?
 ORDER BY created_at DESC, id ASC;
+
+-- name: ListDismissedHumanDecisionsByRepository :many
+SELECT
+  hd.id,
+  hd.finding_id,
+  hd.review_session_id,
+  hd.decision,
+  hd.reason,
+  hd.metadata_json,
+  hd.created_at,
+  f.fingerprint AS finding_fingerprint
+FROM human_decisions hd
+JOIN findings f ON f.id = hd.finding_id
+JOIN review_sessions rs ON rs.id = f.review_session_id
+WHERE rs.repository_id = ?
+  AND hd.decision = 'dismissed'
+  AND f.fingerprint IS NOT NULL
+  AND f.fingerprint <> ''
+ORDER BY hd.created_at DESC, hd.id DESC;

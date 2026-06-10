@@ -14,6 +14,7 @@ import (
 	"github.com/hughdo/cocode/services/cocoded/internal/agents"
 	"github.com/hughdo/cocode/services/cocoded/internal/artifact"
 	"github.com/hughdo/cocode/services/cocoded/internal/db/dbgen"
+	"github.com/hughdo/cocode/services/cocoded/internal/gitrepo"
 )
 
 const (
@@ -30,6 +31,7 @@ type Runner struct {
 	Queries   *dbgen.Queries
 	Artifacts *artifact.Store
 	Driver    agents.ConnectionDriver
+	GitRunner gitrepo.Runner
 	Now       func() time.Time
 	NewRunID  func() string
 }
@@ -41,6 +43,7 @@ type RunParams struct {
 	Permissions   agents.PermissionPolicy
 	Task          agents.AgentTask
 	TimeoutPolicy TimeoutPolicy
+	Filesystem    FilesystemIsolationOptions
 	Metadata      map[string]any
 	EventSink     func(context.Context, agents.AgentEvent)
 }
@@ -159,28 +162,45 @@ func (r Runner) Execute(ctx context.Context, params RunParams) (RunResult, error
 		return r.finishWithError(persistCtx, result, run, startedAt, "permission_denied", permissionDeniedError(denied), params.EventSink)
 	}
 
+	isolation, err := r.prepareFilesystemIsolation(ctx, params, config, task)
+	if err != nil {
+		return r.finishWithError(persistCtx, result, run, startedAt, "filesystem_isolation_error", err, params.EventSink)
+	}
+	if isolation.cleanupRun {
+		r.appendEvent(persistCtx, &result, params.EventSink, isolation.event(run.ID))
+		config = isolation.config
+		task = isolation.task
+	}
+
 	connection, err := r.driver(config.Kind).Open(ctx, config)
 	if err != nil {
+		if cleanupErr := isolation.Cleanup(context.WithoutCancel(ctx)); cleanupErr != nil {
+			err = fmt.Errorf("%w; cleanup filesystem isolation: %v", err, cleanupErr)
+		}
 		return r.finishWithError(persistCtx, result, run, startedAt, "open_error", err, params.EventSink)
 	}
-	defer func() {
-		_ = connection.Close(context.Background())
-	}()
 
 	eventStream, err := connection.SendTask(ctx, task)
 	if err != nil {
+		_ = connection.Close(context.Background())
+		if cleanupErr := isolation.Cleanup(context.WithoutCancel(ctx)); cleanupErr != nil {
+			err = fmt.Errorf("%w; cleanup filesystem isolation: %v", err, cleanupErr)
+		}
 		return r.finishWithError(persistCtx, result, run, startedAt, "send_error", err, params.EventSink)
 	}
 	for event := range eventStream {
 		r.appendEvent(persistCtx, &result, params.EventSink, event)
 	}
+	_ = connection.Close(context.Background())
 	run, err = r.runWithExternalSessionMetadata(run, task, config.AdapterID, result.Events)
 	if err != nil {
+		_ = isolation.Cleanup(context.WithoutCancel(ctx))
 		return result, err
 	}
 	result.Run = run
 
 	completedAt := r.now()
+	cleanupErr := isolation.Cleanup(context.WithoutCancel(ctx))
 	recorder := OutputRecorder{Artifacts: r.Artifacts, Queries: r.Queries, Now: r.Now}
 	outputs, err := recorder.SaveRawOutputs(persistCtx, OutputArtifactParams{
 		WorkspaceID: params.WorkspaceID,
@@ -204,6 +224,9 @@ func (r Runner) Execute(ctx context.Context, params RunParams) (RunResult, error
 	run, err = r.runWithExternalSessionMetadata(run, task, config.AdapterID, result.Events)
 	if err != nil {
 		return result, err
+	}
+	if cleanupErr != nil {
+		r.appendEvent(persistCtx, &result, params.EventSink, syntheticTerminalEvent(run.ID, completedAt, outcomeFromError("filesystem_cleanup_error", cleanupErr)))
 	}
 
 	finished, err := r.finishRun(persistCtx, run, startedAt, completedAt, outcomeFromEvents(result.Events, ctx.Err()))

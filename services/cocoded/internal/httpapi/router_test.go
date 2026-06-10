@@ -4088,6 +4088,7 @@ func createHTTPAPISnapshot(t *testing.T, queries *dbgen.Queries) {
 
 	repoPath := t.TempDir()
 	writeHTTPAPIDefaultRepo(t, repoPath)
+	initHTTPAPIGitRepoWithCommit(t, repoPath)
 	createHTTPAPISnapshotAt(t, queries, repoPath)
 }
 
@@ -5232,6 +5233,29 @@ func writeHTTPAPIDefaultRepo(t *testing.T, repoPath string) {
 	writeHTTPAPIRepoFile(t, repoPath, "src/new.go", "package src\n\nfunc RequireAdmin() bool { return true }\n")
 	writeHTTPAPIRepoFile(t, repoPath, "apps/api/src/routes/repositories.ts", numberedHTTPAPIFile(130, "export const repositoriesRoute = true;"))
 	writeHTTPAPIRepoFile(t, repoPath, "apps/desktop/src/renderer/src/app/App.tsx", numberedHTTPAPIFile(130, "export function App() { return null; }"))
+}
+
+func initHTTPAPIGitRepoWithCommit(t *testing.T, repoPath string) {
+	t.Helper()
+
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	runHTTPAPITestGit(t, repoPath, "init")
+	runHTTPAPITestGit(t, repoPath, "config", "user.email", "cocode@example.com")
+	runHTTPAPITestGit(t, repoPath, "config", "user.name", "Cocode Test")
+	runHTTPAPITestGit(t, repoPath, "add", ".")
+	runHTTPAPITestGit(t, repoPath, "commit", "-m", "initial")
+}
+
+func runHTTPAPITestGit(t *testing.T, repoPath string, args ...string) {
+	t.Helper()
+
+	command := exec.Command("git", append([]string{"-C", repoPath}, args...)...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v error = %v\n%s", args, err, string(output))
+	}
 }
 
 func numberedHTTPAPIFile(lines int, marker string) string {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -474,6 +475,54 @@ func TestRunnerDeniesUnsafeReviewModeRuntimeBeforeOpen(t *testing.T) {
 	}
 }
 
+func TestRunnerUsesEphemeralWorktreeForReviewModeFilesystemRun(t *testing.T) {
+	t.Parallel()
+
+	repoPath := initRunnerGitRepoWithCommit(t)
+	env := setupOutputRecorder(t)
+	task := runnerTask(env, "agent_run_isolated_worktree")
+	task.RepositoryRoot = repoPath
+	task.WorkspaceRoot = repoPath
+	command := writeFakeAgent(t, `#!/bin/sh
+printf 'cwd=%s\n' "$(pwd)"
+printf 'readme=%s\n' "$(cat README.md)"
+printf 'agent mutation\n' > agent-created.txt
+`)
+	config := runnerConfig(command)
+	config.WorkingDirectory = repoPath
+	result, err := runnerWithClock(env).Execute(context.Background(), RunParams{
+		WorkspaceID:  env.WorkspaceID,
+		Config:       config,
+		Capabilities: agents.AgentCapabilities{CanRead: true},
+		Permissions:  agents.ReviewModePermissionPolicy(),
+		Task:         task,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if result.Run.Status != RunStatusSucceeded {
+		t.Fatalf("run = %+v", result.Run)
+	}
+	stdout, _, err := env.Artifacts.Read(context.Background(), result.Run.StdoutArtifactID.String)
+	if err != nil {
+		t.Fatalf("Read(stdout) error = %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(stdout)), "\n")
+	if len(lines) < 2 || !strings.HasPrefix(lines[0], "cwd=") || lines[1] != "readme=hello" {
+		t.Fatalf("stdout = %q", string(stdout))
+	}
+	isolatedRoot := strings.TrimPrefix(lines[0], "cwd=")
+	if isolatedRoot == repoPath || isolatedRoot == "" {
+		t.Fatalf("isolated cwd = %q, source = %q", isolatedRoot, repoPath)
+	}
+	if _, err := os.Stat(filepath.Join(repoPath, "agent-created.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("source mutation stat error = %v, want not exist", err)
+	}
+	if _, err := os.Stat(isolatedRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("isolated root stat error = %v, want cleaned up", err)
+	}
+}
+
 func TestTimeoutPolicyRejectsNegativeLimits(t *testing.T) {
 	t.Parallel()
 
@@ -558,6 +607,38 @@ func runnerWithClockAt(env outputRecorderEnv, start time.Time) Runner {
 			}
 			return start.Add(2 * time.Second)
 		},
+	}
+}
+
+func initRunnerGitRepoWithCommit(t *testing.T) string {
+	t.Helper()
+
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	repoPath := t.TempDir()
+	runRunnerTestGit(t, repoPath, "init")
+	runRunnerTestGit(t, repoPath, "config", "user.email", "cocode@example.com")
+	runRunnerTestGit(t, repoPath, "config", "user.name", "Cocode Test")
+	if err := os.WriteFile(filepath.Join(repoPath, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(README) error = %v", err)
+	}
+	runRunnerTestGit(t, repoPath, "add", "README.md")
+	runRunnerTestGit(t, repoPath, "commit", "-m", "initial")
+	canonical, err := filepath.EvalSymlinks(repoPath)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(repo) error = %v", err)
+	}
+	return canonical
+}
+
+func runRunnerTestGit(t *testing.T, cwd string, args ...string) {
+	t.Helper()
+
+	cmd := exec.Command("git", append([]string{"-C", cwd}, args...)...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v error = %v\n%s", args, err, string(output))
 	}
 }
 

@@ -291,7 +291,7 @@ func prioritizedVerifierFindings(findings []dbgen.Finding, limit int) []dbgen.Fi
 			return left < right
 		}
 		if eligible[i].Severity != eligible[j].Severity {
-			return severityPriority(eligible[i].Severity) < severityPriority(eligible[j].Severity)
+			return severityPriority(eligible[i].Severity) > severityPriority(eligible[j].Severity)
 		}
 		if eligible[i].Confidence != eligible[j].Confidence {
 			return eligible[i].Confidence > eligible[j].Confidence
@@ -325,18 +325,20 @@ func verifierStatusPriority(status string) int {
 
 func severityPriority(severity string) int {
 	switch strings.ToLower(strings.TrimSpace(severity)) {
-	case "critical":
-		return 0
-	case "high":
-		return 1
-	case "medium":
-		return 2
-	case "low":
-		return 3
-	case "info", "informational":
-		return 4
-	default:
+	case "blocker", "critical":
 		return 5
+	case "high":
+		return 4
+	case "medium":
+		return 3
+	case "low":
+		return 2
+	case "info", "informational":
+		return 1
+	case "nit":
+		return 1
+	default:
+		return 0
 	}
 }
 

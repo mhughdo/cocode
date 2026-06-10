@@ -61,6 +61,45 @@ func TestDiscoverFindsCodeownersAndCommonConfigs(t *testing.T) {
 	}
 }
 
+func TestDiscoverFindsAgentInstructionAndCursorRuleFiles(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeRuleFile(t, root, "AGENTS.md", "# Agent guide\n")
+	writeRuleFile(t, root, "CLAUDE.md", "# Claude guide\n")
+	writeRuleFile(t, root, "CONTRIBUTING.md", "# Contributing\n")
+	writeRuleFile(t, root, ".cursor/rules/review.mdc", "---\ndescription: Review rules\n---\nCheck migrations.\n")
+	writeRuleFile(t, root, ".cursor/rules/style.md", "# Style\nPrefer focused changes.\n")
+
+	candidates, err := Discover(root)
+	if err != nil {
+		t.Fatalf("Discover() error = %v", err)
+	}
+
+	tests := []struct {
+		path  string
+		kind  string
+		title string
+	}{
+		{path: "AGENTS.md", kind: "agent_instructions", title: "AGENTS.md"},
+		{path: "CLAUDE.md", kind: "claude_instructions", title: "CLAUDE.md"},
+		{path: "CONTRIBUTING.md", kind: "contributing", title: "CONTRIBUTING"},
+		{path: ".cursor/rules/review.mdc", kind: "cursor_rule", title: ".cursor/rules"},
+		{path: ".cursor/rules/style.md", kind: "cursor_rule", title: ".cursor/rules"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			candidate := candidateByPath(candidates, tt.path)
+			if candidate.Path != tt.path ||
+				candidate.Kind != tt.kind ||
+				candidate.Title != tt.title ||
+				candidate.Metadata["source"] != "project_rules_discovery" {
+				t.Fatalf("candidate %q = %+v, all paths = %+v", tt.path, candidate, candidatePaths(candidates))
+			}
+		})
+	}
+}
+
 func TestDiscoverSkipsNoisyUnsafeAndUnsupportedFiles(t *testing.T) {
 	t.Parallel()
 

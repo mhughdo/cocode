@@ -163,7 +163,8 @@ func TestShouldHideReviewAgentRunFromChatSkipsInternalWorkflowRuns(t *testing.T)
 		role string
 		want bool
 	}{
-		{role: "chat", want: true},
+		{role: "chat", want: false},
+		{role: "chat_synthesis", want: false},
 		{role: "orchestrator", want: true},
 		{role: "Orchestrator", want: true},
 		{role: "verifier", want: true},
@@ -262,6 +263,7 @@ func TestRemoveHiddenReviewAgentRunMessagesDeletesPersistedInternalCards(t *test
 		role string
 	}{
 		{id: "agent_run_reviewer", role: "General Reviewer"},
+		{id: "agent_run_chat", role: "chat"},
 		{id: "agent_run_verifier", role: "verifier"},
 	} {
 		if _, err := queries.CreateAgentRun(ctx, dbgen.CreateAgentRunParams{
@@ -298,6 +300,17 @@ VALUES ('thread_cleanup', 'review_session_cleanup', 'Review', 'active', ?, ?)`, 
 		ThreadID:          "thread_cleanup",
 		AuthorType:        AuthorAgent,
 		AuthorDisplayName: "Codex CLI",
+		AgentRunID:        "agent_run_chat",
+		Body:              "chat answer",
+		Status:            MessageStatusCompleted,
+		MetadataJSON:      []byte(`{"answer_source":"review_agent_run","review_agent_run_id":"agent_run_chat"}`),
+	}); err != nil {
+		t.Fatalf("append chat message error = %v", err)
+	}
+	if _, err := service.appendMessage(ctx, appendMessageParams{
+		ThreadID:          "thread_cleanup",
+		AuthorType:        AuthorAgent,
+		AuthorDisplayName: "Codex CLI",
 		AgentRunID:        "agent_run_verifier",
 		Body:              "verifier output",
 		Status:            MessageStatusCompleted,
@@ -314,14 +327,28 @@ VALUES ('thread_cleanup', 'review_session_cleanup', 'Review', 'active', ?, ?)`, 
 	if err != nil {
 		t.Fatalf("removeHiddenReviewAgentRunMessages() error = %v", err)
 	}
-	if len(visible) != 1 || visible[0].AgentRunID != "agent_run_reviewer" {
+	if len(visible) != 2 {
+		t.Fatalf("visible messages = %+v", visible)
+	}
+	visibleByRun := map[string]bool{}
+	for _, message := range visible {
+		visibleByRun[message.AgentRunID] = true
+	}
+	if !visibleByRun["agent_run_reviewer"] || !visibleByRun["agent_run_chat"] || visibleByRun["agent_run_verifier"] {
 		t.Fatalf("visible messages = %+v", visible)
 	}
 	persisted, err := service.listMessages(ctx, "thread_cleanup")
 	if err != nil {
 		t.Fatalf("listMessages(after cleanup) error = %v", err)
 	}
-	if len(persisted) != 1 || persisted[0].AgentRunID != "agent_run_reviewer" {
+	if len(persisted) != 2 {
+		t.Fatalf("persisted messages = %+v", persisted)
+	}
+	persistedByRun := map[string]bool{}
+	for _, message := range persisted {
+		persistedByRun[message.AgentRunID] = true
+	}
+	if !persistedByRun["agent_run_reviewer"] || !persistedByRun["agent_run_chat"] || persistedByRun["agent_run_verifier"] {
 		t.Fatalf("persisted messages = %+v", persisted)
 	}
 }

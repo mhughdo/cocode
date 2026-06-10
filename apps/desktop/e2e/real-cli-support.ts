@@ -109,7 +109,6 @@ export const realCliTargets: Record<string, RealCliTarget> = {
     args: [
       "--print",
       "--sandbox",
-      "--dangerously-skip-permissions",
       "--print-timeout",
       "30m0s",
     ],

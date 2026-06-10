@@ -94,6 +94,63 @@ type ChangedFile struct {
 	CreatedAt       string         `json:"created_at"`
 }
 
+type ChatMessage struct {
+	ID                string         `json:"id"`
+	ThreadID          string         `json:"thread_id"`
+	ParentMessageID   sql.NullString `json:"parent_message_id"`
+	AuthorType        string         `json:"author_type"`
+	AuthorDisplayName string         `json:"author_display_name"`
+	AgentConfigID     sql.NullString `json:"agent_config_id"`
+	AgentRunID        sql.NullString `json:"agent_run_id"`
+	ContextBundleID   sql.NullString `json:"context_bundle_id"`
+	ArtifactID        sql.NullString `json:"artifact_id"`
+	Body              string         `json:"body"`
+	Status            string         `json:"status"`
+	MetadataJson      string         `json:"metadata_json"`
+	CreatedAt         string         `json:"created_at"`
+	UpdatedAt         string         `json:"updated_at"`
+}
+
+type ChatMessageContextRef struct {
+	ID           string         `json:"id"`
+	MessageID    string         `json:"message_id"`
+	RefType      string         `json:"ref_type"`
+	RefID        string         `json:"ref_id"`
+	Label        sql.NullString `json:"label"`
+	MetadataJson string         `json:"metadata_json"`
+}
+
+type ChatThread struct {
+	ID              string `json:"id"`
+	ReviewSessionID string `json:"review_session_id"`
+	Title           string `json:"title"`
+	Status          string `json:"status"`
+	CreatedAt       string `json:"created_at"`
+	UpdatedAt       string `json:"updated_at"`
+}
+
+type ChatTurn struct {
+	ID                     string         `json:"id"`
+	ThreadID               string         `json:"thread_id"`
+	UserMessageID          string         `json:"user_message_id"`
+	Mode                   string         `json:"mode"`
+	Audience               string         `json:"audience"`
+	ResponderAgentConfigID sql.NullString `json:"responder_agent_config_id"`
+	Status                 string         `json:"status"`
+	ErrorCode              sql.NullString `json:"error_code"`
+	ErrorMessage           sql.NullString `json:"error_message"`
+	StartedAt              sql.NullString `json:"started_at"`
+	CompletedAt            sql.NullString `json:"completed_at"`
+	CreatedAt              string         `json:"created_at"`
+	UpdatedAt              string         `json:"updated_at"`
+}
+
+type ChatTurnAgentRun struct {
+	ChatTurnID string `json:"chat_turn_id"`
+	AgentRunID string `json:"agent_run_id"`
+	Role       string `json:"role"`
+}
+
 type ContextBundle struct {
 	ID              string         `json:"id"`
 	ReviewSessionID string         `json:"review_session_id"`

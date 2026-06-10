@@ -59,7 +59,14 @@ while IFS= read -r line; do
     *'"method":"initialized"'*)
       ;;
     *'"method":"thread/start"'*)
-      printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread_1"},"model":"fake-model"}}'
+      case "$line" in
+        *'"sandbox":"read-only"'*)
+          printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread_1"},"model":"fake-model"}}'
+          ;;
+        *)
+          printf '%s\n' '{"id":2,"error":{"code":400,"message":"expected read-only sandbox"}}'
+          ;;
+      esac
       ;;
     *'"method":"turn/start"'*)
       printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn_1","status":"inProgress"}}}'

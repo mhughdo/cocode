@@ -326,21 +326,19 @@ func TestAgentPresetsEndpointIncludesBuiltInCLIs(t *testing.T) {
 	codex := findAgentPreset(t, presets, "codex-cli")
 	if codex.ID == "" ||
 		codex.Command != "codex" ||
-		len(codex.Args) != 14 ||
+		len(codex.Args) != 12 ||
 		codex.Args[0] != "-a" ||
 		codex.Args[1] != "never" ||
 		codex.Args[2] != "exec" ||
 		codex.Args[3] != "--json" ||
 		codex.Args[4] != "--sandbox" ||
-		codex.Args[5] != "workspace-write" ||
-		codex.Args[6] != "--add-dir" ||
-		codex.Args[7] != agents.CLIRuntimeBaseDir() ||
-		codex.Args[8] != "--skip-git-repo-check" ||
-		codex.Args[9] != "--ephemeral" ||
-		codex.Args[10] != "--ignore-rules" ||
-		codex.Args[11] != "--color" ||
-		codex.Args[12] != "never" ||
-		codex.Args[13] != "-" ||
+		codex.Args[5] != "read-only" ||
+		codex.Args[6] != "--skip-git-repo-check" ||
+		codex.Args[7] != "--ephemeral" ||
+		codex.Args[8] != "--ignore-rules" ||
+		codex.Args[9] != "--color" ||
+		codex.Args[10] != "never" ||
+		codex.Args[11] != "-" ||
 		codex.Role != "orchestrator" ||
 		codex.OutputMode != agents.OutputJSONL ||
 		codex.ModelLabel != "default" ||
@@ -443,12 +441,11 @@ func TestAgentPresetsEndpointIncludesBuiltInCLIs(t *testing.T) {
 	}
 	antigravity := findAgentPreset(t, presets, "antigravity-cli")
 	if antigravity.Command != "agy" ||
-		len(antigravity.Args) != 5 ||
+		len(antigravity.Args) != 4 ||
 		antigravity.Args[0] != "--print" ||
 		antigravity.Args[1] != "--sandbox" ||
-		antigravity.Args[2] != "--dangerously-skip-permissions" ||
-		antigravity.Args[3] != "--print-timeout" ||
-		antigravity.Args[4] != "30m0s" ||
+		antigravity.Args[2] != "--print-timeout" ||
+		antigravity.Args[3] != "30m0s" ||
 		antigravity.OutputMode != agents.OutputText ||
 		antigravity.ModelLabel != "gemini-3.5-flash" ||
 		antigravity.ReasoningLabel != "high" ||
@@ -4215,7 +4212,7 @@ func createHTTPAPIFindingFixture(t *testing.T, queries *dbgen.Queries) {
 		t.Fatalf("CreateAgentRun() error = %v", err)
 	}
 	createHTTPAPIFindingCandidate(t, queries, "candidate_auth_1", "Repository settings updates miss admin guard", "security", "high", 0.91, "apps/api/src/routes/repositories.ts", "auth-guard-missing")
-	createHTTPAPIFindingCandidate(t, queries, "candidate_auth_2", "The update route does not enforce admin permissions", "security", "high", 0.88, "apps/api/src/routes/repositories.ts", "auth-guard-missing")
+	createHTTPAPIFindingCandidate(t, queries, "candidate_auth_2", "The update route does not enforce admin permissions", "security", "high", 0.88, "apps/api/src/routes/repositories.ts", "auth-guard-missing-alt")
 	createHTTPAPIFindingCandidate(t, queries, "candidate_budget", "Renderer preview can load the full diff payload", "reliability", "medium", 0.72, "apps/desktop/src/renderer/src/app/App.tsx", "renderer-budget")
 	createHTTPAPIFindingCandidate(t, queries, "candidate_theme", "Theme selection might not persist", "maintainability", "low", 0.38, "apps/desktop/src/renderer/src/app/App.tsx", "theme-persistence")
 

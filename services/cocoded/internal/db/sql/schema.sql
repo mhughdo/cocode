@@ -332,6 +332,9 @@ CREATE TABLE human_decisions (
 
 CREATE INDEX idx_candidates_session ON finding_candidates(review_session_id);
 CREATE INDEX idx_candidates_fingerprint ON finding_candidates(review_session_id, fingerprint);
+CREATE UNIQUE INDEX idx_candidates_run_fingerprint_unique
+  ON finding_candidates(agent_run_id, fingerprint)
+  WHERE fingerprint IS NOT NULL AND fingerprint <> '';
 CREATE INDEX idx_findings_session_status ON findings(review_session_id, decision_status, verification_status);
 CREATE INDEX idx_findings_path ON findings(review_session_id, primary_path);
 CREATE INDEX idx_decisions_finding ON human_decisions(finding_id, created_at DESC);

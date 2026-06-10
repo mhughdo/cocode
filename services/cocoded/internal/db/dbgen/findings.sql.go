@@ -54,6 +54,23 @@ INSERT INTO findings (
   ?,
   ?
 )
+ON CONFLICT(review_session_id, fingerprint)
+DO UPDATE SET
+  canonical_claim = excluded.canonical_claim,
+  category = excluded.category,
+  severity = excluded.severity,
+  confidence = excluded.confidence,
+  verification_status = excluded.verification_status,
+  primary_path = excluded.primary_path,
+  primary_start_line = excluded.primary_start_line,
+  primary_end_line = excluded.primary_end_line,
+  evidence_summary = excluded.evidence_summary,
+  counter_evidence_summary = excluded.counter_evidence_summary,
+  suggested_fix = excluded.suggested_fix,
+  draft_comment = excluded.draft_comment,
+  merged_from_count = excluded.merged_from_count,
+  introduced_in_sha = excluded.introduced_in_sha,
+  updated_at = excluded.updated_at
 RETURNING id, review_session_id, canonical_claim, category, severity, confidence, verification_status, decision_status, primary_path, primary_start_line, primary_end_line, evidence_summary, counter_evidence_summary, suggested_fix, draft_comment, fingerprint, merged_from_count, introduced_in_sha, first_seen_at, updated_at
 `
 
@@ -167,6 +184,9 @@ INSERT INTO finding_candidates (
   ?,
   ?
 )
+ON CONFLICT(agent_run_id, fingerprint) WHERE fingerprint IS NOT NULL AND fingerprint <> ''
+DO UPDATE SET
+  id = finding_candidates.id
 RETURNING id, review_session_id, agent_run_id, raw_artifact_id, category, severity, confidence, claim, primary_path, primary_start_line, primary_end_line, locations_json, evidence_json, suggested_fix, draft_comment, fingerprint, created_at
 `
 
@@ -384,6 +404,8 @@ INSERT INTO finding_candidate_links (
   ?,
   ?
 )
+ON CONFLICT(finding_id, finding_candidate_id)
+DO UPDATE SET relation = excluded.relation
 `
 
 type LinkFindingCandidateParams struct {

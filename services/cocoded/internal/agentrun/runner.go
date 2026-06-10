@@ -88,6 +88,15 @@ func (r Runner) Execute(ctx context.Context, params RunParams) (RunResult, error
 	if strings.TrimSpace(config.AdapterID) == "" {
 		config.AdapterID = task.AgentConfigID
 	}
+	var reviewRuntimeErr error
+	if params.Permissions.Mode == agents.PermissionModeReview {
+		enforcedConfig, err := agents.EnforceReviewModeRuntime(config, params.Capabilities)
+		if err != nil {
+			reviewRuntimeErr = err
+		} else {
+			config = enforcedConfig
+		}
+	}
 	startedAt := r.now()
 	task, timeoutMetadata, preflightOutcome, err := params.TimeoutPolicy.Apply(startedAt, task)
 	if err != nil {
@@ -142,6 +151,9 @@ func (r Runner) Execute(ctx context.Context, params RunParams) (RunResult, error
 		finished, err := r.finishRun(persistCtx, run, startedAt, completedAt, *preflightOutcome)
 		result.Run = finished
 		return result, err
+	}
+	if reviewRuntimeErr != nil {
+		return r.finishWithError(persistCtx, result, run, startedAt, "permission_denied", reviewRuntimeErr, params.EventSink)
 	}
 	if denied, ok := permissions.FirstDenied(); ok {
 		return r.finishWithError(persistCtx, result, run, startedAt, "permission_denied", permissionDeniedError(denied), params.EventSink)

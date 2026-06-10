@@ -476,7 +476,7 @@ func (c *JSONRPCStdioConnection) runCodexAppServerTask(ctx context.Context, task
 	threadParams := map[string]any{
 		"cwd":                    firstNonEmptyString(task.RepositoryRoot, c.config.WorkingDirectory),
 		"approvalPolicy":         "never",
-		"sandbox":                "workspace-write",
+		"sandbox":                "read-only",
 		"serviceName":            "cocode",
 		"developerInstructions":  "You are running as a read-only code review agent inside cocode. Do not modify files; return findings in the requested output contract.",
 		"ephemeral":              true,

@@ -43,6 +43,18 @@ var Migrations = []Migration{
 		SQL:            codexCLIDefaultOrchestratorSQL,
 		RequiredTables: []string{"agent_configs"},
 	},
+	{
+		Version:        9,
+		Name:           "codex_read_only_runtime",
+		SQL:            codexReadOnlyRuntimeSQL,
+		RequiredTables: []string{"agent_configs"},
+	},
+	{
+		Version:        10,
+		Name:           "finding_candidate_run_fingerprint_unique",
+		SQL:            findingCandidateRunFingerprintUniqueSQL,
+		RequiredTables: []string{"finding_candidates"},
+	},
 }
 
 const schemaV1SQL = `
@@ -445,6 +457,9 @@ CREATE INDEX idx_context_items_bundle ON context_items(context_bundle_id, kind);
 CREATE INDEX idx_agent_runs_session ON agent_runs(review_session_id, status);
 CREATE INDEX idx_candidates_session ON finding_candidates(review_session_id);
 CREATE INDEX idx_candidates_fingerprint ON finding_candidates(review_session_id, fingerprint);
+CREATE UNIQUE INDEX idx_candidates_run_fingerprint_unique
+  ON finding_candidates(agent_run_id, fingerprint)
+  WHERE fingerprint IS NOT NULL AND fingerprint <> '';
 CREATE INDEX idx_findings_session_status ON findings(review_session_id, decision_status, verification_status);
 CREATE INDEX idx_findings_path ON findings(review_session_id, primary_path);
 CREATE INDEX idx_evidence_finding ON evidence_items(finding_id, kind);
@@ -628,6 +643,37 @@ WHERE name = 'Codex CLI'
   AND command = 'codex'
   AND adapter_kind = 'cli_noninteractive'
   AND output_mode = 'jsonl';
+`
+
+const codexReadOnlyRuntimeSQL = `
+UPDATE agent_configs
+SET
+  args_json = '["-a","never","exec","--json","--sandbox","read-only","--skip-git-repo-check","--ephemeral","--ignore-rules","--color","never","-"]',
+  updated_at = datetime('now')
+WHERE command = 'codex'
+  AND args_json IN (
+    '["exec","--json","--sandbox","read-only","--skip-git-repo-check","--ephemeral","--ignore-rules","--color","never","-"]',
+    '["-a","never","exec","--json","--sandbox","read-only","--skip-git-repo-check","--ephemeral","--ignore-rules","--color","never","-"]',
+    '["-a","never","exec","--json","--sandbox","workspace-write","--skip-git-repo-check","--ephemeral","--ignore-rules","--color","never","-"]',
+    '["-a","never","exec","--json","--sandbox","workspace-write","--add-dir","/tmp/cocode-agent-runtime","--skip-git-repo-check","--ephemeral","--ignore-rules","--color","never","-"]'
+  );
+`
+
+const findingCandidateRunFingerprintUniqueSQL = `
+DELETE FROM finding_candidates
+WHERE fingerprint IS NOT NULL
+  AND fingerprint <> ''
+  AND rowid NOT IN (
+    SELECT MIN(rowid)
+    FROM finding_candidates
+    WHERE fingerprint IS NOT NULL
+      AND fingerprint <> ''
+    GROUP BY agent_run_id, fingerprint
+  );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_candidates_run_fingerprint_unique
+  ON finding_candidates(agent_run_id, fingerprint)
+  WHERE fingerprint IS NOT NULL AND fingerprint <> '';
 `
 
 const evidenceMapRouteNodesSQL = `

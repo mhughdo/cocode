@@ -31,12 +31,11 @@ func TestBudgetContextItemsAppliesDepthRules(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BudgetContextItems(standard) error = %v", err)
 	}
-	if got := itemIDs(standard.Items); strings.Join(got, ",") != "item_hunk,item_file,item_test" {
+	if got := itemIDs(standard.Items); strings.Join(got, ",") != "item_hunk,item_file,item_test,item_rule" {
 		t.Fatalf("standard item IDs = %+v", got)
 	}
-	if len(standard.Dropped) != 2 ||
-		standard.Dropped[0].ItemID != "item_rule" ||
-		standard.Dropped[1].ItemID != "item_comment" {
+	if len(standard.Dropped) != 1 ||
+		standard.Dropped[0].ItemID != "item_comment" {
 		t.Fatalf("standard dropped = %+v", standard.Dropped)
 	}
 }

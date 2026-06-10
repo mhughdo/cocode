@@ -150,7 +150,7 @@ func depthAllowsKind(depth ReviewDepth, kind ItemKind) bool {
 		return kind == ItemPromptMaterial || kind == ItemFocusFile || kind == ItemChangedHunk || kind == ItemEvidence
 	case ReviewDepthStandard:
 		switch kind {
-		case ItemPromptMaterial, ItemFocusFile, ItemChangedHunk, ItemFullFile, ItemFileSlice, ItemRelatedCode, ItemRelatedTest, ItemEvidence:
+		case ItemPromptMaterial, ItemFocusFile, ItemChangedHunk, ItemFullFile, ItemFileSlice, ItemRelatedCode, ItemRelatedTest, ItemProjectRule, ItemEvidence:
 			return true
 		default:
 			return false

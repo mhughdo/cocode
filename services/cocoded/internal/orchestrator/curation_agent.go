@@ -856,7 +856,7 @@ func sortCuratedClusterCandidates(candidates []dbgen.FindingCandidate) {
 }
 
 func curationCandidateScore(candidate dbgen.FindingCandidate) float64 {
-	score := float64(10-severityPriority(candidate.Severity))*100 + candidate.Confidence
+	score := float64(severityPriority(candidate.Severity))*100 + candidate.Confidence
 	if candidate.PrimaryPath.Valid {
 		score += 10
 	}

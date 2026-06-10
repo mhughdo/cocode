@@ -1753,9 +1753,6 @@ func terminalAgentRunStatus(status string) bool {
 
 func shouldHideReviewAgentRunFromChat(run dbgen.AgentRun) bool {
 	role := strings.ToLower(strings.TrimSpace(run.Role))
-	if role == "chat" {
-		return true
-	}
 	return role == AuthorOrchestrator ||
 		role == AuthorVerifier ||
 		strings.Contains(role, "orchestrator") ||

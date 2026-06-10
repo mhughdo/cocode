@@ -372,7 +372,7 @@ func TestRunnerDeniesReviewModeWriteCapability(t *testing.T) {
 	}
 	if result.Run.Status != RunStatusFailed ||
 		result.Run.ErrorCode.String != "permission_denied" ||
-		!strings.Contains(result.Run.ErrorMessage.String, "write action") {
+		!strings.Contains(result.Run.ErrorMessage.String, "write-capable") {
 		t.Fatalf("run = %+v", result.Run)
 	}
 	var metadata map[string]any
@@ -381,6 +381,42 @@ func TestRunnerDeniesReviewModeWriteCapability(t *testing.T) {
 	}
 	if metadata["permission_policy"] == nil {
 		t.Fatalf("permission policy metadata missing: %+v", metadata)
+	}
+}
+
+func TestRunnerDeniesUnsafeReviewModeRuntimeBeforeOpen(t *testing.T) {
+	t.Parallel()
+
+	env := setupOutputRecorder(t)
+	task := runnerTask(env, "agent_run_runtime_denied")
+	driver := &scriptedDriver{
+		events: []agents.AgentEvent{{
+			Type:  agents.EventCompleted,
+			RunID: task.RunID,
+		}},
+	}
+	runner := runnerWithClock(env)
+	runner.Driver = driver
+
+	config := runnerConfig("agy")
+	config.Args = []string{"--print", "--dangerously-skip-permissions"}
+	result, err := runner.Execute(context.Background(), RunParams{
+		WorkspaceID:  env.WorkspaceID,
+		Config:       config,
+		Capabilities: agents.AgentCapabilities{CanRead: true},
+		Permissions:  agents.ReviewModePermissionPolicy(),
+		Task:         task,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if driver.opened {
+		t.Fatal("driver opened despite unsafe review runtime")
+	}
+	if result.Run.Status != RunStatusFailed ||
+		result.Run.ErrorCode.String != "permission_denied" ||
+		!strings.Contains(result.Run.ErrorMessage.String, "dangerously-skip-permissions") {
+		t.Fatalf("run = %+v", result.Run)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hughdo/cocode/services/cocoded/internal/agentoutput"
 	"github.com/hughdo/cocode/services/cocoded/internal/agentrun"
 	"github.com/hughdo/cocode/services/cocoded/internal/agents"
 	"github.com/hughdo/cocode/services/cocoded/internal/artifact"
@@ -87,6 +88,51 @@ func TestDefaultPromptTemplateDoesNotInjectReviewFocusCategories(t *testing.T) {
 	prompt := (&Service{}).promptTemplate()
 	if strings.Contains(strings.ToLower(prompt), "security") {
 		t.Fatalf("default prompt should not inject an unchecked security focus:\n%s", prompt)
+	}
+}
+
+func TestSeverityPriorityUsesPersistedFindingScale(t *testing.T) {
+	t.Parallel()
+
+	if severityPriority("blocker") <= severityPriority("high") {
+		t.Fatalf("blocker priority should rank above high")
+	}
+	if severityPriority("high") <= severityPriority("medium") {
+		t.Fatalf("high priority should rank above medium")
+	}
+	if severityPriority("medium") <= severityPriority("low") {
+		t.Fatalf("medium priority should rank above low")
+	}
+	if severityPriority("low") <= severityPriority("nit") {
+		t.Fatalf("low priority should rank above nit")
+	}
+}
+
+func TestPrioritizedVerifierFindingsRanksBlockerBeforeHigh(t *testing.T) {
+	t.Parallel()
+
+	findings := []dbgen.Finding{
+		{ID: "finding_high", Severity: "high", Confidence: 0.99, VerificationStatus: evidence.StatusPlausible},
+		{ID: "finding_blocker", Severity: "blocker", Confidence: 0.10, VerificationStatus: evidence.StatusPlausible},
+		{ID: "finding_medium", Severity: "medium", Confidence: 1.00, VerificationStatus: evidence.StatusPlausible},
+	}
+
+	prioritized := prioritizedVerifierFindings(findings, 0)
+	if len(prioritized) != len(findings) {
+		t.Fatalf("prioritized len = %d, want %d", len(prioritized), len(findings))
+	}
+	if prioritized[0].ID != "finding_blocker" {
+		t.Fatalf("first prioritized finding = %s, want blocker: %+v", prioritized[0].ID, prioritized)
+	}
+}
+
+func TestCurationCandidateScoreRanksBlockerBeforeHigh(t *testing.T) {
+	t.Parallel()
+
+	blocker := dbgen.FindingCandidate{ID: "candidate_blocker", Severity: "blocker", Confidence: 0.10}
+	high := dbgen.FindingCandidate{ID: "candidate_high", Severity: "high", Confidence: 0.99}
+	if curationCandidateScore(blocker) <= curationCandidateScore(high) {
+		t.Fatalf("blocker curation score = %f, high score = %f", curationCandidateScore(blocker), curationCandidateScore(high))
 	}
 }
 
@@ -565,21 +611,21 @@ func TestWorkflowDeduplicatesCandidatesIntoCanonicalFinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListFindingCandidatesBySession() error = %v", err)
 	}
-	if len(candidates) != 2 || candidates[0].Fingerprint.String != candidates[1].Fingerprint.String {
+	if len(candidates) != 1 || candidates[0].Fingerprint.String == "" || candidates[0].Severity != "high" {
 		t.Fatalf("candidates = %+v", candidates)
 	}
 	findings, err := env.Queries.ListFindingsBySession(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("ListFindingsBySession() error = %v", err)
 	}
-	if len(findings) != 1 || findings[0].MergedFromCount != 2 || findings[0].Severity != "high" {
+	if len(findings) != 1 || findings[0].MergedFromCount != 1 || findings[0].Severity != "high" {
 		t.Fatalf("findings = %+v", findings)
 	}
 	links, err := env.Queries.ListFindingCandidateLinks(context.Background(), findings[0].ID)
 	if err != nil {
 		t.Fatalf("ListFindingCandidateLinks() error = %v", err)
 	}
-	if len(links) != 2 {
+	if len(links) != 1 {
 		t.Fatalf("links = %+v", links)
 	}
 	events, err := env.Events.ListByReviewSession(context.Background(), session.ID)
@@ -587,6 +633,119 @@ func TestWorkflowDeduplicatesCandidatesIntoCanonicalFinding(t *testing.T) {
 		t.Fatalf("ListByReviewSession() error = %v", err)
 	}
 	assertEventTypes(t, events, []string{"FindingMerged", "FindingDeduplicated"})
+}
+
+func TestNormalizeAgentOutputsIsRestartSafe(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	session := createWorkflowSession(t, env, "review_session_normalize_retry", StatusRunning)
+	document := json.RawMessage(`{
+		"findings": [
+			{
+				"claim": "Settings mutation lacks admin guard",
+				"category": "security",
+				"severity": "high",
+				"confidence": 0.91,
+				"locations": [{"path":"src/new.go","start_line":2,"end_line":3,"side":"RIGHT"}],
+				"evidence": [{"title":"route is unguarded","summary":"the mutation is reachable without admin authorization"}]
+			}
+		]
+	}`)
+	parsed, err := json.Marshal(agentoutput.ParsedOutput{
+		Mode:       agents.OutputJSON,
+		Structured: true,
+		Documents:  []json.RawMessage{document},
+		Text:       string(document),
+	})
+	if err != nil {
+		t.Fatalf("marshal parsed output: %v", err)
+	}
+	parsedArtifact, err := env.Artifacts.Save(context.Background(), artifact.SaveParams{
+		ID:              "artifact_parsed_normalize_retry",
+		WorkspaceID:     "workspace_1",
+		ReviewSessionID: nullableTestString(session.ID),
+		Kind:            "parsed_agent_output",
+		RelativePath:    "review_session_normalize_retry/parsed.json",
+		ContentType:     "application/json",
+		CreatedAt:       "2026-05-03T00:08:00Z",
+	}, parsed)
+	if err != nil {
+		t.Fatalf("Save(parsed output) error = %v", err)
+	}
+	run, err := env.Queries.CreateAgentRun(context.Background(), dbgen.CreateAgentRunParams{
+		ID:                     "agent_run_normalize_retry",
+		ReviewSessionID:        session.ID,
+		AgentConfigID:          "agent_config_1",
+		Status:                 agentrun.RunStatusSucceeded,
+		Role:                   "primary_reviewer",
+		ParsedOutputArtifactID: nullableTestString(parsedArtifact.ID),
+		StartedAt:              nullableTestString("2026-05-03T00:08:00Z"),
+		CompletedAt:            nullableTestString("2026-05-03T00:08:30Z"),
+		MetadataJson:           "{}",
+	})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	results := []agentrun.RunResult{{Run: run}}
+	if err := env.Service.normalizeAgentOutputs(context.Background(), session, results); err != nil {
+		t.Fatalf("normalizeAgentOutputs(first) error = %v", err)
+	}
+	if err := env.Service.normalizeAgentOutputs(context.Background(), session, results); err != nil {
+		t.Fatalf("normalizeAgentOutputs(second) error = %v", err)
+	}
+
+	candidates, err := env.Queries.ListFindingCandidatesBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListFindingCandidatesBySession() error = %v", err)
+	}
+	if len(candidates) != 1 || !candidates[0].Fingerprint.Valid || candidates[0].Fingerprint.String == "" {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+}
+
+func TestDeduplicateFindingsIsRestartSafe(t *testing.T) {
+	t.Parallel()
+
+	env := setupWorkflowEnv(t)
+	session := createWorkflowSession(t, env, "review_session_dedupe_retry", StatusRunning)
+	createWorkflowCandidate(
+		t,
+		env,
+		session.ID,
+		"candidate_dedupe_retry",
+		"Settings mutation lacks admin guard",
+		"security",
+		"high",
+		0.91,
+		"src/new.go",
+		2,
+		3,
+		"finding-fingerprint-1",
+	)
+
+	if err := env.Service.deduplicateFindings(context.Background(), session); err != nil {
+		t.Fatalf("deduplicateFindings(first) error = %v", err)
+	}
+	if err := env.Service.deduplicateFindings(context.Background(), session); err != nil {
+		t.Fatalf("deduplicateFindings(second) error = %v", err)
+	}
+
+	findings, err := env.Queries.ListFindingsBySession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ListFindingsBySession() error = %v", err)
+	}
+	if len(findings) != 1 || findings[0].Fingerprint != "finding-fingerprint-1" {
+		t.Fatalf("findings = %+v", findings)
+	}
+	links, err := env.Queries.ListFindingCandidateLinks(context.Background(), findings[0].ID)
+	if err != nil {
+		t.Fatalf("ListFindingCandidateLinks() error = %v", err)
+	}
+	if len(links) != 1 || links[0].FindingCandidateID != "candidate_dedupe_retry" {
+		t.Fatalf("links = %+v", links)
+	}
 }
 
 func TestWorkflowUsesOptionalDedupeHook(t *testing.T) {

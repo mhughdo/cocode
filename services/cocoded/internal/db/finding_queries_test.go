@@ -208,6 +208,185 @@ func TestFindingQueriesCRUD(t *testing.T) {
 	}
 }
 
+func TestCreateFindingCandidateIsIdempotentByRunFingerprint(t *testing.T) {
+	t.Parallel()
+
+	queries := seededReviewQueries(t)
+	createReviewSessionForTest(t, queries, "review_session_1", "Review cocode")
+	createAgentRunForFindingTest(t, queries)
+
+	first, err := queries.CreateFindingCandidate(context.Background(), dbgen.CreateFindingCandidateParams{
+		ID:              "candidate_1",
+		ReviewSessionID: "review_session_1",
+		AgentRunID:      "agent_run_1",
+		Category:        "correctness",
+		Severity:        "high",
+		Confidence:      0.82,
+		Claim:           "Original claim",
+		LocationsJson:   `[]`,
+		EvidenceJson:    `[]`,
+		Fingerprint:     nullableString("finding-fingerprint-1"),
+		CreatedAt:       "2026-05-03T00:09:00Z",
+	})
+	if err != nil {
+		t.Fatalf("CreateFindingCandidate(first) error = %v", err)
+	}
+
+	second, err := queries.CreateFindingCandidate(context.Background(), dbgen.CreateFindingCandidateParams{
+		ID:              "candidate_2",
+		ReviewSessionID: "review_session_1",
+		AgentRunID:      "agent_run_1",
+		Category:        "reliability",
+		Severity:        "medium",
+		Confidence:      0.91,
+		Claim:           "Updated claim",
+		LocationsJson:   `[{"path":"main.go"}]`,
+		EvidenceJson:    `[{"summary":"updated"}]`,
+		Fingerprint:     nullableString("finding-fingerprint-1"),
+		CreatedAt:       "2026-05-03T00:10:00Z",
+	})
+	if err != nil {
+		t.Fatalf("CreateFindingCandidate(second) error = %v", err)
+	}
+	if second.ID != first.ID || second.CreatedAt != first.CreatedAt {
+		t.Fatalf("second candidate = %+v, want original id/time from %+v", second, first)
+	}
+	if second.Category != first.Category || second.Claim != first.Claim || second.Confidence != first.Confidence {
+		t.Fatalf("second candidate did not preserve first normalized candidate: %+v", second)
+	}
+
+	candidates, err := queries.ListFindingCandidatesBySession(context.Background(), "review_session_1")
+	if err != nil {
+		t.Fatalf("ListFindingCandidatesBySession() error = %v", err)
+	}
+	if len(candidates) != 1 || candidates[0].ID != "candidate_1" {
+		t.Fatalf("ListFindingCandidatesBySession() = %+v", candidates)
+	}
+}
+
+func TestCreateFindingIsIdempotentBySessionFingerprint(t *testing.T) {
+	t.Parallel()
+
+	queries := seededReviewQueries(t)
+	createReviewSessionForTest(t, queries, "review_session_1", "Review cocode")
+
+	first, err := queries.CreateFinding(context.Background(), dbgen.CreateFindingParams{
+		ID:                 "finding_1",
+		ReviewSessionID:    "review_session_1",
+		CanonicalClaim:     "Original claim",
+		Category:           "correctness",
+		Severity:           "high",
+		Confidence:         0.82,
+		VerificationStatus: "unverified",
+		DecisionStatus:     "undecided",
+		Fingerprint:        "finding-fingerprint-1",
+		MergedFromCount:    1,
+		FirstSeenAt:        "2026-05-03T00:10:00Z",
+		UpdatedAt:          "2026-05-03T00:10:00Z",
+	})
+	if err != nil {
+		t.Fatalf("CreateFinding(first) error = %v", err)
+	}
+	if _, err := queries.UpdateFindingDecisionStatus(context.Background(), dbgen.UpdateFindingDecisionStatusParams{
+		ID:             first.ID,
+		DecisionStatus: "accepted",
+		UpdatedAt:      "2026-05-03T00:11:00Z",
+	}); err != nil {
+		t.Fatalf("UpdateFindingDecisionStatus() error = %v", err)
+	}
+
+	second, err := queries.CreateFinding(context.Background(), dbgen.CreateFindingParams{
+		ID:                 "finding_2",
+		ReviewSessionID:    "review_session_1",
+		CanonicalClaim:     "Updated claim",
+		Category:           "reliability",
+		Severity:           "medium",
+		Confidence:         0.91,
+		VerificationStatus: "locally_supported",
+		DecisionStatus:     "undecided",
+		Fingerprint:        "finding-fingerprint-1",
+		MergedFromCount:    3,
+		FirstSeenAt:        "2026-05-03T00:12:00Z",
+		UpdatedAt:          "2026-05-03T00:12:00Z",
+	})
+	if err != nil {
+		t.Fatalf("CreateFinding(second) error = %v", err)
+	}
+	if second.ID != first.ID || second.FirstSeenAt != first.FirstSeenAt {
+		t.Fatalf("second finding = %+v, want original id/first_seen from %+v", second, first)
+	}
+	if second.DecisionStatus != "accepted" {
+		t.Fatalf("second finding decision = %q, want accepted", second.DecisionStatus)
+	}
+	if second.CanonicalClaim != "Updated claim" || second.Category != "reliability" || second.MergedFromCount != 3 {
+		t.Fatalf("second finding did not refresh mutable fields: %+v", second)
+	}
+
+	findings, err := queries.ListFindingsBySession(context.Background(), "review_session_1")
+	if err != nil {
+		t.Fatalf("ListFindingsBySession() error = %v", err)
+	}
+	if len(findings) != 1 || findings[0].ID != "finding_1" {
+		t.Fatalf("ListFindingsBySession() = %+v", findings)
+	}
+}
+
+func TestLinkFindingCandidateIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	queries := seededReviewQueries(t)
+	createReviewSessionForTest(t, queries, "review_session_1", "Review cocode")
+	createAgentRunForFindingTest(t, queries)
+	if _, err := queries.CreateFindingCandidate(context.Background(), dbgen.CreateFindingCandidateParams{
+		ID:              "candidate_1",
+		ReviewSessionID: "review_session_1",
+		AgentRunID:      "agent_run_1",
+		Category:        "correctness",
+		Severity:        "high",
+		Confidence:      0.82,
+		Claim:           "Original claim",
+		LocationsJson:   `[]`,
+		EvidenceJson:    `[]`,
+		Fingerprint:     nullableString("finding-fingerprint-1"),
+		CreatedAt:       "2026-05-03T00:09:00Z",
+	}); err != nil {
+		t.Fatalf("CreateFindingCandidate() error = %v", err)
+	}
+	if _, err := queries.CreateFinding(context.Background(), dbgen.CreateFindingParams{
+		ID:                 "finding_1",
+		ReviewSessionID:    "review_session_1",
+		CanonicalClaim:     "Original claim",
+		Category:           "correctness",
+		Severity:           "high",
+		Confidence:         0.82,
+		VerificationStatus: "unverified",
+		DecisionStatus:     "undecided",
+		Fingerprint:        "finding-fingerprint-1",
+		MergedFromCount:    1,
+		FirstSeenAt:        "2026-05-03T00:10:00Z",
+		UpdatedAt:          "2026-05-03T00:10:00Z",
+	}); err != nil {
+		t.Fatalf("CreateFinding() error = %v", err)
+	}
+	for _, relation := range []string{"merged", "representative"} {
+		if err := queries.LinkFindingCandidate(context.Background(), dbgen.LinkFindingCandidateParams{
+			FindingID:          "finding_1",
+			FindingCandidateID: "candidate_1",
+			Relation:           relation,
+		}); err != nil {
+			t.Fatalf("LinkFindingCandidate(%s) error = %v", relation, err)
+		}
+	}
+
+	links, err := queries.ListFindingCandidateLinks(context.Background(), "finding_1")
+	if err != nil {
+		t.Fatalf("ListFindingCandidateLinks() error = %v", err)
+	}
+	if len(links) != 1 || links[0].Relation != "representative" {
+		t.Fatalf("ListFindingCandidateLinks() = %+v", links)
+	}
+}
+
 func createAgentRunForFindingTest(t *testing.T, queries *dbgen.Queries) {
 	t.Helper()
 

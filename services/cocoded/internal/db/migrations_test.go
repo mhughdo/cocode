@@ -337,12 +337,79 @@ INSERT INTO agent_configs (
 	if codexCLIRole != "orchestrator" {
 		t.Fatalf("codex cli role = %q, want orchestrator", codexCLIRole)
 	}
+	var codexCLIUpdatedArgs string
+	if err := database.QueryRowContext(context.Background(), "SELECT args_json FROM agent_configs WHERE id = 'agent_config_codex_cli'").Scan(&codexCLIUpdatedArgs); err != nil {
+		t.Fatalf("read codex cli args: %v", err)
+	}
+	const codexCLIReadOnlyArgs = `["-a","never","exec","--json","--sandbox","read-only","--skip-git-repo-check","--ephemeral","--ignore-rules","--color","never","-"]`
+	if codexCLIUpdatedArgs != codexCLIReadOnlyArgs {
+		t.Fatalf("codex cli args = %s, want %s", codexCLIUpdatedArgs, codexCLIReadOnlyArgs)
+	}
 	var codexAppRole string
 	if err := database.QueryRowContext(context.Background(), "SELECT role FROM agent_configs WHERE id = 'agent_config_codex_app'").Scan(&codexAppRole); err != nil {
 		t.Fatalf("read codex app role: %v", err)
 	}
 	if codexAppRole != "primary_reviewer" {
 		t.Fatalf("codex app role = %q, want primary_reviewer", codexAppRole)
+	}
+}
+
+func TestApplyDeduplicatesFindingCandidatesBeforeUniqueIndex(t *testing.T) {
+	t.Parallel()
+
+	database, err := Open(context.Background(), MemoryDatabase)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer database.Close()
+
+	const legacyFindingCandidatesSQL = `
+CREATE TABLE finding_candidates (
+  id TEXT PRIMARY KEY,
+  agent_run_id TEXT NOT NULL,
+  fingerprint TEXT
+);
+`
+	legacyMigrations := []Migration{
+		{Version: 1, Name: "schema_v1", SQL: legacyFindingCandidatesSQL},
+		{Version: 2, Name: "noop_2", SQL: "SELECT 1;"},
+		{Version: 3, Name: "noop_3", SQL: "SELECT 1;"},
+		{Version: 4, Name: "noop_4", SQL: "SELECT 1;"},
+		{Version: 5, Name: "noop_5", SQL: "SELECT 1;"},
+		{Version: 6, Name: "noop_6", SQL: "SELECT 1;"},
+		{Version: 7, Name: "noop_7", SQL: "SELECT 1;"},
+		{Version: 8, Name: "noop_8", SQL: "SELECT 1;"},
+		{Version: 9, Name: "noop_9", SQL: "SELECT 1;"},
+	}
+	if err := Apply(context.Background(), database, legacyMigrations); err != nil {
+		t.Fatalf("Apply(legacy schema) error = %v", err)
+	}
+	if _, err := database.ExecContext(context.Background(), `
+INSERT INTO finding_candidates(id, agent_run_id, fingerprint)
+VALUES
+  ('candidate_1', 'run_1', 'fp_1'),
+  ('candidate_2', 'run_1', 'fp_1'),
+  ('candidate_3', 'run_2', 'fp_1'),
+  ('candidate_4', 'run_1', NULL)
+`); err != nil {
+		t.Fatalf("insert duplicate candidates: %v", err)
+	}
+	if err := Apply(context.Background(), database, Migrations); err != nil {
+		t.Fatalf("Apply(current migrations) error = %v", err)
+	}
+
+	var count int
+	if err := database.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM finding_candidates").Scan(&count); err != nil {
+		t.Fatalf("count candidates: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("candidate count = %d, want 3", count)
+	}
+	if _, err := database.ExecContext(
+		context.Background(),
+		"INSERT INTO finding_candidates(id, agent_run_id, fingerprint) VALUES ('candidate_5', 'run_1', 'fp_1')",
+	); err == nil {
+		t.Fatal("duplicate candidate insert error = nil, want unique constraint error")
 	}
 }
 

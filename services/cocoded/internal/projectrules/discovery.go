@@ -171,9 +171,18 @@ func ruleForPath(relativePath string) (fileRule, bool) {
 	if rule, ok := codeownersRule(path); ok {
 		return rule, true
 	}
+	if rule, ok := cursorRule(path); ok {
+		return rule, true
+	}
 
 	base := filepath.Base(path)
 	switch strings.ToLower(base) {
+	case "agents.md":
+		return fileRule{Kind: "agent_instructions", Title: "AGENTS.md"}, true
+	case "claude.md":
+		return fileRule{Kind: "claude_instructions", Title: "CLAUDE.md"}, true
+	case "contributing.md", "contributing":
+		return fileRule{Kind: "contributing", Title: "CONTRIBUTING"}, true
 	case "readme.md", "readme":
 		return fileRule{Kind: "readme", Title: "README"}, true
 	case "go.mod":
@@ -201,6 +210,13 @@ func ruleForPath(relativePath string) (fileRule, bool) {
 	default:
 		return fileRule{}, false
 	}
+}
+
+func cursorRule(path string) (fileRule, bool) {
+	if path == ".cursor/rules" || strings.HasPrefix(path, ".cursor/rules/") {
+		return fileRule{Kind: "cursor_rule", Title: ".cursor/rules"}, true
+	}
+	return fileRule{}, false
 }
 
 func codeownersRule(path string) (fileRule, bool) {

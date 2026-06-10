@@ -105,6 +105,15 @@ type Message struct {
 	UpdatedAt         string          `json:"updated_at"`
 }
 
+type ContextRef struct {
+	ID        string          `json:"id,omitempty"`
+	MessageID string          `json:"message_id,omitempty"`
+	RefType   string          `json:"ref_type"`
+	RefID     string          `json:"ref_id"`
+	Label     string          `json:"label,omitempty"`
+	Metadata  json.RawMessage `json:"metadata,omitempty"`
+}
+
 type Turn struct {
 	ID                     string `json:"id"`
 	ThreadID               string `json:"thread_id"`
@@ -157,6 +166,7 @@ type appendMessageParams struct {
 	Body              string
 	Status            string
 	MetadataJSON      json.RawMessage
+	ContextRefs       []ContextRef
 }
 
 type runtimeSettings struct {
@@ -312,6 +322,7 @@ func (s Service) CreateTurn(ctx context.Context, params AskParams) (AskResult, e
 		Body:              body,
 		Status:            MessageStatusCompleted,
 		MetadataJSON:      normalizedJSON(params.ContextRefs, "[]"),
+		ContextRefs:       parseContextRefs(params.ContextRefs),
 	})
 	if err != nil {
 		return AskResult{}, err
@@ -398,6 +409,9 @@ func (s Service) runTurn(ctx context.Context, turnID string, params AskParams) (
 		return AskResult{}, err
 	}
 	params = paramsForTurn(params, turn, userMessage)
+	if refsJSON, ok := s.messageContextRefsJSON(ctx, userMessage.ID); ok {
+		params.ContextRefs = refsJSON
+	}
 	body := strings.TrimSpace(userMessage.Body)
 	if body == "" {
 		return AskResult{}, fmt.Errorf("%w: user message is empty", ErrInvalidMessage)
@@ -1224,6 +1238,9 @@ INSERT INTO chat_messages (
 	if err != nil {
 		return Message{}, fmt.Errorf("create chat message: %w", err)
 	}
+	if err := s.appendMessageContextRefs(ctx, id, params.ContextRefs); err != nil {
+		return Message{}, err
+	}
 	if _, err := s.Database.ExecContext(ctx, "UPDATE chat_threads SET updated_at = ? WHERE id = ?", now, threadID); err != nil {
 		return Message{}, fmt.Errorf("touch chat thread: %w", err)
 	}
@@ -1237,6 +1254,73 @@ INSERT INTO chat_messages (
 		"author":     message.AuthorType,
 	})
 	return message, nil
+}
+
+func (s Service) appendMessageContextRefs(ctx context.Context, messageID string, refs []ContextRef) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	for _, ref := range refs {
+		refType := strings.TrimSpace(ref.RefType)
+		refID := strings.TrimSpace(ref.RefID)
+		if refType == "" || refID == "" || !validContextRefType(refType) {
+			continue
+		}
+		metadata := normalizedJSON(ref.Metadata, "{}")
+		if _, err := s.Database.ExecContext(ctx, `
+INSERT INTO chat_message_context_refs (id, message_id, ref_type, ref_id, label, metadata_json)
+VALUES (?, ?, ?, ?, ?, ?)`,
+			s.newID("chat_context_ref_"),
+			messageID,
+			refType,
+			refID,
+			nullableString(ref.Label),
+			string(metadata),
+		); err != nil {
+			return fmt.Errorf("create chat message context ref: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s Service) listMessageContextRefs(ctx context.Context, messageID string) ([]ContextRef, error) {
+	rows, err := s.Database.QueryContext(ctx, `
+SELECT id, message_id, ref_type, ref_id, label, metadata_json
+FROM chat_message_context_refs
+WHERE message_id = ?
+ORDER BY rowid ASC`, messageID)
+	if err != nil {
+		return nil, fmt.Errorf("list chat message context refs: %w", err)
+	}
+	defer rows.Close()
+	refs := []ContextRef{}
+	for rows.Next() {
+		var ref ContextRef
+		var label sql.NullString
+		var metadata string
+		if err := rows.Scan(&ref.ID, &ref.MessageID, &ref.RefType, &ref.RefID, &label, &metadata); err != nil {
+			return nil, fmt.Errorf("scan chat message context ref: %w", err)
+		}
+		ref.Label = nullableStringValue(label)
+		ref.Metadata = normalizedJSON(json.RawMessage(metadata), "{}")
+		refs = append(refs, ref)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate chat message context refs: %w", err)
+	}
+	return refs, nil
+}
+
+func (s Service) messageContextRefsJSON(ctx context.Context, messageID string) (json.RawMessage, bool) {
+	refs, err := s.listMessageContextRefs(ctx, messageID)
+	if err != nil || len(refs) == 0 {
+		return nil, false
+	}
+	encoded, err := json.Marshal(refs)
+	if err != nil {
+		return nil, false
+	}
+	return json.RawMessage(encoded), true
 }
 
 func (s Service) createTurn(ctx context.Context, threadID string, userMessageID string, params AskParams, now string) (Turn, error) {
@@ -2179,6 +2263,76 @@ func messageMetadata(raw json.RawMessage) map[string]any {
 	return metadata
 }
 
+func parseContextRefs(raw json.RawMessage) []ContextRef {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "[]" || trimmed == "{}" || !json.Valid([]byte(trimmed)) {
+		return nil
+	}
+	var values []map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &values); err != nil {
+		var value map[string]any
+		if err := json.Unmarshal([]byte(trimmed), &value); err != nil {
+			return nil
+		}
+		values = []map[string]any{value}
+	}
+	refs := make([]ContextRef, 0, len(values))
+	for _, value := range values {
+		refType := firstStringValue(value, "ref_type", "type", "kind")
+		refID := firstStringValue(value, "ref_id", "id", "finding_id", "evidence_map_id", "artifact_id", "file_path", "path")
+		if refType == "" {
+			refType = inferContextRefType(value)
+		}
+		if refType == "" || refID == "" || !validContextRefType(refType) {
+			continue
+		}
+		metadata, err := json.Marshal(value)
+		if err != nil {
+			metadata = []byte(`{}`)
+		}
+		refs = append(refs, ContextRef{
+			RefType:  refType,
+			RefID:    refID,
+			Label:    firstStringValue(value, "label", "title", "name"),
+			Metadata: normalizedJSON(metadata, "{}"),
+		})
+	}
+	return refs
+}
+
+func firstStringValue(value map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if result := stringValue(value[key]); result != "" {
+			return result
+		}
+	}
+	return ""
+}
+
+func inferContextRefType(value map[string]any) string {
+	switch {
+	case stringValue(value["finding_id"]) != "":
+		return "finding"
+	case stringValue(value["evidence_map_id"]) != "":
+		return "evidence_map"
+	case stringValue(value["artifact_id"]) != "":
+		return "artifact"
+	case stringValue(value["file_path"]) != "", stringValue(value["path"]) != "":
+		return "file"
+	default:
+		return ""
+	}
+}
+
+func validContextRefType(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "review_session", "finding", "evidence_map", "artifact", "file", "publish_draft", "copy_packet", "agent_run", "context_bundle":
+		return true
+	default:
+		return false
+	}
+}
+
 func stringValue(value any) string {
 	switch typed := value.(type) {
 	case string:
@@ -2628,9 +2782,9 @@ func chatPrompt(session dbgen.ReviewSession, thread Thread, userMessage Message,
 		builder.WriteString("\n\n")
 	}
 	if refs := strings.TrimSpace(string(promptContext.ContextRefs)); refs != "" && refs != "[]" && refs != "{}" {
-		builder.WriteString("# User-selected context references\n\n```json\n")
-		builder.WriteString(truncatePromptText(refs, 8*1024))
-		builder.WriteString("\n```\n\n")
+		builder.WriteString("# User-selected context references\n\n")
+		builder.WriteString(renderContextRefs(promptContext.ContextRefs))
+		builder.WriteString("\n\n")
 	}
 	if promptContext.IncludeEvidence {
 		builder.WriteString("# Review context bundle\n\n")
@@ -2693,6 +2847,26 @@ func renderChatMessages(messages []Message) string {
 	}
 	if len(lines) == 0 {
 		return "No prior chat messages are available."
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderContextRefs(raw json.RawMessage) string {
+	refs := parseContextRefs(raw)
+	if len(refs) == 0 {
+		trimmed := strings.TrimSpace(string(raw))
+		if trimmed == "" || trimmed == "[]" || trimmed == "{}" {
+			return "No explicit context references were attached."
+		}
+		return "```json\n" + truncatePromptText(trimmed, 8*1024) + "\n```"
+	}
+	lines := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		label := strings.TrimSpace(ref.Label)
+		if label == "" {
+			label = ref.RefID
+		}
+		lines = append(lines, fmt.Sprintf("- %s: `%s` (%s)", ref.RefType, ref.RefID, label))
 	}
 	return strings.Join(lines, "\n")
 }

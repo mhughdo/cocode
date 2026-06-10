@@ -53,6 +53,25 @@ func TestChatPromptProvidesFindingsContext(t *testing.T) {
 	}
 }
 
+func TestRenderContextRefsFormatsStructuredRefs(t *testing.T) {
+	raw := json.RawMessage(`[
+		{"ref_type":"finding","ref_id":"finding_1","label":"Nil guard panic"},
+		{"path":"internal/app/server.go","label":"Server handler"}
+	]`)
+	rendered := renderContextRefs(raw)
+	for _, want := range []string{
+		"finding: `finding_1` (Nil guard panic)",
+		"file: `internal/app/server.go` (Server handler)",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("rendered refs missing %q:\n%s", want, rendered)
+		}
+	}
+	if strings.Contains(rendered, "```json") {
+		t.Fatalf("structured refs should render as a concise list:\n%s", rendered)
+	}
+}
+
 func TestUserVisibleChatFindingsFiltersMachineEvents(t *testing.T) {
 	findings := []dbgen.Finding{
 		{ID: "finding_real", CanonicalClaim: "Missing auth check"},
@@ -193,6 +212,58 @@ func TestCancelTurnMarksRequestAndRunExitsCanceled(t *testing.T) {
 	}
 	if len(completed.Messages) != len(created.Messages) {
 		t.Fatalf("runTurn appended messages after cancellation: before=%d after=%d", len(created.Messages), len(completed.Messages))
+	}
+}
+
+func TestCreateTurnPersistsContextRefs(t *testing.T) {
+	ctx := context.Background()
+	database, err := cocodedb.Open(ctx, cocodedb.MemoryDatabase)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = database.Close()
+	})
+	if err := cocodedb.Apply(ctx, database, cocodedb.Migrations); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	queries := dbgen.New(database)
+	createChatSessionFixture(t, queries, "review_session_context_refs")
+	service := Service{Database: database, Queries: queries}
+
+	created, err := service.CreateTurn(ctx, AskParams{
+		ReviewSessionID: "review_session_context_refs",
+		Body:            "Explain this finding using the selected file.",
+		Audience:        AudienceOrchestrator,
+		ContextRefs: json.RawMessage(`[
+			{"ref_type":"finding","ref_id":"finding_123","label":"Unsafe nil dereference"},
+			{"path":"internal/app/server.go","label":"Server handler"},
+			{"ref_type":"unknown","ref_id":"ignored"}
+		]`),
+	})
+	if err != nil {
+		t.Fatalf("CreateTurn() error = %v", err)
+	}
+
+	refs, err := service.listMessageContextRefs(ctx, created.Turn.UserMessageID)
+	if err != nil {
+		t.Fatalf("listMessageContextRefs() error = %v", err)
+	}
+	if got, want := len(refs), 2; got != want {
+		t.Fatalf("refs len = %d, want %d: %+v", got, want, refs)
+	}
+	if refs[0].RefType != "finding" || refs[0].RefID != "finding_123" || refs[0].Label != "Unsafe nil dereference" {
+		t.Fatalf("first ref = %+v", refs[0])
+	}
+	if refs[1].RefType != "file" || refs[1].RefID != "internal/app/server.go" {
+		t.Fatalf("second ref = %+v", refs[1])
+	}
+	refsJSON, ok := service.messageContextRefsJSON(ctx, created.Turn.UserMessageID)
+	if !ok {
+		t.Fatalf("messageContextRefsJSON() did not return persisted refs")
+	}
+	if rendered := renderContextRefs(refsJSON); !strings.Contains(rendered, "finding: `finding_123`") || !strings.Contains(rendered, "file: `internal/app/server.go`") {
+		t.Fatalf("persisted refs did not render cleanly:\n%s", rendered)
 	}
 }
 
